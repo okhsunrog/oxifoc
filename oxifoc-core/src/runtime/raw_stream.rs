@@ -4,13 +4,16 @@
 use super::streaming::{
     FAST_DECIM_CTR, FAST_TELEM_GATE, FAST_TELEM_PERIOD, FAST_TELEM_Q, fast_telem_stats,
 };
+use super::velocity_debug;
 use crate::{
-    icd::RawTelemetryEndpoint,
+    icd::{RawTelemetryEndpoint, VelocityDebugArmEndpoint},
     raw_telemetry::{
-        RawBlockEncoder, RawEncoding, RawTelemetryAck, RawTelemetryRequest, RawTelemetryStatus,
+        RAW_HEADER_BYTES, RawBlockEncoder, RawBlockHeader, RawEncoding, RawTelemetryAck,
+        RawTelemetryRequest, RawTelemetryStatus, VelocityDebugArm,
     },
     timer::Timer,
     types::{ControlTiming, TelemetryConfigAck},
+    velocity_telemetry::VELOCITY_RECORD_BYTES,
 };
 use core::{
     pin::pin,
@@ -54,6 +57,7 @@ struct RawControl {
     encoding: RawEncoding,
     fast_hz: u16,
     period: u32,
+    velocity_debug: bool,
     phase: Phase,
     owner: Option<ergot::Address>,
 }
@@ -70,6 +74,7 @@ impl RawControl {
             encoding: RawEncoding::Packed28,
             fast_hz: 0,
             period: 0,
+            velocity_debug: false,
             phase: Phase::Idle,
             owner: None,
         }
@@ -85,12 +90,23 @@ impl RawControl {
             Phase::Failed => RawTelemetryStatus::Unavailable,
         }
     }
+    #[cfg(test)]
     fn request(
         &mut self,
         request: RawTelemetryRequest,
         foc_hz: u32,
         ready: bool,
         flash: bool,
+    ) -> (RawTelemetryStatus, Action) {
+        self.request_with_options(request, foc_hz, ready, flash, false)
+    }
+    fn request_with_options(
+        &mut self,
+        request: RawTelemetryRequest,
+        foc_hz: u32,
+        ready: bool,
+        flash: bool,
+        debug: bool,
     ) -> (RawTelemetryStatus, Action) {
         match request {
             RawTelemetryRequest::Status => (self.status(), Action::None),
@@ -100,6 +116,12 @@ impl RawControl {
                 encoding,
                 fast_hz,
             } => {
+                if debug && encoding != RawEncoding::Packed28 {
+                    return (RawTelemetryStatus::Invalid, Action::None);
+                }
+                if debug && !velocity_debug::available() {
+                    return (RawTelemetryStatus::Unavailable, Action::None);
+                }
                 if !cfg!(any(test, feature = "diagnostic-telemetry-codecs"))
                     && encoding != RawEncoding::Packed28
                 {
@@ -109,7 +131,10 @@ impl RawControl {
                     return (RawTelemetryStatus::Invalid, Action::None);
                 }
                 if session == self.session {
-                    return if encoding == self.encoding && fast_hz == self.fast_hz {
+                    return if encoding == self.encoding
+                        && fast_hz == self.fast_hz
+                        && debug == self.velocity_debug
+                    {
                         (self.status(), Action::None)
                     } else {
                         (RawTelemetryStatus::Busy, Action::None)
@@ -122,11 +147,17 @@ impl RawControl {
                     return (RawTelemetryStatus::Unavailable, Action::None);
                 }
                 let period = (foc_hz / u32::from(fast_hz)).max(1);
+                // The companion records ride in each native Packed28 envelope.
+                // A decimated carrier cannot guarantee sufficient bandwidth.
+                if debug && period != 1 {
+                    return (RawTelemetryStatus::Invalid, Action::None);
+                }
                 *self = Self {
                     session,
                     encoding,
                     fast_hz,
                     period,
+                    velocity_debug: debug,
                     phase: Phase::Open,
                     owner: None,
                 };
@@ -180,7 +211,17 @@ async fn control_request_from_peer(
     request: RawTelemetryRequest,
     foc_hz: u32,
     timing: ControlTiming,
+    peer: ergot::Address,
+) -> RawTelemetryAck {
+    control_request_with_options(request, foc_hz, timing, peer, false).await
+}
+
+async fn control_request_with_options(
+    request: RawTelemetryRequest,
+    foc_hz: u32,
+    timing: ControlTiming,
     mut peer: ergot::Address,
+    debug: bool,
 ) -> RawTelemetryAck {
     let _gate = FAST_TELEM_GATE.lock().await;
     let mut control = CONTROL.lock().await;
@@ -199,14 +240,16 @@ async fn control_request_from_peer(
         if foreign {
             return (RawTelemetryStatus::Busy, Action::None);
         }
-        let outcome = control.request(
+        let outcome = control.request_with_options(
             request,
             foc_hz,
             READY.load(Ordering::Acquire),
             crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst),
+            debug,
         );
         if !matches!(outcome.1, Action::None) {
             FAST_TELEM_PERIOD.store(0, Ordering::Release);
+            velocity_debug::disable();
         }
         outcome
     });
@@ -215,6 +258,7 @@ async fn control_request_from_peer(
         // Disabled producer + task gate give exclusive queue ownership. Do not
         // mask the FOC interrupt while discarding an old queue's whole prefix.
         FAST_TELEM_Q.discard();
+        velocity_debug::discard();
         PRODUCER_DROPS.store(0, Ordering::Relaxed);
         FAST_DECIM_CTR.store(0, Ordering::Relaxed);
         critical_section::with(|_| {
@@ -222,6 +266,9 @@ async fn control_request_from_peer(
                 control.phase = Phase::Failed;
                 status = RawTelemetryStatus::Busy;
             } else {
+                if control.velocity_debug {
+                    velocity_debug::enable();
+                }
                 FAST_TELEM_PERIOD.store(period, Ordering::Release);
             }
         });
@@ -270,18 +317,83 @@ pub async fn raw_telemetry_server<NS: NetStackHandle, const N: usize>(
     }
 }
 
+pub async fn velocity_debug_arm_server<NS: NetStackHandle, const N: usize>(
+    endpoints: Endpoints<NS>,
+    foc_hz: u32,
+    timing: ControlTiming,
+) {
+    let server = endpoints.bounded_server::<VelocityDebugArmEndpoint, N>(Some("velocity_debug"));
+    let server = pin!(server);
+    let mut handle = server.attach();
+    loop {
+        let _ = handle
+            .serve_full(|message: &ergot::socket::HeaderMessage<VelocityDebugArm>| {
+                let arm = message.t;
+                control_request_with_options(
+                    RawTelemetryRequest::Arm {
+                        session: arm.session,
+                        previous_session: arm.previous_session,
+                        encoding: RawEncoding::Packed28,
+                        fast_hz: arm.fast_hz,
+                    },
+                    foc_hz,
+                    timing,
+                    message.hdr.src,
+                    true,
+                )
+            })
+            .await;
+    }
+}
+
 async fn fail_session(session: u64) {
     let _gate = FAST_TELEM_GATE.lock().await;
     let mut control = CONTROL.lock().await;
     if control.session == session {
-        FAST_TELEM_PERIOD.store(0, Ordering::Release);
+        critical_section::with(|_| {
+            FAST_TELEM_PERIOD.store(0, Ordering::Release);
+            velocity_debug::disable();
+        });
         control.phase = Phase::Failed;
         FAST_TELEM_Q.discard();
+        velocity_debug::discard();
     }
+}
+
+fn append_velocity_block(
+    buffer: &mut [u8],
+    session: u64,
+    index: u32,
+    final_total: Option<u64>,
+) -> (usize, usize) {
+    let space = buffer.len().saturating_sub(RAW_HEADER_BYTES);
+    let capacity = (space / VELOCITY_RECORD_BYTES).min(crate::raw_telemetry::RAW_MAX_RECORDS);
+    if capacity == 0 {
+        return (0, 0);
+    }
+    let payload = velocity_debug::drain(
+        &mut buffer[RAW_HEADER_BYTES..RAW_HEADER_BYTES + capacity * VELOCITY_RECORD_BYTES],
+    );
+    let count = payload / VELOCITY_RECORD_BYTES;
+    let end = if count == 0 { final_total } else { None };
+    if count == 0 && end.is_none() {
+        return (0, 0);
+    }
+    RawBlockHeader::velocity(
+        session,
+        index,
+        count as u8,
+        velocity_debug::DROPS.load(Ordering::Acquire),
+        end,
+    )
+    .write(buffer);
+    (RAW_HEADER_BYTES + payload, count)
 }
 
 pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
     let mut encoder = RawBlockEncoder::new();
+    let mut debug_total = 0_u64;
+    let mut debug_ended = false;
     let mut session = 0;
     let mut block_index = 0;
     let mut total_records = 0_u64;
@@ -298,6 +410,8 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             session = control.session;
             block_index = 0;
             total_records = 0;
+            debug_total = 0;
+            debug_ended = false;
             encoder.begin(
                 session,
                 block_index,
@@ -305,6 +419,7 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
                 control.period as u16,
             );
         }
+        let closing = control.phase == Phase::Closing;
         let mut refused = false;
         let read = FAST_TELEM_Q.drain_raw(|frame| {
             let accepted = encoder.push(frame);
@@ -314,7 +429,6 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
         if read != 0 {
             fast_telem_stats::READ_OK.fetch_add(read, Ordering::Relaxed);
         }
-        let closing = control.phase == Phase::Closing;
         if !encoder.is_full() && !refused && !closing {
             drop(gate);
             T::after_micros(500).await;
@@ -328,10 +442,27 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             fail_session(session).await;
             continue;
         }
-        let end = count == 0 && closing;
+        let closing_velocity = count == 0 && closing && control.velocity_debug && !debug_ended;
+        let end = count == 0 && closing && !closing_velocity;
         let drops = PRODUCER_DROPS.load(Ordering::Acquire);
-        let bytes = if end {
+        let mut velocity_records = 0;
+        let bytes = if closing_velocity {
+            let buffer = encoder.empty_scratch();
+            let (len, records) =
+                append_velocity_block(buffer, session, block_index, Some(debug_total));
+            velocity_records = records;
+            &buffer[..len]
+        } else if end {
             encoder.end(session, block_index, control.encoding, total_records, drops)
+        } else if control.velocity_debug {
+            // Native samples always get first claim on the envelope. Append a
+            // companion block to the existing buffer, with no extra send/await.
+            encoder.finish_with_suffix(drops, |suffix| {
+                let (len, records) =
+                    append_velocity_block(suffix, session, block_index.wrapping_add(1), None);
+                velocity_records = records;
+                len
+            })
         } else {
             encoder.finish(drops)
         };
@@ -355,7 +486,12 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             }
         } else {
             total_records += count as u64;
-            block_index = block_index.wrapping_add(1);
+            debug_total += velocity_records as u64;
+            if closing_velocity && velocity_records == 0 {
+                debug_ended = true;
+            }
+            block_index =
+                block_index.wrapping_add(1 + u32::from(!closing_velocity && velocity_records != 0));
             encoder.begin(
                 session,
                 block_index,

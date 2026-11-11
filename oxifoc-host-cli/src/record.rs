@@ -82,6 +82,8 @@ pub struct RecordSummary {
     pub fast_source: oxifoc_host_lib::FastSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_telemetry: Option<oxifoc_host_lib::raw_telemetry::RawCaptureReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub velocity_debug_path: Option<String>,
 }
 
 /// Latest hardware info the backend has seen (handshake), if any.
@@ -314,6 +316,10 @@ impl Capture {
         }
         let mut metadata = extra_meta.to_vec();
         let raw_report = self.raw_telemetry.as_ref().and_then(|raw| raw.report());
+        let velocity_debug_path = raw_report
+            .as_ref()
+            .and_then(|report| report.velocity_debug.as_ref())
+            .map(|_| format!("{out_path}.velocity.csv"));
         let fast_source = raw_report
             .as_ref()
             .map_or(oxifoc_host_lib::FastSource::Ergot, |raw| raw.source);
@@ -326,6 +332,16 @@ impl Capture {
         }
         if let Some(session) = self.raw_session {
             metadata.push(("oxifoc.raw_session".into(), session.to_string()));
+        }
+        if let Some(path) = &velocity_debug_path {
+            metadata.push((
+                "oxifoc.velocity_debug_csv".into(),
+                std::path::Path::new(path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            ));
         }
         metadata.push((
             "oxifoc.board_calibration".to_string(),
@@ -351,6 +367,19 @@ impl Capture {
             let session = self
                 .raw_session
                 .context("raw capture has no owned session")?;
+            if let Some(path) = &velocity_debug_path {
+                let frames = raw
+                    .velocity_frames(session)?
+                    .context("missing velocity debug session")?;
+                write_velocity_csv(
+                    path,
+                    &frames,
+                    self.samples[0].seq,
+                    self.expected_step(),
+                    f64::from(self.control_timing.clock_hz)
+                        / f64::from(self.control_timing.period_ticks),
+                )?;
+            }
             raw.wait_end_for(session, Duration::ZERO)?
                 .validate_export(session, self.samples.len())?;
         }
@@ -367,8 +396,62 @@ impl Capture {
             samples_lost,
             fast_source,
             raw_telemetry: raw_report,
+            velocity_debug_path,
         })
     }
+}
+
+fn write_velocity_csv(
+    path: &str,
+    frames: &[oxifoc_core::velocity_telemetry::VelocityDebugFrame],
+    first_fast_seq: u16,
+    stride: u32,
+    foc_hz: f64,
+) -> Result<()> {
+    use std::io::{BufWriter, Write};
+    // The diagnostic origin is produced before native publish in the same ISR.
+    // A decimated stream's first frame may follow it by at most one stride.
+    let offset = if let Some(origin) = frames.first() {
+        let delta = u32::from(first_fast_seq.wrapping_sub(origin.sequence as u16));
+        if delta > stride {
+            bail!("velocity debug origin does not align with first fast sample");
+        }
+        delta
+    } else {
+        0
+    };
+    let mut file = BufWriter::new(File::create(path)?);
+    writeln!(
+        file,
+        "t_s,foc_sequence,tick_us,target_rad_s,reference_rad_s,feedback_rad_s,requested_iq_a,granted_iq_a,granted_id_a,integral_iq_a,iq_min_a,iq_max_a,hall_raw,hall_age_us,hall_direction,flags"
+    )?;
+    for frame in frames {
+        let delta = frame.sequence.wrapping_sub(frames[0].sequence);
+        let time = (f64::from(delta) - f64::from(offset)) / foc_hz;
+        let speed = |word| f64::from(word) / 8.0;
+        let current = |word| f64::from(word) / 100.0;
+        writeln!(
+            file,
+            "{time:.9},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            frame.sequence,
+            frame.tick_us,
+            speed(frame.target),
+            speed(frame.reference),
+            speed(frame.feedback),
+            current(frame.requested_iq),
+            current(frame.granted_iq),
+            current(frame.granted_id),
+            current(frame.integral),
+            current(frame.iq_min),
+            current(frame.iq_max),
+            frame.hall_raw,
+            u32::from(frame.hall_age_100us) * 100,
+            frame.hall_direction,
+            frame.flags
+        )?;
+    }
+    file.flush()?;
+    Ok(())
 }
 
 pub fn record(

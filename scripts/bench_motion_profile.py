@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--cases", default="velocity40,velocity-negative40,velocity120-to40")
     parser.add_argument("--velocity-ki", type=float, help="Volatile speed PI integral gain; other gains unchanged")
     parser.add_argument("--velocity-kp", type=float, help="Volatile speed PI proportional gain")
+    parser.add_argument("--velocity-debug", action="store_true", help="Record native speed PI updates in the Packed28 session")
     parser.add_argument("--hall-config", type=Path, help="Replay only Hall calibration from a saved config dump, in RAM")
     parser.add_argument("--interp-min-erpm", type=float, help="Volatile Hall interpolation threshold")
     args = parser.parse_args()
@@ -88,7 +89,10 @@ def main():
                 for symbol in ["BENCH_HALL_EDGE_COUNT", "BENCH_HALL_EDGE_DROPPED", "BENCH_HALL_PHASE_COUNT", "BENCH_VELOCITY_COUNT", "BENCH_FAULT_COUNT"]:
                     probe.run(probe.device("write", "b32", hex(symbols[symbol]), "0"))
                 capture = args.output/f"{name}.parquet"
-                result = subprocess.run(["just", "test-bridge", str(capture), str(maneuver)], capture_output=True, text=True, timeout=35)
+                cmd = ["just", "test-bridge", str(capture), str(maneuver)]
+                if args.velocity_debug:
+                    cmd += ["ergot-raw", "packed28", "on"]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
                 (args.output/f"{name}.driver.log").write_text(result.stdout+result.stderr)
                 row = dict(name=name, exit=result.returncode)
                 manifest["runs"].append(row)
@@ -100,6 +104,10 @@ def main():
                 if result.returncode == 0:
                     report = json.loads(capture.with_suffix(".parquet.json").read_text())
                     probe.validate_capture(report["record"])
+                    if args.velocity_debug:
+                        debug = report["record"]["raw_telemetry"]["velocity_debug"]
+                        assert debug["records"] > 1 and debug["end_total_records"] == debug["records"]
+                        assert debug["producer_drops"] == 0
                     assert report["terminal_ok"] and all(e["ok"] for e in report["events"])
                     row["record"] = report["record"]
                 save()

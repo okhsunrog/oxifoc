@@ -159,6 +159,7 @@ pub mod raw_telemetry;
 pub mod spi_link;
 #[cfg(feature = "transport-bench")]
 pub mod transport_bench;
+pub mod velocity_telemetry;
 
 /// Interface Control Document with ergot endpoints (requires `icd` feature)
 ///

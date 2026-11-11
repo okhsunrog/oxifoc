@@ -78,6 +78,10 @@ where
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
             velocity_feedback_available: false,
             velocity_schedule: Default::default(),
+            #[cfg(feature = "fast-telemetry")]
+            last_velocity_update: None,
+            #[cfg(feature = "fast-telemetry")]
+            record_velocity_updates: false,
             last_granted_iq: 0.0,
             last_granted_id: 0.0,
             position: PositionTracker::default(),
@@ -252,6 +256,22 @@ where
             granted_id_a: self.last_granted_id,
             measured_iq_a: self.last_iq_meas,
         })
+    }
+
+    #[cfg(feature = "fast-telemetry")]
+    pub fn record_velocity_updates(&mut self, enabled: bool) {
+        self.record_velocity_updates = enabled;
+    }
+
+    #[cfg(feature = "fast-telemetry")]
+    pub fn velocity_update_at(&self, tick_us: u64) -> Option<super::VelocityUpdate> {
+        self.last_velocity_update
+            .filter(|update| update.tick_us == tick_us)
+    }
+
+    #[cfg(feature = "fast-telemetry")]
+    pub fn velocity_integral_a(&self) -> f32 {
+        self.velocity_loop.integral_a()
     }
 
     /// Apply position-loop tuning (sane values only; see

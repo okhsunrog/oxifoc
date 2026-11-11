@@ -504,10 +504,11 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let device_addr = Arc::new(AtomicU32::new(pack_addr(LINK_LOCAL_PEER)));
     let cancel_token = CancellationToken::new();
     let raw_telemetry = cfg.fast_source().is_raw().then(|| {
-        raw_telemetry::RawTelemetryState::new(
+        raw_telemetry::RawTelemetryState::new_with_velocity_debug(
             cfg.fast_source(),
             cfg.fast_encoding(),
             fast_tx.clone(),
+            cfg.velocity_debug,
         )
     });
 

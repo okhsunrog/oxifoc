@@ -74,6 +74,7 @@ def main():
     parser.add_argument("--recovery-elf", type=Path, required=True)
     parser.add_argument("--logging", choices=["timing", "quiet"], default="timing")
     parser.add_argument("--cases", default="hold,current,velocity40,velocity120")
+    parser.add_argument("--velocity-debug", action="store_true")
     args = parser.parse_args()
     cases = args.cases.split(",")
     assert len(cases) == len(set(cases)) and set(cases) <= {"hold", "current", "velocity40", "velocity120"}
@@ -81,7 +82,11 @@ def main():
         parser.error("RAM section export requires >1.1 seconds active; omit the short current pulse")
     assert 1 <= args.repeats <= 5
     args.output.mkdir(parents=True, exist_ok=False)
-    manifest = dict(detail=args.detail, logging=args.logging, runs=[])
+    # The deadline witness is a frozen RAM prefix, not a log stream. A quiet
+    # deadline run need not poll RTT over SWD during the timed workload.
+    monitor_rtt = not (args.detail == "deadline" and args.logging == "quiet")
+    manifest = dict(detail=args.detail, logging=args.logging, rtt_monitor=monitor_rtt,
+                    velocity_debug=args.velocity_debug, runs=[])
     logger = None
     try:
         with (args.output/"flash.log").open("w") as log:
@@ -120,14 +125,18 @@ def main():
                 if args.detail == "deadline":
                     assert probe.read(symbols["PWM_DEADLINE_DATA"], 2) == [3, 0], "deadline counters not reset"
                 capture = args.output / f"{name}.parquet"
-                with (args.output/f"{name}.rtt.log").open("w") as log:
-                    logger = subprocess.Popen(probe.device("attach", str(image.resolve())), stdout=log, stderr=subprocess.STDOUT)
+                if monitor_rtt:
+                    with (args.output/f"{name}.rtt.log").open("w") as log:
+                        logger = subprocess.Popen(probe.device("attach", str(image.resolve())), stdout=log, stderr=subprocess.STDOUT)
                     time.sleep(1)
                     assert logger.poll() is None, "RTT monitor failed to attach"
-                    try:
-                        result = subprocess.run(["just", "test-bridge", str(capture), str(maneuver)],
-                            capture_output=True, text=True, timeout=35)
-                    finally:
+                try:
+                    cmd = ["just", "test-bridge", str(capture), str(maneuver)]
+                    if args.velocity_debug:
+                        cmd += ["ergot-raw", "packed28", "on"]
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
+                finally:
+                    if logger is not None:
                         logger.send_signal(signal.SIGINT)
                         logger.wait(timeout=5)
                         logger = None

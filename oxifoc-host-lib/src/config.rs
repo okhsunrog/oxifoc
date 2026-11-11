@@ -64,6 +64,9 @@ pub struct HostConfig {
     pub fast_hz: Option<u16>,
     pub fast_source: Option<FastSource>,
     pub fast_encoding: Option<oxifoc_core::raw_telemetry::RawEncoding>,
+    /// Request velocity-loop observations in the same Ergot raw session.
+    #[serde(default)]
+    pub velocity_debug: bool,
 }
 
 /// Controls how the host handles transport disconnection/failure.

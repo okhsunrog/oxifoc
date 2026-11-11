@@ -106,6 +106,18 @@ pub struct VelocityControlSnapshot {
     pub measured_iq_a: f32,
 }
 
+/// Inputs and limits of an actual outer-loop update, in its own clock domain.
+#[cfg(feature = "fast-telemetry")]
+#[derive(Clone, Copy)]
+pub struct VelocityUpdate {
+    pub tick_us: u64,
+    pub target_rad_s: f32,
+    pub feedback_rad_s: f32,
+    pub iq_min_a: f32,
+    pub iq_max_a: f32,
+    pub flags: u16,
+}
+
 /// Maximum measured electrical speed accepted by the all-phases-at-50%
 /// diagnostic. The operator acknowledgement remains mandatory because a
 /// sensorless estimator cannot prove that an unenergised rotor is stationary.
@@ -267,6 +279,10 @@ where
     velocity_feedback_available: bool,
     /// Native-rate sample-and-hold around the scheduled cruise controller.
     velocity_schedule: VelocitySchedule,
+    #[cfg(feature = "fast-telemetry")]
+    last_velocity_update: Option<VelocityUpdate>,
+    #[cfg(feature = "fast-telemetry")]
+    record_velocity_updates: bool,
     /// Last final q-current grant, after all target/trust/torque clamps.
     last_granted_iq: f32,
     last_granted_id: f32,

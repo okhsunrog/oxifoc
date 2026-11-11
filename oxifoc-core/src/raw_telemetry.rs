@@ -25,6 +25,8 @@ pub const RAW_MAX_BLOCK_BYTES: usize = RAW_HEADER_BYTES + RAW_MAX_RECORDS * 34;
 const VERSION: u8 = 1;
 const END: u8 = 1;
 const FALLBACK: u8 = 2;
+const VELOCITY: u8 = 4;
+use crate::velocity_telemetry::{VELOCITY_RECORD_BYTES, VelocityDebugFrame};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -61,6 +63,14 @@ pub enum RawTelemetryRequest {
     Stop {
         session: u64,
     },
+}
+
+/// Separate Arm endpoint preserves the existing raw control ICD key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
+pub struct VelocityDebugArm {
+    pub session: u64,
+    pub previous_session: u64,
+    pub fast_hz: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
@@ -102,6 +112,9 @@ impl RawBlockHeader {
     pub const fn is_end(&self) -> bool {
         self.flags & END != 0
     }
+    pub const fn is_velocity(&self) -> bool {
+        self.flags & VELOCITY != 0
+    }
     pub const fn is_fallback(&self) -> bool {
         self.flags & FALLBACK != 0
     }
@@ -125,7 +138,8 @@ impl RawBlockHeader {
         };
         let flags = b[6];
         let count = b[7];
-        if flags & !(END | FALLBACK) != 0
+        if flags & !(END | FALLBACK | VELOCITY) != 0
+            || flags & VELOCITY != 0 && (encoding != RawEncoding::Packed28 || flags & FALLBACK != 0)
             || count as usize > RAW_MAX_RECORDS
             || flags & FALLBACK != 0 && encoding != RawEncoding::Raw34
         {
@@ -134,7 +148,7 @@ impl RawBlockHeader {
         let end = flags & END != 0;
         let payload_len = if end { 0 } else { read16(b, 30) };
         if end {
-            if count != 0 || flags != END {
+            if count != 0 || flags & !VELOCITY != END {
                 return Err(RawDecodeError::Header);
             }
         } else {
@@ -142,7 +156,9 @@ impl RawBlockHeader {
                 return Err(RawDecodeError::Header);
             }
             let length = usize::from(payload_len);
-            let valid = if encoding == RawEncoding::Packed26Delta {
+            let valid = if flags & VELOCITY != 0 {
+                length == count as usize * VELOCITY_RECORD_BYTES
+            } else if encoding == RawEncoding::Packed26Delta {
                 // The seed is fixed; each later frame is a tag+full frame or
                 // a tag+four-byte mask followed by its changed bytes.
                 (26 + (count as usize - 1) * 5..=26 + (count as usize - 1) * 27).contains(&length)
@@ -172,7 +188,30 @@ impl RawBlockHeader {
         Ok(header)
     }
 
-    fn write(self, b: &mut [u8]) {
+    /// Encode a diagnostic block header. Block indexes share the fast session sequence.
+    pub fn velocity(
+        session: u64,
+        block_index: u32,
+        count: u8,
+        drops: u32,
+        end_total: Option<u64>,
+    ) -> Self {
+        Self {
+            session,
+            block_index,
+            encoding: RawEncoding::Packed28,
+            producer_drops: drops,
+            count,
+            first_seq: 0,
+            stride: 0,
+            pwm_arr: 0,
+            flags: VELOCITY | if end_total.is_some() { END } else { 0 },
+            total_records: end_total.unwrap_or(0),
+            payload_len: u16::from(count) * VELOCITY_RECORD_BYTES as u16,
+        }
+    }
+
+    pub fn write(self, b: &mut [u8]) {
         b[..4].copy_from_slice(&RAW_MAGIC);
         b[4] = VERSION;
         b[5] = match self.encoding {
@@ -451,6 +490,23 @@ impl RawBlockEncoder {
         self.header.write(&mut self.bytes[..RAW_HEADER_BYTES]);
         &self.bytes[..RAW_HEADER_BYTES + self.header.payload_bytes()]
     }
+
+    #[cfg(feature = "fast-telemetry")]
+    pub(crate) fn finish_with_suffix(
+        &mut self,
+        producer_drops: u32,
+        append: impl FnOnce(&mut [u8]) -> usize,
+    ) -> &[u8] {
+        let len = self.finish(producer_drops).len();
+        let added = append(&mut self.bytes[len..]);
+        &self.bytes[..len + added]
+    }
+
+    #[cfg(feature = "fast-telemetry")]
+    pub(crate) fn empty_scratch(&mut self) -> &mut [u8] {
+        debug_assert!(self.len() == 0);
+        &mut self.bytes
+    }
     pub fn end(
         &mut self,
         session: u64,
@@ -477,6 +533,7 @@ pub enum RawDecodeError {
 pub struct DecodedRawBlock {
     pub header: RawBlockHeader,
     pub samples: heapless::Vec<FastTelemetry, RAW_MAX_RECORDS>,
+    pub velocity: heapless::Vec<VelocityDebugFrame, RAW_MAX_RECORDS>,
 }
 
 pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError> {
@@ -485,6 +542,19 @@ pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError>
         return Err(RawDecodeError::Length);
     }
     let mut samples = heapless::Vec::new();
+    let mut velocity = heapless::Vec::new();
+    if header.is_velocity() {
+        for record in bytes[RAW_HEADER_BYTES..].chunks_exact(VELOCITY_RECORD_BYTES) {
+            velocity
+                .push(VelocityDebugFrame::decode(record).ok_or(RawDecodeError::Length)?)
+                .map_err(|_| RawDecodeError::Length)?;
+        }
+        return Ok(DecodedRawBlock {
+            header,
+            samples,
+            velocity,
+        });
+    }
     if header.encoding == RawEncoding::Packed26Delta && !header.is_end() {
         let mut data = &bytes[RAW_HEADER_BYTES..];
         let mut previous = [0_u8; 26];
@@ -525,7 +595,11 @@ pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError>
         if !data.is_empty() {
             return Err(RawDecodeError::Length);
         }
-        return Ok(DecodedRawBlock { header, samples });
+        return Ok(DecodedRawBlock {
+            header,
+            samples,
+            velocity,
+        });
     }
     for (index, b) in bytes[RAW_HEADER_BYTES..]
         .chunks_exact(header.encoding.bytes())
@@ -545,7 +619,11 @@ pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError>
         }
         samples.push(sample).map_err(|_| RawDecodeError::Length)?;
     }
-    Ok(DecodedRawBlock { header, samples })
+    Ok(DecodedRawBlock {
+        header,
+        samples,
+        velocity,
+    })
 }
 
 /// Strict incremental parser; reset after transport/session abandonment. The

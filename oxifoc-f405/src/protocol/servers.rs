@@ -442,12 +442,23 @@ async fn raw_telemetry_server_task(stack: &'static Stack) {
         .await
         .set_priority(2);
     let timing = *crate::config::CONTROL_TIMING.get().await;
-    oxifoc_core::runtime::raw_stream::raw_telemetry_server::<_, 2>(
+    let raw = oxifoc_core::runtime::raw_stream::raw_telemetry_server::<_, 2>(
         stack.endpoints(),
         timing.frequency_hz() as u32,
         timing,
+    );
+    #[cfg(feature = "fast-telemetry")]
+    embassy_futures::join::join(
+        raw,
+        oxifoc_core::runtime::raw_stream::velocity_debug_arm_server::<_, 2>(
+            stack.endpoints(),
+            timing.frequency_hz() as u32,
+            timing,
+        ),
     )
     .await;
+    #[cfg(not(feature = "fast-telemetry"))]
+    raw.await;
 }
 
 /// Fault topic publisher — pushes the full fault snapshot on every

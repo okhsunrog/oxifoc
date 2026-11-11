@@ -22,6 +22,8 @@ pub mod streaming;
 
 #[cfg(feature = "fast-telemetry")]
 pub mod raw_stream;
+#[cfg(feature = "fast-telemetry")]
+pub mod velocity_debug;
 
 /// Shared motor-detection server with effectively-once dedup.
 ///

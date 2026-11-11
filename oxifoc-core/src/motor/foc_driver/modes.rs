@@ -191,7 +191,7 @@ where
         match self.velocity_schedule.begin_cycle(now_ticks) {
             super::velocity_schedule::VelocityTick::Hold => {}
             super::velocity_schedule::VelocityTick::Update { dt } => {
-                self.update_velocity_request(target, omega, dt);
+                self.update_velocity_request(target, omega, dt, now_ticks);
             }
             super::velocity_schedule::VelocityTick::Reanchor => {
                 self.velocity_loop.reset(omega);
@@ -211,7 +211,13 @@ where
     // Keep authority, position P, slew and PI register pressure off the held
     // current path. Only this due-only helper sees the elapsed outer-loop dt.
     #[inline(never)]
-    fn update_velocity_request(&mut self, target: Option<f32>, omega: f32, dt: f32) {
+    fn update_velocity_request(
+        &mut self,
+        target: Option<f32>,
+        omega: f32,
+        dt: f32,
+        _now_ticks: u64,
+    ) {
         let profile_start = crate::isr_prof::phase_now();
         let target_vel = self.velocity_target(target);
         let (tracking, mut blockage, mut voltage_clip) = self.velocity_schedule.take_feedback();
@@ -263,6 +269,31 @@ where
         let iq_target = self
             .velocity_loop
             .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt);
+        #[cfg(feature = "fast-telemetry")]
+        if self.record_velocity_updates {
+            use crate::velocity_telemetry as trace;
+            let mut flags = trace::UPDATED | trace::FEEDBACK_VALID;
+            for (present, flag) in [
+                (iq_target <= iq_min + 1e-4, trace::LOWER_BOUND),
+                (iq_target >= iq_max - 1e-4, trace::UPPER_BOUND),
+                (blockage.positive(), trace::BLOCKED_POSITIVE),
+                (blockage.negative(), trace::BLOCKED_NEGATIVE),
+                (voltage_clip.positive(), trace::VOLTAGE_POSITIVE),
+                (voltage_clip.negative(), trace::VOLTAGE_NEGATIVE),
+            ] {
+                if present {
+                    flags |= flag;
+                }
+            }
+            self.last_velocity_update = Some(super::VelocityUpdate {
+                tick_us: _now_ticks,
+                target_rad_s: target_vel,
+                feedback_rad_s: omega,
+                iq_min_a: iq_min,
+                iq_max_a: iq_max,
+                flags,
+            });
+        }
         if !self.velocity_schedule.set_request(iq_target) {
             self.invalidate_velocity();
         }

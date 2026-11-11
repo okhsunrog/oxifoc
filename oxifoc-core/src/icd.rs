@@ -34,7 +34,7 @@ use ergot::endpoint;
 pub use crate::types::*;
 
 use crate::foc::phase::PhaseSource;
-use crate::raw_telemetry::{RawTelemetryAck, RawTelemetryRequest};
+use crate::raw_telemetry::{RawTelemetryAck, RawTelemetryRequest, VelocityDebugArm};
 
 // ============================================================================
 // Protocol Constants
@@ -166,6 +166,12 @@ endpoint!(
     RawTelemetryAck,
     "cmd/raw_telemetry"
 );
+endpoint!(
+    VelocityDebugArmEndpoint,
+    VelocityDebugArm,
+    RawTelemetryAck,
+    "cmd/raw_velocity_debug"
+);
 
 // Fault management endpoint (host → device)
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
@@ -236,6 +242,9 @@ mod delivery_classes {
         type Delivery = Idempotent;
     }
     impl Command for RawTelemetryEndpoint {
+        type Delivery = Idempotent;
+    }
+    impl Command for VelocityDebugArmEndpoint {
         type Delivery = Idempotent;
     }
     impl Command for FaultEndpoint {

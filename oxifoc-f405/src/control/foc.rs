@@ -174,6 +174,61 @@ pub static ADC3_INJECTED: CriticalSectionMutex<
 /// FOC driver storage (mutated only inside the ADC ISR)
 type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor, FastSinCos>;
 type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, PhaseManagerType, FastSinCos>;
+
+#[cfg(feature = "fast-telemetry")]
+#[inline(never)]
+fn publish_velocity_debug(
+    driver: &FocDriverType,
+    sequence: u32,
+    tick_us: u64,
+    hall_snapshot: Option<oxifoc_core::foc::sensors::HallSnapshot>,
+) {
+    use oxifoc_core::{runtime::velocity_debug, velocity_telemetry as trace};
+    let update = driver.velocity_update_at(tick_us);
+    if update.is_none() && !velocity_debug::start_pending() {
+        return;
+    }
+    let mut frame = trace::VelocityDebugFrame {
+        sequence,
+        tick_us: tick_us as u32,
+        hall_raw: hall::read_hall_state_raw(),
+        ..Default::default()
+    };
+    if let Some(hall) = hall_snapshot {
+        use oxifoc_core::foc::hall_sensor::Direction;
+        frame.hall_direction = match hall.direction {
+            Direction::Clockwise => 1,
+            Direction::CounterClockwise => -1,
+            Direction::Stopped => 0,
+        };
+        let age = hall.edge_age_s * 10_000.0;
+        if age > f32::from(u16::MAX) {
+            frame.flags |= trace::HALL_AGE_CLIPPED;
+        }
+        frame.hall_age_100us = age as u16;
+    } else {
+        frame.flags |= trace::HALL_UNAVAILABLE;
+    }
+    if let (Some(update), Some(snapshot)) = (update, driver.velocity_control_snapshot()) {
+        frame.flags |= trace::ACTIVE | update.flags;
+        frame.target = frame.quantize(update.target_rad_s, 8.0);
+        frame.reference = frame.quantize(snapshot.reference_rad_s, 8.0);
+        frame.feedback = frame.quantize(update.feedback_rad_s, 8.0);
+        frame.requested_iq = frame.quantize(snapshot.requested_iq_a, 100.0);
+        frame.granted_iq = frame.quantize(snapshot.granted_iq_a, 100.0);
+        frame.granted_id = frame.quantize(snapshot.granted_id_a, 100.0);
+        frame.integral = frame.quantize(driver.velocity_integral_a(), 100.0);
+        frame.iq_min = frame.quantize(update.iq_min_a, 100.0);
+        frame.iq_max = frame.quantize(update.iq_max_a, 100.0);
+        if (snapshot.requested_iq_a - snapshot.granted_iq_a).abs() > 1e-4 {
+            frame.flags |= trace::GRANT_CLIPPED;
+        }
+    } else if !velocity_debug::start_pending() {
+        // Position-control reuses the loop, but this stream describes velocity mode.
+        return;
+    }
+    velocity_debug::push(frame);
+}
 #[cfg_attr(feature = "ccm", unsafe(link_section = ".ccm.data"))]
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
@@ -186,6 +241,8 @@ pub async fn init(
     adc_handles: AdcHandles,
     config: &RuntimeConfig,
 ) {
+    #[cfg(feature = "fast-telemetry")]
+    oxifoc_core::runtime::velocity_debug::register_producer();
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
     let timing = motor_pwm.control_timing();
@@ -596,6 +653,10 @@ fn ADC() {
     let mut codec_bench_stopped = false;
     let foc_telem = FOC_DRIVER.lock(|cell| {
         cell.borrow_mut().as_mut().and_then(|driver| {
+            #[cfg(feature = "fast-telemetry")]
+            let velocity_debug = oxifoc_core::runtime::velocity_debug::enabled();
+            #[cfg(feature = "fast-telemetry")]
+            driver.record_velocity_updates(velocity_debug);
             let output = run_foc_cycle(
                 &STATE,
                 &FAULT_REGISTRY,
@@ -604,6 +665,10 @@ fn ADC() {
                 now_ticks,
                 protection_board,
             );
+            #[cfg(feature = "fast-telemetry")]
+            if velocity_debug {
+                publish_velocity_debug(driver, *SEQ, now_ticks, hall_snapshot);
+            }
             #[cfg(feature = "bench-hall-phase")]
             HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
             #[cfg(feature = "bench-hall-phase")]

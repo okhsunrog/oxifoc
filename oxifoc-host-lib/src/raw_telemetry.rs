@@ -9,6 +9,7 @@ use oxifoc_core::{
         RawStreamDecoder, RawTelemetryStatus,
     },
     types::FastTelemetry,
+    velocity_telemetry::{SESSION_START, VelocityDebugFrame},
 };
 use serde::Serialize;
 use std::{
@@ -52,6 +53,16 @@ pub struct RawCaptureReport {
     pub end_total_records: Option<u64>,
     pub ended: bool,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub velocity_debug: Option<VelocityDebugReport>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct VelocityDebugReport {
+    pub records: u64,
+    pub blocks: u64,
+    pub producer_drops: u32,
+    pub end_total_records: Option<u64>,
 }
 
 impl RawCaptureReport {
@@ -87,6 +98,7 @@ struct CaptureState {
     report: RawCaptureReport,
     next_block: u32,
     last_progress: Instant,
+    velocity_frames: Vec<VelocityDebugFrame>,
 }
 
 #[derive(Default)]
@@ -102,13 +114,24 @@ pub struct RawTelemetryState {
     tx: Sender<FastTelemetry>,
     inner: Mutex<Inner>,
     changed: Condvar,
+    velocity_debug: bool,
 }
 
 impl RawTelemetryState {
+    #[cfg(test)]
     pub(crate) fn new(
         source: FastSource,
         encoding: RawEncoding,
         tx: Sender<FastTelemetry>,
+    ) -> Arc<Self> {
+        Self::new_with_velocity_debug(source, encoding, tx, false)
+    }
+
+    pub(crate) fn new_with_velocity_debug(
+        source: FastSource,
+        encoding: RawEncoding,
+        tx: Sender<FastTelemetry>,
+        velocity_debug: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             source,
@@ -116,7 +139,22 @@ impl RawTelemetryState {
             tx,
             inner: Mutex::new(Inner::default()),
             changed: Condvar::new(),
+            velocity_debug,
         })
+    }
+
+    pub fn velocity_frames(&self, session: u64) -> Result<Option<Vec<VelocityDebugFrame>>> {
+        let inner = self.inner.lock().unwrap();
+        let capture = inner
+            .capture
+            .as_ref()
+            .filter(|c| c.report.session == session)
+            .ok_or_else(|| anyhow!("velocity capture session changed before export"))?;
+        Ok(capture
+            .report
+            .velocity_debug
+            .as_ref()
+            .map(|_| capture.velocity_frames.clone()))
     }
 
     pub fn source(&self) -> FastSource {
@@ -230,9 +268,11 @@ impl RawTelemetryState {
                 end_total_records: None,
                 ended: false,
                 error: None,
+                velocity_debug: self.velocity_debug.then(VelocityDebugReport::default),
             },
             next_block: 0,
             last_progress: Instant::now(),
+            velocity_frames: Vec::new(),
         });
         Ok(session)
     }
@@ -349,10 +389,62 @@ impl RawTelemetryState {
             }
             capture.next_block = capture.next_block.wrapping_add(1);
             capture.report.blocks_received += 1;
+            capture.last_progress = Instant::now();
+            if header.is_velocity() {
+                let report = capture
+                    .report
+                    .velocity_debug
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("unsolicited velocity debug block"))?;
+                if report.end_total_records.is_some() {
+                    bail!("velocity debug data arrived after its END");
+                }
+                report.blocks += 1;
+                report.producer_drops = report.producer_drops.max(header.producer_drops);
+                if header.is_end() {
+                    report.end_total_records = Some(header.total_records);
+                    if report.records == 0
+                        || header.total_records != report.records
+                        || report.producer_drops != 0
+                    {
+                        bail!(
+                            "incomplete velocity debug stream: END {}, records {}, drops {}",
+                            header.total_records,
+                            report.records,
+                            report.producer_drops
+                        );
+                    }
+                } else {
+                    // Diagnostics remain bounded even for a caller that never requests Stop.
+                    if capture.velocity_frames.len() + block.velocity.len() > 1_048_576 {
+                        bail!("velocity debug host capture limit exceeded");
+                    }
+                    for frame in block.velocity {
+                        if let Some(previous) = capture.velocity_frames.last() {
+                            let delta = frame.sequence.wrapping_sub(previous.sequence);
+                            if frame.flags & SESSION_START != 0 || delta == 0 || delta >= 1 << 31 {
+                                bail!("invalid velocity debug sequence");
+                            }
+                        } else if frame.flags & SESSION_START == 0 {
+                            bail!("velocity debug stream has no session origin");
+                        }
+                        capture.velocity_frames.push(frame);
+                        report.records += 1;
+                    }
+                }
+                return Ok(());
+            }
             capture.report.producer_drops =
                 capture.report.producer_drops.max(header.producer_drops);
-            capture.last_progress = Instant::now();
             if header.is_end() {
+                if capture
+                    .report
+                    .velocity_debug
+                    .as_ref()
+                    .is_some_and(|d| d.end_total_records.is_none())
+                {
+                    bail!("fast END arrived before velocity debug END");
+                }
                 capture.report.end_total_records = Some(header.total_records);
                 if header.total_records != capture.report.records_received {
                     bail!(
@@ -446,8 +538,8 @@ where
 {
     use oxifoc_core::{
         delivery::ReliableExt,
-        icd::RawTelemetryEndpoint,
-        raw_telemetry::{RawTelemetryRequest, RawTelemetryStatus},
+        icd::{RawTelemetryEndpoint, VelocityDebugArmEndpoint},
+        raw_telemetry::{RawTelemetryRequest, RawTelemetryStatus, VelocityDebugArm},
     };
     let client = stack.clone().reliable::<crate::TokioTimer>();
     if fast_hz != 0
@@ -501,15 +593,30 @@ where
             fast_hz,
         }
     };
-    let result = client
-        .at_least_once::<RawTelemetryEndpoint>(
-            address,
-            &request,
-            Some("raw_telemetry"),
-            &crate::SETPOINT_POLICY,
-        )
-        .await
-        .map_err(|error| anyhow!("raw telemetry control failed: {error:?}"));
+    let result = if fast_hz != 0 && state.velocity_debug {
+        client
+            .at_least_once::<VelocityDebugArmEndpoint>(
+                address,
+                &VelocityDebugArm {
+                    session,
+                    previous_session,
+                    fast_hz,
+                },
+                Some("velocity_debug"),
+                &crate::SETPOINT_POLICY,
+            )
+            .await
+    } else {
+        client
+            .at_least_once::<RawTelemetryEndpoint>(
+                address,
+                &request,
+                Some("raw_telemetry"),
+                &crate::SETPOINT_POLICY,
+            )
+            .await
+    }
+    .map_err(|error| anyhow!("raw telemetry control failed: {error:?}"));
     let result = result.and_then(|ack| {
         if ack.session != session {
             bail!("raw acknowledgement cookie mismatch");
@@ -715,6 +822,62 @@ mod tests {
     use super::*;
     use crossbeam_channel::{Receiver, bounded};
     use oxifoc_core::raw_telemetry::RawBlockEncoder;
+
+    #[test]
+    fn velocity_sidecar_requires_its_own_totals_and_session_origin() {
+        use oxifoc_core::velocity_telemetry::VELOCITY_RECORD_BYTES;
+        for (debug_end, drops, expected_ok) in
+            [(true, 0, true), (false, 0, false), (true, 1, false)]
+        {
+            let (tx, rx) = bounded(8);
+            let state = RawTelemetryState::new_with_velocity_debug(
+                FastSource::ErgotRaw,
+                RawEncoding::Packed28,
+                tx,
+                true,
+            );
+            state.reader_ready();
+            let session = state.arm().unwrap();
+            let first = FastTelemetry {
+                seq: u16::MAX,
+                ..Default::default()
+            };
+            let mut bytes = data(session, 0, RawEncoding::Packed28, &[first], 0);
+            let mut debug = [0; RAW_HEADER_BYTES + 2 * VELOCITY_RECORD_BYTES];
+            RawBlockHeader::velocity(session, 1, 2, 0, None).write(&mut debug);
+            let origin = VelocityDebugFrame {
+                sequence: u32::MAX,
+                flags: SESSION_START,
+                ..Default::default()
+            };
+            let update = VelocityDebugFrame {
+                sequence: 19,
+                requested_iq: -30,
+                ..Default::default()
+            };
+            debug[RAW_HEADER_BYTES..RAW_HEADER_BYTES + VELOCITY_RECORD_BYTES]
+                .copy_from_slice(&origin.encode());
+            debug[RAW_HEADER_BYTES + VELOCITY_RECORD_BYTES..].copy_from_slice(&update.encode());
+            bytes.extend(debug);
+            let mut next = 2;
+            if debug_end {
+                let mut marker = [0; RAW_HEADER_BYTES];
+                RawBlockHeader::velocity(session, next, 0, drops, Some(2)).write(&mut marker);
+                bytes.extend(marker);
+                next += 1;
+            }
+            bytes.extend(end(session, next, RawEncoding::Packed28, 1, 0));
+            let mut ingress = RawIngress::new(state.clone());
+            let result: Result<()> = bytes.chunks(13).try_for_each(|chunk| ingress.push(chunk));
+            assert_eq!(result.is_ok(), expected_ok);
+            assert_eq!(rx.try_recv().unwrap(), first);
+            assert_eq!(
+                state.velocity_frames(session).unwrap().unwrap(),
+                [origin, update]
+            );
+            assert_eq!(state.wait_end(Duration::ZERO).is_ok(), expected_ok);
+        }
+    }
 
     #[tokio::test]
     async fn ergot_carrier_preserves_blocks_end_and_missing_block_failure() {

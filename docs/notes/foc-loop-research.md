@@ -12,16 +12,18 @@ was off; ordinary running retargets preserve state. Hardware restart peaks
 Hall/speed ripple remains, especially a 120→40 transition. Small-power dissipative-braking pilot was rejected: it worsened rocking.
 Latest speed sweep: ±20 can rock/stall; +80/+160 and ±320 settle much more
 smoothly. Lower Ki improves 40 and 120→40 but substantially slows startup;
-interpolation threshold=0 does not cure 20. Next add native 1-kHz velocity PI
-diagnostics over Ergot/SPI (user approved), then resolve low-speed behavior.
+interpolation threshold=0 does not cure 20. Optional native 1-kHz PI diagnostics
+now run alongside Packed28 on normal firmware. Use those traces for the next
+low-speed control change; the diagnostic deadline-bench combination still
+needs investigation because its command ACKs sometimes miss their deadline.
 Clock/current/outer-loop rates stay
 168 profile / 20 kHz / 1 kHz. All earlier experimental tuning remains volatile.
 
 Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
 
 Latest artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-low-speed-2026-11-11/`.
-Recovery for future tests: `normal-fixed.elf` in the previous pwm-motion root, source fix
-`44a9790`. Do not silently restore the old pre-fix recovery image.
+Recovery for future tests: `normal-velocity-debug.elf` in the latest root
+includes bridge rearm fix `44a9790` and optional velocity diagnostics.
 Use this one living note for progress; add conclusions/evidence and next actions,
 not transcripts of questions. Do not repeat completed A/Bs without a reason.
 
@@ -563,7 +565,40 @@ limitation, not hidden in the successful count. Repeats succeeded. Parallel
 analysis was disabled after the first failure, so it does not explain all three.
 Do not silently loosen schedule tolerances or call the whole batch lossless.
 
-User approved next: optional native 1-kHz velocity debug with PI input/reference,
-requested/granted Iq, integral, clipping reason, raw Hall state/edge age, exact
-FOC sequence. Main 20-kHz Packed28 remains; same Ergot/SPI transport. Measure
-CPU/wire overhead and preserve correlated session/END/loss semantics.
+### Native velocity PI evidence
+
+`--velocity-debug` opts into the diagnostic Arm on an Ergot Packed28 native
+capture. The ISR publishes exactly on velocity PI updates plus a session
+origin at the first native ADC cycle. Separate 32-byte records contain actual
+PI feedback/reference/target, integral, Iq request/grant/bounds, Id grant,
+voltage/blockage flags, Hall pin bits/direction/edge age, full FOC sequence and
+clock ticks. Speed unit 1/8 electrical rad/s; current 10 mA; age 100 µs. The
+normal Packed28 frame and control behavior are unchanged. Diagnostics share
+its session and block index, with their own END, count and loss checks. Data
+blocks fit in the spare tail of the existing Ergot envelope, so there is no
+extra send in the normal running path. Payload ~32 kB/s plus ~10 kB/s headers
+while the PI runs. The host saves `<capture>.velocity.csv`, time-aligned to
+the native samples including sequence wrap. No calibration or gain writes.
+
+Final normal-image runs use the same 168/20k/1k clocks. Two +120 runs,
+120→40 and velocity→Iq=.45 A: 438,598 native samples, 16,815 diagnostic
+records, all 95 planned command ACKs, no drops in either stream and no faults.
+Normal-image footprint change: +6048 flash bytes (.text/.rodata/.data),
++2660 static RAM bytes (.data/.bss), including the 2-KiB diagnostic queue.
+Tests: 702 core, 14 host raw, 4 maneuver passed. Final stopped, 23.977 V,
+fault count 0; persisted config unchanged except boot DC offsets.
+
+Do not claim full PWM deadline qualification with diagnostics. First debug
+deadline trial (separate envelopes) lost ACK and 102 producer samples; the
+coalesced variant had an ACK failure with no loss, then an ACK failure and
+84 producer drops without RTT. All saved short timing prefixes had zero
+late/ambiguous/masked writes with minimum margin 9.55–9.62 µs. The root cause
+of these instrumented-run failures is unresolved; RTT alone does not explain
+them. Ordinary firmware passed the four complete diagnostic runs above.
+
+The first transition trace (`velocity-debug-pilot`) records 5804 PI updates
+at 952–1050 µs intervals. Quantized integral and granted Iq can now distinguish
+speed feedback collapse from voltage saturation or rejected current. See
+`normal-mux-velocity120-to40.velocity.png` for the current format. For a
+focused independent review, the artifact root contains `fable-review/PROMPT.md`
+and `EVIDENCE.md` with exact A/B, raw data and source entry points.

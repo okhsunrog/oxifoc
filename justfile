@@ -606,8 +606,8 @@ bench-mk5-foc-pc output maneuver="maneuvers/foc-profile-velocity40.json":
     wait "$profiler" || status=$?
     exit "$status"
 
-bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,velocity40,velocity120" logging="timing":
-    uv run --no-project python -B scripts/bench_foc_profile.py {{quote(output)}} --detail {{quote(detail)}} --repeats {{repeats}} --cases {{quote(cases)}} --logging {{quote(logging)}} --recovery-elf {{quote(recovery)}}
+bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,velocity40,velocity120" logging="timing" velocity_debug="off":
+    uv run --no-project python -B scripts/bench_foc_profile.py {{quote(output)}} --detail {{quote(detail)}} --repeats {{repeats}} --cases {{quote(cases)}} --logging {{quote(logging)}} --recovery-elf {{quote(recovery)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}}
 
 # Current production transport and model; diagnostics differ only by section marks.
 build-mk5-foc-profile detail="minimal" logging="timing":
@@ -636,11 +636,11 @@ cli-bridge *ARGS:
     @target/release/oxifoc-host-cli --transport usb-serial-jtag --serial-path /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 --elf {{mk5_elf}} --wait-secs 12 --json "$@"
 
 # Finite maneuver, full native-rate stream, terminal Stop on success or failure.
-test-bridge capture maneuver source="ergot-raw" encoding="packed28":
-    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(encoding)}}
+test-bridge capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off":
+    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(encoding)}} {{quote(velocity_debug)}}
 
 # USB is a temporary A/B reference; bridge is the production route.
-test-link link capture maneuver source="ergot-raw" encoding="packed28":
+test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off":
     #!/usr/bin/env bash
     set -euo pipefail
     test {{quote(link)}} = bridge -o {{quote(link)}} = usb
@@ -649,7 +649,7 @@ test-link link capture maneuver source="ergot-raw" encoding="packed28":
     trap '"${cli[@]}" stop >/dev/null' EXIT
     export RUST_LOG="${RUST_LOG:-warn},device=info"
     "${cli[@]}" source hall > {{quote(capture + ".source.json")}}
-    "${cli[@]}" --fast-source {{quote(source)}} --fast-encoding {{quote(encoding)}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
+    "${cli[@]}" --fast-source {{quote(source)}} --fast-encoding {{quote(encoding)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
 
 # Matching bench-executor-trace firmware must already be flashed.
 profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" repeats="3":
@@ -684,6 +684,15 @@ bench-mk5-speed-sweep output recovery hall_config ki="0.2" repeats="2" cases="ve
 # Isolate low-speed commutation from the independent physical speed estimate.
 bench-mk5-low-speed-interp output recovery hall_config interp="0" repeats="2":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --interp-min-erpm {{quote(interp)}} --cases velocity20-sweep,velocity40-long,velocity80-sweep
+
+# Native velocity PI observations and Packed28 in one capture session.
+bench-mk5-velocity-debug output recovery hall_config repeats="2" cases="velocity40-long,velocity120-to40-long,velocity40-to-iq045":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --velocity-debug --cases {{quote(cases)}}
+
+test-velocity-debug:
+    cargo test --locked -p oxifoc-core --lib --features {{quote(core_embassy_features + ",fast-telemetry")}}
+    cargo test --locked -p oxifoc-host-lib --lib raw_telemetry
+    cargo test --locked -p oxifoc-host-cli --bin oxifoc-host-cli maneuver
 
 
 # Hold torque after the same spin-up to separate speed PI from commutation ripple.

@@ -207,6 +207,9 @@ struct Cli {
     /// Raw block encoding; default: raw34. Packed encodings fall back explicitly.
     #[arg(long, value_enum, global = true)]
     fast_encoding: Option<FastEncodingArg>,
+    /// Record native velocity-loop observations alongside Ergot Packed28.
+    #[arg(long, global = true)]
+    velocity_debug: bool,
 
     /// Serial port path (e.g., /dev/ttyACM0). Required for serial transport if not in config.
     #[arg(long)]
@@ -1100,6 +1103,13 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         && cfg.transport_type() != TransportType::Usb
     {
         bail!("usb-raw requires --transport usb for commands");
+    }
+    cfg.velocity_debug |= cli.velocity_debug;
+    if cfg.velocity_debug
+        && (cfg.fast_source() != oxifoc_host_lib::FastSource::ErgotRaw
+            || cfg.fast_encoding() != oxifoc_core::raw_telemetry::RawEncoding::Packed28)
+    {
+        bail!("velocity debug requires Ergot raw Packed28 telemetry");
     }
     Ok(cfg)
 }

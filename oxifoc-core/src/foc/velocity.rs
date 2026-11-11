@@ -257,6 +257,11 @@ impl VelocityLoop {
         self.ramp.value()
     }
 
+    #[cfg(feature = "fast-telemetry")]
+    pub(crate) fn integral_a(&self) -> f32 {
+        self.pi.get_integral()
+    }
+
     /// Account for the previous interval's granted-minus-requested current.
     pub(crate) fn track_grant(&mut self, correction: f32) {
         if correction.is_finite() {
