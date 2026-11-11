@@ -4061,6 +4061,43 @@ mod severity_gate {
             let _next = crate::state::DetectionActiveGuard::arm();
             assert!(!crate::state::detection_cancelled());
         }
+
+        #[test]
+        fn queued_detection_authority_cannot_cross_stop_or_session_replacement() {
+            let _serial = cmd_channel_lock();
+            let detection = crate::state::DetectionActiveGuard::arm();
+            let token = crate::state::DetectionCommandToken::capture().unwrap();
+            let mut h = running_harness();
+            let mode = program().hold_mode();
+            CMD_CHANNEL
+                .try_send(DriverCommand::DetectionMode { token, mode })
+                .unwrap();
+            tick(&mut h, 50);
+            assert_eq!(h.driver.mode(), mode);
+            CMD_CHANNEL
+                .try_send(DriverCommand::Motor(crate::types::MotorRequest {
+                    source_session: 42,
+                    seq: 1,
+                    command: crate::types::MotorCommand::EmergencyStop,
+                }))
+                .unwrap();
+            CMD_CHANNEL
+                .try_send(DriverCommand::DetectionMode { token, mode })
+                .unwrap();
+            tick(&mut h, 100);
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            assert!(!token.is_current());
+            drop(detection);
+            let _next = crate::state::DetectionActiveGuard::arm();
+            assert!(!token.is_current());
+            CMD_CHANNEL
+                .try_send(DriverCommand::DetectionMode { token, mode })
+                .unwrap();
+            tick(&mut h, 150);
+            assert_eq!(h.driver.mode(), ControlMode::Stopped);
+            let next_token = crate::state::DetectionCommandToken::capture().unwrap();
+            assert!(next_token.is_current());
+        }
     }
 
     #[cfg(feature = "storage")]

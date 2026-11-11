@@ -39,6 +39,7 @@ pub use crate::foc::detection::{FluxLinkageParams, InductanceParams, ResistanceP
 /// Generic implementation usable on any platform with embassy-time,
 /// critical-section mutexes for state, and atomic ADC samples.
 pub struct EmbassyDetectionHardware {
+    authority: Option<state::DetectionCommandToken>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
@@ -48,7 +49,9 @@ pub struct EmbassyDetectionHardware {
 }
 
 impl EmbassyDetectionHardware {
-    /// Create a new detection hardware instance.
+    /// Create a backend inside an active device detection session.
+    /// Authority is captured once. Construction outside a session or reuse
+    /// after its cancellation fails health checks and cannot enqueue excitation.
     pub fn new(
         state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
         ia: &'static AtomicU16,
@@ -64,6 +67,7 @@ impl EmbassyDetectionHardware {
                 .map(|h| h.error_count)
         });
         Self {
+            authority: state::DetectionCommandToken::capture(),
             state_mutex,
             ia,
             ib,
@@ -79,6 +83,9 @@ impl DetectionHardware for EmbassyDetectionHardware {
         true
     }
     fn check_health(&self) -> Result<(), DetectionError> {
+        if !self.authority.is_some_and(|token| token.is_current()) {
+            return Err(DetectionError::HardwareFault);
+        }
         critical_section::with(|cs| {
             let state = self.state_mutex.borrow(cs).borrow();
             if state.motor_state == crate::types::MotorState::Error || state::detection_cancelled()
@@ -201,12 +208,15 @@ impl DetectionHardware for EmbassyDetectionHardware {
     }
 
     async fn send_command(&self, mode: ControlMode) {
+        let Some(token) = self.authority.filter(|token| token.is_current()) else {
+            return;
+        };
         // send().await, not try_send: the ISR drains the channel every FOC
         // cycle, so this parks for at most ~50 µs — and a silently dropped
         // command would corrupt the measurement (the HFI loop pairs each
         // current sample with the voltage commanded one cycle earlier).
         state::CMD_CHANNEL
-            .send(state::DriverCommand::SetMode(mode))
+            .send(state::DriverCommand::DetectionMode { token, mode })
             .await;
     }
 

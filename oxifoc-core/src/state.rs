@@ -47,6 +47,11 @@ use crate::types::{
 /// that way.
 #[derive(Clone, Copy, Debug)]
 pub enum DriverCommand {
+    /// Device-side excitation belongs to one detection generation.
+    DetectionMode {
+        token: DetectionCommandToken,
+        mode: ControlMode,
+    },
     /// Change control mode (start/stop/targets)
     SetMode(ControlMode),
     /// Source-owned, sequenced protocol command.
@@ -82,6 +87,7 @@ impl DriverCommand {
     /// the control loop.
     pub fn is_sane(&self) -> bool {
         match *self {
+            Self::DetectionMode { mode, .. } => mode.is_finite(),
             Self::SetMode(mode) => mode.is_finite(),
             Self::Motor(request) => request.command.is_finite(),
             Self::SetCurrentLimits(limits) => {
@@ -251,6 +257,30 @@ pub struct DetectionActiveGuard {
 }
 
 static DETECTION_GENERATION: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// A capability captured when a detection backend is constructed. The field
+/// is private: an old backend cannot mint authority for a subsequent run.
+#[derive(Clone, Copy, Debug)]
+pub struct DetectionCommandToken(u32);
+
+impl DetectionCommandToken {
+    #[cfg(any(feature = "embassy", test))]
+    pub(crate) fn capture() -> Option<Self> {
+        critical_section::with(|_| {
+            (DETECTION_ACTIVE.load(Ordering::Acquire)
+                && !DETECTION_CANCELLED.load(Ordering::Acquire))
+            .then(|| Self(DETECTION_GENERATION.load(Ordering::Acquire)))
+        })
+    }
+
+    pub(crate) fn is_current(self) -> bool {
+        critical_section::with(|_| {
+            DETECTION_ACTIVE.load(Ordering::Acquire)
+                && !DETECTION_CANCELLED.load(Ordering::Acquire)
+                && DETECTION_GENERATION.load(Ordering::Acquire) == self.0
+        })
+    }
+}
 
 /// Private proof that the current detection owns its final stopped install.
 /// Tokens from a cancelled or replaced operation cannot authorize an ISR apply.
@@ -624,6 +654,10 @@ where
 {
     // Process all pending commands
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
+        let detection_authority = match cmd {
+            DriverCommand::DetectionMode { token, .. } => Some(token),
+            _ => None,
+        };
         let protocol_request = match cmd {
             DriverCommand::Motor(request) => Some(request),
             _ => None,
@@ -638,6 +672,15 @@ where
             continue;
         }
         let mode = match cmd {
+            DriverCommand::DetectionMode { token, mode } => {
+                if !token.is_current() {
+                    continue;
+                }
+                *saw_set_mode = true;
+                crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
+                    .fetch_add(1, Ordering::Relaxed);
+                mode
+            }
             DriverCommand::SetMode(mode) => {
                 // Fresh setpoint from the host — feed the deadman. Set even if
                 // the gates below reject the mode: liveness ≠ acceptance.
@@ -802,6 +845,11 @@ where
         }
         let outcome = critical_section::with(|cs| {
             let mut state = state_mutex.borrow(cs).borrow_mut();
+            // Recheck at the application boundary, serialized with guard
+            // cancellation/drop, not merely when dequeuing the command.
+            if detection_authority.is_some_and(|token| !token.is_current()) {
+                return MotorCommandOutcome::RejectedSafety;
+            }
 
             // Exit the Error latch only once the host has explicitly cleared
             // the fault registry (FaultRequest::Clear via fault_server).
