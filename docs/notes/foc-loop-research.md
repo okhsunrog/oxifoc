@@ -748,3 +748,14 @@ The image used 109.2 KiB of main SRAM for static data, leaving 18.8 KiB for
 stack and margin. The previous bench firmware was restored and verified
 stopped, with zero active faults. Artifacts are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-48k/`.
+
+The 48 KiB CCM follow-up moved only the queue to `0x10000000`, using the
+existing CCM startup copy. ELF symbols confirmed that the FOC driver,
+platform state and SPI queue stayed in main SRAM. Static main SRAM fell
+from 109.2 to 61.1 KiB. All three full runs captured 512,051 samples
+without loss. All nine timeline commands and three terminal Stops were
+acknowledged, with a 35.2 ms maximum on the timed Stop command. There
+were zero SPI errors and one Hall stale-edge warning after deceleration.
+The previous 4 KiB firmware was restored and verified stopped with zero
+active faults. Artifacts are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-48k-ccm/`.
