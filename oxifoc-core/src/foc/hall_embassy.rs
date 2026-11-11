@@ -195,6 +195,11 @@ impl HallAngleProxy {
 }
 
 impl AngleSensor for HallAngleProxy {
+    #[cfg(feature = "bench-cogging-compensation")]
+    fn bench_hall_position(&self, now_ticks: u64) -> Option<f32> {
+        HALL_ESTIMATOR.lock(|est| est.borrow().sensor.as_ref()?.bench_hall_position(now_ticks))
+    }
+
     fn apply_prepared_hall_calibration(
         &mut self,
         prepared: &PreparedHallCalibration,

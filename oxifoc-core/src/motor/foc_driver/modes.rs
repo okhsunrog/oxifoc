@@ -18,6 +18,13 @@ enum CurrentFeedback {
     Cruise,
 }
 
+// Only the stopped bench harness selects a profile over SWD. Reset starts
+// disabled and unknown values cannot add torque.
+#[cfg(feature = "bench-cogging-compensation")]
+#[unsafe(no_mangle)]
+pub static BENCH_COGGING_PROFILE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
     P: PhasePwm,
@@ -266,6 +273,38 @@ where
         } else {
             iq_min
         };
+        #[cfg(feature = "bench-cogging-compensation")]
+        let position_feedforward =
+            match BENCH_COGGING_PROFILE.load(core::sync::atomic::Ordering::Relaxed) {
+                1 if target.is_some() => 0.25,
+                2 if target.is_some() => -0.25,
+                _ => 0.0,
+            };
+        #[cfg(feature = "bench-cogging-compensation")]
+        let iq_target = if position_feedforward != 0.0 {
+            // Measured acceleration peaks at 137° modulo 180°. Counter
+            // torque peaks 90 electrical degrees away, at 47°.
+            let feedforward = self
+                .phase
+                .bench_hall_position(_now_ticks)
+                .map_or(0.0, |angle| {
+                    let (_, cos) = S::sin_cos(wrap_angle(2.0 * (angle - 47.0_f32.to_radians())));
+                    position_feedforward * cos
+                });
+            self.velocity_loop.step_with_feedforward(
+                target_vel,
+                omega,
+                iq_min,
+                iq_max,
+                blockage,
+                dt,
+                feedforward,
+            )
+        } else {
+            self.velocity_loop
+                .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt)
+        };
+        #[cfg(not(feature = "bench-cogging-compensation"))]
         let iq_target = self
             .velocity_loop
             .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt);

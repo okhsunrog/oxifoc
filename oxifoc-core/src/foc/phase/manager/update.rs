@@ -77,6 +77,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 // ============================================================================
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
+    #[cfg(feature = "bench-cogging-compensation")]
+    fn bench_hall_position(&self, now_ticks: u64) -> Option<f32> {
+        if self.source == PhaseSource::Hall
+            && self.hall_health == HallHealth::Ok
+            && !self.open_loop_override.active
+        {
+            self.hall.bench_hall_position(now_ticks)
+        } else {
+            None
+        }
+    }
+
     fn motion_reference_epoch(&self) -> super::super::MotionReferenceEpoch {
         self.motion_reference_epoch
     }

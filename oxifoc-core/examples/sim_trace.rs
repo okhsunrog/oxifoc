@@ -12,6 +12,8 @@
 //!
 //! Arguments (`key=value`, all optional):
 //! - `motor=flipsky|zd2808` — plant + config preset (default flipsky)
+//! - `config=` — JSON from `config dump` to replay motor, Hall, current and
+//!   velocity settings, `angle=` — initial electrical angle (degrees)
 //! - `source=hall|observer|cold` — `observer` spins up on hall and switches
 //!   at `switch=` s; `cold` runs the sensorless cold start from rest
 //! - `mode=iq|rpm|pos|lock|anchor`, `set=` — torque current (A),
@@ -28,6 +30,9 @@
 //!   load (N·m·s/rad, mechanical), `slope=` constant torque (N·m,
 //!   positive pulls toward negative speed), `j=` rotor inertia (kg·m²,
 //!   mechanical; a rider on a 5065 board reflects ~0.024)
+//! - `coulomb=` dry friction torque (N·m), `cogging=` amplitude (N·m)
+//!   of the second electrical harmonic, `cogging_phase=` angle (degrees)
+//!   at which it accelerates the rotor in the positive direction
 //! - `delay=` actuation delay in PWM periods (plant and driver, default 0.5)
 //! - `substeps=` plant sub-steps per period (default 8)
 //! - `tracker=` phase-tracker ωn (rad/s, 0 = off; default 100 like f405)
@@ -52,8 +57,20 @@ use oxifoc_core::foc::position::PositionLoopConfig;
 use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::foc::{angle_difference, wrap_angle};
 use oxifoc_core::motor::ControlMode;
+use oxifoc_core::storage::{
+    CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConfig, VelocityConfigStored,
+};
 
 use common::{DT, FOC_HZ, Rig, RigConfig};
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct SimConfig {
+    motor_params: Option<MotorParamsConfig>,
+    hall_calibration: Option<HallCalibrationConfig>,
+    current_limits: Option<CurrentLimitsConfig>,
+    velocity: Option<VelocityConfigStored>,
+}
 
 fn arg<T: std::str::FromStr>(args: &HashMap<String, String>, key: &str, default: T) -> T {
     args.get(key)
@@ -114,6 +131,13 @@ fn main() -> std::io::Result<()> {
     let switch_s: f32 = arg(&args, "switch", 1.0);
     let decim: u64 = arg(&args, "decim", 4).max(1);
     let out_path: String = arg(&args, "out", "trace.csv".to_owned());
+    let config: SimConfig = match args.get("config") {
+        Some(path) => serde_json::from_reader(File::open(path)?)?,
+        None => SimConfig::default(),
+    };
+    let cogging: f32 = arg(&args, "cogging", 0.0);
+    let cogging_phase = arg(&args, "cogging_phase", 137.0_f32).to_radians();
+    let coulomb: f32 = arg(&args, "coulomb", 0.0);
 
     let mut rig = Rig::new(&RigConfig {
         motor: arg(&args, "motor", "flipsky".to_owned()),
@@ -122,13 +146,17 @@ fn main() -> std::io::Result<()> {
         delay: arg(&args, "delay", 0.5),
         tracker: arg(&args, "tracker", 100.0),
         j: arg(&args, "j", 0.0),
+        start_angle: arg(&args, "angle", 0.0_f32).to_radians(),
+        motor_params: config.motor_params,
+        hall_calibration: config.hall_calibration,
+        current_limits: config.current_limits,
     });
     rig.load = arg(&args, "load", 0.0);
     rig.torque_disturbance = arg(&args, "slope", 0.0);
     if source == "cold" {
         rig.set_source(PhaseSource::Observer);
     }
-    let vel_default = VelocityLoopConfig::default();
+    let vel_default = VelocityLoopConfig::from_stored(config.velocity.as_ref());
     rig.driver.set_velocity_config(VelocityLoopConfig {
         kp: arg(&args, "vkp", vel_default.kp),
         ki: arg(&args, "vki", vel_default.ki),
@@ -161,7 +189,7 @@ fn main() -> std::io::Result<()> {
     let mut w = BufWriter::new(File::create(&out_path)?);
     writeln!(
         w,
-        "t,theta,frame_err,obs_raw_err,w_true,w_est,w_obs,id_meas,iq_meas,id_true,iq_true,vd,vq,torque,starting,trusted,iq_target,pos_true,pos_est,pos_target"
+        "t,theta,frame_err,obs_raw_err,w_true,w_est,w_obs,id_meas,iq_meas,id_true,iq_true,vd,vq,torque,starting,trusted,iq_target,pos_true,pos_est,pos_target,hall_raw"
     )?;
     let steps = (secs * FOC_HZ as f32) as u64;
     for step in 1..=steps {
@@ -200,7 +228,20 @@ fn main() -> std::io::Result<()> {
                 rig.driver.set_mode(want);
             }
         }
-        let rec = rig.step();
+        let rec = if coulomb != 0.0 || cogging != 0.0 {
+            let sample = rig.out;
+            let periodic_drive = cogging * (2.0 * (sample.angle_rad - cogging_phase)).cos();
+            let omega_m = sample.omega_e / f32::from(rig.params.pole_pairs);
+            let load = rig.load * (omega_m / 2.0).tanh() + rig.torque_disturbance - periodic_drive;
+            // Outside the near-zero band use Coulomb friction. Inside it
+            // limit the opposing load to what can stop the rotor in one
+            // sample, based on the last sampled electromagnetic torque.
+            let stopping_torque = rig.params.j * omega_m / DT;
+            let friction = (sample.torque - load + stopping_torque).clamp(-coulomb, coulomb);
+            rig.step_with_load(load + friction)
+        } else {
+            rig.step()
+        };
         pos_true += angle_difference(rec.sample.angle_rad, prev_angle);
         prev_angle = rec.sample.angle_rad;
         if step % decim == 0 {
@@ -226,7 +267,7 @@ fn main() -> std::io::Result<()> {
             let pos_est = rig.driver.position().as_rad();
             writeln!(
                 w,
-                "{t:.6},{:.5},{:.5},{obs_raw_err:.5},{:.2},{:.2},{:.2},{:.4},{:.4},{id_true:.4},{iq_true:.4},{:.4},{:.4},{:.5},{},{},{iq_target:.3},{pos_true:.4},{pos_est:.4},{pos_target:.4}",
+                "{t:.6},{:.5},{:.5},{obs_raw_err:.5},{:.2},{:.2},{:.2},{:.4},{:.4},{id_true:.4},{iq_true:.4},{:.4},{:.4},{:.5},{},{},{iq_target:.3},{pos_true:.4},{pos_est:.4},{pos_target:.4},{}",
                 wrap_angle(rec.sample.angle_rad),
                 rec.frame_err(),
                 rec.sample.omega_e,
@@ -239,6 +280,7 @@ fn main() -> std::io::Result<()> {
                 rec.sample.torque,
                 u8::from(rig.driver.phase().is_starting()),
                 u8::from(rig.driver.phase().angle_trustworthy()),
+                rec.sample.hall_state,
             )?;
         }
     }

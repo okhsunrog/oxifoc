@@ -96,6 +96,7 @@ fn main() -> std::io::Result<()> {
         delay: arg(&args, "delay", 0.5),
         tracker: arg(&args, "tracker", 100.0),
         j: arg(&args, "j", 0.0),
+        ..RigConfig::default()
     };
     let (fmin, fmax) = match lp.as_str() {
         "current" => (arg(&args, "fmin", 20.0f32), arg(&args, "fmax", 4000.0f32)),

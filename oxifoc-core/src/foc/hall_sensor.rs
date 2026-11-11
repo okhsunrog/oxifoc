@@ -1340,6 +1340,18 @@ impl Default for HallCalibration {
 }
 
 impl AngleSensor for HallSensor {
+    #[cfg(feature = "bench-cogging-compensation")]
+    fn bench_hall_position(&self, now_ticks: u64) -> Option<f32> {
+        let age = self.time_since_edge_s(now_ticks)?;
+        if self.in_glitch || self.geometry_resync {
+            return None;
+        }
+        if !self.base_is_boundary {
+            return Some(self.calib.angle_for_state(self.raw_state));
+        }
+        Some(wrap_angle(self.angle + self.decayed_velocity(age) * age))
+    }
+
     fn apply_prepared_hall_calibration(
         &mut self,
         prepared: &PreparedHallCalibration,

@@ -323,6 +323,20 @@ impl VelocityLoop {
         blockage: VelocityBlockage,
         dt: f32,
     ) -> f32 {
+        self.step_with_feedforward(omega_target, omega_meas, iq_min, iq_max, blockage, dt, 0.0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step_with_feedforward(
+        &mut self,
+        omega_target: f32,
+        omega_meas: f32,
+        iq_min: f32,
+        iq_max: f32,
+        blockage: VelocityBlockage,
+        dt: f32,
+        position_feedforward: f32,
+    ) -> f32 {
         let ref_prev = self.ramp.value();
         let mut omega_ref = self.ramp.step(omega_target, dt);
         // With the actuator at its limit in the direction the reference is
@@ -349,7 +363,7 @@ impl VelocityLoop {
         // it is our own ramp). Charged against the PI's anti-windup bounds
         // so back-calculation sees only the PI's own share of the budget
         // (same rule as the current loop's FF split in controller.rs).
-        let ff = if self.cfg.accel_ff > 0.0 && dt > 0.0 {
+        let accel_ff = if self.cfg.accel_ff > 0.0 && dt > 0.0 {
             crate::foc::clamp_f32(
                 (omega_ref - ref_prev) / dt * self.cfg.accel_ff,
                 iq_min,
@@ -357,6 +371,14 @@ impl VelocityLoop {
             )
         } else {
             0.0
+        };
+        // A signed position correction may reduce positive motoring current
+        // even when the lower torque bound is zero. The shifted PI bounds
+        // constrain the combined request.
+        let ff = if position_feedforward != 0.0 {
+            accel_ff + position_feedforward
+        } else {
+            accel_ff
         };
         self.pi.set_limits(iq_min - ff, iq_max - ff);
         self.last_iq = self.pi.update(omega_ref, omega_meas, dt) + ff;
@@ -377,6 +399,31 @@ mod tests {
     use super::*;
 
     const DT: f32 = 1.0 / 20_000.0;
+
+    #[test]
+    fn position_feedforward_shares_the_pi_current_budget() {
+        let mut velocity = VelocityLoop::new(VelocityLoopConfig {
+            kp: 0.0,
+            ki: 1.0,
+            accel_limit: 0.0,
+            accel_ff: 0.0,
+        });
+        velocity.reset_holding(1.0, 0.5);
+        assert_eq!(velocity.step_clamped(1.0, 1.0, 0.0, 1.0, DT), 0.5);
+        let blockage = VelocityBlockage::default();
+        assert_eq!(
+            velocity.step_with_feedforward(1.0, 1.0, 0.0, 1.0, blockage, DT, -0.25),
+            0.25
+        );
+        assert_eq!(
+            velocity.step_with_feedforward(1.0, 1.0, 0.0, 1.0, blockage, DT, 0.25),
+            0.75
+        );
+        assert_eq!(
+            velocity.step_with_feedforward(1.0, 1.0, 0.0, 0.0, blockage, DT, 0.25),
+            0.0
+        );
+    }
 
     #[test]
     fn interval_tracking_charges_the_integrator_but_not_a_proportional_loop() {

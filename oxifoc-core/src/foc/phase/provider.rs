@@ -132,6 +132,11 @@ pub struct PhaseInput {
 /// current vector `ω·dt` off the q axis while the controller's own frame
 /// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
+    #[cfg(feature = "bench-cogging-compensation")]
+    fn bench_hall_position(&self, _now_ticks: u64) -> Option<f32> {
+        None
+    }
+
     /// Increment on accepted reference/source/model changes or discontinuous
     /// fallback changes. Ordinary sensor edges and continuous blending retain
     /// their epoch. Immutable simple providers may keep the default generation.

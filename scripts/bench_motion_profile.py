@@ -19,6 +19,7 @@ SWEEP_CASES = {
     for sign, speeds in (("", (20, 80, 160, 320)), ("negative", (20, 320)))
     for speed in speeds
 }
+COGGING_PROFILES = {"off": 0, "compensate": 1, "inverted": 2}
 
 
 def main():
@@ -33,6 +34,7 @@ def main():
     parser.add_argument("--velocity-ki", type=float, help="Volatile speed PI integral gain; other gains unchanged")
     parser.add_argument("--velocity-kp", type=float, help="Volatile speed PI proportional gain")
     parser.add_argument("--velocity-debug", action="store_true", help="Record native speed PI updates in the Packed28 session")
+    parser.add_argument("--cogging-ab", action="store_true", help="Compare disabled, compensating and inverted 0.25 A profiles")
     parser.add_argument("--phase-source", choices=("hall", "hall-fallback"), default="hall")
     parser.add_argument("--spi-priority", action="store_true")
     parser.add_argument("--capture-hz", type=int, choices=(10000, 20000), default=20000)
@@ -45,6 +47,7 @@ def main():
     assert len(cases) == len(set(cases))
     assert cases and set(cases) <= MOTION_CASES | SWEEP_CASES
     assert 1 <= args.repeats <= 3
+    assert not args.cogging_ab or args.phase_source == "hall"
     args.output.mkdir(parents=True, exist_ok=False)
     crossover = bool({"velocity320-to40", "velocity320-hold-to40"}.intersection(cases))
     manifest = dict(phase_source=args.phase_source, spi_priority=args.spi_priority,
@@ -54,7 +57,8 @@ def main():
     try:
         with (args.output/"flash.log").open("w") as log:
             subprocess.run(["just", "flash-mk5-motion", "on" if crossover else "off",
-                            "on" if args.spi_priority else "off"], stdout=log,
+                            "on" if args.spi_priority else "off",
+                            "on" if args.cogging_ab else "off"], stdout=log,
                            stderr=subprocess.STDOUT, check=True, timeout=600)
         image = args.output/"firmware.elf"
         image.write_bytes(probe.ELF.read_bytes())
@@ -85,13 +89,18 @@ def main():
         (args.output/"config-before.json").write_text(probe.run(["just", "cli-bridge", "config", "dump"]).stdout)
         listing = probe.run(["rust-nm", "--defined-only", str(image)]).stdout
         symbols = {line.split()[-1]: int(line.split()[0],16) for line in listing.splitlines() if len(line.split()) >= 3}
-        for case in cases:
+        profiles = tuple(COGGING_PROFILES) if args.cogging_ab else (None,)
+        if args.cogging_ab:
+            manifest["cogging_profiles"] = COGGING_PROFILES
+        for case_index, case in enumerate(cases):
             maneuver = args.output/f"{case}.maneuver.json"
             plan = json.loads(Path(f"maneuvers/foc-profile-{case}.json").read_text())
             plan["capture"]["fast_hz"] = args.capture_hz
             maneuver.write_text(json.dumps(plan, indent=2) + "\n")
-            for repeat in range(args.repeats):
-                name = f"{case}-{repeat}"
+            trials = [(repeat, profiles[(case_index + repeat + i) % len(profiles)])
+                      for repeat in range(args.repeats) for i in range(len(profiles))]
+            for repeat, profile in trials:
+                name = f"{case}-{profile}-{repeat}" if profile is not None else f"{case}-{repeat}"
                 status = json.loads(probe.run(["just", "cli-bridge", "status"]).stdout)
                 assert status["motor_state"] == "Stopped" and status["fault_count"] == 0
                 time.sleep(1)
@@ -100,12 +109,17 @@ def main():
                     counters.append("BENCH_CROSSOVER_COUNT")
                 for symbol in counters:
                     probe.run(probe.device("write", "b32", hex(symbols[symbol]), "0"))
+                if profile is not None:
+                    address = hex(symbols["BENCH_COGGING_PROFILE"])
+                    probe.run(probe.device("write", "b32", address, str(COGGING_PROFILES[profile])))
                 capture = args.output/f"{name}.parquet"
                 cmd = ["just", "test-bridge", str(capture), str(maneuver)]
                 cmd += ["ergot-raw", "packed28", "on" if args.velocity_debug else "off", args.phase_source]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
                 (args.output/f"{name}.driver.log").write_text(result.stdout+result.stderr)
                 row = dict(name=name, exit=result.returncode)
+                if profile is not None:
+                    row["cogging_profile"] = profile
                 manifest["runs"].append(row)
                 # Stop before any SWD export, including on a failed capture.
                 probe.run(["just", "cli-bridge", "stop"])

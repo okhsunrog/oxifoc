@@ -10,7 +10,7 @@ use std::f32::consts::{FRAC_PI_3, FRAC_PI_6, TAU};
 use oxifoc_core::foc::angle_difference;
 use oxifoc_core::foc::clamp_f32;
 use oxifoc_core::foc::controller::{FocController, FocOutput};
-use oxifoc_core::foc::hall_sensor::HallSensor;
+use oxifoc_core::foc::hall_sensor::{HallSensor, PreparedHallCalibration};
 use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::CurrentSensor;
@@ -18,7 +18,10 @@ use oxifoc_core::foc::transforms::{clarke, park};
 use oxifoc_core::foc::trig::LibmSinCos;
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::foc_driver::CurrentLimits;
-use oxifoc_core::storage::{MotorParamsConfig, RuntimeConfig};
+use oxifoc_core::storage::{
+    CurrentLimitsConfig, HallCalibrationConfig, HallTransitionGeometryConfig, MotorParamsConfig,
+    RuntimeConfig,
+};
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
 pub const FOC_HZ: u32 = 20_000;
@@ -96,6 +99,10 @@ pub struct RigConfig {
     /// Rotor inertia override (kg·m², mechanical; 0 = the preset's). A
     /// rider on a 5065 / 36:15 / 83 mm board reflects ~0.024.
     pub j: f32,
+    pub start_angle: f32,
+    pub motor_params: Option<MotorParamsConfig>,
+    pub hall_calibration: Option<HallCalibrationConfig>,
+    pub current_limits: Option<CurrentLimitsConfig>,
 }
 
 impl Default for RigConfig {
@@ -107,6 +114,10 @@ impl Default for RigConfig {
             delay: 0.5,
             tracker: 100.0,
             j: 0.0,
+            start_angle: 0.0,
+            motor_params: None,
+            hall_calibration: None,
+            current_limits: None,
         }
     }
 }
@@ -146,6 +157,7 @@ pub struct Rig {
     /// Unwrapped mechanical rotor angle (rad).
     pub mech_angle: f64,
     last_hall: u8,
+    hall_geometry: Option<HallTransitionGeometryConfig>,
     prev_angle: f32,
     step: u64,
 }
@@ -153,6 +165,13 @@ pub struct Rig {
 impl Rig {
     pub fn new(cfg: &RigConfig) -> Self {
         let (mut params, vbus, i_max) = preset(&cfg.motor);
+        if let Some(model) = &cfg.motor_params {
+            params.r = model.resistance_ohm;
+            params.ld = model.inductance_d_h;
+            params.lq = model.inductance_q_h;
+            params.lambda = model.flux_linkage_wb;
+            params.pole_pairs = model.pole_pairs;
+        }
         if cfg.j > 0.0 {
             params.j = cfg.j;
         }
@@ -171,8 +190,18 @@ impl Rig {
             ..RuntimeConfig::default()
         };
         let mut motor = VirtualMotor::new(params);
-        let out = motor.step(0.0, 0.0, 0.0, DT);
+        motor.set_angle(cfg.start_angle);
+        let mut out = motor.step(0.0, 0.0, 0.0, DT);
         let mut hall = HallSensor::new(1_000_000);
+        let hall_geometry = cfg.hall_calibration.as_ref().and_then(|config| {
+            let prepared = PreparedHallCalibration::from_config(config)
+                .expect("invalid Hall reference in sim config");
+            hall.install_prepared_calibration(&prepared);
+            config.geometry.clone()
+        });
+        if let Some(geometry) = &hall_geometry {
+            out.hall_state = measured_hall_state(geometry, out.angle_rad);
+        }
         hall.update(out.hall_state, 0);
         let mut phase = PhaseManager::with_hall(hall);
         phase.configure_observers_from_config(&config, vbus);
@@ -183,7 +212,11 @@ impl Rig {
             enabled: false,
         };
         let mut driver = FocDriver::new(foc, pwm, Currents((0.0, 0.0, 0.0)), phase, DT);
-        driver.set_current_limits(CurrentLimits::from_max_current(i_max));
+        let limits = cfg.current_limits.as_ref().map_or_else(
+            || CurrentLimits::from_max_current(i_max),
+            |limits| CurrentLimits::from_config_clamped(limits, i_max, 0.0),
+        );
+        driver.set_current_limits(limits);
         driver.set_actuation_delay(cfg.delay);
         Self {
             params,
@@ -194,6 +227,7 @@ impl Rig {
             torque_disturbance: 0.0,
             mech_angle: 0.0,
             last_hall: out.hall_state,
+            hall_geometry,
             prev_angle: out.angle_rad,
             step: 0,
         }
@@ -218,23 +252,33 @@ impl Rig {
 
     /// Advance one FOC period.
     pub fn step(&mut self) -> StepRecord {
+        let omega_m = self.out.omega_e / f32::from(self.params.pole_pairs);
+        self.step_with_load(self.load * (omega_m / 2.0).tanh() + self.torque_disturbance)
+    }
+
+    /// Advance one FOC period with an externally calculated load torque (N·m).
+    pub fn step_with_load(&mut self, load: f32) -> StepRecord {
         self.step += 1;
         let now = self.step * TICKS;
         if self.out.hall_state != self.last_hall {
-            // Crossing of the hall boundary (π/6 + k·π/3) inside the step.
+            // Interpolate the crossing time between the two plant samples.
             let a0 = self.prev_angle;
             let a1 = a0 + angle_difference(self.out.angle_rad, a0);
-            let k0 = ((a0 - FRAC_PI_6) / FRAC_PI_3).floor();
-            let k1 = ((a1 - FRAC_PI_6) / FRAC_PI_3).floor();
-            let frac = if k0 == k1 {
-                1.0
+            let boundary = if let Some(geometry) = &self.hall_geometry {
+                let entered = if a1 > a0 {
+                    self.out.hall_state
+                } else {
+                    self.last_hall
+                };
+                Some(a0 + angle_difference(geometry.entry_angles[usize::from(entered)], a0))
             } else {
-                clamp_f32(
-                    (FRAC_PI_6 + FRAC_PI_3 * k0.max(k1) - a0) / (a1 - a0),
-                    0.0,
-                    1.0,
-                )
+                let k0 = ((a0 - FRAC_PI_6) / FRAC_PI_3).floor();
+                let k1 = ((a1 - FRAC_PI_6) / FRAC_PI_3).floor();
+                (k0 != k1).then_some(FRAC_PI_6 + FRAC_PI_3 * k0.max(k1))
             };
+            let frac = boundary.filter(|_| a1 != a0).map_or(1.0, |boundary| {
+                clamp_f32((boundary - a0) / (a1 - a0), 0.0, 1.0)
+            });
             let edge = now - ((1.0 - frac) * TICKS as f32) as u64;
             self.driver
                 .phase_mut()
@@ -247,13 +291,25 @@ impl Rig {
         let telem = self.driver.step(now).unwrap_or_default();
         self.prev_angle = sample.angle_rad;
         let omega_m = sample.omega_e / f32::from(self.params.pole_pairs);
-        let load = self.load * (omega_m / 2.0).tanh() + self.torque_disturbance;
         self.out = if self.driver.pwm().enabled {
             self.motor.step(telem.v_alpha, telem.v_beta, load, DT)
         } else {
             self.motor.step_coast(load, DT)
         };
+        if let Some(geometry) = &self.hall_geometry {
+            self.out.hall_state = measured_hall_state(geometry, self.out.angle_rad);
+        }
         self.mech_angle += f64::from(omega_m * DT);
         StepRecord { sample, telem }
     }
+}
+
+fn measured_hall_state(geometry: &HallTransitionGeometryConfig, angle: f32) -> u8 {
+    // The most recent forward entry boundary identifies the active state.
+    (1_usize..=6)
+        .min_by(|&a, &b| {
+            let distance = |state: usize| (angle - geometry.entry_angles[state]).rem_euclid(TAU);
+            distance(a).total_cmp(&distance(b))
+        })
+        .expect("nonempty Hall state set") as u8
 }

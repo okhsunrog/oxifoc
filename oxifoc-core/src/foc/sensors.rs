@@ -101,6 +101,12 @@ pub trait CurrentSensor {
 ///
 /// Provides electrical angle for FOC Park/Clarke transforms.
 pub trait AngleSensor {
+    /// Hall position estimated from a boundary and bounded sector travel.
+    #[cfg(feature = "bench-cogging-compensation")]
+    fn bench_hall_position(&self, _now_ticks: u64) -> Option<f32> {
+        None
+    }
+
     /// Install a prepared Hall reference. Unsupported sensors reject without
     /// mutation; proxies publish the new reference epoch with control samples.
     fn apply_prepared_hall_calibration(

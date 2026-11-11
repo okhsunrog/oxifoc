@@ -656,10 +656,10 @@ profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" re
     uv run --no-project python -B scripts/bench_link_profile.py {{quote(link)}} {{quote(maneuver)}} {{quote(output)}} --repeats {{repeats}}
 
 # Native telemetry plus finite Hall/velocity evidence, without per-cycle timing marks.
-build-mk5-motion crossover="off" spi_priority="off":
-    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-hall-phase" + (if crossover == "on" { ",bench-hall-crossover" } else { "" }) + (if spi_priority == "on" { ",bench-spi-pump-priority" } else { "" }))}}
+build-mk5-motion crossover="off" spi_priority="off" cogging="off":
+    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-hall-phase" + (if crossover == "on" { ",bench-hall-crossover" } else { "" }) + (if spi_priority == "on" { ",bench-spi-pump-priority" } else { "" }) + (if cogging == "on" { ",bench-cogging-compensation" } else { "" }))}}
 
-flash-mk5-motion crossover="off" spi_priority="off": (build-mk5-motion crossover spi_priority)
+flash-mk5-motion crossover="off" spi_priority="off" cogging="off": (build-mk5-motion crossover spi_priority cogging)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
 
@@ -688,6 +688,9 @@ bench-mk5-low-speed-interp output recovery hall_config interp="0" repeats="2":
 # Native velocity PI observations and Packed28 in one capture session.
 bench-mk5-velocity-debug output recovery hall_config repeats="2" cases="velocity40-long,velocity120-to40-long,velocity40-to-iq045":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --velocity-debug --cases {{quote(cases)}}
+
+bench-mk5-cogging output recovery hall_config repeats="2" cases="velocity40-long,velocity120-to40-long,velocity80-sweep" hz="20000":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --cogging-ab --velocity-debug --cases {{quote(cases)}} --capture-hz {{hz}}
 
 bench-mk5-crossover output recovery hall_config repeats="1" phase_source="hall-fallback" cases="velocity320-hold-to40" spi_priority="off" hz="20000":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --phase-source {{quote(phase_source)}} --cases {{quote(cases)}} {{if spi_priority == "on" { "--spi-priority" } else { "" }}} --capture-hz {{hz}}

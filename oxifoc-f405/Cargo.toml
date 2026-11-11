@@ -106,6 +106,7 @@ bench-hall = []
 # Finite ADC-side Hall/observer handoff evidence; opt in separately from edges.
 bench-hall-phase = ["bench-hall"]
 bench-hall-crossover = ["bench-hall-phase", "oxifoc-core/bench-phase-observation"]
+bench-cogging-compensation = ["bench-hall-phase", "oxifoc-core/bench-cogging-compensation"]
 bench-spi-pump-priority = ["task-priority"]
 # Production fixed Packed28 sessions over the selected Ergot interface.
 fast-telemetry = ["task-priority", "oxifoc-core/fast-telemetry"]

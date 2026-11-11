@@ -629,3 +629,44 @@ two repeats recorded 170,475 samples without losses or missed ACKs. TIM1 and
 the current loop remained at 20,004.27 Hz. Normal firmware was restored,
 stopped in Hall mode. Continuous 20-kHz recording during this blend remains
 unqualified. `half-rate/analysis.json` and the PNGs contain the aligned data.
+
+### Low-speed cogging and velocity PI
+
+Artifacts are in `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-cogging-2026-11-11/`.
+`sim_trace` replayed the measured Hall geometry and motor model with the
+firmware controller, dry friction and a fitted 0.0174 N·m second electrical
+harmonic peaking at 137°. At +20, the 200-ms travel speed P5–P95 widened from
+18–22 to 1–38 electrical rad/s. At +40 it widened from 40 ± 0.2 to 20–62.
+The same ripple appeared after 120→40. +80 remained steady on that time scale.
+The model reproduces stop-and-go motion and overshoot. It did not reproduce
+the bench's reverse Hall crossings with these plant parameters.
+
+Six native-rate runs at ±20 exported 34,814 PI updates and 807,877 FOC samples
+without loss. With regeneration capped at zero, the Iq bound in the drive
+direction reached zero in 3,843 updates. The integral magnitude was at most
+0.01 A in 3,175 of them. For 158 of 163 reverse Hall edges there was a
+zero-bound, near-zero-integral PI observation within `[-25, +70] ms` of the
+edge. This confirms the predicted clipping path while retaining the PSU limit.
+
+`just bench-mk5-cogging` compares off, 0.25 A at 47°, and the same amplitude
+with the second harmonic inverted. Two matched repeats per arm used the
+same 1-kHz PI, Hall geometry and 20-kHz capture. At +40, both compensated
+repeats raised late speed P5 from 5–10 to 30–31 rad/s. Inversion raised it to
+26–28 with a larger P95 of 60. Across ±20, compensation reduced reverse
+Hall edges from 44 to 26 and zero-drive-authority PI updates from 1,822 to
+945, while substantial ripple remained. 120→40 had no repeatable gain.
++80 settled around 79–81 rad/s in all arms. The Hall prediction cannot
+resolve exact position within a sector during a stall.
+
+The final guarded build repeated the three +40 arms. Off, compensation and
+inversion gave P5–P95 of 32–52, 28–57 and 39–45 rad/s, respectively. The
+starting Hall states varied. Across all three +40 repeats, reverse edges
+fell from 10 to 1 with compensation, but its speed-spread benefit did not
+repeat consistently. The 39 total runs recorded 5,155,418 FOC samples and
+221,505 PI updates without transport loss or faults. Normal firmware was
+restored, stopped in Hall mode, and the stored settings matched the
+pre-test dump apart from boot DC offsets.
+
+Compensation stays bench-only. It shares the original torque bounds and is
+applied only on velocity updates with the Hall source and a healthy sensor.
+The experiment preserves the zero-regeneration and zero-dissipation limits.
