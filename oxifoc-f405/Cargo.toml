@@ -66,6 +66,8 @@ bench-foc-sections-ram = ["bench-foc-distribution"]
 bench-foc-phase-ram = ["bench-foc-sections-ram", "oxifoc-core/isr-profile-phase"]
 # Exhaustive host-table/MCU temperature-model agreement before PWM setup.
 bench-ntc-check = []
+# Explicit bench build for a motor with no thermistor connected to TMP.
+bench-no-motor-ntc = []
 # Finite ADC-owned records of the first and longest over-budget cycles.
 bench-cycle-outliers = ["isr-profiling", "bench-clock-reference"]
 # A/B reproduction of the former periodic observer log inside ADC.

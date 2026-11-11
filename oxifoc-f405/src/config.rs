@@ -42,6 +42,10 @@ pub fn prepared_board() -> &'static PreparedBoardConfig {
 // Board Hardware Configuration
 // ============================================================================
 
+/// A fitted motor NTC keeps fail-closed protection if its wire opens.
+pub const MOTOR_NTC_PRESENT: bool = !cfg!(feature = "bench-no-motor-ntc");
+const MAX_MOTOR_TEMP_C: f32 = if MOTOR_NTC_PRESENT { 120.0 } else { 0.0 };
+
 /// Cheap FOCer 2 / Simple FOCer 2 board configuration
 ///
 /// Hardware specs:
@@ -68,7 +72,7 @@ pub const BOARD: BoardConfig = BoardConfig {
     max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)
     min_vbus_mv: 6_000,        // Undervoltage at 6V (VESC HW_LIM_VIN)
     max_fet_temp_c: 100.0,     // FET overtemp at 100°C
-    max_motor_temp_c: 120.0,   // motor winding NTC on PC4
+    max_motor_temp_c: MAX_MOTOR_TEMP_C,
     // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus divider
     // (39k/2.2k). No RC phase filters on this board → usable only undriven
     // (back-EMF / coasting-rotation detection), not while PWMing.
@@ -105,7 +109,7 @@ pub const BOARD: BoardConfig = BoardConfig {
     max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN; vendor abs max 60V)
     min_vbus_mv: 6_000,        // UV fault floor (VESC HW_LIM_VIN; operating min is 14V)
     max_fet_temp_c: 100.0,     // Conservative (original hw60 cutoff: 110°C)
-    max_motor_temp_c: 120.0,   // motor winding NTC on PC4
+    max_motor_temp_c: MAX_MOTOR_TEMP_C,
     // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus
     // divider. MK5 has switchable RC phase filters (enabled via PC13 at
     // boot) → usable while PWMing, unlike CF2.

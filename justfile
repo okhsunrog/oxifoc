@@ -46,10 +46,12 @@ bench-mk5-bridge-spi output c5_project="/home/okhsunrog/code/rust/c5-hello-world
 bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
     cargo run --release --locked -p oxifoc-host-lib --features transport-bench --example usb_serial_jtag_bench -- {{quote(port)}} {{fps}} {{bytes}} {{seconds}}
 
-build-mk5-spi:
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_release_features + ",bench-calibrated-clock")}} --bin oxifoc-f405
+# Use motor_ntc=off only for a motor without a thermistor connected to TMP.
+build-mk5-spi motor_ntc="on":
+    test {{quote(motor_ntc)}} = on -o {{quote(motor_ntc)}} = off
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_release_features + ",bench-calibrated-clock" + if motor_ntc == "off" { ",bench-no-motor-ntc" } else { "" })}} --bin oxifoc-f405
 
-flash-mk5-spi: build-mk5-spi
+flash-mk5-spi motor_ntc="on": (build-mk5-spi motor_ntc)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
 

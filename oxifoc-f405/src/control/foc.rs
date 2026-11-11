@@ -575,14 +575,15 @@ fn ADC() {
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
-    // Convert motor temperature raw ADC to 0.1°C units
-    let motor_temp_c_x10 = if convert_temp {
-        let t = temperature::motor_c_x10(motor_temp_raw);
-        MOTOR_TEMP_C_X10.store(t, Ordering::Relaxed);
-        t
-    } else {
-        MOTOR_TEMP_C_X10.load(Ordering::Relaxed)
-    };
+    let motor_temp_c_x10 = crate::config::MOTOR_NTC_PRESENT.then(|| {
+        if convert_temp {
+            let t = temperature::motor_c_x10(motor_temp_raw);
+            MOTOR_TEMP_C_X10.store(t, Ordering::Relaxed);
+            t
+        } else {
+            MOTOR_TEMP_C_X10.load(Ordering::Relaxed)
+        }
+    });
 
     // Read ADC3 injected data (phase C current + VBUS)
     let (ic_raw, vbus_raw, vc_raw) = ADC3_INJECTED.lock(|cell| {
@@ -634,8 +635,11 @@ fn ADC() {
     let adc_snapshot = AdcSnapshot::new(ia_raw, ib_raw, ic_raw, vbus_mv, *SEQ)
         .with_phase_voltages([va_raw, vb_raw, vc_raw])
         .with_pwm(pwm_snapshot)
-        .with_temp(TempSensorId::Fet, board_temp_c_x10)
-        .with_temp(TempSensorId::Motor, motor_temp_c_x10);
+        .with_temp(TempSensorId::Fet, board_temp_c_x10);
+    let adc_snapshot = match motor_temp_c_x10 {
+        Some(temp) => adc_snapshot.with_temp(TempSensorId::Motor, temp),
+        None => adc_snapshot,
+    };
 
     // Get Hall snapshot
     let hall_snapshot = hall::get_snapshot(now_ticks);
