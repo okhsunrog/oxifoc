@@ -21,7 +21,21 @@ impl RawTelemetrySink for ErgotRawSink {
         use oxifoc_core::icd::{RawTelemetryBlockRef, RawTelemetryBlockRefTopic};
 
         with_timeout(BLOCK_TIMEOUT, async {
+            #[cfg(feature = "transport-spi")]
+            let producer = super::SPI_OUTQ.framed_producer();
             loop {
+                // Only this task sends the raw stream. Wait for enough
+                // contiguous space for its MTU and one reply MTU before
+                // enqueueing. Aborting the probe publishes nothing. The
+                // send below is synchronous on the same executor, so a
+                // different producer cannot take that headroom in between.
+                // The existing FIFO still orders commands and telemetry.
+                #[cfg(feature = "transport-spi")]
+                {
+                    const MTU: u16 = crate::config::MAX_PACKET_SIZE as u16;
+                    const FRAME_PREFIX_BYTES: u16 = size_of::<u16>() as u16;
+                    drop(producer.wait_grant(2 * MTU + FRAME_PREFIX_BYTES).await);
+                }
                 // Route to the node which armed this session, including a host
                 // behind another router. Never retry a partially successful broadcast.
                 if self

@@ -130,6 +130,8 @@ pub mod cmd_stats {
     use core::sync::atomic::AtomicU32;
     /// MotorEndpoint requests received by the command server.
     pub static MOTOR_REQS: AtomicU32 = AtomicU32::new(0);
+    /// Requests processed by the server whose reply the local route refused.
+    pub static MOTOR_ACK_SEND_ERRORS: AtomicU32 = AtomicU32::new(0);
     /// `DriverCommand::SetMode` drained by the ISR (deadman stamp events).
     pub static SETMODE_DRAINED: AtomicU32 = AtomicU32::new(0);
 }

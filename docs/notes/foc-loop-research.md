@@ -670,3 +670,35 @@ pre-test dump apart from boot DC offsets.
 Compensation stays bench-only. It shares the original torque bounds and is
 applied only on velocity updates with the Hall source and a healthy sensor.
 The experiment preserves the zero-regeneration and zero-dissipation limits.
+
+### Motor acknowledgements under 20-kHz capture load
+
+Evidence is in `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-stream-reliability-2026-11-11/`.
+With the measured Hall geometry, the normal STM32 build reproduced 2,150
+producer drops and missed the 40-rad/s step and terminal ACK in the 320→40
+Hall-to-observer maneuver. Pure Hall at 20 kHz and the same hybrid maneuver
+at 10 kHz passed. SPI error counters were zero. The profiled hybrid failure
+processed 126 motor requests and rejected 116 ACK sends at the STM32 route.
+Its mean ISR time was 45.25 µs in the 50-µs period, versus 43.00 µs on Hall.
+The instrumented run lost more samples than the normal image.
+
+The raw SPI sender now waits for contiguous space for its block and one
+reply MTU, then enqueues through the original FIFO. No extra queue RAM or
+wire changes. A separate priority FIFO candidate was rejected after it lost
+the route during capture setup. Packing now reads aligned telemetry grants
+directly, with an unaligned fallback. Full handoff uses the observer's
+normalized angle and speed directly.
+
+With these changes the profiled hybrid build completed both 320→40 runs.
+All 158/158 motor requests reached the ISR in each, with zero ACK send
+errors and all timeline ACKs within 48 ms. Recording still lost 35,420
+and 34,223 producer samples, respectively. The matched pure Hall run
+remained lossless at 20 kHz. Mean hybrid ISR time was 44.55–44.56 µs.
+
+The non-instrumented candidate also completed both 20-kHz hybrid runs,
+with all motor requests applied, zero local ACK send errors, and a maximum
+timeline ACK of 23.16 ms. It still dropped 1,729 and 1,239 producer samples
+respectively. The sequence gaps concentrate around the Hall/observer
+transitions, with a clean sustained +320 plateau. The 10-kHz recording
+passed with zero loss while FOC still ran at 20 kHz. No C5 changes.
+The previous normal image was restored and verified stopped.

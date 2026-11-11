@@ -65,25 +65,29 @@ impl<const N: usize> FastTelemetryQueue<N> {
     ) -> u32 {
         let consumer = self.queue.stream_consumer();
         let mut accepted = 0;
-        while accepted < crate::raw_telemetry::RAW_MAX_RECORDS as u32
+        while accepted < crate::raw_telemetry::RAW_MAX_RECORDS
             && let Ok(grant) = consumer.read()
         {
-            let mut records = 0;
-            for bytes in grant.chunks_exact(FRAME_BYTES) {
-                if accepted + records >= crate::raw_telemetry::RAW_MAX_RECORDS as u32
-                    || !accept(&bytemuck::pod_read_unaligned(bytes))
-                {
-                    break;
-                }
-                records += 1;
-            }
-            grant.release(records as usize * FRAME_BYTES);
+            debug_assert!(grant.len().is_multiple_of(FRAME_BYTES));
+            let count =
+                (grant.len() / FRAME_BYTES).min(crate::raw_telemetry::RAW_MAX_RECORDS - accepted);
+            let bytes = &grant[..count * FRAME_BYTES];
+            // A grant's base alignment is a property of the queue storage.
+            // Check once, and retain the unaligned path for other placements.
+            let records = match bytemuck::try_cast_slice::<u8, FastTelemetry>(bytes) {
+                Ok(frames) => frames.iter().take_while(|frame| accept(frame)).count(),
+                Err(_) => bytes
+                    .chunks_exact(FRAME_BYTES)
+                    .take_while(|frame| accept(&bytemuck::pod_read_unaligned(frame)))
+                    .count(),
+            };
+            grant.release(records * FRAME_BYTES);
             accepted += records;
-            if records == 0 {
+            if records < count || records == 0 {
                 break;
             }
         }
-        accepted
+        accepted as u32
     }
 
     /// Called under the stream/session gate after disabling the producer.

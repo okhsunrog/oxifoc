@@ -294,14 +294,17 @@ fn packable(f: &FastTelemetry) -> bool {
 fn pack26(f: &FastTelemetry, out: &mut [u8]) {
     let present = f.vphase_adc != [u16::MAX; 3];
     let p = if present { f.vphase_adc } else { [0; 3] };
-    let adc = [f.ia, f.ib, f.ic, p[0], p[1], p[2]];
-    for (pair, values) in adc.chunks_exact(2).enumerate() {
-        out[pair * 3] = values[0] as u8;
-        out[pair * 3 + 1] = ((values[0] >> 8) | (values[1] << 4)) as u8;
-        out[pair * 3 + 2] = (values[1] >> 4) as u8;
+    for (encoded, (a, b)) in
+        out[..9]
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .zip([(f.ia, f.ib), (f.ic, p[0]), (p[1], p[2])])
+    {
+        *encoded = [a as u8, ((a >> 8) | (b << 4)) as u8, (b >> 4) as u8];
     }
     out[9] = f.pwm_enables as u8 | (u8::from(present) << 7);
-    for (i, value) in [
+    let words = [
         f.vbus,
         f.angle,
         f.vd as u16,
@@ -310,11 +313,9 @@ fn pack26(f: &FastTelemetry, out: &mut [u8]) {
         f.pwm_ccr[0],
         f.pwm_ccr[1],
         f.pwm_ccr[2],
-    ]
-    .iter()
-    .enumerate()
-    {
-        out[10 + i * 2..12 + i * 2].copy_from_slice(&value.to_le_bytes());
+    ];
+    for (encoded, value) in out[10..26].as_chunks_mut::<2>().0.iter_mut().zip(words) {
+        *encoded = value.to_le_bytes();
     }
 }
 
@@ -409,22 +410,23 @@ impl RawBlockEncoder {
         }
         // Historical formats cannot represent Hall. Never silently drop it,
         // and never fall back from the production format to a different codec.
+        let fits_packed = self.requested == RawEncoding::Raw34 || packable(f);
         if (self.requested != RawEncoding::Packed28 && f.hall_angle.encoded() != 0)
-            || (self.requested == RawEncoding::Packed28 && !packable(f))
+            || (self.requested == RawEncoding::Packed28 && !fits_packed)
         {
             return false;
         }
         if self.is_empty() {
             self.header.first_seq = f.seq;
             self.header.pwm_arr = f.pwm_arr;
-            if self.requested != RawEncoding::Raw34 && !packable(f) {
+            if !fits_packed {
                 self.header.encoding = RawEncoding::Raw34;
                 self.header.flags = FALLBACK;
             }
         }
         let packed = self.header.encoding != RawEncoding::Raw34;
         if packed
-            && (!packable(f)
+            && (!fits_packed
                 || f.pwm_arr != self.header.pwm_arr
                 || f.seq
                     != self.header.first_seq.wrapping_add(

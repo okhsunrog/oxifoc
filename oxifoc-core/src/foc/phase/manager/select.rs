@@ -379,8 +379,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // sensor dies at speed — its decaying estimate drags the blend back
         // toward trusting the dying sensor MORE, while the (ready) observer
         // still reports the true speed.
-        let obs_speed = self.observer.velocity().unwrap_or(0.0).abs();
+        let mut obs_velocity = self.observer.velocity();
+        let obs_speed = obs_velocity.unwrap_or(0.0).abs();
         let blend = compute_blend(sensor.velocity.abs().max(obs_speed), blend_low, blend_high);
+        let mut obs_angle = self.observer.phase();
 
         // π-flip guard: back-EMF observers carry a half-turn ambiguity from
         // standstill. While the sensor still has any weight it is the truth
@@ -388,12 +390,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // inverted flux vector, and blending toward it collapses torque
         // mid-crossover. Reseed instead of blending.
         let reseeded = blend < 1.0
-            && self.observer.phase().is_some_and(|obs_angle| {
+            && obs_angle.is_some_and(|obs_angle| {
                 angle_difference(obs_angle, sensor.angle).abs() > core::f32::consts::FRAC_PI_2
             });
         if reseeded {
             self.hall_motion_witness.reset();
             self.observer.seed(sensor.angle, sensor.velocity);
+            obs_angle = self.observer.phase();
+            obs_velocity = self.observer.velocity();
         }
         // Continuous blend evolution keeps its epoch. A readiness gate or a
         // phase reseed can instead introduce/remove an existing contribution
@@ -403,8 +407,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             self.motion_reference_epoch.advance();
         }
 
-        if let (Some(obs_angle), Some(obs_vel)) = (self.observer.phase(), self.observer.velocity())
-        {
+        if let (Some(obs_angle), Some(obs_vel)) = (obs_angle, obs_velocity) {
             #[cfg(feature = "bench-phase-observation")]
             {
                 self.bench_observer_weight = Some(blend);
@@ -416,9 +419,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             } else {
                 blend_rotor_velocity(sensor_velocity, obs_vel, blend)
             };
-            PhaseOutput {
-                angle: blend_angles(sensor.angle, obs_angle, blend),
-                velocity: sensor.velocity * (1.0 - blend) + obs_vel * blend,
+            if blend >= 1.0 {
+                // The observer already produces a normalized angle. At full
+                // handoff use it directly, including across the wrap.
+                PhaseOutput {
+                    angle: obs_angle,
+                    velocity: obs_vel,
+                }
+            } else {
+                PhaseOutput {
+                    angle: blend_angles(sensor.angle, obs_angle, blend),
+                    velocity: sensor.velocity * (1.0 - blend) + obs_vel * blend,
+                }
             }
         } else {
             self.rotor_velocity = sensor_velocity;

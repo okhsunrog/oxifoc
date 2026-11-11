@@ -123,7 +123,7 @@ pub async fn motor_command_server<NS, F, T, const N: usize>(
     let mut h = server.attach();
 
     loop {
-        let _ = h
+        let result = h
             .serve(|request: &MotorRequest| {
                 let request = *request;
                 crate::runtime::streaming::cmd_stats::MOTOR_REQS
@@ -166,6 +166,10 @@ pub async fn motor_command_server<NS, F, T, const N: usize>(
                 }
             })
             .await;
+        if result.is_err() {
+            crate::runtime::streaming::cmd_stats::MOTOR_ACK_SEND_ERRORS
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
     }
 }
 
