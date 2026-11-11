@@ -74,6 +74,40 @@ pub struct DetectionOutcome {
 }
 
 impl DetectionOutcome {
+    /// Construct the reviewed setup without inheriting fields from the previous motor.
+    /// The device must validate it against its own inverter protection before installation.
+    pub fn setup(
+        &self,
+        plan: DetectionPlan,
+        current: oxifoc_core::drive_setup::DriveCurrent,
+    ) -> Result<oxifoc_core::drive_setup::DriveSetup> {
+        use oxifoc_core::drive_setup::{DriveSetup, Feedback};
+        anyhow::ensure!(self.session.is_some(), "missing measurement provenance");
+        anyhow::ensure!(
+            plan.calibrate_hall == self.hall.is_some() && self.hall_ok == self.hall.is_some(),
+            "incomplete feedback result"
+        );
+        anyhow::ensure!(
+            plan.max_power_loss_w == plan.motor_class.preset().max_power_loss_w,
+            "inconsistent motor class"
+        );
+        Ok(DriveSetup {
+            motor: oxifoc_core::storage::MotorParamsConfig {
+                resistance_ohm: self.resistance_ohm,
+                inductance_d_h: self.inductance_d_h,
+                inductance_q_h: self.inductance_q_h,
+                flux_linkage_wb: self.flux_linkage_wb,
+                pole_pairs: plan.pole_pairs,
+                max_power_loss_w: plan.max_power_loss_w,
+                max_current_a: rating_from_loss(self.resistance_ohm, plan.max_power_loss_w),
+                ..Default::default()
+            },
+            feedback: self.hall.map_or(Feedback::Sensorless, Feedback::Hall),
+            source: plan.source.context("missing confirmed source limits")?,
+            current,
+        })
+    }
+
     /// Average of the d/q inductances.
     #[must_use]
     pub fn l_avg(&self) -> f32 {

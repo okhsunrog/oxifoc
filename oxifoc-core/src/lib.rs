@@ -196,6 +196,9 @@ pub mod virtual_motor;
 #[cfg(feature = "storage")]
 pub mod storage;
 
+#[cfg(feature = "storage")]
+pub mod drive_setup;
+
 /// Async runtime with servers (requires `runtime` feature)
 ///
 /// Provides async protocol servers that access state directly:

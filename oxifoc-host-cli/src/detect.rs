@@ -217,13 +217,14 @@ fn run_all(
         captures.insert(stage.into(), capture);
         Ok(response)
     })?;
+    let setup = outcome.setup(plan, oxifoc_core::drive_setup::DriveCurrent::Auto)?;
     if apply {
         detect::apply_sequence(&runtime.cmd_tx, &outcome, plan)?;
     }
     let (kp, ki) = detect::suggested_pi_gains(outcome.resistance_ohm, outcome.l_avg());
     emit(
         json,
-        json!({"plan": plan, "result": outcome, "kp": kp, "ki": ki, "applied": apply, "captures": captures}),
+        json!({"setup": setup, "plan": plan, "result": outcome, "kp": kp, "ki": ki, "applied": apply, "captures": captures}),
         format!("{outcome:?}\nCurrent PI: Kp={kp:.5}, Ki={ki:.4}"),
     );
     Ok(())

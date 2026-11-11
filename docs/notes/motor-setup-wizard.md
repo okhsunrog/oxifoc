@@ -286,3 +286,16 @@ writes separate motor/Hall groups and is **not** the new atomic wizard Save.
 Do not qualify the final wizard as complete or perform a setup Save on the bench
 until migration, partial-write recovery and exact-revision acknowledgements
 are covered. Then finish the run/review/save UI and CLI workflow.
+
+### DriveSetup value boundary (2026-11-12)
+
+Core now defines explicit `Feedback::{Hall, Sensorless}`, `DriveCurrent::{Auto,
+Override}`, and `DriveSetup`. Validation produces a non-deserializable
+`ValidatedDriveSetup` using controller-owned protection. Auto separates the raw
+thermal estimate from the effective inverter-bounded current; overrides above
+either bound are rejected. The candidate does not carry board calibration or
+change the independent trip. A new setup resets inherited dissipative braking
+and unmeasured fundamental inductances. Host-lib constructs the candidate from
+this detection; CLI JSON includes it for review. This is a value/preparation
+boundary only: installation, aggregate storage and migration are not connected
+yet. No firmware flash or physical test was performed for this step.
