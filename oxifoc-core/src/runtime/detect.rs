@@ -20,6 +20,8 @@
 
 use core::cell::RefCell;
 
+pub mod operations;
+
 use critical_section::Mutex as CriticalSectionMutex;
 use ergot::net_stack::NetStackHandle;
 use ergot::net_stack::endpoints::Endpoints;
@@ -111,11 +113,10 @@ pub async fn detect_server<NS, B>(
     let server = core::pin::pin!(server);
     let mut h = server.attach();
 
-    // Single-entry dedup cache: a retry with the same id AND the same request
-    // replays this response. The payload must be compared too — host ids are
-    // only unique within one process, so a freshly started host can reuse an
-    // old id for a *different* step and would otherwise get the stale answer
-    // replayed (e.g. a Resistance result for a CalibrateHall request).
+    // Legacy endpoint retains one terminal response, including failures.
+    // Reusing its id with changed parameters is a protocol error, never a new
+    // measurement. Session-scoped retirement is implemented in `operations`;
+    // this legacy cache alone does NOT cover eviction or a device reboot.
     let mut cache: Option<(ReqId, DetectRequest, DetectResponse)> = None;
 
     loop {
@@ -136,10 +137,8 @@ pub async fn detect_server<NS, B>(
 
         let resp = match &cache {
             // Hit: replay without re-running the (physical) measurement.
-            Some((cached_id, cached_req, resp))
-                if *cached_id == id && *cached_req == msg.t.inner =>
-            {
-                *resp
+            Some((cached_id, cached_req, resp)) if *cached_id == id => {
+                replay_detection(*cached_req, msg.t.inner, *resp)
             }
             // Miss: stop the motor, measure, leave the motor stopped, cache.
             _ => {
@@ -174,10 +173,9 @@ pub async fn detect_server<NS, B>(
                 } else {
                     DetectResponse::Error(DetectError::Busy)
                 };
-                // Success-only cache: a transient error stays retryable.
-                if !matches!(resp, DetectResponse::Error(_)) {
-                    cache = Some((id, msg.t.inner, resp));
-                }
+                // A lost failure reply must not repeat physical excitation.
+                // A deliberate retry (including Busy) uses a fresh request id.
+                cache = Some((id, msg.t.inner, resp));
                 resp
             }
         };
@@ -185,6 +183,18 @@ pub async fn detect_server<NS, B>(
         let _ = responder
             .clone()
             .respond_owned::<DetectEndpoint>(&msg.hdr, &resp);
+    }
+}
+
+pub(crate) fn replay_detection(
+    original: DetectRequest,
+    repeated: DetectRequest,
+    response: DetectResponse,
+) -> DetectResponse {
+    if original == repeated {
+        response
+    } else {
+        DetectResponse::Error(DetectError::KeyConflict)
     }
 }
 
@@ -569,6 +579,27 @@ fn map_err(e: DetectionError) -> DetectError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_failure_is_final_and_changed_payload_is_rejected() {
+        let request = DetectRequest::MeasureResistance {
+            max_power_loss_w: 120.0,
+            current_limit_a: None,
+        };
+        let response = DetectResponse::Error(DetectError::SourceLimited);
+        assert!(matches!(
+            replay_detection(request, request, response),
+            DetectResponse::Error(DetectError::SourceLimited)
+        ));
+        let changed = DetectRequest::MeasureResistance {
+            max_power_loss_w: 60.0,
+            current_limit_a: None,
+        };
+        assert!(matches!(
+            replay_detection(request, changed, response),
+            DetectResponse::Error(DetectError::KeyConflict)
+        ));
+    }
 
     #[test]
     fn commissioning_uses_inverter_and_source_without_old_motor_limits() {

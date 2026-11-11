@@ -510,17 +510,18 @@ fn detected_hall_ack_commits_actual_reference_revision_and_durable_detection_ded
         coordinator.detected(id, request),
         Some(DetectResponse::HallCalibrated)
     ));
-    assert!(
-        coordinator
-            .detected(
-                id,
-                DetectRequest::MeasureResistance {
-                    max_power_loss_w: 120.0,
-                    current_limit_a: None,
-                }
-            )
-            .is_none()
-    );
+    assert!(matches!(
+        coordinator.detected(
+            id,
+            DetectRequest::MeasureResistance {
+                max_power_loss_w: 120.0,
+                current_limit_a: None,
+            }
+        ),
+        Some(DetectResponse::Error(
+            crate::types::DetectError::KeyConflict
+        ))
+    ));
     assert_eq!(
         driver.phase().hall().sample(50).unwrap().angle.to_bits(),
         calibration.angles[1].to_bits()

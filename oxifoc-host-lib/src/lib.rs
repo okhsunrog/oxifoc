@@ -279,7 +279,8 @@ pub enum HostCommand {
     ConfigPersist(Keyed<ConfigPersist>, ConfigResponseSender),
     /// Erase every stored config group (factory reset).
     ConfigResetAll(ConfigResponseSender),
-    Detect(DetectRequest, DetectResponseSender),
+    /// Identity belongs to the logical operation, not to a transport attempt.
+    Detect(Keyed<DetectRequest>, DetectResponseSender),
     /// Query or clear device faults (`FaultEndpoint`).
     Fault(FaultRequest, FaultResponseSender),
 }
@@ -289,6 +290,12 @@ pub enum HostCommand {
 /// with a cheap clone — in particular off the GUI's runtime mutex, so a long
 /// detection sequence never blocks the UI's Stop/Coast handlers.
 pub type CommandSender = tokio::sync::mpsc::UnboundedSender<HostCommand>;
+
+/// Allocate once for a new measurement. Retain this request when retrying an
+/// uncertain outcome; allocating a fresh key explicitly requests a new run.
+pub fn new_detection(request: DetectRequest) -> Keyed<DetectRequest> {
+    Keyed::new(next_detect_id(), request)
+}
 
 pub struct HostRuntime {
     pub fast_rx: Receiver<FastTelemetry>,
@@ -1433,11 +1440,10 @@ async fn handle_command<NS>(
                 // Effectively-once: a stable id across retries. If the (slow)
                 // response is lost, a retry returns the device's cached
                 // result instead of re-running characterization.
-                let keyed = Keyed::new(next_detect_id(), req);
                 let res = client
                     .effectively_once::<DetectEndpoint>(
                         device_addr,
-                        &keyed,
+                        &req,
                         Some("detect"),
                         &DETECT_POLICY,
                     )

@@ -93,7 +93,15 @@ impl ConfigCoordinator {
                 .detection
                 .as_ref()
                 .and_then(|(cached_id, cached_request, response)| {
-                    (*cached_id == id && *cached_request == request).then_some(*response)
+                    (*cached_id == id).then(|| {
+                        if *cached_request == request {
+                            *response
+                        } else {
+                            crate::types::DetectResponse::Error(
+                                crate::types::DetectError::KeyConflict,
+                            )
+                        }
+                    })
                 })
         })
     }

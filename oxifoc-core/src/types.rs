@@ -625,7 +625,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 12;
+pub const ICD_PROTO_VERSION: u16 = 13;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1002,6 +1002,8 @@ pub enum DetectError {
     Unsafe,
     /// Inverter-input current estimate exceeded the commissioning source envelope.
     SourceLimited,
+    /// The caller reused an operation key with a different request.
+    KeyConflict,
 }
 
 // ============================================================================

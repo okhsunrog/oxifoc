@@ -185,6 +185,26 @@ timing qualification remain necessary.
 
 ### Remaining sequence
 
+Operation contract work (protocol 13): the legacy endpoint now retains failed
+responses and rejects changed payloads under the same key. Host commands carry
+their key before entering transport dispatch. This is still a one-result cache;
+it does not protect retired keys after eviction or reboot.
+
+`runtime/detect/operations.rs` is the tested, allocation-free session state
+machine for the next protocol integration: sequential operation IDs, terminal
+success/failure/cancellation, cancellation tombstones before Start, explicit
+cleanup before acknowledging active cancellation, and rejection of retired IDs.
+It is not yet wired to the endpoint. Device-issued boot/session identities,
+status/cancel endpoints and binding to the ISR generation remain to implement.
+
+Hardware regression on protocol 13: `test-stop-bridge` now cancels L, replays
+the same request twice, then changes its payload under the same key. Both
+replays returned the original failure; the changed payload returned KeyConflict.
+Stop acknowledgement 10.41 ms; replay observations about 10.1 ms (10-ms host
+polling). Capture: 20,560 Packed28 records at 20,004.27 Hz, zero gaps/drops,
+one contiguous PWM-enabled interval and no re-excitation after Stop. Artifacts:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-operation-contracts-20261111/`.
+
 1. Add the typed source limits and temporary device envelope. Prove
    enforcement in current, voltage packet, and spin/coast paths. Exercise
    Stop, disconnect, low source ceilings and zero regen in simulation and on

@@ -263,7 +263,7 @@ fn measure(
     let (tx, mut rx) = oxifoc_host_lib::detect_channel();
     runtime
         .cmd_tx
-        .send(HostCommand::Detect(req, tx))
+        .send(HostCommand::Detect(oxifoc_host_lib::new_detection(req), tx))
         .context("send detect command")?;
     // The detect oneshot is async; poll it (no tokio runtime on this
     // thread). The deadline derives from the backend's own retry budget
@@ -385,62 +385,118 @@ mod hardware_tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         anyhow::ensure!(stop(&runtime.cmd_tx)?.fault_count == 0);
-        let (ack, stop_ms, error) = std::thread::scope(|scope| -> Result<_> {
-            let detect = scope.spawn(|| {
-                run_detect(
-                    &runtime,
-                    DetectStep::Inductance,
-                    DetectionPlan::from(&detect::PRESETS[2]),
-                    Some(resistance),
-                    None,
-                    OffsetMethodArg::PerPhase,
-                    1000,
-                    false,
-                    false,
-                    Some(out.clone()),
-                    Some(20000),
-                    true,
-                )
-            });
-            let running_by = Instant::now() + Duration::from_secs(3);
-            loop {
-                if let Ok(status) = runtime.slow_rx.recv_timeout(Duration::from_millis(20))
-                    && status.motor_state == MotorState::Running
-                {
-                    break;
-                }
-                if Instant::now() >= running_by {
-                    let _ = stop(&runtime.cmd_tx);
-                    bail!("detector did not enter its holding ramp");
-                }
+        let request = oxifoc_host_lib::new_detection(DetectRequest::MeasureInductance {
+            max_power_loss_w: DetectionPlan::from(&detect::PRESETS[2]).max_power_loss_w,
+            current_limit_a: None,
+            resistance_ohm: resistance,
+        });
+        let mut capture = record::Capture::start(&runtime, 20000)?;
+        let (tx, mut rx) = oxifoc_host_lib::detect_channel();
+        runtime
+            .cmd_tx
+            .send(HostCommand::Detect(request.clone(), tx))?;
+        let running_by = Instant::now() + Duration::from_secs(3);
+        loop {
+            capture.drain_until(&runtime, Instant::now() + Duration::from_millis(10))?;
+            if runtime
+                .slow_rx
+                .try_iter()
+                .any(|s| s.motor_state == MotorState::Running)
+            {
+                break;
             }
-            std::thread::sleep(Duration::from_millis(100));
-            let sent = Instant::now();
-            let ack = stop(&runtime.cmd_tx)?;
-            let elapsed = sent.elapsed().as_secs_f64() * 1000.0;
-            let result = detect
-                .join()
-                .map_err(|_| anyhow::anyhow!("detection thread panicked"))?;
-            let error =
-                result.expect_err("Stop must cancel the operation, not produce a measurement");
-            Ok((ack, elapsed, error.to_string()))
-        })?;
-        anyhow::ensure!(ack.state == MotorState::Stopped && ack.fault_count == 0);
-        anyhow::ensure!(error.contains("HardwareFault"), "{error}");
-        runtime.slow_rx.try_iter().for_each(drop);
-        let observe_until = Instant::now() + Duration::from_millis(750);
-        while Instant::now() < observe_until {
-            if let Ok(status) = runtime.slow_rx.recv_timeout(Duration::from_millis(50)) {
-                anyhow::ensure!(
-                    status.motor_state == MotorState::Stopped && status.fault_count == 0,
-                    "detection resumed after Stop: {status:?}"
-                );
-            }
+            anyhow::ensure!(
+                Instant::now() < running_by,
+                "detector did not enter holding ramp"
+            );
         }
+        capture.drain_until(&runtime, Instant::now() + Duration::from_millis(100))?;
+        let sent = Instant::now();
+        let ack = stop(&runtime.cmd_tx)?;
+        let stop_ms = sent.elapsed().as_secs_f64() * 1000.0;
+        let finish_by = Instant::now() + Duration::from_secs(4);
+        let original = loop {
+            if let Ok(result) = rx.try_recv() {
+                break result?;
+            }
+            anyhow::ensure!(Instant::now() < finish_by, "cancel did not finish");
+            capture.drain_until(&runtime, Instant::now() + Duration::from_millis(10))?;
+        };
+        anyhow::ensure!(matches!(
+            original,
+            DetectResponse::Error(oxifoc_core::types::DetectError::HardwareFault)
+        ));
+        anyhow::ensure!(ack.state == MotorState::Stopped && ack.fault_count == 0);
+        runtime.slow_rx.try_iter().for_each(drop);
+        // Model a lost terminal reply: resend the EXACT key and payload.
+        // Then try reusing that key with different parameters.
+        let mut replay_ms = Vec::new();
+        for changed in [false, false, true] {
+            let mut repeated = request.clone();
+            if changed {
+                repeated.inner = DetectRequest::MeasureResistance {
+                    max_power_loss_w: 120.0,
+                    current_limit_a: None,
+                };
+            }
+            let (tx, mut rx) = oxifoc_host_lib::detect_channel();
+            let sent = Instant::now();
+            runtime.cmd_tx.send(HostCommand::Detect(repeated, tx))?;
+            let response = loop {
+                if let Ok(result) = rx.try_recv() {
+                    break result?;
+                }
+                anyhow::ensure!(
+                    sent.elapsed() < Duration::from_secs(2),
+                    "cached reply timed out"
+                );
+                capture.drain_until(&runtime, Instant::now() + Duration::from_millis(10))?;
+                for status in runtime.slow_rx.try_iter() {
+                    anyhow::ensure!(
+                        status.motor_state == MotorState::Stopped && status.fault_count == 0,
+                        "retry resumed excitation: {status:?}"
+                    );
+                }
+            };
+            replay_ms.push(sent.elapsed().as_secs_f64() * 1000.0);
+            anyhow::ensure!(
+                matches!(
+                    (changed, response),
+                    (
+                        false,
+                        DetectResponse::Error(oxifoc_core::types::DetectError::HardwareFault)
+                    ) | (
+                        true,
+                        DetectResponse::Error(oxifoc_core::types::DetectError::KeyConflict)
+                    )
+                ),
+                "unexpected replay: {response:?}"
+            );
+        }
+        capture.drain_until(&runtime, Instant::now() + Duration::from_millis(750))?;
+        for status in runtime.slow_rx.try_iter() {
+            anyhow::ensure!(status.motor_state == MotorState::Stopped && status.fault_count == 0);
+        }
+        capture.stop(&runtime)?;
+        let summary = capture.finish(
+            &out,
+            &config_snapshot(&runtime.cmd_tx),
+            &[
+                (
+                    "oxifoc.dedup_request".into(),
+                    serde_json::to_string(&request)?,
+                ),
+                (
+                    "oxifoc.dedup_replay_ms".into(),
+                    serde_json::to_string(&replay_ms)?,
+                ),
+            ],
+        )?;
+        anyhow::ensure!(summary.gaps == 0 && summary.samples_lost == 0);
         println!(
             "{}",
             serde_json::json!({"stop_ack": ack, "stop_ms": stop_ms,
-            "detect_error": error, "capture": out})
+            "replay_ms": replay_ms, "capture": summary})
         );
         drop(stop_guard);
         runtime.shutdown();
