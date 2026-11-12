@@ -22,7 +22,7 @@ use crate::motor::derating::DeratingScales;
 use crate::motor::dissipation::RegenBudget;
 use crate::motor::dissipation::WindingModel;
 use crate::motor::dissipation::dissipate_with_id;
-use crate::motor::drive_limits::DriveLimitsConfig;
+use crate::motor::drive::DriveConfig;
 
 struct BusIqBounds {
     lo: f32,
@@ -177,9 +177,9 @@ pub(super) struct ProtectionMonitor {
     board_voltage: Option<PreparedVoltageLimits>,
     voltage: Option<PreparedVoltageLimits>,
     config: DeratingConfig,
-    drive_limits: DriveLimitsConfig,
+    drive: DriveConfig,
     #[cfg(feature = "storage")]
-    drive_limits_valid: bool,
+    drive_config_valid: bool,
     environment_drive: f32,
     duty_utilization: f32,
     scales: DeratingScales,
@@ -214,9 +214,9 @@ impl ProtectionMonitor {
             board_voltage: None,
             voltage: None,
             config: DeratingConfig::default(),
-            drive_limits: DriveLimitsConfig::default(),
+            drive: DriveConfig::default(),
             #[cfg(feature = "storage")]
-            drive_limits_valid: true,
+            drive_config_valid: true,
             environment_drive: 1.0,
             duty_utilization: 0.0,
             scales: DeratingScales::default(),
@@ -247,18 +247,15 @@ impl ProtectionMonitor {
     }
 
     fn speed_ceiling(&self, physical_direction: f32) -> f32 {
-        self.drive_limits
-            .ceiling(physical_direction, self.config.max_speed_erad_s)
+        self.drive.speed_ceiling(physical_direction)
     }
 
     fn drive_cut(&self, omega: f32) -> f32 {
-        self.config
-            .speed_cut_at(omega, self.speed_ceiling(omega))
-            .min(self.duty_cut())
+        self.drive.speed_cut(omega).min(self.duty_cut())
     }
 
     fn duty_cut(&self) -> f32 {
-        let start = self.drive_limits.duty_start_frac;
+        let start = self.drive.duty_start_frac;
         if start >= 1.0 || self.duty_utilization <= start {
             1.0
         } else {
@@ -355,7 +352,7 @@ impl ProtectionMonitor {
         self.protection_tick = self.protection_tick.wrapping_add(1);
         if self.protection_tick.is_multiple_of(256) {
             let omega = sample.velocity;
-            self.scales = self.config.compute(fet_c, motor_c, sample.vbus_v, 0.0);
+            self.scales = self.config.compute(fet_c, motor_c, sample.vbus_v);
             self.environment_drive = self.scales.drive;
             self.scales.drive = self.scales.drive.min(self.drive_cut(omega));
             let worst = self.scales.worst();
@@ -384,37 +381,36 @@ where
     }
 
     /// Install the rider-facing configuration at boot or at the stopped apply boundary.
-    #[cfg(feature = "storage")]
-    pub fn set_drive_limits(
-        &mut self,
-        cfg: DriveLimitsConfig,
-    ) -> Result<(), super::MotorModelError> {
+    pub fn set_drive_config(&mut self, cfg: DriveConfig) -> Result<(), super::MotorModelError> {
         if !cfg.is_sane() {
             return Err(super::MotorModelError::Invalid);
         }
         if self.mode() != crate::types::ControlMode::Stopped || self.current_offset_active() {
             return Err(super::MotorModelError::Busy);
         }
-        self.protection.drive_limits = cfg;
-        self.protection.drive_limits_valid = true;
+        self.protection.drive = cfg;
+        #[cfg(feature = "storage")]
+        {
+            self.protection.drive_config_valid = true;
+        }
         self.reset_duty_utilization();
         Ok(())
     }
 
     #[cfg(feature = "storage")]
-    pub fn load_drive_limits(&mut self, config: &crate::storage::RuntimeConfig) {
-        self.protection.drive_limits_valid = config.drive_limits_are_valid();
-        self.protection.drive_limits = if self.protection.drive_limits_valid {
-            config.drive_limits.unwrap_or_default()
+    pub fn load_drive_config(&mut self, config: &crate::storage::RuntimeConfig) {
+        self.protection.drive_config_valid = config.drive_is_valid();
+        self.protection.drive = if self.protection.drive_config_valid {
+            config.drive.unwrap_or_default()
         } else {
-            DriveLimitsConfig::DEFAULT
+            DriveConfig::DEFAULT
         };
         self.reset_duty_utilization();
     }
 
     #[cfg(all(feature = "runtime", feature = "storage"))]
-    pub(crate) fn drive_limits_valid(&self) -> bool {
-        self.protection.drive_limits_valid
+    pub(crate) fn drive_config_valid(&self) -> bool {
+        self.protection.drive_config_valid
     }
 
     #[cfg(feature = "runtime")]
@@ -422,7 +418,7 @@ where
         &self,
         mode: crate::types::ControlMode,
     ) -> crate::types::ControlMode {
-        self.protection.drive_limits.orient(mode)
+        self.protection.drive.orient(mode)
     }
 
     pub(super) fn speed_ceiling(&self, physical_direction: f32) -> f32 {
@@ -434,7 +430,7 @@ where
     }
 
     pub(super) fn update_duty_utilization(&mut self, vd: f32, vq: f32, dt: f32) {
-        if self.protection.drive_limits.duty_start_frac < 1.0 {
+        if self.protection.drive.duty_start_frac < 1.0 {
             let voltage_limit = self.controller.voltage_limit();
             if voltage_limit > 0.0 {
                 let utilization = (sqrtf(vd * vd + vq * vq) / voltage_limit).min(1.0);
@@ -541,7 +537,7 @@ where
     ///   (heat, sag, speed). The speed cut is re-evaluated FRESH each cycle
     ///   on top of the decimated scales — a 78 Hz-stale cut bang-bangs the
     ///   torque around the ceiling on a fast free rotor (see
-    ///   [`DeratingConfig::speed_cut`]).
+    ///   [`DriveConfig::speed_cut`]).
     /// - Opposing is braking: `max_brake_a` × the brake derate (heat only,
     ///   never speed). The regen the supply refuses (the regen-OV derate,
     ///   `bus_regen_max_a`) is burned in the windings when dissipation is
@@ -1013,7 +1009,7 @@ mod tests {
                     assert_eq!(registry.has_category(FaultCategory::OverTemp), expected_hot);
                     assert_eq!(
                         monitor.scales,
-                        DeratingConfig::default().compute(fet_c, motor_c, 24.0, 0.0)
+                        DeratingConfig::default().compute(fet_c, motor_c, 24.0)
                     );
                 }
             }

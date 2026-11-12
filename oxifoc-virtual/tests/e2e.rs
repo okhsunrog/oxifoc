@@ -24,9 +24,9 @@ use std::time::{Duration, Instant};
 
 use oxifoc_core::storage::{CurrentLimitsConfig, FailsafeConfigStored};
 use oxifoc_core::types::{
-    ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigValue, ConfigWrite,
-    ControlMode, CurrentOffsetMethod, DetectRequest, DetectResponse, FaultClear, FaultClearTarget,
-    FaultRequest, FaultResponse, Keyed, MotorCommandOutcome, ReqId,
+    ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigValue, ControlMode,
+    CurrentOffsetMethod, DetectRequest, DetectResponse, FaultClear, FaultClearTarget, FaultRequest,
+    FaultResponse, Keyed, MotorCommandOutcome, ReqId,
 };
 use oxifoc_host_lib::{
     HostCommand, HostConfig, ReconnectPolicy, TransportType, config_channel, fault_channel,
@@ -180,7 +180,7 @@ fn run_e2e(transport: TransportType) {
     oxifoc_host_lib::ops::config::apply_write(
         &rt.cmd_tx,
         0,
-        ConfigWrite::CurrentLimits(CurrentLimitsConfig {
+        ConfigValue::CurrentLimits(CurrentLimitsConfig {
             max_iq_a: 1.0,
             bus_in_max_a: 5.0,
             bus_regen_max_a: 0.0,
@@ -332,7 +332,7 @@ fn run_e2e(transport: TransportType) {
         ReqId(0xA11E_0001),
         ConfigApply {
             expected_revision: 0,
-            write: ConfigWrite::Failsafe(FailsafeConfigStored::default()),
+            write: ConfigValue::Failsafe(FailsafeConfigStored::default()),
         },
     );
     for attempt in 0..2 {
@@ -359,7 +359,7 @@ fn run_e2e(transport: TransportType) {
                 ReqId(0xA11E_0002),
                 ConfigApply {
                     expected_revision: 0,
-                    write: ConfigWrite::Failsafe(FailsafeConfigStored::default()),
+                    write: ConfigValue::Failsafe(FailsafeConfigStored::default()),
                 },
             ),
             tx,
@@ -576,8 +576,8 @@ fn run_e2e(transport: TransportType) {
 }
 
 #[test]
-fn drive_limits_apply_to_the_throttle_command() {
-    use oxifoc_core::storage::DriveLimitsConfig;
+fn drive_config_applies_to_the_throttle_command() {
+    use oxifoc_core::storage::DriveConfig;
     use oxifoc_host_lib::ops::config::{apply_write, read_group};
 
     let port = free_tcp_port();
@@ -591,17 +591,18 @@ fn drive_limits_apply_to_the_throttle_command() {
         ..Default::default()
     });
     assert!(rt.wait_for_connection(Duration::from_secs(15)));
-    let limits = DriveLimitsConfig {
+    let drive = DriveConfig {
         invert_direction: true,
-        max_forward_erad_s: Some(350.0),
-        max_reverse_erad_s: Some(120.0),
-        duty_start_frac: DriveLimitsConfig::E_SKATE_DUTY_START,
+        max_forward_erad_s: 350.0,
+        max_reverse_erad_s: 120.0,
+        duty_start_frac: DriveConfig::E_SKATE_DUTY_START,
+        ..DriveConfig::DEFAULT
     };
-    let group = ConfigGroupId::DriveLimits;
-    let revision = apply_write(&rt.cmd_tx, 0, ConfigWrite::DriveLimits(limits)).unwrap();
+    let group = ConfigGroupId::Drive;
+    let revision = apply_write(&rt.cmd_tx, 0, ConfigValue::Drive(drive)).unwrap();
     let snapshot = read_group(&rt.cmd_tx, group).unwrap();
     assert_eq!(snapshot.revision, revision);
-    assert_eq!(snapshot.value, Some(ConfigValue::DriveLimits(limits)));
+    assert_eq!(snapshot.value, Some(ConfigValue::Drive(drive)));
 
     let send = |mode| {
         let (tx, rx) = motor_channel();
@@ -619,7 +620,7 @@ fn drive_limits_apply_to_the_throttle_command() {
         apply_write(
             &rt.cmd_tx,
             revision,
-            ConfigWrite::DriveLimits(DriveLimitsConfig::DEFAULT),
+            ConfigValue::Drive(DriveConfig::DEFAULT),
         )
         .is_err()
     );
@@ -627,6 +628,44 @@ fn drive_limits_apply_to_the_throttle_command() {
         send(ControlMode::Stopped).outcome,
         MotorCommandOutcome::Applied
     );
+    rt.shutdown();
+}
+
+#[test]
+fn invalid_loop_config_does_not_advance_the_revision() {
+    use oxifoc_core::storage::VelocityLoopConfig;
+    use oxifoc_host_lib::ops::config::{apply_write, read_group};
+
+    let port = free_tcp_port();
+    let _device = spawn_device("tcp", port);
+    let rt = start_host(HostConfig {
+        transport: Some(TransportType::Tcp),
+        tcp_host: Some("127.0.0.1".into()),
+        tcp_port: Some(port),
+        stream_defmt: Some(false),
+        ..Default::default()
+    });
+    assert!(rt.wait_for_connection(Duration::from_secs(15)));
+    for write in [
+        ConfigValue::Velocity(VelocityLoopConfig {
+            kp: -0.01,
+            ..Default::default()
+        }),
+        ConfigValue::Failsafe(FailsafeConfigStored {
+            policy: 99,
+            ..Default::default()
+        }),
+        ConfigValue::Failsafe(FailsafeConfigStored {
+            slew_a_per_s: 0.0,
+            ..Default::default()
+        }),
+    ] {
+        let group = write.group();
+        let before = read_group(&rt.cmd_tx, group).unwrap();
+        let error = apply_write(&rt.cmd_tx, before.revision, write).unwrap_err();
+        assert!(error.to_string().contains("fails validation"));
+        assert_eq!(read_group(&rt.cmd_tx, group).unwrap(), before);
+    }
     rt.shutdown();
 }
 
@@ -731,7 +770,7 @@ fn board_calibration_e2e_tcp() {
                     ReqId(id),
                     ConfigApply {
                         expected_revision: revision,
-                        write: ConfigWrite::BoardCalibration(BoardCalibrationConfig {
+                        write: ConfigValue::BoardCalibration(BoardCalibrationConfig {
                             vbus_gain: gain,
                         }),
                     },

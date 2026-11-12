@@ -7,7 +7,7 @@
 //! the one-shot stopped install must be included in that platform timing bound.
 
 use super::{CMD_CHANNEL, DriverCommand};
-use crate::motor::drive_limits::DriveLimitsConfig;
+use crate::motor::drive::DriveConfig;
 use crate::{
     motor::foc_driver::PreparedMotorModel,
     storage::{HallCalibrationConfig, MotorParamsConfig, RuntimeConfig, VoltageFeedforwardConfig},
@@ -85,7 +85,7 @@ const READING: u32 = 5;
 const APPLYING_CANCELLED: u32 = 6;
 
 pub(crate) enum ModelConfigUpdate {
-    DriveLimits(DriveLimitsConfig),
+    Drive(DriveConfig),
     VoltageLimits(crate::storage::VoltageLimitsConfig),
     MotorParams(MotorParamsConfig),
     VoltageFeedforward(VoltageFeedforwardConfig),
@@ -104,9 +104,9 @@ impl From<MotorParamsConfig> for ModelConfigUpdate {
 impl ModelConfigUpdate {
     pub(crate) fn apply_to_config(&self, config: &mut RuntimeConfig) {
         match self {
-            Self::DriveLimits(value) => {
-                config.drive_limits = Some(*value);
-                config.drive_limits_invalid = false;
+            Self::Drive(value) => {
+                config.drive = Some(*value);
+                config.drive_invalid = false;
             }
             Self::VoltageLimits(value) => config.voltage_limits = Some(value.clone()),
             Self::MotorParams(value) => config.motor_params = Some(value.clone()),
@@ -123,7 +123,7 @@ impl ModelConfigUpdate {
 
     fn group(&self) -> ConfigGroupId {
         match self {
-            Self::DriveLimits(_) => ConfigGroupId::DriveLimits,
+            Self::Drive(_) => ConfigGroupId::Drive,
             Self::VoltageLimits(_) => ConfigGroupId::VoltageLimits,
             #[cfg(all(feature = "detection", feature = "delivery"))]
             Self::DriveSetup(_) => ConfigGroupId::MotorParams,
@@ -139,7 +139,7 @@ impl ModelConfigUpdate {
     reason = "one static zero-copy slot owns prepared ISR state; no embedded allocator or extra payload move"
 )]
 enum PreparedUpdate {
-    DriveLimits(DriveLimitsConfig),
+    Drive(DriveConfig),
     VoltageLimits(crate::motor::foc_driver::PreparedVoltageLimits),
     Motor(PreparedMotorModel),
     Hall(crate::foc::hall_sensor::PreparedHallCalibration),
@@ -149,7 +149,7 @@ impl PreparedUpdate {
     fn pole_pairs(&self) -> Option<u8> {
         match self {
             Self::Motor(model) => Some(model.pole_pairs),
-            Self::Hall(_) | Self::VoltageLimits(_) | Self::DriveLimits(_) => None,
+            Self::Hall(_) | Self::VoltageLimits(_) | Self::Drive(_) => None,
         }
     }
 }
@@ -301,19 +301,20 @@ pub(crate) struct ModelApplyGuard {
 }
 
 impl ModelApplyGuard {
-    pub fn prepare_drive_limits(
-        value: DriveLimitsConfig,
+    pub fn prepare_drive(
+        value: DriveConfig,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
+        coordinator: &'static ConfigCoordinator,
         request: ReqId,
         expected_revision: u32,
     ) -> Option<Self> {
         Self::prepare_inner(
-            PreparedUpdate::DriveLimits(value),
-            ModelConfigUpdate::DriveLimits(value),
+            PreparedUpdate::Drive(value),
+            ModelConfigUpdate::Drive(value),
             None,
             config,
-            &CONFIG_COORDINATOR.revisions,
-            &CONFIG_COORDINATOR.actions,
+            &coordinator.revisions,
+            &coordinator.actions,
             request,
             expected_revision,
         )
@@ -502,7 +503,7 @@ pub(super) fn apply<P, C, Ph, S>(
         ConfigResponse::Busy
     } else {
         let applied = match &mut pending.prepared {
-            PreparedUpdate::DriveLimits(value) => foc.set_drive_limits(*value).map(|()| None),
+            PreparedUpdate::Drive(value) => foc.set_drive_config(*value).map(|()| None),
             PreparedUpdate::VoltageLimits(prepared) => {
                 foc.apply_voltage_limits(*prepared).map(|()| None)
             }
@@ -514,8 +515,10 @@ pub(super) fn apply<P, C, Ph, S>(
                 if matches!(pending.update, ModelConfigUpdate::Reset) {
                     foc.reset_voltage_limits();
                     foc.set_derating(Default::default());
-                    foc.set_drive_limits(DriveLimitsConfig::DEFAULT)
-                        .expect("stopped reset accepts default drive limits");
+                    foc.set_velocity_config(Default::default());
+                    foc.set_failsafe(Default::default());
+                    foc.set_drive_config(DriveConfig::DEFAULT)
+                        .expect("stopped reset accepts the default drive configuration");
                     *pending.config.borrow(cs).borrow_mut() = RuntimeConfig::default();
                     for revision in pending.revisions.borrow(cs).borrow_mut().iter_mut() {
                         *revision = revision.wrapping_add(1);

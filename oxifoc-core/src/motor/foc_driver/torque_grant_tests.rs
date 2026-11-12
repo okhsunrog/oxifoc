@@ -80,11 +80,9 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
         return (id_target, legacy_bus_clamp(driver, iq_target));
     }
     if iq_target * omega >= 0.0 {
-        let lim = limits.max_current_a
-            * driver
-                .derating()
-                .drive
-                .min(driver.derating_cfg().speed_cut(omega));
+        // The oracle fixtures use the default drive configuration (no speed
+        // or duty taper). Those tapers are covered by the rotor velocity tests.
+        let lim = limits.max_current_a * driver.derating().drive;
         return (
             id_target,
             legacy_bus_clamp(driver, clamp_f32(iq_target, -lim, lim)),

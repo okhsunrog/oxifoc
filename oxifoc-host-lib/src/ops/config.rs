@@ -4,7 +4,7 @@
 //! field-level writes are implemented without per-field code: read the
 //! current group (or its default when nothing is stored), patch keys on the
 //! JSON object, deserialize back into the typed struct and send a
-//! `ConfigWrite`. Unknown field names are rejected against the actual
+//! `ConfigValue`. Unknown field names are rejected against the actual
 //! object's keys (serde would silently ignore them otherwise).
 //!
 //! Lives in host-lib (not the CLI) so the GUI shares the exact same group
@@ -13,8 +13,8 @@
 
 use anyhow::{Context, Result, bail};
 use oxifoc_core::types::{
-    ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigSnapshot, ConfigValue,
-    ConfigWrite, Keyed, ReqId,
+    ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigSnapshot, ConfigValue, Keyed,
+    ReqId,
 };
 use serde_json::Value;
 
@@ -36,7 +36,7 @@ pub const GROUPS: [(&str, ConfigGroupId); ConfigGroupId::COUNT] = [
     ("board-calibration", ConfigGroupId::BoardCalibration),
     ("voltage-feedforward", ConfigGroupId::VoltageFeedforward),
     ("motor-temperature", ConfigGroupId::MotorTemperature),
-    ("drive-limits", ConfigGroupId::DriveLimits),
+    ("drive", ConfigGroupId::Drive),
 ];
 
 /// Parse a kebab-case group name into its id.
@@ -124,7 +124,7 @@ pub fn group_value(value: &ConfigValue) -> Option<Value> {
         ConfigValue::Derating(v) => serde_json::to_value(v).ok(),
         ConfigValue::VoltageFeedforward(v) => serde_json::to_value(v).ok(),
         ConfigValue::MotorTemperature(v) => serde_json::to_value(v).ok(),
-        ConfigValue::DriveLimits(v) => serde_json::to_value(v).ok(),
+        ConfigValue::Drive(v) => serde_json::to_value(v).ok(),
     }
 }
 
@@ -144,34 +144,34 @@ pub fn group_default_value(group: ConfigGroupId) -> Value {
         G::PiGains => serde_json::to_value(st::PiGainsConfig::default()),
         G::HallTuning => serde_json::to_value(st::HallTuningConfig::default()),
         G::Failsafe => serde_json::to_value(st::FailsafeConfigStored::default()),
-        G::Velocity => serde_json::to_value(st::VelocityConfigStored::default()),
-        G::Derating => serde_json::to_value(st::DeratingConfigStored::default()),
+        G::Velocity => serde_json::to_value(st::VelocityLoopConfig::default()),
+        G::Derating => serde_json::to_value(st::DeratingConfig::default()),
         G::VoltageFeedforward => serde_json::to_value(st::VoltageFeedforwardConfig::default()),
         G::MotorTemperature => serde_json::to_value(st::MotorTemperatureConfig::default()),
-        G::DriveLimits => serde_json::to_value(st::DriveLimitsConfig::default()),
+        G::Drive => serde_json::to_value(st::DriveConfig::default()),
     };
     v.expect("stored-config structs always serialize")
 }
 
-/// Build a typed `ConfigWrite` back from a patched JSON object.
-pub fn write_from_value(group: ConfigGroupId, v: Value) -> Result<ConfigWrite> {
+/// Build a typed `ConfigValue` back from a patched JSON object.
+pub fn write_from_value(group: ConfigGroupId, v: Value) -> Result<ConfigValue> {
     use ConfigGroupId as G;
     Ok(match group {
-        G::BoardCalibration => ConfigWrite::BoardCalibration(serde_json::from_value(v)?),
-        G::MotorParams => ConfigWrite::MotorParams(serde_json::from_value(v)?),
-        G::HallCalibration => ConfigWrite::HallCalibration(serde_json::from_value(v)?),
-        G::DcOffsets => ConfigWrite::DcOffsets(serde_json::from_value(v)?),
-        G::CurrentLimits => ConfigWrite::CurrentLimits(serde_json::from_value(v)?),
-        G::VoltageLimits => ConfigWrite::VoltageLimits(serde_json::from_value(v)?),
-        G::PwmConfig => ConfigWrite::PwmConfig(serde_json::from_value(v)?),
-        G::PiGains => ConfigWrite::PiGains(serde_json::from_value(v)?),
-        G::HallTuning => ConfigWrite::HallTuning(serde_json::from_value(v)?),
-        G::Failsafe => ConfigWrite::Failsafe(serde_json::from_value(v)?),
-        G::Velocity => ConfigWrite::Velocity(serde_json::from_value(v)?),
-        G::Derating => ConfigWrite::Derating(serde_json::from_value(v)?),
-        G::VoltageFeedforward => ConfigWrite::VoltageFeedforward(serde_json::from_value(v)?),
-        G::MotorTemperature => ConfigWrite::MotorTemperature(serde_json::from_value(v)?),
-        G::DriveLimits => ConfigWrite::DriveLimits(serde_json::from_value(v)?),
+        G::BoardCalibration => ConfigValue::BoardCalibration(serde_json::from_value(v)?),
+        G::MotorParams => ConfigValue::MotorParams(serde_json::from_value(v)?),
+        G::HallCalibration => ConfigValue::HallCalibration(serde_json::from_value(v)?),
+        G::DcOffsets => ConfigValue::DcOffsets(serde_json::from_value(v)?),
+        G::CurrentLimits => ConfigValue::CurrentLimits(serde_json::from_value(v)?),
+        G::VoltageLimits => ConfigValue::VoltageLimits(serde_json::from_value(v)?),
+        G::PwmConfig => ConfigValue::PwmConfig(serde_json::from_value(v)?),
+        G::PiGains => ConfigValue::PiGains(serde_json::from_value(v)?),
+        G::HallTuning => ConfigValue::HallTuning(serde_json::from_value(v)?),
+        G::Failsafe => ConfigValue::Failsafe(serde_json::from_value(v)?),
+        G::Velocity => ConfigValue::Velocity(serde_json::from_value(v)?),
+        G::Derating => ConfigValue::Derating(serde_json::from_value(v)?),
+        G::VoltageFeedforward => ConfigValue::VoltageFeedforward(serde_json::from_value(v)?),
+        G::MotorTemperature => ConfigValue::MotorTemperature(serde_json::from_value(v)?),
+        G::Drive => ConfigValue::Drive(serde_json::from_value(v)?),
     })
 }
 
@@ -196,7 +196,7 @@ pub fn current_value(cmd: &CommandSender, group: ConfigGroupId) -> Result<(Value
     ))
 }
 
-pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigWrite) -> Result<u32> {
+pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigValue) -> Result<u32> {
     let (tx, rx) = config_channel();
     let id = next_config_id();
     let group = write.group();
@@ -224,12 +224,16 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigWri
             "device rejected PWM configuration. Supported on MK5: freq_hz=15000 or 20000, \
              max_duty_percent=95"
         ),
+        ConfigResponse::Invalid if group == ConfigGroupId::Drive => bail!(
+            "device rejected drive configuration. Speed ceilings must be finite and non-negative, \
+             speed_start_frac strictly between 0 and 1, and duty_start_frac in 0..=1"
+        ),
         ConfigResponse::Invalid => bail!(
             "device refused the write: value fails validation. Rules: all fields \
              finite; current_limits: max_phase_current_a >= 1.3 x max_iq_a (the \
              overcurrent trip needs headroom above full throttle); derating: every \
              enabled ramp well-formed (temp/regen end > start, battery cut start > \
-             end, accel_dec and speed_start_frac in 0..=1); board-calibration: \
+             end, accel_dec in 0..=1); board-calibration: \
              vbus_gain must be finite and within 0.95..=1.05; voltage-limits: \
              0 < min_vbus_mv < max_vbus_mv, within board limits"
         ),
@@ -280,7 +284,7 @@ pub fn persist_group(
 }
 
 /// Apply a value, then persist that exact revision when flash is available.
-pub fn send_write(cmd: &CommandSender, write: ConfigWrite) -> Result<ConfigCommit> {
+pub fn send_write(cmd: &CommandSender, write: ConfigValue) -> Result<ConfigCommit> {
     let group = write.group();
     let snapshot = read_group(cmd, group)?;
     let revision = apply_write(cmd, snapshot.revision, write)?;
@@ -298,7 +302,7 @@ pub fn patch_fields(
     group: ConfigGroupId,
     mut value: Value,
     kvs: &[String],
-) -> Result<(Value, ConfigWrite)> {
+) -> Result<(Value, ConfigValue)> {
     let obj = value
         .as_object_mut()
         .context("config group is not a JSON object")?;
@@ -391,7 +395,7 @@ pub fn reset_all(cmd: &CommandSender) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxifoc_core::storage::{MotorParamsConfig, VelocityConfigStored, VoltageFeedforwardConfig};
+    use oxifoc_core::storage::{MotorParamsConfig, VelocityLoopConfig, VoltageFeedforwardConfig};
     use oxifoc_core::types::VoltageFeedforwardMode;
 
     #[test]
@@ -404,7 +408,7 @@ mod tests {
         legacy.as_object_mut().unwrap().remove("geometry");
         assert_eq!(
             write_from_value(group, legacy).unwrap(),
-            ConfigWrite::HallCalibration(HallCalibrationConfig::default())
+            ConfigValue::HallCalibration(HallCalibrationConfig::default())
         );
         let tau = core::f32::consts::TAU;
         let config = HallCalibrationConfig {
@@ -427,11 +431,11 @@ mod tests {
         let json = group_value(&ConfigValue::HallCalibration(config)).unwrap();
         assert_eq!(
             write_from_value(group, json.clone()).unwrap(),
-            ConfigWrite::HallCalibration(config)
+            ConfigValue::HallCalibration(config)
         );
         let (_, write) =
             patch_fields(group, default, &[format!("geometry={}", json["geometry"])]).unwrap();
-        assert_eq!(write, ConfigWrite::HallCalibration(config));
+        assert_eq!(write, ConfigValue::HallCalibration(config));
     }
 
     #[test]
@@ -448,7 +452,7 @@ mod tests {
             let config = VoltageFeedforwardConfig { mode };
             let (json, write) =
                 patch_fields(group, default.clone(), &[format!("mode={mode:?}")]).unwrap();
-            assert_eq!(write, ConfigWrite::VoltageFeedforward(config));
+            assert_eq!(write, ConfigValue::VoltageFeedforward(config));
             assert_eq!(
                 group_value(&ConfigValue::VoltageFeedforward(config)),
                 Some(json)
@@ -481,7 +485,7 @@ mod tests {
             assert_eq!(request.inner.expected_revision, 7);
             assert_eq!(
                 request.inner.write,
-                ConfigWrite::VoltageFeedforward(VoltageFeedforwardConfig {
+                ConfigValue::VoltageFeedforward(VoltageFeedforwardConfig {
                     mode: VoltageFeedforwardMode::Both,
                 })
             );
@@ -522,14 +526,14 @@ mod tests {
             &["resistance_ohm=0.2".into()],
         )
         .unwrap();
-        let ConfigWrite::MotorParams(patched) = write else {
+        let ConfigValue::MotorParams(patched) = write else {
             panic!("wrong write variant");
         };
         assert_eq!(patched.resistance_ohm, 0.2);
         assert_eq!(patched.ld_fundamental_h, 81e-6);
         assert_eq!(patched.lq_fundamental_h, 127e-6);
 
-        let velocity = VelocityConfigStored {
+        let velocity = VelocityLoopConfig {
             accel_ff: 0.75,
             ..Default::default()
         };
@@ -539,7 +543,7 @@ mod tests {
             &["kp=0.3".into()],
         )
         .unwrap();
-        let ConfigWrite::Velocity(patched) = write else {
+        let ConfigValue::Velocity(patched) = write else {
             panic!("wrong write variant");
         };
         assert_eq!(patched.kp, 0.3);

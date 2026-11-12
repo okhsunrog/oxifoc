@@ -206,25 +206,9 @@ impl FailsafeConfig {
     /// to [`Default`] — a corrupt config can never disable the deadman.
     #[cfg(feature = "storage")]
     pub fn from_stored(cfg: Option<&FailsafeConfigStored>) -> Self {
-        match cfg {
-            Some(c) => {
-                let candidate = Self {
-                    policy: FailsafePolicy::from_u8(c.policy),
-                    staleness_timeout_us: u64::from(c.staleness_timeout_ms) * 1_000,
-                    brake_current_a: c.brake_current_a,
-                    slew_a_per_s: c.slew_a_per_s,
-                    standstill_rad_s: c.standstill_rad_s,
-                    decel_rad_s2: c.decel_rad_s2,
-                    terminal: FailsafeTerminal::from_u8(c.terminal),
-                };
-                if candidate.is_sane() {
-                    candidate
-                } else {
-                    Self::default()
-                }
-            }
-            None => Self::default(),
-        }
+        cfg.map(Self::from)
+            .filter(Self::is_sane)
+            .unwrap_or_default()
     }
 
     /// Upper bound on the deadman staleness timeout (µs). The host affirms
@@ -248,6 +232,21 @@ impl FailsafeConfig {
             && self.standstill_rad_s > 0.0
             && self.decel_rad_s2.is_finite()
             && self.decel_rad_s2 > 0.0
+    }
+}
+
+#[cfg(feature = "storage")]
+impl From<&FailsafeConfigStored> for FailsafeConfig {
+    fn from(cfg: &FailsafeConfigStored) -> Self {
+        Self {
+            policy: FailsafePolicy::from_u8(cfg.policy),
+            staleness_timeout_us: u64::from(cfg.staleness_timeout_ms) * 1_000,
+            brake_current_a: cfg.brake_current_a,
+            slew_a_per_s: cfg.slew_a_per_s,
+            standstill_rad_s: cfg.standstill_rad_s,
+            decel_rad_s2: cfg.decel_rad_s2,
+            terminal: FailsafeTerminal::from_u8(cfg.terminal),
+        }
     }
 }
 

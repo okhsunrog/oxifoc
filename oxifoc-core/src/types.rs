@@ -628,7 +628,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 18;
+pub const ICD_PROTO_VERSION: u16 = 19;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1023,14 +1023,14 @@ pub use config_types::*;
 #[cfg(feature = "storage")]
 mod config_types {
     use crate::storage::{
-        BoardCalibrationConfig, CurrentLimitsConfig, DcOffsetsConfig, DeratingConfigStored,
+        BoardCalibrationConfig, CurrentLimitsConfig, DcOffsetsConfig, DeratingConfig,
         FailsafeConfigStored, HallCalibrationConfig, HallTuningConfig, MotorParamsConfig,
-        MotorTemperatureConfig, PiGainsConfig, PwmConfigStored, VelocityConfigStored,
+        MotorTemperatureConfig, PiGainsConfig, PwmConfigStored, VelocityLoopConfig,
         VoltageFeedforwardConfig, VoltageLimitsConfig,
     };
 
     use super::*;
-    use crate::motor::drive_limits::DriveLimitsConfig;
+    use crate::motor::drive::DriveConfig;
 
     /// Configuration request from host.
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
@@ -1073,11 +1073,11 @@ mod config_types {
         BoardCalibration,
         VoltageFeedforward,
         MotorTemperature,
-        DriveLimits,
+        Drive,
     }
 
     impl ConfigGroupId {
-        pub const COUNT: usize = 15;
+        pub const COUNT: usize = Self::Drive as usize + 1;
         pub const ALL: [Self; Self::COUNT] = [
             Self::MotorParams,
             Self::HallCalibration,
@@ -1093,58 +1093,23 @@ mod config_types {
             Self::BoardCalibration,
             Self::VoltageFeedforward,
             Self::MotorTemperature,
-            Self::DriveLimits,
+            Self::Drive,
         ];
 
         pub const fn index(self) -> usize {
-            match self {
-                Self::MotorParams => 0,
-                Self::HallCalibration => 1,
-                Self::DcOffsets => 2,
-                Self::CurrentLimits => 3,
-                Self::VoltageLimits => 4,
-                Self::PwmConfig => 5,
-                Self::PiGains => 6,
-                Self::HallTuning => 7,
-                Self::Failsafe => 8,
-                Self::Velocity => 9,
-                Self::Derating => 10,
-                Self::BoardCalibration => 11,
-                Self::VoltageFeedforward => 12,
-                Self::MotorTemperature => 13,
-                Self::DriveLimits => 14,
-            }
+            self as usize
+        }
+
+        #[cfg(feature = "runtime")]
+        pub(crate) const fn is_setup_component(self) -> bool {
+            matches!(
+                self,
+                Self::MotorParams | Self::HallCalibration | Self::CurrentLimits
+            )
         }
     }
 
-    /// Config write payload — one variant per group
-    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub enum ConfigWrite {
-        MotorParams(MotorParamsConfig),
-        CurrentLimits(CurrentLimitsConfig),
-        VoltageLimits(VoltageLimitsConfig),
-        PwmConfig(PwmConfigStored),
-        PiGains(PiGainsConfig),
-        HallTuning(HallTuningConfig),
-        /// Hall calibration result (written by the host after CalibrateHall)
-        HallCalibration(HallCalibrationConfig),
-        /// Current-sensor DC offsets
-        DcOffsets(DcOffsetsConfig),
-        /// Command-staleness deadman + failsafe policy
-        Failsafe(FailsafeConfigStored),
-        /// Cruise velocity-loop tuning
-        Velocity(VelocityConfigStored),
-        // postcard encodes the variant index — append only.
-        /// Graduated derating ramps (thermal/voltage/speed)
-        Derating(DeratingConfigStored),
-        BoardCalibration(BoardCalibrationConfig),
-        VoltageFeedforward(VoltageFeedforwardConfig),
-        MotorTemperature(MotorTemperatureConfig),
-        DriveLimits(DriveLimitsConfig),
-    }
-
-    impl ConfigWrite {
+    impl ConfigValue {
         pub const fn group(&self) -> ConfigGroupId {
             match self {
                 Self::MotorParams(_) => ConfigGroupId::MotorParams,
@@ -1161,7 +1126,7 @@ mod config_types {
                 Self::BoardCalibration(_) => ConfigGroupId::BoardCalibration,
                 Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
                 Self::MotorTemperature(_) => ConfigGroupId::MotorTemperature,
-                Self::DriveLimits(_) => ConfigGroupId::DriveLimits,
+                Self::Drive(_) => ConfigGroupId::Drive,
             }
         }
     }
@@ -1170,7 +1135,7 @@ mod config_types {
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub struct ConfigApply {
         pub expected_revision: u32,
-        pub write: ConfigWrite,
+        pub write: ConfigValue,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Schema)]
@@ -1180,7 +1145,7 @@ mod config_types {
         pub expected_revision: u32,
     }
 
-    /// Typed value returned by a revisioned read.
+    /// Typed group value used for configuration reads, applies and saves.
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub enum ConfigValue {
@@ -1193,12 +1158,12 @@ mod config_types {
         HallCalibration(HallCalibrationConfig),
         DcOffsets(DcOffsetsConfig),
         Failsafe(FailsafeConfigStored),
-        Velocity(VelocityConfigStored),
-        Derating(DeratingConfigStored),
+        Velocity(VelocityLoopConfig),
+        Derating(DeratingConfig),
         BoardCalibration(BoardCalibrationConfig),
         VoltageFeedforward(VoltageFeedforwardConfig),
         MotorTemperature(MotorTemperatureConfig),
-        DriveLimits(DriveLimitsConfig),
+        Drive(DriveConfig),
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]

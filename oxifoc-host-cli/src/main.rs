@@ -1071,23 +1071,20 @@ fn main() -> Result<()> {
                 );
             }
             ConfigAction::DriveProfile { profile, volatile } => {
-                use oxifoc_core::storage::DriveLimitsConfig;
+                use oxifoc_core::storage::DriveConfig;
                 use oxifoc_host_lib::ops::config;
                 let start = match profile {
-                    DriveProfile::Generic => DriveLimitsConfig::DEFAULT.duty_start_frac,
-                    DriveProfile::ESkate => DriveLimitsConfig::E_SKATE_DUTY_START,
+                    DriveProfile::Generic => DriveConfig::DEFAULT.duty_start_frac,
+                    DriveProfile::ESkate => DriveConfig::E_SKATE_DUTY_START,
                 };
                 let fields = [format!("duty_start_frac={start}")];
                 let (value, revision, persisted) = if volatile {
                     let (value, revision) =
-                        config::apply_fields(&runtime.cmd_tx, ConfigGroupId::DriveLimits, &fields)?;
+                        config::apply_fields(&runtime.cmd_tx, ConfigGroupId::Drive, &fields)?;
                     (value, revision, false)
                 } else {
-                    let (value, commit) = config_cli::set_fields(
-                        &runtime.cmd_tx,
-                        ConfigGroupId::DriveLimits,
-                        &fields,
-                    )?;
+                    let (value, commit) =
+                        config_cli::set_fields(&runtime.cmd_tx, ConfigGroupId::Drive, &fields)?;
                     (value, commit.revision, commit.persisted)
                 };
                 emit(

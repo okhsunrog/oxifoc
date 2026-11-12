@@ -815,7 +815,7 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
       (derating speed ceiling, default OFF) is now baked: 400 el rad/s
       + rolloff from 0.5×, sized for the ISR wall (below), and the
       speed-cut term is evaluated PER CYCLE in the iq clamp
-      (DeratingConfig::speed_cut) — the 78 Hz decimated scale
+      (`DriveConfig::speed_cut`) — the 78 Hz decimated scale
       bang-banged ±2.3 k erpm around the ceiling at 9 300 el rad/s²
       (plain-fix-2 sawtooth 2.6 Hz). bus_in_max baked 10 → 3.5 A
       (PSU CC is 4 A; the gate had been hiding the real bus draw too).
@@ -1256,7 +1256,7 @@ Phase A (cold-start align→ramp→handoff, current-scheduled ceiling) + Phase B
   opportunity).** From the full June-commit review; the real bugs were
   fixed same-day (a50ff1f/118ce54/bce662a/922a15a):
   - `MOTOR_POLE_PAIRS` is latched at init on all three boards — a runtime
-    `ConfigWrite(MotorParams)` desyncs the frame's rpm (old pp) from host
+    applying `MotorParams` desyncs the frame's rpm (old pp) from host
     erpm (new pp) until reboot; boot with no params → rpm hard-0 all
     power-up. Re-apply on config write, or read the config each cycle.
   - Fixed-point packers wrap instead of clamping past range ends

@@ -37,9 +37,13 @@ Hosts must not infer decimation by dividing rounded frequencies. Firmware and
 host must both be upgraded; v8/v9 connections fail at the frozen bootstrap.
 
 ICD v18 adds the signed fractional `Throttle` control mode and the
-`DriveLimits` config group. Legacy derating records keep their existing
-flash encoding and supply the symmetric speed ceiling for unset directions.
-The bootstrap requires a matching host and device version.
+`DriveLimits` config group.
+
+ICD v19 puts direction, directional speed ceilings, and both torque tapers
+in `Drive`. `Derating` holds temperature and bus voltage ramps. The two
+groups use new flash keys and start with defaults until explicitly written.
+Re-enter any custom settings for these groups after upgrading. The
+bootstrap requires a matching host and device version.
 
 The host validates, in order:
 

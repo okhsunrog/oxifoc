@@ -57,9 +57,7 @@ use oxifoc_core::foc::position::PositionLoopConfig;
 use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::foc::{angle_difference, wrap_angle};
 use oxifoc_core::motor::ControlMode;
-use oxifoc_core::storage::{
-    CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConfig, VelocityConfigStored,
-};
+use oxifoc_core::storage::{CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConfig};
 
 use common::{DT, FOC_HZ, Rig, RigConfig};
 
@@ -69,7 +67,7 @@ struct SimConfig {
     motor_params: Option<MotorParamsConfig>,
     hall_calibration: Option<HallCalibrationConfig>,
     current_limits: Option<CurrentLimitsConfig>,
-    velocity: Option<VelocityConfigStored>,
+    velocity: Option<VelocityLoopConfig>,
 }
 
 fn arg<T: std::str::FromStr>(args: &HashMap<String, String>, key: &str, default: T) -> T {
@@ -156,7 +154,10 @@ fn main() -> std::io::Result<()> {
     if source == "cold" {
         rig.set_source(PhaseSource::Observer);
     }
-    let vel_default = VelocityLoopConfig::from_stored(config.velocity.as_ref());
+    let vel_default = config
+        .velocity
+        .filter(VelocityLoopConfig::is_sane)
+        .unwrap_or_default();
     rig.driver.set_velocity_config(VelocityLoopConfig {
         kp: arg(&args, "vkp", vel_default.kp),
         ki: arg(&args, "vki", vel_default.ki),

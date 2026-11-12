@@ -17,7 +17,7 @@ mod failsafe;
 mod model;
 mod modes;
 #[cfg(feature = "storage")]
-pub use model::{MotorModelError, PreparedMotorModel};
+pub use model::PreparedMotorModel;
 mod limits;
 mod protection;
 mod step;
@@ -32,6 +32,15 @@ pub use limits::{CurrentLimits, InvalidSourceLimits, OVERCURRENT_HEADROOM, Power
 #[cfg(feature = "runtime")]
 pub use protection::PreparedBoardConfig;
 pub use protection::PreparedVoltageLimits;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum MotorModelError {
+    Invalid,
+    Busy,
+    Unsupported,
+    Consumed,
+}
 
 use crate::foc::controller::FocController;
 use crate::foc::current_offset::CurrentOffsetCalibrator;

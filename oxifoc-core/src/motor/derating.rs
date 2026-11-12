@@ -1,9 +1,8 @@
 //! Graduated derating: continuous power rolloff BEFORE any fault.
 //!
 //! VESC's `update_override_limits` lesson (docs/notes/fault-overhaul.md):
-//! a stop is the response to "derating has already failed", not to "hot"
-//! or "sagging". This module computes two live scale factors from the
-//! measurements —
+//! temperature and bus voltage ramps reduce the available torque before a
+//! fault. This module computes three live scale factors:
 //!
 //! - `drive` scales torque in the direction of motion (acceleration),
 //! - `brake` scales torque opposing it,
@@ -17,7 +16,6 @@
 //! | Motor temperature | drive + brake, accel earlier | same shape, separate thresholds (off when no NTC) |
 //! | Battery cutoff | drive | 1 above `vbus_cut_start`, 0 at `vbus_cut_end` (start > end) — a sagging pack sheds drive current before the UV fault can trip |
 //! | Regen overvoltage | regen | 1 below `vbus_regen_start`, 0 at `vbus_regen_end` — braking into a full pack sheds regen before the OV fault |
-//! | Speed cut | drive | 1 below `frac·max`, 0 at `max_speed_erad_s` — a soft ceiling, NEVER limits braking (descending past the limit must still brake) |
 //!
 //! `regen` is not a torque scale by itself: the driver either burns the
 //! refused share in the windings (dissipative braking,
@@ -29,8 +27,6 @@
 //! ladder remain the backstops at the ramp ends.
 
 use crate::foc::clamp_f32;
-#[cfg(feature = "storage")]
-use crate::storage::DeratingConfigStored;
 
 /// Live derating factors (1.0 = no derate), applied by the driver's
 /// torque grant (`FocDriver::grant_torque`), selected by direction.
@@ -66,10 +62,12 @@ impl DeratingScales {
     }
 }
 
-/// Runtime derating configuration (SI units; mirrors
-/// `crate::storage::DeratingConfigStored`). Per-ramp `0` disables that
-/// ramp — the all-default config derates on FET temperature only.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Temperature and bus voltage ramps. A zero start disables that ramp.
+#[derive(
+    Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[serde(deny_unknown_fields)]
 pub struct DeratingConfig {
     /// FET temperature ramp start (°C); `0` disables the FET ramp
     pub temp_fet_start_c: f32,
@@ -92,11 +90,6 @@ pub struct DeratingConfig {
     pub vbus_regen_start_v: f32,
     /// Regen overvoltage ramp end (V, zero regen at/above; must be > start)
     pub vbus_regen_end_v: f32,
-    /// Speed soft ceiling (electrical rad/s; eRPM = erad/s × 60 / 2π);
-    /// `0` disables. Drive-only — braking is never speed-limited.
-    pub max_speed_erad_s: f32,
-    /// Fraction of `max_speed_erad_s` where the drive rolloff starts
-    pub speed_start_frac: f32,
 }
 
 impl Default for DeratingConfig {
@@ -114,32 +107,11 @@ impl Default for DeratingConfig {
             vbus_cut_end_v: 0.0,
             vbus_regen_start_v: 0.0,
             vbus_regen_end_v: 0.0,
-            max_speed_erad_s: 0.0,
-            speed_start_frac: 0.8,
         }
     }
 }
 
 impl DeratingConfig {
-    /// Build from the stored (host-writable) form; a missing or non-sane
-    /// stored value falls back to [`Default`] — a corrupt config can never
-    /// disable the FET thermal rolloff. (The config server additionally
-    /// rejects insane writes loudly: `From` + [`Self::is_sane`].)
-    #[cfg(feature = "storage")]
-    pub fn from_stored(cfg: Option<&DeratingConfigStored>) -> Self {
-        match cfg {
-            Some(c) => {
-                let candidate = Self::from(c);
-                if candidate.is_sane() {
-                    candidate
-                } else {
-                    Self::default()
-                }
-            }
-            None => Self::default(),
-        }
-    }
-
     /// All fields finite and every ENABLED ramp well-formed (the config
     /// server also rejects insane writes loudly via this check).
     pub fn is_sane(&self) -> bool {
@@ -152,9 +124,7 @@ impl DeratingConfig {
             && f(self.vbus_cut_start_v)
             && f(self.vbus_cut_end_v)
             && f(self.vbus_regen_start_v)
-            && f(self.vbus_regen_end_v)
-            && f(self.max_speed_erad_s)
-            && f(self.speed_start_frac);
+            && f(self.vbus_regen_end_v);
         if !all_finite {
             return false;
         }
@@ -167,18 +137,7 @@ impl DeratingConfig {
             || (self.vbus_cut_end_v > 0.0 && self.vbus_cut_start_v > self.vbus_cut_end_v);
         let regen_ok =
             self.vbus_regen_start_v <= 0.0 || self.vbus_regen_end_v > self.vbus_regen_start_v;
-        // frac == 1.0 is a zero-width ramp: it used to hit ramp_down's
-        // malformed-ramp branch and return 1.0 for EVERY speed — "cut
-        // exactly at the ceiling" silently became "no ceiling at all", on
-        // the only speed bound torque mode has on a free rotor.
-        let speed_ok = self.max_speed_erad_s <= 0.0
-            || (self.speed_start_frac > 0.0 && self.speed_start_frac < 1.0);
-        (0.0..=1.0).contains(&self.accel_dec)
-            && fet_ok
-            && motor_ok
-            && cut_ok
-            && regen_ok
-            && speed_ok
+        (0.0..=1.0).contains(&self.accel_dec) && fet_ok && motor_ok && cut_ok && regen_ok
     }
 
     /// Compute the live scales. `None` measurements skip their ramps
@@ -188,7 +147,6 @@ impl DeratingConfig {
         fet_temp_c: Option<f32>,
         motor_temp_c: Option<f32>,
         vbus_v: f32,
-        omega_e_rad_s: f32,
     ) -> DeratingScales {
         let mut drive = 1.0f32;
         let mut brake = 1.0f32;
@@ -219,7 +177,6 @@ impl DeratingConfig {
         if self.vbus_regen_start_v > 0.0 && self.vbus_regen_end_v > self.vbus_regen_start_v {
             regen = ramp_down(vbus_v, self.vbus_regen_start_v, self.vbus_regen_end_v);
         }
-        drive = drive.min(self.speed_cut(omega_e_rad_s));
 
         DeratingScales {
             drive,
@@ -227,54 +184,9 @@ impl DeratingConfig {
             regen,
         }
     }
-
-    /// The speed-cut factor alone, cheap enough for per-cycle use (one
-    /// division when inside the taper). The thermal and vbus ramps ride
-    /// slow measurements and stay on the decimated protection tick, but a
-    /// free rotor crosses the whole speed taper in milliseconds — a
-    /// 78 Hz-stale cut bang-bangs the torque around the ceiling (bench
-    /// 2026-07-07 plain-fix-2: 2.6 Hz sawtooth, 3.2k↔7.8k erpm around a
-    /// 3.8k-erpm ceiling at 9 300 el rad/s² of free-rotor acceleration).
-    /// The driver's iq clamp therefore evaluates this fresh every cycle
-    /// and combines it with the decimated scales.
-    pub fn speed_cut(&self, omega_e_rad_s: f32) -> f32 {
-        self.speed_cut_at(omega_e_rad_s, self.max_speed_erad_s)
-    }
-
-    pub(super) fn speed_cut_at(&self, omega_e_rad_s: f32, ceiling: f32) -> f32 {
-        if ceiling <= 0.0 {
-            return 1.0;
-        }
-        let start = ceiling * clamp_f32(self.speed_start_frac, 0.0, 1.0);
-        ramp_down(omega_e_rad_s.abs(), start, ceiling)
-    }
-}
-
-#[cfg(feature = "storage")]
-impl From<&DeratingConfigStored> for DeratingConfig {
-    fn from(c: &DeratingConfigStored) -> Self {
-        Self {
-            temp_fet_start_c: c.temp_fet_start_c,
-            temp_fet_end_c: c.temp_fet_end_c,
-            temp_motor_start_c: c.temp_motor_start_c,
-            temp_motor_end_c: c.temp_motor_end_c,
-            accel_dec: c.accel_dec,
-            vbus_cut_start_v: c.vbus_cut_start_v,
-            vbus_cut_end_v: c.vbus_cut_end_v,
-            vbus_regen_start_v: c.vbus_regen_start_v,
-            vbus_regen_end_v: c.vbus_regen_end_v,
-            max_speed_erad_s: c.max_speed_erad_s,
-            speed_start_frac: c.speed_start_frac,
-        }
-    }
 }
 
 /// 1.0 at/below `start`, 0.0 at/above `end`, linear between.
-///
-/// A zero/negative-width ramp (`end <= start` — stored by older firmware
-/// that accepted `speed_start_frac == 1.0`, or a malformed pair) degrades
-/// to a hard STEP at `end` instead of never derating: for a protection
-/// ramp, cutting late is strictly safer than not cutting at all.
 fn ramp_down(x: f32, start: f32, end: f32) -> f32 {
     if end <= start {
         return if x >= end { 0.0 } else { 1.0 };
@@ -296,7 +208,7 @@ mod tests {
 
     #[test]
     fn cold_board_no_derate() {
-        let s = cfg().compute(Some(40.0), None, 24.0, 100.0);
+        let s = cfg().compute(Some(40.0), None, 24.0);
         assert_eq!(s, DeratingScales::default());
     }
 
@@ -304,20 +216,20 @@ mod tests {
     fn fet_ramp_derates_accel_before_brake() {
         // Mid-ramp on the brake curve (85→100): the accel copy (lerped
         // toward 25 °C) must already be lower.
-        let s = cfg().compute(Some(92.0), None, 24.0, 100.0);
+        let s = cfg().compute(Some(92.0), None, 24.0);
         assert!(s.brake > 0.4 && s.brake < 0.7, "brake mid-ramp: {s:?}");
         assert!(s.drive < s.brake, "accel must derate earlier: {s:?}");
 
         // At the ramp end: both at zero — the OverTemp fault right past
         // this point means the ramp already failed.
-        let s = cfg().compute(Some(100.0), None, 24.0, 100.0);
+        let s = cfg().compute(Some(100.0), None, 24.0);
         assert_eq!(s.brake, 0.0);
         assert_eq!(s.drive, 0.0);
     }
 
     #[test]
     fn missing_sensor_skips_ramp() {
-        let s = cfg().compute(None, None, 24.0, 100.0);
+        let s = cfg().compute(None, None, 24.0);
         assert_eq!(s, DeratingScales::default());
     }
 
@@ -328,10 +240,10 @@ mod tests {
             vbus_cut_end_v: 36.0,
             ..cfg()
         };
-        let s = c.compute(Some(40.0), None, 38.0, 100.0);
+        let s = c.compute(Some(40.0), None, 38.0);
         assert!((s.drive - 0.5).abs() < 1e-3, "mid-cut: {s:?}");
         assert_eq!(s.brake, 1.0, "sag must never cost braking");
-        let s = c.compute(Some(40.0), None, 35.0, 100.0);
+        let s = c.compute(Some(40.0), None, 35.0);
         assert_eq!(s.drive, 0.0, "below cut end: no drive");
     }
 
@@ -342,46 +254,24 @@ mod tests {
             vbus_regen_end_v: 58.0,
             ..cfg()
         };
-        let s = c.compute(Some(40.0), None, 57.0, 100.0);
+        let s = c.compute(Some(40.0), None, 57.0);
         assert!((s.regen - 0.5).abs() < 1e-3, "mid-regen-cut: {s:?}");
         assert_eq!((s.drive, s.brake), (1.0, 1.0));
-        let s = c.compute(Some(40.0), None, 58.5, 100.0);
+        let s = c.compute(Some(40.0), None, 58.5);
         assert_eq!(s.regen, 0.0, "full pack: no regen");
         assert_eq!(s.worst(), 0.0, "and the rider is warned");
     }
 
     #[test]
-    fn speed_cut_is_drive_only() {
-        let c = DeratingConfig {
-            max_speed_erad_s: 1000.0,
-            ..cfg()
-        };
-        // Below the rolloff start: untouched.
-        let s = c.compute(Some(40.0), None, 24.0, 700.0);
-        assert_eq!(s.drive, 1.0);
-        // Mid-rolloff (start 800, end 1000).
-        let s = c.compute(Some(40.0), None, 24.0, 900.0);
-        assert!((s.drive - 0.5).abs() < 1e-3, "mid speed cut: {s:?}");
-        // Past the ceiling (downhill): zero drive, FULL brake.
-        let s = c.compute(Some(40.0), None, 24.0, 1100.0);
-        assert_eq!(s.drive, 0.0);
-        assert_eq!(s.brake, 1.0, "braking past the limit must work");
-        // Direction-agnostic.
-        let s = c.compute(Some(40.0), None, 24.0, -1100.0);
-        assert_eq!(s.drive, 0.0);
-    }
-
-    #[test]
     fn ramps_compose_via_min() {
         let c = DeratingConfig {
-            max_speed_erad_s: 1000.0,
             vbus_cut_start_v: 40.0,
             vbus_cut_end_v: 36.0,
             ..cfg()
         };
-        // Hot + sagging + fast: drive takes the worst of the three.
-        let s = c.compute(Some(92.0), None, 38.0, 900.0);
-        let thermal_only = c.compute(Some(92.0), None, 50.0, 0.0);
+        // Hot + sagging: drive takes the tighter of the two ramps.
+        let s = c.compute(Some(92.0), None, 38.0);
+        let thermal_only = c.compute(Some(92.0), None, 50.0);
         assert!(s.drive <= thermal_only.drive.min(0.5));
     }
 
@@ -426,42 +316,5 @@ mod tests {
             }
             .is_sane()
         );
-    }
-
-    /// frac == 1.0 is a zero-width ramp: it used to fall into ramp_down's
-    /// malformed branch and disable the ceiling entirely — the only speed
-    /// bound torque mode has on a free rotor.
-    #[test]
-    fn full_fraction_speed_ramp_is_rejected() {
-        assert!(
-            !DeratingConfig {
-                max_speed_erad_s: 2000.0,
-                speed_start_frac: 1.0,
-                ..cfg()
-            }
-            .is_sane()
-        );
-        assert!(
-            DeratingConfig {
-                max_speed_erad_s: 2000.0,
-                speed_start_frac: 0.9,
-                ..cfg()
-            }
-            .is_sane()
-        );
-    }
-
-    /// A legacy stored config with frac == 1.0 (accepted by older firmware)
-    /// must degrade to a hard step at the ceiling, not to "no limit".
-    #[test]
-    fn zero_width_speed_ramp_degrades_to_a_step_cut() {
-        let c = DeratingConfig {
-            max_speed_erad_s: 2000.0,
-            speed_start_frac: 1.0,
-            ..cfg()
-        };
-        assert_eq!(c.speed_cut(1999.0), 1.0);
-        assert_eq!(c.speed_cut(2000.0), 0.0, "at the ceiling: full cut");
-        assert_eq!(c.speed_cut(3000.0), 0.0, "beyond the ceiling: full cut");
     }
 }

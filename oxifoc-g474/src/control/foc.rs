@@ -111,16 +111,12 @@ pub async fn init(
         .expect("stored voltage limits must fit the board");
 
     // Cruise velocity-loop tuning from stored config (or soft defaults).
-    foc_driver.set_velocity_config(oxifoc_core::foc::velocity::VelocityLoopConfig::from_stored(
-        config.velocity.as_ref(),
-    ));
+    foc_driver.set_velocity_config(config.effective_velocity());
 
     // Graduated derating ramps from stored config (default = FET thermal
     // rolloff only; see motor::derating).
-    foc_driver.set_derating(oxifoc_core::motor::derating::DeratingConfig::from_stored(
-        config.derating.as_ref(),
-    ));
-    foc_driver.load_drive_limits(config);
+    foc_driver.set_derating(config.effective_derating());
+    foc_driver.load_drive_config(config);
 
     // Store ADC handles for ISR access
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));

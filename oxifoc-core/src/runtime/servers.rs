@@ -31,18 +31,16 @@ use embassy_futures::join::{join, join3};
 use embassy_futures::select::{Either, select};
 
 #[cfg(feature = "storage")]
-use crate::foc::velocity::VelocityLoopConfig;
-#[cfg(feature = "storage")]
-use crate::motor::derating::DeratingConfig;
-#[cfg(feature = "storage")]
 use crate::motor::failsafe::FailsafeConfig;
 #[cfg(feature = "storage")]
 use crate::motor::foc_driver::CurrentLimits;
+use crate::state::DriverCommand;
+#[cfg(feature = "storage")]
+use crate::state::DriverOperation;
 #[cfg(feature = "storage")]
 use crate::state::FlashPendingGuard;
 #[cfg(feature = "storage")]
 use crate::state::model::{CONFIG_COORDINATOR, CachedConfigAck, ModelApplyGuard};
-use crate::state::{DriverCommand, DriverOperation};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::fault::{FaultRegistry, PlatformFault};
@@ -67,9 +65,7 @@ use crate::types::MotorCommandOutcome;
 /// instead of an unattributable transport timeout.
 pub const MOTOR_ACK_TIMEOUT_MS: u64 = 1_000;
 #[cfg(feature = "storage")]
-use crate::storage::{
-    ConfigKey, ConfigPayload, FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig,
-};
+use crate::storage::{FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig};
 
 /// Device info server - responds to info requests from host
 ///
@@ -281,42 +277,40 @@ pub async fn fault_server<NS, F, const N: usize>(
 /// - PwmConfig: boards that consume this group at boot supply their limits.
 #[cfg(feature = "storage")]
 fn write_is_acceptable(
-    w: &crate::types::ConfigWrite,
+    w: &crate::types::ConfigValue,
     pwm_limits: Option<crate::storage::PwmConfigLimits>,
 ) -> bool {
-    use crate::types::ConfigWrite;
+    use crate::types::ConfigValue;
     let counts_ok = |v: f32| (0.0..=f32::from(u16::MAX)).contains(&v);
     match w {
-        ConfigWrite::BoardCalibration(v) => v.is_sane(),
-        ConfigWrite::CurrentLimits(v) => v.is_coherent(),
-        ConfigWrite::Derating(v) => DeratingConfig::from(v).is_sane(),
-        ConfigWrite::DriveLimits(v) => v.is_sane(),
-        ConfigWrite::DcOffsets(v) => {
+        ConfigValue::BoardCalibration(v) => v.is_sane(),
+        ConfigValue::CurrentLimits(v) => v.is_coherent(),
+        ConfigValue::Derating(v) => v.is_sane(),
+        ConfigValue::Drive(v) => v.is_sane(),
+        ConfigValue::DcOffsets(v) => {
             counts_ok(v.phase_a) && counts_ok(v.phase_b) && counts_ok(v.phase_c)
         }
-        ConfigWrite::PiGains(v) => v.is_sane(),
-        ConfigWrite::VoltageFeedforward(_) | ConfigWrite::MotorTemperature(_) => true,
-        ConfigWrite::MotorParams(v) => v.is_valid(),
-        ConfigWrite::HallCalibration(v) => v.is_calibrated(),
-        ConfigWrite::HallTuning(v) => v.is_sane(),
-        ConfigWrite::VoltageLimits(value) => value.is_sane(),
-        ConfigWrite::PwmConfig(config) => pwm_limits.is_some_and(|limits| limits.accepts(config)),
-        // No boundary invariant beyond is_sane() at the ISR gate; listed
-        // explicitly (no catch-all) so a new group cannot compile without
-        // being classified here — an unclassified group would fail OPEN.
-        ConfigWrite::Failsafe(_) | ConfigWrite::Velocity(_) => true,
+        ConfigValue::PiGains(v) => v.is_sane(),
+        ConfigValue::VoltageFeedforward(_) | ConfigValue::MotorTemperature(_) => true,
+        ConfigValue::MotorParams(v) => v.is_valid(),
+        ConfigValue::HallCalibration(v) => v.is_calibrated(),
+        ConfigValue::HallTuning(v) => v.is_sane(),
+        ConfigValue::VoltageLimits(value) => value.is_sane(),
+        ConfigValue::PwmConfig(config) => pwm_limits.is_some_and(|limits| limits.accepts(config)),
+        ConfigValue::Failsafe(v) => v.is_sane(),
+        ConfigValue::Velocity(v) => v.is_sane(),
     }
 }
 
 #[cfg(feature = "storage")]
-fn write_is_live_safe_while_running(w: &crate::types::ConfigWrite) -> bool {
-    use crate::types::ConfigWrite;
+fn write_is_live_safe_while_running(w: &crate::types::ConfigValue) -> bool {
+    use crate::types::ConfigValue;
     matches!(
         w,
-        ConfigWrite::CurrentLimits(_)
-            | ConfigWrite::Failsafe(_)
-            | ConfigWrite::Velocity(_)
-            | ConfigWrite::Derating(_)
+        ConfigValue::CurrentLimits(_)
+            | ConfigValue::Failsafe(_)
+            | ConfigValue::Velocity(_)
+            | ConfigValue::Derating(_)
     )
 }
 
@@ -337,45 +331,11 @@ fn config_value(
         G::PiGains => cfg.pi_gains.clone().map(V::PiGains),
         G::HallTuning => cfg.hall_tuning.clone().map(V::HallTuning),
         G::Failsafe => cfg.failsafe.clone().map(V::Failsafe),
-        G::Velocity => cfg.velocity.clone().map(V::Velocity),
-        G::Derating => cfg.derating.clone().map(V::Derating),
+        G::Velocity => cfg.velocity.map(V::Velocity),
+        G::Derating => cfg.derating.map(V::Derating),
         G::VoltageFeedforward => cfg.voltage_feedforward.map(V::VoltageFeedforward),
         G::MotorTemperature => cfg.motor_temperature.map(V::MotorTemperature),
-        G::DriveLimits => cfg.drive_limits.map(V::DriveLimits),
-    }
-}
-
-#[cfg(feature = "storage")]
-fn flash_parts(value: crate::types::ConfigValue) -> (ConfigKey, ConfigPayload) {
-    use crate::types::ConfigValue as V;
-    match value {
-        V::BoardCalibration(v) => (
-            ConfigKey::BoardCalibration,
-            ConfigPayload::BoardCalibration(v),
-        ),
-        V::MotorParams(v) => (ConfigKey::MotorParams, ConfigPayload::MotorParams(v)),
-        V::CurrentLimits(v) => (ConfigKey::CurrentLimits, ConfigPayload::CurrentLimits(v)),
-        V::VoltageLimits(v) => (ConfigKey::VoltageLimits, ConfigPayload::VoltageLimits(v)),
-        V::PwmConfig(v) => (ConfigKey::PwmConfig, ConfigPayload::PwmConfig(v)),
-        V::PiGains(v) => (ConfigKey::PiGains, ConfigPayload::PiGains(v)),
-        V::HallTuning(v) => (ConfigKey::HallTuning, ConfigPayload::HallTuning(v)),
-        V::HallCalibration(v) => (
-            ConfigKey::HallCalibrationRecord,
-            ConfigPayload::HallCalibration(v),
-        ),
-        V::DcOffsets(v) => (ConfigKey::DcOffsets, ConfigPayload::DcOffsets(v)),
-        V::Failsafe(v) => (ConfigKey::Failsafe, ConfigPayload::Failsafe(v)),
-        V::Velocity(v) => (ConfigKey::Velocity, ConfigPayload::Velocity(v)),
-        V::Derating(v) => (ConfigKey::Derating, ConfigPayload::Derating(v)),
-        V::DriveLimits(v) => (ConfigKey::DriveLimits, ConfigPayload::DriveLimits(v)),
-        V::VoltageFeedforward(v) => (
-            ConfigKey::VoltageFeedforward,
-            ConfigPayload::VoltageFeedforward(v),
-        ),
-        V::MotorTemperature(v) => (
-            ConfigKey::MotorTemperature,
-            ConfigPayload::MotorTemperature(v),
-        ),
+        G::Drive => cfg.drive.map(V::Drive),
     }
 }
 
@@ -412,7 +372,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     NS: NetStackHandle,
 {
     use crate::icd::ConfigGroupId;
-    use crate::types::{ConfigSnapshot, ConfigWrite, MotorState};
+    use crate::types::{ConfigSnapshot, ConfigValue, MotorState};
 
     let server = endpoints.bounded_server::<ConfigEndpoint, N>(Some("config"));
     let server = pin!(server);
@@ -431,12 +391,14 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     critical_section::with(|cs| *persisted_revisions.borrow(cs).borrow_mut() = initially_persisted);
     let action_cache = &CONFIG_COORDINATOR.actions;
 
+    #[cfg(all(feature = "detection", feature = "delivery"))]
     let setup_ack = CriticalSectionMutex::new(RefCell::new(
         None::<(
             crate::types::Keyed<crate::types::SaveDriveSetup>,
             ConfigResponse,
         )>,
     ));
+    #[cfg(all(feature = "detection", feature = "delivery"))]
     let setup_ack = &setup_ack;
 
     loop {
@@ -495,7 +457,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     ConfigGroupId::HallCalibration => {
                                         cfg.hall_calibration_is_valid()
                                     }
-                                    ConfigGroupId::DriveLimits => cfg.drive_limits_are_valid(),
+                                    ConfigGroupId::Drive => cfg.drive_is_valid(),
                                     _ => true,
                                 },
                                 persisted: persisted_revisions.borrow(cs).borrow()[group.index()]
@@ -537,13 +499,13 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             // complete ADC ISR executions.
                             if matches!(
                                 &write,
-                                ConfigWrite::BoardCalibration(_) | ConfigWrite::MotorTemperature(_)
+                                ConfigValue::BoardCalibration(_) | ConfigValue::MotorTemperature(_)
                             ) {
                                 return critical_section::with(|cs| {
                                     let mut state = state_mutex.borrow(cs).borrow_mut();
                                     let mut cfg = runtime_config.borrow(cs).borrow_mut();
                                     match &write {
-                                        ConfigWrite::BoardCalibration(value) => {
+                                        ConfigValue::BoardCalibration(value) => {
                                             if !state.can_apply_board_calibration() {
                                                 return ConfigResponse::Busy;
                                             }
@@ -552,7 +514,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                             cfg.board_calibration = Some(*value);
                                             cfg.board_calibration_invalid = false;
                                         }
-                                        ConfigWrite::MotorTemperature(value) => {
+                                        ConfigValue::MotorTemperature(value) => {
                                             // Permit repair after a missing expected sensor
                                             // has already raised a stop fault.
                                             if state.actuator_busy()
@@ -580,7 +542,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     }
                                 });
                             }
-                            if let ConfigWrite::HallCalibration(value) = &write {
+                            if let ConfigValue::HallCalibration(value) = &write {
                                 let Some(guard) = ModelApplyGuard::prepare_hall(
                                     *value,
                                     runtime_config,
@@ -593,7 +555,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 };
                                 return guard.apply::<T>().await;
                             }
-                            if let ConfigWrite::VoltageLimits(value) = &write {
+                            if let ConfigValue::VoltageLimits(value) = &write {
                                 let Some(guard) = ModelApplyGuard::prepare_voltage_limits(
                                     value.clone(),
                                     runtime_config,
@@ -605,10 +567,11 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 };
                                 return guard.apply::<T>().await;
                             }
-                            if let ConfigWrite::DriveLimits(value) = &write {
-                                let Some(guard) = ModelApplyGuard::prepare_drive_limits(
+                            if let ConfigValue::Drive(value) = &write {
+                                let Some(guard) = ModelApplyGuard::prepare_drive(
                                     *value,
                                     runtime_config,
+                                    &CONFIG_COORDINATOR,
                                     keyed.id,
                                     current_revision,
                                 ) else {
@@ -617,12 +580,12 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 return guard.apply::<T>().await;
                             }
                             let model_update = match &write {
-                                ConfigWrite::MotorParams(value) => {
+                                ConfigValue::MotorParams(value) => {
                                     Some(crate::state::model::ModelConfigUpdate::MotorParams(
                                         value.clone(),
                                     ))
                                 }
-                                ConfigWrite::VoltageFeedforward(value) => Some(
+                                ConfigValue::VoltageFeedforward(value) => Some(
                                     crate::state::model::ModelConfigUpdate::VoltageFeedforward(
                                         *value,
                                     ),
@@ -660,61 +623,51 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             critical_section::with(|cs| {
                                 let mut cfg = runtime_config.borrow(cs).borrow_mut();
                                 match &write {
-                                    ConfigWrite::BoardCalibration(_)
-                                    | ConfigWrite::MotorTemperature(_) => {} // handled atomically above
-                                    ConfigWrite::MotorParams(v) => {
-                                        cfg.motor_params = Some(v.clone());
-                                    }
-                                    ConfigWrite::VoltageFeedforward(_) => {} // handled by durable model apply
-                                    ConfigWrite::CurrentLimits(v) => {
+                                    ConfigValue::CurrentLimits(v) => {
                                         cfg.current_limits = Some(v.clone());
                                     }
-                                    ConfigWrite::VoltageLimits(_) | ConfigWrite::DriveLimits(_) => {
-                                        unreachable!("handled by durable driver apply");
-                                    }
-                                    ConfigWrite::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
-                                    ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
-                                    ConfigWrite::HallTuning(v) => {
+                                    ConfigValue::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
+                                    ConfigValue::PiGains(v) => cfg.pi_gains = Some(v.clone()),
+                                    ConfigValue::HallTuning(v) => {
                                         cfg.hall_tuning = Some(v.clone());
                                     }
-                                    ConfigWrite::HallCalibration(v) => {
-                                        cfg.hall_calibration = Some(*v);
-                                    }
-                                    ConfigWrite::DcOffsets(v) => {
+                                    ConfigValue::DcOffsets(v) => {
                                         cfg.dc_offsets = Some(v.clone());
                                     }
-                                    ConfigWrite::Failsafe(v) => cfg.failsafe = Some(v.clone()),
-                                    ConfigWrite::Velocity(v) => cfg.velocity = Some(v.clone()),
-                                    ConfigWrite::Derating(v) => cfg.derating = Some(v.clone()),
+                                    ConfigValue::Failsafe(v) => cfg.failsafe = Some(v.clone()),
+                                    ConfigValue::Velocity(v) => cfg.velocity = Some(*v),
+                                    ConfigValue::Derating(v) => cfg.derating = Some(*v),
+                                    ConfigValue::BoardCalibration(_)
+                                    | ConfigValue::MotorTemperature(_)
+                                    | ConfigValue::MotorParams(_)
+                                    | ConfigValue::VoltageFeedforward(_)
+                                    | ConfigValue::VoltageLimits(_)
+                                    | ConfigValue::Drive(_)
+                                    | ConfigValue::HallCalibration(_) => {
+                                        unreachable!("handled by atomic apply above");
+                                    }
                                 }
                             });
                             // Make the write take effect on the live driver,
                             // not only at the next boot. `send().await`, not
                             // `try_send`: the ISR drains the channel every
-                            // cycle, and a silent drop here leaves the saved
-                            // config and the live driver disagreeing (worst
-                            // case: MotorParams applies its gains but loses
-                            // the decoupling command on a full channel).
-                            // Motor rating ceiling for the limits clamp —
-                            // read back from the just-updated mirror so a
-                            // simultaneous MotorParams write is reflected.
-                            let rating_a = critical_section::with(|cs| {
-                                runtime_config
-                                    .borrow(cs)
-                                    .borrow()
-                                    .motor_params
-                                    .as_ref()
-                                    .and_then(
-                                        super::super::storage::MotorParamsConfig::rating_current_a,
-                                    )
-                                    .unwrap_or(0.0)
-                            });
+                            // cycle, and a dropped command would leave the
+                            // stored configuration and the driver disagreeing.
                             match write {
-                                ConfigWrite::BoardCalibration(_)
-                                | ConfigWrite::MotorTemperature(_) => {} // handled atomically above
                                 // Limits: clamped to the board ceiling and
                                 // the motor rating.
-                                ConfigWrite::CurrentLimits(ref v) => {
+                                ConfigValue::CurrentLimits(ref v) => {
+                                    let rating_a = critical_section::with(|cs| {
+                                        runtime_config
+                                            .borrow(cs)
+                                            .borrow()
+                                            .motor_params
+                                            .as_ref()
+                                            .and_then(
+                                                crate::storage::MotorParamsConfig::rating_current_a,
+                                            )
+                                            .unwrap_or(0.0)
+                                    });
                                     CMD_CHANNEL
                                         .send(DriverCommand::SetCurrentLimits(
                                             CurrentLimits::from_config_clamped(
@@ -726,45 +679,37 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                         .await;
                                 }
                                 // Explicit PI gains apply verbatim.
-                                ConfigWrite::PiGains(v) => {
+                                ConfigValue::PiGains(v) => {
                                     CMD_CHANNEL
                                         .send(DriverCommand::SetPiGains { kp: v.kp, ki: v.ki })
                                         .await;
                                 }
-                                ConfigWrite::MotorParams(_)
-                                | ConfigWrite::VoltageFeedforward(_)
-                                | ConfigWrite::VoltageLimits(_)
-                                | ConfigWrite::DriveLimits(_)
-                                | ConfigWrite::HallCalibration(_) => {
-                                    unreachable!("handled by coherent model transaction")
+                                ConfigValue::BoardCalibration(_)
+                                | ConfigValue::MotorTemperature(_)
+                                | ConfigValue::MotorParams(_)
+                                | ConfigValue::VoltageFeedforward(_)
+                                | ConfigValue::VoltageLimits(_)
+                                | ConfigValue::Drive(_)
+                                | ConfigValue::HallCalibration(_) => {
+                                    unreachable!("handled by atomic apply above");
                                 }
                                 // Cruise velocity-loop tuning applies live.
-                                ConfigWrite::Velocity(v) => {
-                                    CMD_CHANNEL
-                                        .send(DriverCommand::SetVelocityConfig(
-                                            VelocityLoopConfig::from_stored(Some(&v)),
-                                        ))
-                                        .await;
+                                ConfigValue::Velocity(v) => {
+                                    CMD_CHANNEL.send(DriverCommand::SetVelocityConfig(v)).await;
                                 }
                                 // Derating ramps apply to the live driver.
-                                ConfigWrite::Derating(v) => {
-                                    CMD_CHANNEL
-                                        .send(DriverCommand::SetDerating(
-                                            DeratingConfig::from_stored(Some(&v)),
-                                        ))
-                                        .await;
+                                ConfigValue::Derating(v) => {
+                                    CMD_CHANNEL.send(DriverCommand::SetDerating(v)).await;
                                 }
                                 // Failsafe tuning applies to the live driver.
-                                ConfigWrite::Failsafe(v) => {
+                                ConfigValue::Failsafe(v) => {
                                     CMD_CHANNEL
-                                        .send(DriverCommand::SetFailsafe(
-                                            FailsafeConfig::from_stored(Some(&v)),
-                                        ))
+                                        .send(DriverCommand::SetFailsafe(FailsafeConfig::from(&v)))
                                         .await;
                                 }
                                 // Persisted calibration must take effect now,
                                 // not only after the next reboot.
-                                ConfigWrite::DcOffsets(v) => {
+                                ConfigValue::DcOffsets(v) => {
                                     CMD_CHANNEL
                                         .send(DriverCommand::SetCurrentOffsets([
                                             v.phase_a, v.phase_b, v.phase_c,
@@ -778,7 +723,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 //   construction (boot only).
                                 // - PwmConfig is consumed at PWM construction
                                 //   on the next boot.
-                                ConfigWrite::HallTuning(_) | ConfigWrite::PwmConfig(_) => {}
+                                ConfigValue::HallTuning(_) | ConfigValue::PwmConfig(_) => {}
                             }
                             let revision = current_revision.wrapping_add(1);
                             critical_section::with(|cs| {
@@ -799,12 +744,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             }
                             let group = keyed.inner.group;
                             if crate::state::drive_setup_recovery_required()
-                                && matches!(
-                                    group,
-                                    ConfigGroupId::MotorParams
-                                        | ConfigGroupId::CurrentLimits
-                                        | ConfigGroupId::HallCalibration
-                                )
+                                && group.is_setup_component()
                             {
                                 return ConfigResponse::Busy;
                             }
@@ -844,17 +784,13 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             let Some(value) = value else {
                                 return ConfigResponse::Invalid;
                             };
-                            if let crate::types::ConfigValue::PwmConfig(config) = &value
+                            if let ConfigValue::PwmConfig(config) = &value
                                 && !pwm_limits.is_some_and(|limits| limits.accepts(config))
                             {
                                 return ConfigResponse::Invalid;
                             }
-                            let (key, payload) = flash_parts(value);
                             FLASH_DONE.reset();
-                            if FLASH_CHANNEL
-                                .try_send(FlashOperation::Save(key, payload))
-                                .is_err()
-                            {
+                            if FLASH_CHANNEL.try_send(FlashOperation::Save(value)).is_err() {
                                 return ConfigResponse::Error;
                             }
                             if !FLASH_DONE.wait().await {
@@ -873,6 +809,9 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 revision: current_revision,
                             }
                         }
+                        #[cfg(not(all(feature = "detection", feature = "delivery")))]
+                        ConfigRequest::SaveDriveSetup(_) => ConfigResponse::Unsupported,
+                        #[cfg(all(feature = "detection", feature = "delivery"))]
                         ConfigRequest::SaveDriveSetup(request) => {
                             let replay = critical_section::with(|cs| {
                                 let cache = setup_ack.borrow(cs).borrow();
@@ -964,11 +903,11 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             };
                             drop(_calibration_pending);
                             let reply = guard.apply::<T>().await;
+                            #[cfg(all(feature = "detection", feature = "delivery"))]
                             if matches!(reply, ConfigResponse::Reset) {
                                 critical_section::with(|cs| {
                                     *setup_ack.borrow(cs).borrow_mut() = None;
                                 });
-                                #[cfg(all(feature = "detection", feature = "delivery"))]
                                 super::detect::invalidate_setup_candidate();
                             }
                             reply
@@ -980,7 +919,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     }
 }
 
-#[cfg(feature = "storage")]
+#[cfg(all(feature = "storage", feature = "detection", feature = "delivery"))]
 async fn save_drive_setup<T: crate::timer::Timer>(
     request: &crate::types::Keyed<crate::types::SaveDriveSetup>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
@@ -988,88 +927,79 @@ async fn save_drive_setup<T: crate::timer::Timer>(
     board_trip_a: f32,
     persist: bool,
 ) -> ConfigResponse {
-    #[cfg(not(all(feature = "detection", feature = "delivery")))]
-    {
-        let _ = (request, runtime_config, state_mutex, board_trip_a, persist);
-        ConfigResponse::Unsupported
+    use crate::state::DETECTION_ACTIVE;
+    use crate::types::{ConfigGroupId, ControlMode, MotorState};
+    use core::sync::atomic::Ordering;
+    if !persist {
+        return ConfigResponse::Unsupported;
     }
-    #[cfg(all(feature = "detection", feature = "delivery"))]
+    let flash_pending = FlashPendingGuard::arm();
+    let stopped = critical_section::with(|cs| {
+        let state = state_mutex.borrow(cs).borrow();
+        state.motor_state == MotorState::Stopped
+            && state.control_mode == ControlMode::Stopped
+            && !state.actuator_busy()
+            && state.board_calibration_valid
+            && !DETECTION_ACTIVE.load(Ordering::Acquire)
+    });
+    if !stopped {
+        return ConfigResponse::Busy;
+    }
+    if !super::detect::setup_is_current(&request.inner) {
+        return ConfigResponse::Invalid;
+    }
+    let (mut config, revision, vbus) = critical_section::with(|cs| {
+        (
+            runtime_config.borrow(cs).borrow().clone(),
+            CONFIG_COORDINATOR.revisions.borrow(cs).borrow()[ConfigGroupId::MotorParams.index()],
+            state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0,
+        )
+    });
+    let trip = config
+        .current_limits
+        .as_ref()
+        .map_or(0.0, |limits| limits.max_phase_current_a);
+    let Ok(setup) = request.inner.setup.clone().validate(board_trip_a, trip) else {
+        return ConfigResponse::Invalid;
+    };
+    let record = crate::storage::InstalledDrive::new(&setup);
+    setup.project(&mut config);
+    let mut model =
+        crate::motor::foc_driver::PreparedMotorModel::from_config(&config, vbus, board_trip_a);
+    if model.prepare_setup_feedback(setup.hall()).is_none() {
+        return ConfigResponse::Invalid;
+    }
+    let Some(guard) = ModelApplyGuard::prepare(
+        model,
+        crate::state::model::ModelConfigUpdate::DriveSetup(setup),
+        runtime_config,
+        &CONFIG_COORDINATOR.revisions,
+        &CONFIG_COORDINATOR.actions,
+        request.id,
+        revision,
+    ) else {
+        return ConfigResponse::Busy;
+    };
+    FLASH_DONE.reset();
+    if FLASH_CHANNEL
+        .try_send(FlashOperation::SaveInstalledDrive(record))
+        .is_err()
     {
-        use crate::state::DETECTION_ACTIVE;
-        use crate::types::{ConfigGroupId, ControlMode, MotorState};
-        use core::sync::atomic::Ordering;
-        if !persist {
-            return ConfigResponse::Unsupported;
-        }
-        let flash_pending = FlashPendingGuard::arm();
-        let stopped = critical_section::with(|cs| {
-            let state = state_mutex.borrow(cs).borrow();
-            state.motor_state == MotorState::Stopped
-                && state.control_mode == ControlMode::Stopped
-                && !state.actuator_busy()
-                && state.board_calibration_valid
-                && !DETECTION_ACTIVE.load(Ordering::Acquire)
-        });
-        if !stopped {
-            return ConfigResponse::Busy;
-        }
-        if !super::detect::setup_is_current(&request.inner) {
-            return ConfigResponse::Invalid;
-        }
-        let (mut config, revision, vbus) = critical_section::with(|cs| {
-            (
-                runtime_config.borrow(cs).borrow().clone(),
-                CONFIG_COORDINATOR.revisions.borrow(cs).borrow()
-                    [ConfigGroupId::MotorParams.index()],
-                state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0,
-            )
-        });
-        let trip = config
-            .current_limits
-            .as_ref()
-            .map_or(0.0, |limits| limits.max_phase_current_a);
-        let Ok(setup) = request.inner.setup.clone().validate(board_trip_a, trip) else {
-            return ConfigResponse::Invalid;
-        };
-        let record = crate::storage::InstalledDrive::new(&setup);
-        setup.project(&mut config);
-        let mut model =
-            crate::motor::foc_driver::PreparedMotorModel::from_config(&config, vbus, board_trip_a);
-        if model.prepare_setup_feedback(setup.hall()).is_none() {
-            return ConfigResponse::Invalid;
-        }
-        let Some(guard) = ModelApplyGuard::prepare(
-            model,
-            crate::state::model::ModelConfigUpdate::DriveSetup(setup),
-            runtime_config,
-            &CONFIG_COORDINATOR.revisions,
-            &CONFIG_COORDINATOR.actions,
-            request.id,
+        return ConfigResponse::Error;
+    }
+    // Once a write is queued, an error may leave a complete new record.
+    // Inhibit starts until the prepared model is installed or reboot loads it.
+    crate::state::set_drive_setup_recovery(true);
+    if !FLASH_DONE.wait().await {
+        return ConfigResponse::Error;
+    }
+    drop(flash_pending);
+    match guard.apply::<T>().await {
+        ConfigResponse::Applied { revision, .. } => ConfigResponse::Persisted {
+            req_id: request.id,
             revision,
-        ) else {
-            return ConfigResponse::Busy;
-        };
-        FLASH_DONE.reset();
-        if FLASH_CHANNEL
-            .try_send(FlashOperation::SaveInstalledDrive(record))
-            .is_err()
-        {
-            return ConfigResponse::Error;
-        }
-        // Once a write is queued, an error may leave a complete new record.
-        // Inhibit starts until the prepared model is installed or reboot loads it.
-        crate::state::set_drive_setup_recovery(true);
-        if !FLASH_DONE.wait().await {
-            return ConfigResponse::Error;
-        }
-        drop(flash_pending);
-        match guard.apply::<T>().await {
-            ConfigResponse::Applied { revision, .. } => ConfigResponse::Persisted {
-                req_id: request.id,
-                revision,
-            },
-            _ => ConfigResponse::SetupRequiresRestart { req_id: request.id },
-        }
+        },
+        _ => ConfigResponse::SetupRequiresRestart { req_id: request.id },
     }
 }
 

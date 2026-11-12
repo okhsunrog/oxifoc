@@ -9,7 +9,9 @@
 //! All value types implement [`PostcardValue`] via the marker trait,
 //! giving them automatic postcard serialization for sequential-storage.
 
-pub use crate::motor::drive_limits::DriveLimitsConfig;
+pub use crate::foc::velocity::VelocityLoopConfig;
+pub use crate::motor::{derating::DeratingConfig, drive::DriveConfig};
+use crate::types::ConfigValue;
 pub use crate::types::VoltageFeedforwardMode;
 use sequential_storage::map::{Key, PostcardValue, SerializationError};
 use serde::{Deserialize, Serialize};
@@ -55,8 +57,8 @@ pub enum ConfigKey {
     Failsafe = 9,
     /// Cruise velocity-loop tuning
     Velocity = 10,
-    /// Graduated derating ramps (thermal/voltage/speed)
-    Derating = 11,
+    /// Reserved key tag. Keep it recognizable during flash compaction.
+    Reserved11 = 11,
     /// Per-device analog measurement corrections (versioned payload).
     BoardCalibration = 12,
     /// Explicit current-loop voltage feedforward policy.
@@ -65,7 +67,11 @@ pub enum ConfigKey {
     HallCalibrationRecord = 14,
     InstalledDrive = 15,
     MotorTemperature = 16,
-    DriveLimits = 17,
+    /// Reserved key tag. Keep it recognizable during flash compaction.
+    Reserved17 = 17,
+    Drive = 18,
+    /// Temperature and bus voltage ramps.
+    Derating = 19,
 }
 
 impl Key for ConfigKey {
@@ -92,13 +98,15 @@ impl Key for ConfigKey {
             8 => Self::HallTuning,
             9 => Self::Failsafe,
             10 => Self::Velocity,
-            11 => Self::Derating,
+            11 => Self::Reserved11,
             12 => Self::BoardCalibration,
             13 => Self::VoltageFeedforward,
             14 => Self::HallCalibrationRecord,
             15 => Self::InstalledDrive,
             16 => Self::MotorTemperature,
-            17 => Self::DriveLimits,
+            17 => Self::Reserved17,
+            18 => Self::Drive,
+            19 => Self::Derating,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -660,107 +668,33 @@ pub struct FailsafeConfigStored {
 
 impl PostcardValue<'_> for FailsafeConfigStored {}
 
-/// Cruise velocity-loop tuning (see [`crate::foc::velocity`]); mirrors
-/// `VelocityLoopConfig` field-for-field. The driver decodes via
-/// `VelocityLoopConfig::from_stored` (sane-checked, falls back to default).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct VelocityConfigStored {
-    /// Proportional gain, A per (electrical rad/s).
-    pub kp: f32,
-    /// Integral gain, A per (electrical rad/s · s).
-    pub ki: f32,
-    /// Reference accel/decel ramp limit (electrical rad/s²).
-    pub accel_limit: f32,
-    /// Acceleration feedforward, A per (electrical rad/s²) of REFERENCE
-    /// slew — the measured free-rotor accel-per-amp inverted (ZD2808:
-    /// 1/8100 ≈ 1.2e-4). The ramp's torque is delivered open-loop and the
-    /// PI only trims, which kills the ramp-lag overshoot. 0 = off.
-    pub accel_ff: f32,
-}
+impl PostcardValue<'_> for VelocityLoopConfig {}
 
-impl PostcardValue<'_> for VelocityConfigStored {}
-
-impl Default for VelocityConfigStored {
-    /// Mirrors `VelocityLoopConfig::default` (soft, hall-edge-rate safe).
-    fn default() -> Self {
-        Self {
-            kp: 0.01,
-            ki: 0.2,
-            accel_limit: 500.0,
-            accel_ff: 0.0,
-        }
+impl FailsafeConfigStored {
+    pub fn is_sane(&self) -> bool {
+        use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy, FailsafeTerminal};
+        self.policy <= FailsafePolicy::ControlledStop as u8
+            && self.terminal <= FailsafeTerminal::ParkBrake as u8
+            && FailsafeConfig::from(self).is_sane()
     }
 }
 
 impl Default for FailsafeConfigStored {
-    /// Longboard default: brake to a controlled stop on link loss, then hold
-    /// the parking brake (mirrors `FailsafeConfig::default`).
     fn default() -> Self {
+        let config = crate::motor::failsafe::FailsafeConfig::default();
         Self {
-            staleness_timeout_ms: 150,
-            policy: 2, // ControlledStop
-            brake_current_a: 15.0,
-            slew_a_per_s: 150.0,
-            standstill_rad_s: 20.0,
-            decel_rad_s2: 1_000.0,
-            terminal: 1, // ParkBrake
+            staleness_timeout_ms: (config.staleness_timeout_us / 1_000) as u32,
+            policy: config.policy as u8,
+            brake_current_a: config.brake_current_a,
+            slew_a_per_s: config.slew_a_per_s,
+            standstill_rad_s: config.standstill_rad_s,
+            decel_rad_s2: config.decel_rad_s2,
+            terminal: config.terminal as u8,
         }
     }
 }
 
-/// Graduated derating ramps (see [`crate::motor::derating`]); mirrors
-/// `DeratingConfig` field-for-field (same SI units). The driver decodes
-/// via `DeratingConfig::from_stored` (sane-checked, falls back to the
-/// default = FET thermal rolloff only).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct DeratingConfigStored {
-    /// FET temperature ramp start (°C); 0 disables
-    pub temp_fet_start_c: f32,
-    /// FET temperature ramp end (°C; scale = 0, the OverTemp fault sits here)
-    pub temp_fet_end_c: f32,
-    /// Motor temperature ramp start (°C); 0 disables (no NTC)
-    pub temp_motor_start_c: f32,
-    /// Motor temperature ramp end (°C)
-    pub temp_motor_end_c: f32,
-    /// Acceleration-derate factor 0..=1 (VESC `l_temp_accel_dec`)
-    pub accel_dec: f32,
-    /// Battery cutoff ramp start (V, full drive above); 0 disables
-    pub vbus_cut_start_v: f32,
-    /// Battery cutoff ramp end (V, zero drive at/below; < start)
-    pub vbus_cut_end_v: f32,
-    /// Regen overvoltage ramp start (V, full brake below); 0 disables
-    pub vbus_regen_start_v: f32,
-    /// Regen overvoltage ramp end (V, zero regen at/above; > start)
-    pub vbus_regen_end_v: f32,
-    /// Speed soft ceiling (electrical rad/s; eRPM = erad/s × 60/2π); 0 disables
-    pub max_speed_erad_s: f32,
-    /// Fraction of the ceiling where the drive rolloff starts
-    pub speed_start_frac: f32,
-}
-
-impl PostcardValue<'_> for DeratingConfigStored {}
-
-impl Default for DeratingConfigStored {
-    /// Mirrors `DeratingConfig::default` (FET 85→100 °C, accel_dec 0.15,
-    /// per-vehicle ramps off).
-    fn default() -> Self {
-        Self {
-            temp_fet_start_c: 85.0,
-            temp_fet_end_c: 100.0,
-            temp_motor_start_c: 0.0,
-            temp_motor_end_c: 0.0,
-            accel_dec: 0.15,
-            vbus_cut_start_v: 0.0,
-            vbus_cut_end_v: 0.0,
-            vbus_regen_start_v: 0.0,
-            vbus_regen_end_v: 0.0,
-            max_speed_erad_s: 0.0,
-            speed_start_frac: 0.8,
-        }
-    }
-}
+impl PostcardValue<'_> for DeratingConfig {}
 
 // ============================================================================
 // Runtime Config Aggregate
@@ -800,7 +734,7 @@ pub struct MotorTemperatureConfig {
 
 impl PostcardValue<'_> for MotorTemperatureConfig {}
 
-impl PostcardValue<'_> for DriveLimitsConfig {}
+impl PostcardValue<'_> for DriveConfig {}
 
 /// Fields are `None` if not yet stored in flash (use board defaults).
 #[derive(Debug, Clone, Default)]
@@ -820,18 +754,30 @@ pub struct RuntimeConfig {
     pub pi_gains: Option<PiGainsConfig>,
     pub hall_tuning: Option<HallTuningConfig>,
     pub failsafe: Option<FailsafeConfigStored>,
-    pub velocity: Option<VelocityConfigStored>,
-    pub derating: Option<DeratingConfigStored>,
+    pub velocity: Option<VelocityLoopConfig>,
+    pub derating: Option<DeratingConfig>,
     /// Missing records retain plain PI control.
     pub voltage_feedforward: Option<VoltageFeedforwardConfig>,
     pub motor_temperature: Option<MotorTemperatureConfig>,
-    pub drive_limits: Option<DriveLimitsConfig>,
-    pub drive_limits_invalid: bool,
+    pub drive: Option<DriveConfig>,
+    pub drive_invalid: bool,
 }
 
 impl RuntimeConfig {
-    pub fn drive_limits_are_valid(&self) -> bool {
-        !self.drive_limits_invalid && self.drive_limits.is_none_or(DriveLimitsConfig::is_sane)
+    pub fn effective_velocity(&self) -> VelocityLoopConfig {
+        self.velocity
+            .filter(VelocityLoopConfig::is_sane)
+            .unwrap_or_default()
+    }
+
+    pub fn effective_derating(&self) -> DeratingConfig {
+        self.derating
+            .filter(DeratingConfig::is_sane)
+            .unwrap_or_default()
+    }
+
+    pub fn drive_is_valid(&self) -> bool {
+        !self.drive_invalid && self.drive.is_none_or(DriveConfig::is_sane)
     }
 
     pub fn board_calibration_is_valid(&self) -> bool {
@@ -912,12 +858,12 @@ impl InstalledDrive {
         true
     }
 
-    fn with_edit(&self, payload: &ConfigPayload) -> Option<Self> {
+    fn with_edit(&self, payload: &ConfigValue) -> Option<Self> {
         let Self::V1(mut next) = self.clone();
         match payload {
-            ConfigPayload::MotorParams(value) => next.motor_override = Some(value.clone()),
-            ConfigPayload::CurrentLimits(value) => next.limits_override = Some(value.clone()),
-            ConfigPayload::HallCalibration(value) => next.hall_override = Some((*value).into()),
+            ConfigValue::MotorParams(value) => next.motor_override = Some(value.clone()),
+            ConfigValue::CurrentLimits(value) => next.limits_override = Some(value.clone()),
+            ConfigValue::HallCalibration(value) => next.hall_override = Some((*value).into()),
             _ => return None,
         }
         Some(Self::V1(next))
@@ -941,31 +887,11 @@ impl InstalledDrive {
 )]
 pub enum FlashOperation {
     /// Save a config group to flash
-    Save(ConfigKey, ConfigPayload),
+    Save(ConfigValue),
     /// Erase all stored configuration
     EraseAll,
     #[cfg(feature = "runtime")]
     SaveInstalledDrive(InstalledDrive),
-}
-
-/// Payload variants for each config group.
-#[derive(Clone, Debug)]
-pub enum ConfigPayload {
-    BoardCalibration(BoardCalibrationConfig),
-    MotorParams(MotorParamsConfig),
-    HallCalibration(HallCalibrationConfig),
-    DcOffsets(DcOffsetsConfig),
-    CurrentLimits(CurrentLimitsConfig),
-    VoltageLimits(VoltageLimitsConfig),
-    PwmConfig(PwmConfigStored),
-    PiGains(PiGainsConfig),
-    HallTuning(HallTuningConfig),
-    Failsafe(FailsafeConfigStored),
-    Velocity(VelocityConfigStored),
-    Derating(DeratingConfigStored),
-    VoltageFeedforward(VoltageFeedforwardConfig),
-    MotorTemperature(MotorTemperatureConfig),
-    DriveLimits(DriveLimitsConfig),
 }
 
 // ============================================================================
@@ -1039,16 +965,10 @@ where
                     false
                 }
             }
-            FlashOperation::Save(key, payload) => {
-                let aggregate_edit = matches!(
-                    &payload,
-                    ConfigPayload::MotorParams(_)
-                        | ConfigPayload::HallCalibration(_)
-                        | ConfigPayload::CurrentLimits(_)
-                );
-                if aggregate_edit && !matches!(&installed, Ok(None)) {
+            FlashOperation::Save(value) => {
+                if value.group().is_setup_component() && !matches!(&installed, Ok(None)) {
                     let success = if let Ok(Some(current)) = &installed
-                        && let Some(next) = current.with_edit(&payload)
+                        && let Some(next) = current.with_edit(&value)
                     {
                         if storage
                             .store_item(buf, &ConfigKey::InstalledDrive, &next)
@@ -1066,14 +986,20 @@ where
                     FLASH_DONE.signal(success);
                     continue;
                 }
-                let result = match payload {
-                    ConfigPayload::BoardCalibration(v) => {
+                let result = match value {
+                    ConfigValue::BoardCalibration(v) => {
                         storage
-                            .store_item(buf, &key, &StoredBoardCalibration::from(v))
+                            .store_item(
+                                buf,
+                                &ConfigKey::BoardCalibration,
+                                &StoredBoardCalibration::from(v),
+                            )
                             .await
                     }
-                    ConfigPayload::MotorParams(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::HallCalibration(v) => {
+                    ConfigValue::MotorParams(v) => {
+                        storage.store_item(buf, &ConfigKey::MotorParams, &v).await
+                    }
+                    ConfigValue::HallCalibration(v) => {
                         storage
                             .store_item(
                                 buf,
@@ -1082,18 +1008,44 @@ where
                             )
                             .await
                     }
-                    ConfigPayload::DcOffsets(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::CurrentLimits(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::VoltageLimits(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::PwmConfig(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::PiGains(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::HallTuning(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::Failsafe(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::Velocity(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::Derating(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::DriveLimits(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::VoltageFeedforward(v) => storage.store_item(buf, &key, &v).await,
-                    ConfigPayload::MotorTemperature(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigValue::DcOffsets(v) => {
+                        storage.store_item(buf, &ConfigKey::DcOffsets, &v).await
+                    }
+                    ConfigValue::CurrentLimits(v) => {
+                        storage.store_item(buf, &ConfigKey::CurrentLimits, &v).await
+                    }
+                    ConfigValue::VoltageLimits(v) => {
+                        storage.store_item(buf, &ConfigKey::VoltageLimits, &v).await
+                    }
+                    ConfigValue::PwmConfig(v) => {
+                        storage.store_item(buf, &ConfigKey::PwmConfig, &v).await
+                    }
+                    ConfigValue::PiGains(v) => {
+                        storage.store_item(buf, &ConfigKey::PiGains, &v).await
+                    }
+                    ConfigValue::HallTuning(v) => {
+                        storage.store_item(buf, &ConfigKey::HallTuning, &v).await
+                    }
+                    ConfigValue::Failsafe(v) => {
+                        storage.store_item(buf, &ConfigKey::Failsafe, &v).await
+                    }
+                    ConfigValue::Velocity(v) => {
+                        storage.store_item(buf, &ConfigKey::Velocity, &v).await
+                    }
+                    ConfigValue::Derating(v) => {
+                        storage.store_item(buf, &ConfigKey::Derating, &v).await
+                    }
+                    ConfigValue::Drive(v) => storage.store_item(buf, &ConfigKey::Drive, &v).await,
+                    ConfigValue::VoltageFeedforward(v) => {
+                        storage
+                            .store_item(buf, &ConfigKey::VoltageFeedforward, &v)
+                            .await
+                    }
+                    ConfigValue::MotorTemperature(v) => {
+                        storage
+                            .store_item(buf, &ConfigKey::MotorTemperature, &v)
+                            .await
+                    }
                 };
                 if result.is_err() {
                     #[cfg(feature = "defmt")]
@@ -1172,12 +1124,12 @@ where
     load!(voltage_feedforward, VoltageFeedforward);
     load!(motor_temperature, MotorTemperature);
     match storage
-        .fetch_item::<DriveLimitsConfig>(buf, &ConfigKey::DriveLimits)
+        .fetch_item::<DriveConfig>(buf, &ConfigKey::Drive)
         .await
     {
-        Ok(Some(value)) if value.is_sane() => cfg.drive_limits = Some(value),
+        Ok(Some(value)) if value.is_sane() => cfg.drive = Some(value),
         Ok(None) => {}
-        _ => cfg.drive_limits_invalid = true,
+        _ => cfg.drive_invalid = true,
     }
 
     match storage
@@ -1271,7 +1223,7 @@ mod tests {
         let mut limits = setup.limits().clone();
         limits.bus_in_max_a = 8.0;
         let edited = installed
-            .with_edit(&ConfigPayload::CurrentLimits(limits.clone()))
+            .with_edit(&ConfigValue::CurrentLimits(limits.clone()))
             .unwrap();
         assert!(load_installed_drive(
             &mut legacy,
@@ -1308,7 +1260,7 @@ mod tests {
 
     #[test]
     fn hall_record_freezes_legacy_bytes_and_appends_versioned_storage_without_moving_wire_ids() {
-        use crate::types::{ConfigGroupId, ConfigValue, ConfigWrite};
+        use crate::types::{ConfigGroupId, ConfigValue};
         let legacy = LegacyHallCalibrationConfig {
             angles: [0.0; 8],
             valid: [false, true, true, true, true, true, true, false],
@@ -1344,7 +1296,7 @@ mod tests {
         );
         let config = measured_hall_config();
         assert_eq!(
-            postcard::to_slice(&ConfigWrite::HallCalibration(config), &mut buf).unwrap()[0],
+            postcard::to_slice(&ConfigValue::HallCalibration(config), &mut buf).unwrap()[0],
             6
         );
         assert_eq!(
@@ -1487,7 +1439,7 @@ mod tests {
 
     #[test]
     fn feedforward_policy_appends_storage_and_wire_ids_and_defaults_disabled() {
-        use crate::types::{ConfigGroupId, ConfigValue, ConfigWrite};
+        use crate::types::{ConfigGroupId, ConfigValue};
         assert_eq!(
             VoltageFeedforwardConfig::default().mode,
             VoltageFeedforwardMode::Disabled
@@ -1527,7 +1479,7 @@ mod tests {
                 value
             );
             assert_eq!(
-                postcard::to_slice(&ConfigWrite::VoltageFeedforward(value), &mut buf).unwrap(),
+                postcard::to_slice(&ConfigValue::VoltageFeedforward(value), &mut buf).unwrap(),
                 &[12, tag]
             );
             assert_eq!(
@@ -1575,6 +1527,63 @@ mod tests {
             vbus_gain: f32::NAN,
         });
         assert!(bad.validated().is_none());
+    }
+
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn drive_and_derating_use_only_their_current_flash_keys() {
+        use sequential_storage::cache::Cache;
+        use sequential_storage::map::{MapConfig, MapStorage};
+        use sequential_storage::mock_flash::{MockFlashBase, WriteCountCheck};
+        fn ready<T>(future: impl Future<Output = T>) -> T {
+            let mut future = core::pin::pin!(future);
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            match future.as_mut().poll(&mut cx) {
+                core::task::Poll::Ready(v) => v,
+                core::task::Poll::Pending => panic!("mock flash unexpectedly yielded"),
+            }
+        }
+        type Flash = MockFlashBase<4, 4, 256>;
+        let mut storage = MapStorage::new(
+            Flash::new(WriteCountCheck::TwiceWithZero, None, true),
+            MapConfig::new(Flash::FULL_FLASH_RANGE),
+            Cache::new_uncached(),
+        );
+        let mut buf = [0; 128];
+        let mut old_buf = [0; 64];
+        let old_derating = [
+            77.0f32, 95.0, 0.0, 0.0, 0.15, 0.0, 0.0, 0.0, 0.0, 400.0, 0.9,
+        ];
+        let bytes: &[u8] = postcard::to_slice(&old_derating, &mut old_buf).unwrap();
+        ready(storage.store_item(&mut buf, &ConfigKey::Reserved11, &bytes)).unwrap();
+        let old_drive = (true, Some(200.0f32), None::<f32>, 0.85f32);
+        let bytes: &[u8] = postcard::to_slice(&old_drive, &mut old_buf).unwrap();
+        ready(storage.store_item(&mut buf, &ConfigKey::Reserved17, &bytes)).unwrap();
+        let voltage = VoltageLimitsConfig::default();
+        ready(storage.store_item(&mut buf, &ConfigKey::VoltageLimits, &voltage)).unwrap();
+        let loaded = ready(load_all(&mut storage, &mut buf));
+        assert_eq!(loaded.voltage_limits, Some(voltage));
+        assert_eq!(loaded.drive, None);
+        assert!(loaded.drive_is_valid());
+        assert_eq!(loaded.derating, None);
+        assert_eq!(loaded.effective_derating(), DeratingConfig::default());
+
+        let drive = DriveConfig {
+            invert_direction: true,
+            max_forward_erad_s: 300.0,
+            max_reverse_erad_s: 150.0,
+            ..DriveConfig::DEFAULT
+        };
+        let derating = DeratingConfig {
+            temp_fet_start_c: 80.0,
+            ..DeratingConfig::default()
+        };
+        ready(storage.store_item(&mut buf, &ConfigKey::Drive, &drive)).unwrap();
+        ready(storage.store_item(&mut buf, &ConfigKey::Derating, &derating)).unwrap();
+        let loaded = ready(load_all(&mut storage, &mut buf));
+        assert_eq!(loaded.drive, Some(drive));
+        assert!(loaded.drive_is_valid());
+        assert_eq!(loaded.effective_derating(), derating);
     }
 
     #[cfg(feature = "runtime")]

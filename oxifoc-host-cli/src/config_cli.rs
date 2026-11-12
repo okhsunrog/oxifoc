@@ -97,7 +97,7 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
     }
     println!("        board_calibration_invalid: false,");
     println!("        hall_calibration_invalid: false,");
-    println!("        drive_limits_invalid: false,");
+    println!("        drive_invalid: false,");
     println!("    }}");
     println!("}}");
     Ok(())
@@ -119,11 +119,11 @@ fn rust_struct_name(group: oxifoc_core::types::ConfigGroupId) -> &'static str {
         G::PiGains => "PiGainsConfig",
         G::HallTuning => "HallTuningConfig",
         G::Failsafe => "FailsafeConfigStored",
-        G::Velocity => "VelocityConfigStored",
-        G::Derating => "DeratingConfigStored",
+        G::Velocity => "VelocityLoopConfig",
+        G::Derating => "DeratingConfig",
         G::VoltageFeedforward => "VoltageFeedforwardConfig",
         G::MotorTemperature => "MotorTemperatureConfig",
-        G::DriveLimits => "DriveLimitsConfig",
+        G::Drive => "DriveConfig",
     }
 }
 
@@ -133,12 +133,6 @@ fn rust_field_literal(
     value: &Value,
 ) -> Result<String> {
     use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
-    if group == ConfigGroupId::DriveLimits
-        && matches!(field, "max_forward_erad_s" | "max_reverse_erad_s")
-    {
-        let limit = serde_json::from_value::<Option<f32>>(value.clone())?;
-        return Ok(limit.map_or_else(|| "None".into(), |v| format!("Some({v:?})")));
-    }
     if group == ConfigGroupId::MotorTemperature && field == "sensor" {
         use oxifoc_core::storage::MotorTemperatureSensor;
         let sensor = serde_json::from_value::<MotorTemperatureSensor>(value.clone())?;

@@ -213,10 +213,10 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
             let group_idx = app.get_config_group();
 
             use oxifoc_core::storage::*;
-            use oxifoc_core::types::{ConfigGroupId, ConfigWrite};
+            use oxifoc_core::types::{ConfigGroupId, ConfigValue};
 
             enum ConfigAction {
-                Replace(ConfigWrite),
+                Replace(ConfigValue),
                 Patch {
                     group: ConfigGroupId,
                     fields: Vec<String>,
@@ -258,7 +258,7 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
                         parse_field("bus regen max", &app.get_cfg_bus_regen_max(), err);
                     let dissipation: f32 =
                         parse_field("dissipation max", &app.get_cfg_max_dissipation(), err);
-                    ConfigAction::Replace(ConfigWrite::CurrentLimits(CurrentLimitsConfig {
+                    ConfigAction::Replace(ConfigValue::CurrentLimits(CurrentLimitsConfig {
                         max_iq_a: iq,
                         max_brake_a: brake,
                         max_phase_current_a: ph,
@@ -277,7 +277,7 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
                     let kp: f32 = parse_field("kp", &app.get_cfg_kp(), err);
                     let ki: f32 = parse_field("ki", &app.get_cfg_ki(), err);
                     let bw: f32 = parse_field("bandwidth", &app.get_cfg_bandwidth(), err);
-                    ConfigAction::Replace(ConfigWrite::PiGains(PiGainsConfig {
+                    ConfigAction::Replace(ConfigValue::PiGains(PiGainsConfig {
                         kp,
                         ki,
                         bandwidth_rad_s: bw,
@@ -306,7 +306,7 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
                         parse_field("standstill", &app.get_cfg_fs_standstill(), err);
                     let decel: f32 = parse_field("decel", &app.get_cfg_fs_decel(), err);
                     let terminal: u8 = parse_field("terminal", &app.get_cfg_fs_terminal(), err);
-                    ConfigAction::Replace(ConfigWrite::Failsafe(FailsafeConfigStored {
+                    ConfigAction::Replace(ConfigValue::Failsafe(FailsafeConfigStored {
                         staleness_timeout_ms: staleness,
                         policy,
                         brake_current_a: brake,

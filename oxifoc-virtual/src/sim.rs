@@ -17,9 +17,7 @@ use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::{
     AdcSnapshot, CurrentSensor, HallSensorTrait, HallSnapshot, TempSensorId,
 };
-use oxifoc_core::foc::velocity::VelocityLoopConfig;
 use oxifoc_core::motor::FocDriver;
-use oxifoc_core::motor::derating::DeratingConfig;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
 use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
@@ -156,9 +154,9 @@ pub async fn foc_loop(
     driver
         .configure_voltage_protection(&board, config.voltage_limits.as_ref())
         .expect("stored voltage limits must fit the board");
-    driver.set_velocity_config(VelocityLoopConfig::from_stored(config.velocity.as_ref()));
-    driver.set_derating(DeratingConfig::from_stored(config.derating.as_ref()));
-    driver.load_drive_limits(&config);
+    driver.set_velocity_config(config.effective_velocity());
+    driver.set_derating(config.effective_derating());
+    driver.load_drive_config(&config);
     let prepared_board = PreparedBoardConfig::new(board);
 
     let mut seq = 0u32;

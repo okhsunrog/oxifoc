@@ -64,13 +64,19 @@ pub fn set_motor_temperature_input(config: crate::storage::MotorTemperatureConfi
 /// that way.
 #[derive(Clone, Copy, Debug)]
 pub enum DriverCommand {
+    #[cfg(any(
+        test,
+        all(feature = "detection", feature = "delivery", feature = "storage")
+    ))]
     BeginCommissioning {
         token: DetectionCommandToken,
         prepared: crate::motor::foc_driver::PreparedCommissioning,
     },
-    EndCommissioning {
-        token: DetectionCommandToken,
-    },
+    #[cfg(any(
+        test,
+        all(feature = "detection", feature = "delivery", feature = "storage")
+    ))]
+    EndCommissioning { token: DetectionCommandToken },
     /// Device-side excitation belongs to one detection generation.
     DetectionMode {
         token: DetectionCommandToken,
@@ -83,10 +89,7 @@ pub enum DriverCommand {
     /// Apply current limits (already clamped to the board ceiling)
     SetCurrentLimits(CurrentLimits),
     /// Apply current-loop PI gains (post-detection tune, config write)
-    SetPiGains {
-        kp: f32,
-        ki: f32,
-    },
+    SetPiGains { kp: f32, ki: f32 },
     /// Apply dq-decoupling/back-EMF feedforward params (post-detection)
     SetDecoupling(Decoupling),
     /// Small token referencing the single-flight prepared-model mailbox.
@@ -114,6 +117,10 @@ impl DriverCommand {
     /// the control loop.
     pub fn is_sane(&self) -> bool {
         match *self {
+            #[cfg(any(
+                test,
+                all(feature = "detection", feature = "delivery", feature = "storage")
+            ))]
             Self::BeginCommissioning { .. } | Self::EndCommissioning { .. } => true,
             Self::DetectionMode { mode, .. } => mode.is_finite(),
             Self::SetMode(mode) => mode.is_finite(),
@@ -144,18 +151,21 @@ impl DriverCommand {
 /// Command channel - servers send DriverCommands here, ISR receives them
 pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Channel::new();
 
+#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CommissioningTransition {
     Begin,
     End,
 }
 
+#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 struct CommissioningAck {
     generation: u32,
     transition: CommissioningTransition,
     accepted: bool,
 }
 
+#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 static COMMISSIONING_DONE: Signal<CriticalSectionRawMutex, CommissioningAck> = Signal::new();
 static DETECTION_SOURCE_LIMITED: AtomicBool = AtomicBool::new(false);
 static DETECTION_SOURCE_CONSTRAINED: AtomicBool = AtomicBool::new(false);
@@ -328,7 +338,7 @@ static DETECTION_GENERATION: core::sync::atomic::AtomicU32 = core::sync::atomic:
 pub struct DetectionCommandToken(u32);
 
 impl DetectionCommandToken {
-    #[cfg(any(feature = "embassy", test))]
+    #[cfg(any(test, all(feature = "detection", feature = "embassy")))]
     pub(crate) fn capture() -> Option<Self> {
         critical_section::with(|_| {
             (DETECTION_ACTIVE.load(Ordering::Acquire)
@@ -346,6 +356,7 @@ impl DetectionCommandToken {
     }
 }
 
+#[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 impl DetectionActiveGuard {
     /// Revoke only this generation; ISR cleanup rejects its queued work.
     pub(crate) fn cancel(&self) {
@@ -404,6 +415,9 @@ impl DetectionActiveGuard {
             Either::Second(()) => false,
         }
     }
+}
+
+impl DetectionActiveGuard {
     pub fn arm() -> Self {
         Self::try_arm().expect("one detection operation owns the device")
     }
@@ -803,6 +817,10 @@ where
             critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
         }
         let mode = match cmd {
+            #[cfg(any(
+                test,
+                all(feature = "detection", feature = "delivery", feature = "storage")
+            ))]
             DriverCommand::BeginCommissioning { token, prepared } => {
                 let accepted = critical_section::with(|cs| {
                     let state = state_mutex.borrow(cs).borrow();
@@ -815,18 +833,26 @@ where
                         && !model_apply_pending()
                         && foc.begin_commissioning(token.0, prepared).is_ok()
                 });
+                #[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
                 COMMISSIONING_DONE.signal(CommissioningAck {
                     generation: token.0,
                     transition: CommissioningTransition::Begin,
                     accepted,
                 });
+                #[cfg(not(all(feature = "detection", feature = "delivery", feature = "storage")))]
+                let _ = accepted;
                 continue;
             }
+            #[cfg(any(
+                test,
+                all(feature = "detection", feature = "delivery", feature = "storage")
+            ))]
             DriverCommand::EndCommissioning { token } => {
                 if foc.commissioning_generation() == Some(token.0) {
                     foc.end_commissioning();
                     critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
                 }
+                #[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
                 COMMISSIONING_DONE.signal(CommissioningAck {
                     generation: token.0,
                     transition: CommissioningTransition::End,
@@ -1056,7 +1082,7 @@ where
             }
 
             #[cfg(feature = "storage")]
-            if !foc.drive_limits_valid()
+            if !foc.drive_config_valid()
                 && matches!(
                     mode,
                     ControlMode::CurrentControl { .. }

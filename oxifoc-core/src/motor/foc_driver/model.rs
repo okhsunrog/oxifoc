@@ -1,6 +1,6 @@
 //! One prepared model for boot and live configuration.
 
-use super::{CurrentLimits, FocDriver};
+use super::{CurrentLimits, FocDriver, MotorModelError};
 use crate::foc::controller::{Decoupling, FocController};
 use crate::foc::phase::{PhaseProvider, PhaseSource, PreparedPhaseModel};
 use crate::foc::pwm::{PhasePwm, SvpwmModulator};
@@ -55,15 +55,6 @@ impl PreparedMotorModel {
             pole_pairs: motor.map_or(0, |mp| mp.pole_pairs),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum MotorModelError {
-    Invalid,
-    Busy,
-    Unsupported,
-    Consumed,
 }
 
 impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C, Ph, S> {

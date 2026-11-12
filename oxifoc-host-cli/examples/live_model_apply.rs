@@ -10,7 +10,7 @@ use clap::Parser;
 use oxifoc_core::foc::phase::PhaseSource;
 use oxifoc_core::storage::MotorParamsConfig;
 use oxifoc_core::types::{
-    ConfigGroupId, ConfigSnapshot, ConfigValue, ConfigWrite, ControlMode, MotorState, SlowTelemetry,
+    ConfigGroupId, ConfigSnapshot, ConfigValue, ControlMode, MotorState, SlowTelemetry,
 };
 use oxifoc_host_cli::{config_cli, record::Capture};
 use oxifoc_host_lib::ops::{config, telemetry};
@@ -83,7 +83,7 @@ fn apply_model(runtime: &HostRuntime, value: &MotorParamsConfig) -> Result<Confi
     let revision = config::apply_write(
         &runtime.cmd_tx,
         before.revision,
-        ConfigWrite::MotorParams(value.clone()),
+        ConfigValue::MotorParams(value.clone()),
     )?;
     let after = config::read_group(&runtime.cmd_tx, ConfigGroupId::MotorParams)?;
     ensure!(
