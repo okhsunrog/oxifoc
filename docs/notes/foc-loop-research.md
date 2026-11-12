@@ -888,3 +888,14 @@ Iq averaged 0.33–0.35 A on two low-load plateaus. The voltage command
 was about 13.09 V at a 24 V bus, consistent with modulation saturation.
 The plot and summary are `load-current-1a.png` and `current-statistics.json`
 in the same directory.
+
+Two unloaded 20 s current-control runs requested 1 A with a volatile speed
+cut at 650 electrical rad/s, 15 kHz PWM and capture, and Hall fallback.
+With start fractions 0.8 and 0.25, the 100 ms Hall speed peaked at 737 and
+733 rad/s, then settled at medians of 649.8 and 644.3 rad/s. The 5th–95th
+percentile of plateau Iq averaged over 5 ms narrowed from 0.01–0.88 A to
+0.20–0.33 A. Mean Iq stayed around 0.266 A. Widening the taper reduced
+steady-state current pulsing. The initial overshoot remained. Both captures
+were lossless and the original derating config was restored after each run.
+See `speed-cut-comparison.png` and `comparison.json` under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-speed-cut/`.
