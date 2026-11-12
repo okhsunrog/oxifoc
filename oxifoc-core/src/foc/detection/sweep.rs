@@ -30,6 +30,7 @@
 
 use super::excitation::{BurstCapture, BurstSample, VoltageBurst};
 use core::future::Future;
+use embassy_futures::select::{Either, select};
 
 use super::flux_linkage::{
     CoastSample, FluxLinkageMeasurement, HallCoastMeasurement, MagnitudeFluxMeasurement,
@@ -305,7 +306,6 @@ async fn sample_voltage_current<H: DetectionHardware, T: Timer>(
     resistance_source: Option<ResistanceVoltageSource>,
 ) -> Result<(f32, f32), DetectionError> {
     use core::cell::Cell;
-    use embassy_futures::select::{Either, select};
     // Cells, not locals in the async block: on deadline the accumulated sums
     // must survive the sample future being dropped by `select`.
     let got = Cell::new(0u32);
@@ -382,7 +382,6 @@ async fn settled_hold_voltage<H: DetectionHardware, T: Timer>(
     hold_current_a: f32,
 ) -> Result<HoldingVoltage, DetectionError> {
     use core::cell::Cell;
-    use embassy_futures::select::{Either, select};
     let sums = Cell::new([0.0f32; 4]);
     let count = Cell::new(0u32);
     let collect = async {
@@ -421,27 +420,42 @@ async fn settled_hold_voltage<H: DetectionHardware, T: Timer>(
     })
 }
 
-/// Re-enter the retained current PI loop before removing a stationary hold.
-/// A compensated holding command can be negative: ramping that voltage to zero
-/// increases winding current instead of removing it. None preserves PI state.
+/// Release a stationary hold through the retained current PI loop. The
+/// cubic envelope flattens at both ends so there is no large final step.
+/// Once the measured current is small, float the bridge instead of
+/// driving the last fraction of an ampere all the way to zero.
 async fn ramp_down_stationary_current<H: DetectionHardware, T: Timer>(
     hw: &mut H,
     hold_current_a: f32,
     angle_rad: f32,
+    duration_ms: u32,
 ) -> Result<(), DetectionError> {
-    for i in (0..=50).rev() {
+    const RELEASE_CURRENT_A: f32 = 0.5;
+    let duration_ms = duration_ms.max(1);
+    for remaining_ms in (0..=duration_ms).rev() {
         hw.check_health()?;
+        let remaining = remaining_ms as f32 / duration_ms as f32;
+        let current = hold_current_a * remaining * remaining * (3.0 - 2.0 * remaining);
         hw.send_command(ControlMode::OpenLoop {
             angle_rad,
-            current: hold_current_a * (i as f32 / 50.0),
+            current,
             velocity_rad_s: 0.0,
             pi_gains: None,
         })
         .await;
-        T::after_millis(10).await;
+        T::after_millis(1).await;
+        if current.abs() <= RELEASE_CURRENT_A
+            && let Either::First(sample) = select(hw.wait_telemetry(), T::after_millis(2)).await
+            && sample.id * sample.id + sample.iq * sample.iq
+                <= RELEASE_CURRENT_A * RELEASE_CURRENT_A
+        {
+            hw.check_health()?;
+            hw.send_command(ControlMode::Stopped).await;
+            return Ok(());
+        }
     }
     hw.send_command(ControlMode::Stopped).await;
-    Ok(())
+    Err(DetectionError::MotorNotResponding)
 }
 
 /// Measure motor phase resistance.
@@ -1133,7 +1147,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // Ramp down current through the retained PI loop.
     info!("HFI measurement complete, ramping down...");
 
-    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0).await?;
+    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0, 500).await?;
     T::after_millis(100).await;
 
     // Compute result
@@ -1461,7 +1475,7 @@ async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCo
         // noisy/open winding) from here would leave that level applied DC
         // for up to the bench deadman. `measure_resistance` follows the same
         // stop-before-bailout pattern.
-        ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, angle).await?;
+        ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, angle, 500).await?;
         T::after_millis(200).await;
 
         results[axis] = inductance?;
@@ -1729,7 +1743,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
     }
 
     // Ramp the hold back down and stop.
-    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0).await?;
+    ramp_down_stationary_current::<H, T>(hw, params.hold_current_a, 0.0, 500).await?;
     T::after_millis(100).await;
 
     if l_return <= 0.0 {
@@ -2483,22 +2497,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
         }
     }
 
-    // Step 3: Ramp down and stop
-    for i in (0..ramp_steps).rev() {
-        hw.check_health()?;
-        let current = params.current_amps * (i as f32 / ramp_steps as f32);
-        hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current,
-            velocity_rad_s: 0.0,
-            pi_gains: None,
-        })
-        .await;
-        T::after_millis(u64::from(ramp_delay_ms)).await;
-    }
-
-    // Stop motor
-    hw.send_command(ControlMode::Stopped).await;
+    ramp_down_stationary_current::<H, T>(hw, params.current_amps, 0.0, params.ramp_time_ms).await?;
     T::after_millis(100).await;
 
     // Step 4: Compute result

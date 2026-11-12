@@ -9,6 +9,7 @@ enum Event {
     Millis(u64),
     Micros(u64),
     HallRead(f32),
+    CurrentRead,
 }
 
 std::thread_local! {
@@ -32,18 +33,29 @@ impl Timer for RecordingTimer {
     }
 }
 
-struct Hardware;
+#[derive(Default)]
+struct Hardware {
+    current: Cell<f32>,
+}
 
 impl DetectionHardware for Hardware {
     async fn send_command(&self, mode: ControlMode) {
-        if let ControlMode::OpenLoop { angle_rad, .. } = mode {
+        if let ControlMode::OpenLoop {
+            angle_rad, current, ..
+        } = mode
+        {
             ANGLE.with(|angle| angle.set(angle_rad));
+            self.current.set(current);
         }
         record(Event::Command(mode));
     }
 
     async fn wait_telemetry(&mut self) -> FocOutput {
-        panic!("Hall calibration must use its Hall reader, not FOC telemetry");
+        record(Event::CurrentRead);
+        FocOutput {
+            id: self.current.get(),
+            ..FocOutput::empty()
+        }
     }
 
     fn read_phase_currents(&self) -> (f32, f32, f32) {
@@ -75,7 +87,7 @@ fn poll_calibration(
     reader: &impl HallReader,
     params: HallCalibrationParams,
 ) -> Poll<Result<HallCalibrationResult, DetectionError>> {
-    let mut hw = Hardware;
+    let mut hw = Hardware::default();
     let mut future = core::pin::pin!(calibrate_hall::<_, RecordingTimer, _>(
         &mut hw, reader, params
     ));
@@ -169,16 +181,24 @@ fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
         }
         assert_eq!(maximum_degrees, expected_arc_degrees);
 
-        for step in (0..100).rev() {
-            assert_eq!(
-                events.next(),
-                Some(open_loop(
-                    0.0,
-                    params.current_amps * (step as f32 / 100.0),
-                    None
-                ))
-            );
-            assert_eq!(events.next(), Some(Event::Millis(10)));
+        let mut previous = params.current_amps;
+        loop {
+            let Some(Event::Command(ControlMode::OpenLoop {
+                angle_rad: 0.0,
+                current,
+                velocity_rad_s: 0.0,
+                pi_gains: None,
+            })) = events.next()
+            else {
+                panic!("expected stationary current release");
+            };
+            assert!((0.0..=0.004).contains(&(previous - current)));
+            assert_eq!(events.next(), Some(Event::Millis(1)));
+            if current <= 0.5 {
+                assert_eq!(events.next(), Some(Event::CurrentRead));
+                break;
+            }
+            previous = current;
         }
         assert_eq!(events.next(), Some(Event::Command(ControlMode::Stopped)));
         assert_eq!(events.next(), Some(Event::Millis(100)));

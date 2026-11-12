@@ -378,3 +378,18 @@ R/L and Hall were complete at native 5 and 15 kHz. The run lost 29,871 of
 The comparative plots and raw data are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/vesc-h5055-source-limit/run-ErHWfO/`.
 The OxiFOC image and saved configuration were verified after restoration.
+
+The shared L/Hall release now lowers the stationary current with a cubic
+envelope at 1 ms command intervals, retains the PI, and waits for a fresh
+sample below 0.5 A dq before requesting Stop. The source guard and the 0 A
+regen setting were used unchanged. Three full Medium Outrunner runs at
+5 A / 0 A without Advanced completed with zero faults and 1,951,933
+Packed28 samples at 20,004.272 Hz without loss. Last active dq magnitudes
+across the L and Hall exits were 0.23–0.59 A. Results were not applied.
+
+OxiFOC measured R 63.85–65.63 mΩ, Ld 30.75–32.59 µH, Lq 49.79–51.45 µH
+and λ 3.997–4.012 mWb. VESC measured 62.68 mΩ, 35.13 µH, 59.62 µH and
+4.052 mWb. Positive Hall order was 4→5→1→3→2→6 on both firmwares, with
+centers within 2.01 electrical degrees. OxiFOC also measured entry
+boundaries. Captures, release plots and per-sector results are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-stationary-release/`.

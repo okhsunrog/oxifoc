@@ -185,6 +185,37 @@ fn failed_inductance_pulse_removes_negative_voltage_hold_without_current_runaway
     );
 }
 
+#[test]
+fn stationary_release_stops_and_fails_if_current_samples_stop_arriving() {
+    struct NoFreshCurrent(Cell<ControlMode>);
+
+    impl DetectionHardware for NoFreshCurrent {
+        async fn send_command(&self, mode: ControlMode) {
+            self.0.set(mode);
+        }
+
+        async fn wait_telemetry(&mut self) -> FocOutput {
+            core::future::pending().await
+        }
+
+        fn read_phase_currents(&self) -> (f32, f32, f32) {
+            unreachable!("release requires a fresh current sample")
+        }
+    }
+
+    let mut hw = NoFreshCurrent(Cell::new(ControlMode::Stopped));
+    let result = {
+        let mut release = core::pin::pin!(ramp_down_stationary_current::<_, ImmediateTimer>(
+            &mut hw, 1.0, 0.0, 20
+        ));
+        release
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+    };
+    assert_eq!(result, Poll::Ready(Err(DetectionError::MotorNotResponding)));
+    assert_eq!(hw.0.get(), ControlMode::Stopped);
+}
+
 #[cfg(feature = "hfi-detect")]
 #[test]
 fn hfi_fault_timeout_or_missing_cycles_cannot_fall_back_or_report_success() {
