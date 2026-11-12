@@ -103,6 +103,7 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
         failsafe: None,
         velocity: None,
         derating: None,
+        motor_temperature: None,
     },
 ));
 
@@ -256,6 +257,9 @@ async fn main(spawner: Spawner) {
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
     spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
     let runtime_config = storage::CONFIG_LOADED.wait().await;
+    oxifoc_core::state::set_motor_temperature_input(
+        runtime_config.motor_temperature.unwrap_or_default(),
+    );
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
     critical_section::with(|cs| {
         let mut state = STATE.borrow(cs).borrow_mut();

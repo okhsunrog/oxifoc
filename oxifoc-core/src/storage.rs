@@ -63,6 +63,7 @@ pub enum ConfigKey {
     /// Complete versioned Hall calibration, including optional edge geometry.
     HallCalibrationRecord = 14,
     InstalledDrive = 15,
+    MotorTemperature = 16,
 }
 
 impl Key for ConfigKey {
@@ -94,6 +95,7 @@ impl Key for ConfigKey {
             13 => Self::VoltageFeedforward,
             14 => Self::HallCalibrationRecord,
             15 => Self::InstalledDrive,
+            16 => Self::MotorTemperature,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -759,6 +761,27 @@ impl PostcardValue<'_> for VoltageFeedforwardConfig {}
 
 /// All stored configuration loaded at boot.
 ///
+/// Motor temperature input selection. The board owns the ADC and sensor curve.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, postcard_schema::Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum MotorTemperatureSensor {
+    #[default]
+    BoardDefault,
+    Disabled,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, postcard_schema::Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MotorTemperatureConfig {
+    pub sensor: MotorTemperatureSensor,
+}
+
+impl PostcardValue<'_> for MotorTemperatureConfig {}
+
 /// Fields are `None` if not yet stored in flash (use board defaults).
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeConfig {
@@ -781,6 +804,7 @@ pub struct RuntimeConfig {
     pub derating: Option<DeratingConfigStored>,
     /// Missing records retain plain PI control.
     pub voltage_feedforward: Option<VoltageFeedforwardConfig>,
+    pub motor_temperature: Option<MotorTemperatureConfig>,
 }
 
 impl RuntimeConfig {
@@ -914,6 +938,7 @@ pub enum ConfigPayload {
     Velocity(VelocityConfigStored),
     Derating(DeratingConfigStored),
     VoltageFeedforward(VoltageFeedforwardConfig),
+    MotorTemperature(MotorTemperatureConfig),
 }
 
 // ============================================================================
@@ -1040,6 +1065,7 @@ where
                     ConfigPayload::Velocity(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::Derating(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::VoltageFeedforward(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::MotorTemperature(v) => storage.store_item(buf, &key, &v).await,
                 };
                 if result.is_err() {
                     #[cfg(feature = "defmt")]
@@ -1116,6 +1142,7 @@ where
     load!(velocity, Velocity);
     load!(derating, Derating);
     load!(voltage_feedforward, VoltageFeedforward);
+    load!(motor_temperature, MotorTemperature);
 
     match storage
         .fetch_item::<HallCalibrationRecord>(buf, &ConfigKey::HallCalibrationRecord)

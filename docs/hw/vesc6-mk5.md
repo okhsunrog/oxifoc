@@ -147,6 +147,13 @@ energizes the motor. The 150-ms stream-enable interval is reported separately
 from steady-state gaps, using the device's acknowledged decimation factor.
 
 `just build-mk5-spi` / `just flash-mk5-spi` exclude STM32 USB.
+The motor temperature input defaults to the board's 10 kΩ NTC on TMP.
+For a motor without an NTC, run
+`just cli-bridge config set motor-temperature sensor=Disabled` while stopped.
+The setting is saved to flash. `sensor=BoardDefault` restores the NTC input.
+With the input disabled, motor temperature is absent in status. MOSFET
+temperature limits and the other drive protections still apply.
+
 Use `just build-mk5-link-bench usb` for a standalone USB diagnostic image;
 SPI DirectEdge and diagnostic USB/RTT routing cannot be combined. High-level embassy-usb, its Ergot
 adapter, USB task/executor/queues and RX storage are excluded in the SPI build.

@@ -128,10 +128,10 @@ pub fn run_monitor(runtime: &HostRuntime, duration: Duration, json: bool) -> Res
                 println!("{}", serde_json::to_string(&slow)?);
             } else {
                 println!(
-                    "  [sys] vbus:{:.1}V fet:{:.1}°C motor:{:.1}°C faults:{}",
+                    "  [sys] vbus:{:.1}V fet:{:.1}°C motor:{} faults:{}",
                     slow.vbus_mv as f32 / 1000.0,
                     f32::from(slow.fet_temp_c_x10) / 10.0,
-                    f32::from(slow.motor_temp_c_x10) / 10.0,
+                    crate::motor_temperature_text(slow.motor_temp_c_x10),
                     slow.fault_count,
                 );
             }

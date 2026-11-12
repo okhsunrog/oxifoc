@@ -35,6 +35,7 @@ pub const GROUPS: [(&str, ConfigGroupId); ConfigGroupId::COUNT] = [
     ("derating", ConfigGroupId::Derating),
     ("board-calibration", ConfigGroupId::BoardCalibration),
     ("voltage-feedforward", ConfigGroupId::VoltageFeedforward),
+    ("motor-temperature", ConfigGroupId::MotorTemperature),
 ];
 
 /// Parse a kebab-case group name into its id.
@@ -121,6 +122,7 @@ pub fn group_value(value: &ConfigValue) -> Option<Value> {
         ConfigValue::Velocity(v) => serde_json::to_value(v).ok(),
         ConfigValue::Derating(v) => serde_json::to_value(v).ok(),
         ConfigValue::VoltageFeedforward(v) => serde_json::to_value(v).ok(),
+        ConfigValue::MotorTemperature(v) => serde_json::to_value(v).ok(),
     }
 }
 
@@ -143,6 +145,7 @@ pub fn group_default_value(group: ConfigGroupId) -> Value {
         G::Velocity => serde_json::to_value(st::VelocityConfigStored::default()),
         G::Derating => serde_json::to_value(st::DeratingConfigStored::default()),
         G::VoltageFeedforward => serde_json::to_value(st::VoltageFeedforwardConfig::default()),
+        G::MotorTemperature => serde_json::to_value(st::MotorTemperatureConfig::default()),
     };
     v.expect("stored-config structs always serialize")
 }
@@ -164,6 +167,7 @@ pub fn write_from_value(group: ConfigGroupId, v: Value) -> Result<ConfigWrite> {
         G::Velocity => ConfigWrite::Velocity(serde_json::from_value(v)?),
         G::Derating => ConfigWrite::Derating(serde_json::from_value(v)?),
         G::VoltageFeedforward => ConfigWrite::VoltageFeedforward(serde_json::from_value(v)?),
+        G::MotorTemperature => ConfigWrite::MotorTemperature(serde_json::from_value(v)?),
     })
 }
 

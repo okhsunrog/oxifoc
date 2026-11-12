@@ -121,6 +121,7 @@ fn rust_struct_name(group: oxifoc_core::types::ConfigGroupId) -> &'static str {
         G::Velocity => "VelocityConfigStored",
         G::Derating => "DeratingConfigStored",
         G::VoltageFeedforward => "VoltageFeedforwardConfig",
+        G::MotorTemperature => "MotorTemperatureConfig",
     }
 }
 
@@ -130,6 +131,11 @@ fn rust_field_literal(
     value: &Value,
 ) -> Result<String> {
     use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
+    if group == ConfigGroupId::MotorTemperature && field == "sensor" {
+        use oxifoc_core::storage::MotorTemperatureSensor;
+        let sensor = serde_json::from_value::<MotorTemperatureSensor>(value.clone())?;
+        return Ok(format!("MotorTemperatureSensor::{sensor:?}"));
+    }
     if group == ConfigGroupId::VoltageFeedforward && field == "mode" {
         let mode = serde_json::from_value::<VoltageFeedforwardMode>(value.clone())?;
         return Ok(match mode {

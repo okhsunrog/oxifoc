@@ -54,6 +54,7 @@ static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig
         pwm_config: None,
         pi_gains: None,
         voltage_feedforward: None,
+        motor_temperature: None,
         hall_tuning: None,
         failsafe: None,
         velocity: None,

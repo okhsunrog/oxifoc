@@ -575,7 +575,7 @@ fn ADC() {
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
-    let motor_temp_c_x10 = crate::config::MOTOR_NTC_PRESENT.then(|| {
+    let motor_temp_c_x10 = oxifoc_core::state::motor_temperature_input_enabled().then(|| {
         if convert_temp {
             let t = temperature::motor_c_x10(motor_temp_raw);
             MOTOR_TEMP_C_X10.store(t, Ordering::Relaxed);

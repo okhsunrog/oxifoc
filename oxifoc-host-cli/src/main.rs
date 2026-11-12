@@ -604,6 +604,14 @@ impl From<SourceArg> for oxifoc_host_lib::ops::phase::PhaseSourceKind {
     }
 }
 
+fn motor_temperature_text(value: Option<i16>) -> String {
+    match value {
+        Some(i16::MAX) => "invalid".into(),
+        Some(temp) => format!("{:.1}°C", f32::from(temp) / 10.0),
+        None => "unavailable".into(),
+    }
+}
+
 fn main() -> Result<()> {
     init_tracing();
 
@@ -699,13 +707,13 @@ fn main() -> Result<()> {
                 json,
                 serde_json::to_value(slow)?,
                 format!(
-                    "state={:?} mode={:?} source={:?} vbus={:.2}V fet={:.1}°C motor={:.1}°C faults={}",
+                    "state={:?} mode={:?} source={:?} vbus={:.2}V fet={:.1}°C motor={} faults={}",
                     slow.motor_state,
                     slow.control_mode,
                     slow.phase_source,
                     slow.vbus_mv as f32 / 1000.0,
                     f32::from(slow.fet_temp_c_x10) / 10.0,
-                    f32::from(slow.motor_temp_c_x10) / 10.0,
+                    motor_temperature_text(slow.motor_temp_c_x10),
                     slow.fault_count,
                 ),
             );

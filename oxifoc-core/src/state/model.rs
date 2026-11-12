@@ -498,6 +498,7 @@ pub(super) fn apply<P, C, Ph, S>(
                     let mut state = state.borrow(cs).borrow_mut();
                     state.board_calibration = crate::storage::BoardCalibrationConfig::IDENTITY;
                     state.board_calibration_valid = true;
+                    super::set_motor_temperature_input(Default::default());
                     state.hall_calibration_valid = true;
                     if let Some(pole_pairs) = pending.prepared.pole_pairs() {
                         state.motor_pole_pairs = pole_pairs;

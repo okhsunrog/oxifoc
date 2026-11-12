@@ -38,6 +38,23 @@ use crate::types::{
 // Global Communication Channels
 // ============================================================================
 
+#[cfg(feature = "storage")]
+static MOTOR_TEMPERATURE_INPUT_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Board samplers consult this before publishing a motor temperature sample.
+#[cfg(feature = "storage")]
+pub fn motor_temperature_input_enabled() -> bool {
+    MOTOR_TEMPERATURE_INPUT_ENABLED.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "storage")]
+pub fn set_motor_temperature_input(config: crate::storage::MotorTemperatureConfig) {
+    MOTOR_TEMPERATURE_INPUT_ENABLED.store(
+        config.sensor == crate::storage::MotorTemperatureSensor::BoardDefault,
+        Ordering::Relaxed,
+    );
+}
+
 /// Command for the ISR-owned FocDriver.
 ///
 /// The driver is mutated only inside the FOC ISR; every async-side request

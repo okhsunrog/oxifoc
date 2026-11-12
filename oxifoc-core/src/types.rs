@@ -511,7 +511,7 @@ pub struct SlowTelemetry {
     /// FET temperature in 0.1°C units
     pub fet_temp_c_x10: i16,
     /// Motor temperature in 0.1°C units (0 if not available)
-    pub motor_temp_c_x10: i16,
+    pub motor_temp_c_x10: Option<i16>,
     /// Board temperature in 0.1°C units (0 if not available)
     pub board_temp_c_x10: i16,
     /// Current motor state
@@ -625,7 +625,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 16;
+pub const ICD_PROTO_VERSION: u16 = 17;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1019,8 +1019,8 @@ mod config_types {
     use crate::storage::{
         BoardCalibrationConfig, CurrentLimitsConfig, DcOffsetsConfig, DeratingConfigStored,
         FailsafeConfigStored, HallCalibrationConfig, HallTuningConfig, MotorParamsConfig,
-        PiGainsConfig, PwmConfigStored, VelocityConfigStored, VoltageFeedforwardConfig,
-        VoltageLimitsConfig,
+        MotorTemperatureConfig, PiGainsConfig, PwmConfigStored, VelocityConfigStored,
+        VoltageFeedforwardConfig, VoltageLimitsConfig,
     };
 
     use super::*;
@@ -1065,10 +1065,11 @@ mod config_types {
         Derating,
         BoardCalibration,
         VoltageFeedforward,
+        MotorTemperature,
     }
 
     impl ConfigGroupId {
-        pub const COUNT: usize = 13;
+        pub const COUNT: usize = 14;
         pub const ALL: [Self; Self::COUNT] = [
             Self::MotorParams,
             Self::HallCalibration,
@@ -1083,6 +1084,7 @@ mod config_types {
             Self::Derating,
             Self::BoardCalibration,
             Self::VoltageFeedforward,
+            Self::MotorTemperature,
         ];
 
         pub const fn index(self) -> usize {
@@ -1100,6 +1102,7 @@ mod config_types {
                 Self::Derating => 10,
                 Self::BoardCalibration => 11,
                 Self::VoltageFeedforward => 12,
+                Self::MotorTemperature => 13,
             }
         }
     }
@@ -1127,6 +1130,7 @@ mod config_types {
         Derating(DeratingConfigStored),
         BoardCalibration(BoardCalibrationConfig),
         VoltageFeedforward(VoltageFeedforwardConfig),
+        MotorTemperature(MotorTemperatureConfig),
     }
 
     impl ConfigWrite {
@@ -1145,6 +1149,7 @@ mod config_types {
                 Self::Derating(_) => ConfigGroupId::Derating,
                 Self::BoardCalibration(_) => ConfigGroupId::BoardCalibration,
                 Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
+                Self::MotorTemperature(_) => ConfigGroupId::MotorTemperature,
             }
         }
     }
@@ -1180,6 +1185,7 @@ mod config_types {
         Derating(DeratingConfigStored),
         BoardCalibration(BoardCalibrationConfig),
         VoltageFeedforward(VoltageFeedforwardConfig),
+        MotorTemperature(MotorTemperatureConfig),
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]

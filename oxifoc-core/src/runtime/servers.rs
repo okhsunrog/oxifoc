@@ -288,7 +288,7 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
             counts_ok(v.phase_a) && counts_ok(v.phase_b) && counts_ok(v.phase_c)
         }
         ConfigWrite::PiGains(v) => v.is_sane(),
-        ConfigWrite::VoltageFeedforward(_) => true,
+        ConfigWrite::VoltageFeedforward(_) | ConfigWrite::MotorTemperature(_) => true,
         ConfigWrite::MotorParams(v) => v.is_valid(),
         ConfigWrite::HallCalibration(v) => v.is_calibrated(),
         ConfigWrite::HallTuning(v) => v.is_sane(),
@@ -333,6 +333,7 @@ fn config_value(
         G::Velocity => cfg.velocity.clone().map(V::Velocity),
         G::Derating => cfg.derating.clone().map(V::Derating),
         G::VoltageFeedforward => cfg.voltage_feedforward.map(V::VoltageFeedforward),
+        G::MotorTemperature => cfg.motor_temperature.map(V::MotorTemperature),
     }
 }
 
@@ -361,6 +362,10 @@ fn flash_parts(value: crate::types::ConfigValue) -> (ConfigKey, ConfigPayload) {
         V::VoltageFeedforward(v) => (
             ConfigKey::VoltageFeedforward,
             ConfigPayload::VoltageFeedforward(v),
+        ),
+        V::MotorTemperature(v) => (
+            ConfigKey::MotorTemperature,
+            ConfigPayload::MotorTemperature(v),
         ),
     }
 }
@@ -518,18 +523,40 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             }
                             // A measurement-source update needs no FocDriver mutation.
                             // Commit it with its mirror/revision under one CS, between
-                            // complete ADC ISR executions; never inside a capture.
-                            if let ConfigWrite::BoardCalibration(value) = &write {
+                            // complete ADC ISR executions.
+                            if matches!(
+                                &write,
+                                ConfigWrite::BoardCalibration(_) | ConfigWrite::MotorTemperature(_)
+                            ) {
                                 return critical_section::with(|cs| {
                                     let mut state = state_mutex.borrow(cs).borrow_mut();
-                                    if !state.can_apply_board_calibration() {
-                                        return ConfigResponse::Busy;
-                                    }
-                                    state.board_calibration = *value;
-                                    state.board_calibration_valid = true;
                                     let mut cfg = runtime_config.borrow(cs).borrow_mut();
-                                    cfg.board_calibration = Some(*value);
-                                    cfg.board_calibration_invalid = false;
+                                    match &write {
+                                        ConfigWrite::BoardCalibration(value) => {
+                                            if !state.can_apply_board_calibration() {
+                                                return ConfigResponse::Busy;
+                                            }
+                                            state.board_calibration = *value;
+                                            state.board_calibration_valid = true;
+                                            cfg.board_calibration = Some(*value);
+                                            cfg.board_calibration_invalid = false;
+                                        }
+                                        ConfigWrite::MotorTemperature(value) => {
+                                            // Permit repair after a missing expected sensor
+                                            // has already raised a stop fault.
+                                            if state.actuator_busy()
+                                                || state.control_mode
+                                                    != crate::types::ControlMode::Stopped
+                                                || crate::state::DETECTION_ACTIVE
+                                                    .load(core::sync::atomic::Ordering::Acquire)
+                                            {
+                                                return ConfigResponse::Busy;
+                                            }
+                                            crate::state::set_motor_temperature_input(*value);
+                                            cfg.motor_temperature = Some(*value);
+                                        }
+                                        _ => unreachable!(),
+                                    }
                                     let revision = current_revision.wrapping_add(1);
                                     revisions.borrow(cs).borrow_mut()[group.index()] = revision;
                                     action_cache
@@ -611,7 +638,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             critical_section::with(|cs| {
                                 let mut cfg = runtime_config.borrow(cs).borrow_mut();
                                 match &write {
-                                    ConfigWrite::BoardCalibration(_) => {} // handled atomically above
+                                    ConfigWrite::BoardCalibration(_)
+                                    | ConfigWrite::MotorTemperature(_) => {} // handled atomically above
                                     ConfigWrite::MotorParams(v) => {
                                         cfg.motor_params = Some(v.clone());
                                     }
@@ -660,7 +688,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     .unwrap_or(0.0)
                             });
                             match write {
-                                ConfigWrite::BoardCalibration(_) => {} // handled atomically above
+                                ConfigWrite::BoardCalibration(_)
+                                | ConfigWrite::MotorTemperature(_) => {} // handled atomically above
                                 // Limits: clamped to the board ceiling and
                                 // the motor rating.
                                 ConfigWrite::CurrentLimits(ref v) => {
@@ -1099,7 +1128,7 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
                         (
                             state.last_adc.vbus_mv,
                             state.last_adc.fet_temp_c_x10().unwrap_or(0),
-                            state.last_adc.motor_temp_c_x10().unwrap_or(0),
+                            state.last_adc.motor_temp_c_x10(),
                             state.last_adc.board_temp_c_x10().unwrap_or(0),
                             state.motor_state,
                             state.control_mode,

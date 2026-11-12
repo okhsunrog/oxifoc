@@ -42,9 +42,7 @@ pub fn prepared_board() -> &'static PreparedBoardConfig {
 // Board Hardware Configuration
 // ============================================================================
 
-/// A fitted motor NTC keeps fail-closed protection if its wire opens.
-pub const MOTOR_NTC_PRESENT: bool = !cfg!(feature = "bench-no-motor-ntc");
-const MAX_MOTOR_TEMP_C: f32 = if MOTOR_NTC_PRESENT { 120.0 } else { 0.0 };
+const MAX_MOTOR_TEMP_C: f32 = 120.0;
 
 /// Cheap FOCer 2 / Simple FOCer 2 board configuration
 ///
