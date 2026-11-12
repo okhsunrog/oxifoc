@@ -879,3 +879,12 @@ the rebound. Stop was acknowledged and the controller ended fault-free.
 The load was unmeasured and the release capture has no observer blend
 weight or velocity PI state. See `load-350.png` and `350-statistics.json`
 in the same directory.
+
+The 20 s current-control run commanded Iq=1 A, Id=0 with Hall fallback at
+15 kHz. It recorded 333,454 samples without loss and ended stopped with
+zero faults. Iq averaged 1.03–1.06 A on two loaded intervals. Around
+2,970 electrical rad/s, the PWM span reached the configured 95% and
+Iq averaged 0.33–0.35 A on two low-load plateaus. The voltage command
+was about 13.09 V at a 24 V bus, consistent with modulation saturation.
+The plot and summary are `load-current-1a.png` and `current-statistics.json`
+in the same directory.
