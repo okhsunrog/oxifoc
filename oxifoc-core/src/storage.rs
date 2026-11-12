@@ -549,6 +549,21 @@ impl Default for PwmConfigStored {
     }
 }
 
+/// Board limits for the PWM settings that can be stored for the next boot.
+#[derive(Clone, Copy)]
+pub struct PwmConfigLimits {
+    pub frequencies_hz: &'static [u32],
+    /// The duty ceiling is fixed by the board profile.
+    pub max_duty_percent: u8,
+}
+
+impl PwmConfigLimits {
+    pub fn accepts(self, config: &PwmConfigStored) -> bool {
+        self.frequencies_hz.contains(&config.freq_hz)
+            && config.max_duty_percent == self.max_duty_percent
+    }
+}
+
 /// PI controller gains.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

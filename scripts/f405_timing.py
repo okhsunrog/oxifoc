@@ -1,16 +1,21 @@
 """Read back the complete F405 PWM/injected-ADC timing contract while Stopped."""
+import argparse
+import json
+
 import bench_overclock as probe
 
 SAMPLE_CYCLES = [3, 15, 28, 56, 84, 112, 144, 480]
 
 
-def snapshot():
-    clocks = probe.clocks()
+def snapshot(expected_pwm_hz=20_000):
+    clocks = probe.clocks(expected_pwm_hz)
     tim = probe.read(0x40010000, 18)
     common = probe.read(0x40012300, 2)
     assert (tim[0] >> 5) & 3 == 3 and tim[0] & 1, 'TIM1 center-aligned mode changed'
     assert tim[10] == 0 and tim[12] == 1, 'TIM1 prescaler/repetition changed'
-    assert tim[11] == clocks['tim1_hz'] // 40_000, 'TIM1 is not configured for nominal 20 kHz'
+    assert tim[11] == clocks['tim1_hz'] // (2 * expected_pwm_hz), (
+        f'TIM1 is not configured for nominal {expected_pwm_hz / 1000:g} kHz'
+    )
     assert (tim[7] >> 12) & 7 == 6 and tim[7] & (1 << 11), 'CH4 PWM/preload changed'
     assert tim[8] & 0x1000, 'ADC trigger channel disabled'
     assert tim[16] == tim[11] - tim[11] // 50, 'CCR4 sampling location changed'
@@ -43,3 +48,10 @@ def snapshot():
             sample_us=[s*1e6/clocks['adc_hz'] for s in samples],
             sequence_conversion_us=sum(s+12 for s in samples)*1e6/clocks['adc_hz']))
     return result
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--pwm-hz', type=int, default=20_000, choices=(15_000, 20_000))
+    args = parser.parse_args()
+    print(json.dumps(snapshot(args.pwm_hz), indent=2))

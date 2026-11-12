@@ -195,6 +195,7 @@ pub fn current_value(cmd: &CommandSender, group: ConfigGroupId) -> Result<(Value
 pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigWrite) -> Result<u32> {
     let (tx, rx) = config_channel();
     let id = next_config_id();
+    let group = write.group();
     cmd.send(HostCommand::ConfigApply(
         Keyed::new(
             id,
@@ -215,6 +216,10 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigWri
         ConfigResponse::Busy => {
             bail!("device refused volatile apply: this group is not live-safe while running")
         }
+        ConfigResponse::Invalid if group == ConfigGroupId::PwmConfig => bail!(
+            "device rejected PWM configuration. Supported on MK5: freq_hz=15000 or 20000, \
+             max_duty_percent=95"
+        ),
         ConfigResponse::Invalid => bail!(
             "device refused the write: value fails validation. Rules: all fields \
              finite; current_limits: max_phase_current_a >= 1.3 x max_iq_a (the \
@@ -222,7 +227,7 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigWri
              enabled ramp well-formed (temp/regen end > start, battery cut start > \
              end, accel_dec and speed_start_frac in 0..=1); board-calibration: \
              vbus_gain must be finite and within 0.95..=1.05; voltage-limits: \
-             0 < min_vbus_mv < max_vbus_mv, within board limits; PWM config is unsupported"
+             0 < min_vbus_mv < max_vbus_mv, within board limits"
         ),
         ConfigResponse::Conflict { current_revision } => bail!(
             "config changed concurrently (expected revision {expected_revision}, current {current_revision}); re-read and retry"

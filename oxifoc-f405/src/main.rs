@@ -256,7 +256,20 @@ async fn main(spawner: Spawner) {
     let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
     spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
-    let runtime_config = storage::CONFIG_LOADED.wait().await;
+    let mut runtime_config = storage::CONFIG_LOADED.wait().await;
+    let mut pwm_config = config::PWM_CONFIG;
+    if let (Some(limits), Some(stored)) = (config::PWM_CONFIG_LIMITS, &runtime_config.pwm_config) {
+        if limits.accepts(stored) {
+            pwm_config = pwm_config.with_pwm_freq(stored.freq_hz);
+        } else {
+            defmt::warn!(
+                "Ignoring unsupported stored PWM config: freq={}Hz max_duty={}%",
+                stored.freq_hz,
+                stored.max_duty_percent
+            );
+            runtime_config.pwm_config = None;
+        }
+    }
     oxifoc_core::state::set_motor_temperature_input(
         runtime_config.motor_temperature.unwrap_or_default(),
     );
@@ -268,7 +281,14 @@ async fn main(spawner: Spawner) {
     });
     defmt::info!("Config loaded from flash");
     // Publish config revisions/persistence only after the boot load is complete.
-    protocol::servers::spawn_servers(&spawner, stack, &idents, defmt_consumer, detection_boot);
+    protocol::servers::spawn_servers(
+        &spawner,
+        stack,
+        &idents,
+        defmt_consumer,
+        detection_boot,
+        pwm_config.pwm_freq_hz,
+    );
 
     // ========== STEP 9: Initialize DRV8301 Gate Driver ==========
     let (drv_config, nfault) = hardware::drv8301::init_bus(r.drv, ExtiIrqs);
@@ -299,12 +319,12 @@ async fn main(spawner: Spawner) {
     sensors::init_hall(r.hall.pc6, r.hall.pc7, r.hall.pc8, p.TIM3);
 
     // ========== STEP 12: Initialize Motor PWM ==========
-    let motor_pwm = MotorPwm::new(r.motor, config::PWM_CONFIG);
+    let motor_pwm = MotorPwm::new(r.motor, pwm_config);
     let timing = motor_pwm.control_timing();
     defmt::unwrap!(config::CONTROL_TIMING.init(timing).map_err(|_| ()));
     defmt::info!(
         "Control timing: requested={}Hz clock={}Hz period={}ticks dt={=f32}s rate={=f32}Hz",
-        config::PWM_CONFIG.pwm_freq_hz,
+        pwm_config.pwm_freq_hz,
         timing.clock_hz,
         timing.period_ticks,
         timing.dt_s(),

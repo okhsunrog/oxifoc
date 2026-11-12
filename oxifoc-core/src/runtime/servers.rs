@@ -278,12 +278,12 @@ pub async fn fault_server<NS, F, const N: usize>(
 ///   angles must be finite; otherwise Hall commutation can ingest NaN or boot
 ///   with an incomplete table.
 /// - VoltageLimits: ordered, positive; the ISR also verifies board bounds.
-/// - PwmConfig: nothing consumes this group (frequency is compile-time) —
-///   accepting the write would persist a silent no-op in exactly the
-///   protection domain. Rejected until a consumer exists; reads of
-///   previously-stored values still work.
+/// - PwmConfig: boards that consume this group at boot supply their limits.
 #[cfg(feature = "storage")]
-fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
+fn write_is_acceptable(
+    w: &crate::types::ConfigWrite,
+    pwm_limits: Option<crate::storage::PwmConfigLimits>,
+) -> bool {
     use crate::types::ConfigWrite;
     let counts_ok = |v: f32| (0.0..=f32::from(u16::MAX)).contains(&v);
     match w {
@@ -299,7 +299,7 @@ fn write_is_acceptable(w: &crate::types::ConfigWrite) -> bool {
         ConfigWrite::HallCalibration(v) => v.is_calibrated(),
         ConfigWrite::HallTuning(v) => v.is_sane(),
         ConfigWrite::VoltageLimits(value) => value.is_sane(),
-        ConfigWrite::PwmConfig(_) => false,
+        ConfigWrite::PwmConfig(config) => pwm_limits.is_some_and(|limits| limits.accepts(config)),
         // No boundary invariant beyond is_sane() at the ISR gate; listed
         // explicitly (no catch-all) so a new group cannot compile without
         // being classified here — an unclassified group would fail OPEN.
@@ -404,6 +404,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     hw_max_current_a: f32,
     persist: bool,
+    pwm_limits: Option<crate::storage::PwmConfigLimits>,
 ) where
     NS: NetStackHandle,
 {
@@ -504,7 +505,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                         // this task's future, which flash-tight boards'
                         // flash and RAM budgets ride).
                         ConfigRequest::Apply(ref keyed)
-                            if !write_is_acceptable(&keyed.inner.write) =>
+                            if !write_is_acceptable(&keyed.inner.write, pwm_limits) =>
                         {
                             ConfigResponse::Invalid
                         }
@@ -759,8 +760,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 // here or it will not compile):
                                 // - HallTuning is consumed at hall-estimator
                                 //   construction (boot only).
-                                // - PwmConfig is rejected by
-                                //   write_is_acceptable and never get here.
+                                // - PwmConfig is consumed at PWM construction
+                                //   on the next boot.
                                 ConfigWrite::HallTuning(_) | ConfigWrite::PwmConfig(_) => {}
                             }
                             let revision = current_revision.wrapping_add(1);
@@ -827,6 +828,11 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             let Some(value) = value else {
                                 return ConfigResponse::Invalid;
                             };
+                            if let crate::types::ConfigValue::PwmConfig(config) = &value
+                                && !pwm_limits.is_some_and(|limits| limits.accepts(config))
+                            {
+                                return ConfigResponse::Invalid;
+                            }
                             let (key, payload) = flash_parts(value);
                             FLASH_DONE.reset();
                             if FLASH_CHANNEL
@@ -1284,6 +1290,7 @@ pub async fn run_all_servers_with_config<NS, F, T>(
     control_timing: crate::types::ControlTiming,
     hw_max_current_a: f32,
     persist: bool,
+    pwm_limits: Option<crate::storage::PwmConfigLimits>,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
@@ -1304,6 +1311,7 @@ pub async fn run_all_servers_with_config<NS, F, T>(
                     state_mutex,
                     hw_max_current_a,
                     persist,
+                    pwm_limits,
                 ),
                 phase_source_server::<NS, 2>(endpoints.clone()),
                 telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz, control_timing),

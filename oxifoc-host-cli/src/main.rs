@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use oxifoc_core::types::{ControlMode, FaultCategory, FaultClearTarget};
+use oxifoc_core::types::{ConfigGroupId, ControlMode, FaultCategory, FaultClearTarget};
 use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, TransportType, init_tracing, list_probes,
     list_serial_ports, motor_channel, start_host,
@@ -932,30 +932,35 @@ fn main() -> Result<()> {
             ConfigAction::Get { group } => {
                 let g = config_cli::parse_group(&group)?;
                 let (value, state) = config_cli::current_value(&runtime.cmd_tx, g)?;
-                emit(
-                    json,
-                    json!({
-                        "group": group,
-                        "present": state.present,
-                        "valid": state.valid,
-                        "persisted": state.persisted,
-                        "revision": state.revision,
-                        "value": value,
-                    }),
-                    format!(
-                        "{group} (revision {}, {}): {value:#}",
-                        state.revision,
-                        if !state.valid {
-                            "INVALID, motor start blocked"
-                        } else if !state.present {
-                            "defaults, not configured"
-                        } else if state.persisted {
-                            "persisted"
-                        } else {
-                            "volatile, not persisted"
-                        }
-                    ),
+                let persistence = if !state.valid {
+                    "INVALID, motor start blocked"
+                } else if !state.present {
+                    "defaults, not configured"
+                } else if state.persisted {
+                    "persisted"
+                } else {
+                    "volatile, not persisted"
+                };
+                let mut output = json!({
+                    "group": group,
+                    "present": state.present,
+                    "valid": state.valid,
+                    "persisted": state.persisted,
+                    "revision": state.revision,
+                    "value": value,
+                });
+                let mut message = format!(
+                    "{group} (revision {}, {persistence}): {value:#}",
+                    state.revision
                 );
+                if g == ConfigGroupId::PwmConfig {
+                    let active_hz = record::latest_hw_info(&runtime)
+                        .context("no hardware info received")?
+                        .foc_freq_hz;
+                    output["active_freq_hz"] = json!(active_hz);
+                    message.push_str(&format!("\nActive PWM: {active_hz} Hz"));
+                }
+                emit(json, output, message);
             }
             ConfigAction::Set {
                 group,
@@ -963,6 +968,18 @@ fn main() -> Result<()> {
                 volatile,
             } => {
                 let g = config_cli::parse_group(&group)?;
+                let active_pwm_hz = if g == ConfigGroupId::PwmConfig {
+                    if volatile {
+                        bail!("PWM frequency must be persisted to apply after restart");
+                    }
+                    Some(
+                        record::latest_hw_info(&runtime)
+                            .context("no hardware info received")?
+                            .foc_freq_hz,
+                    )
+                } else {
+                    None
+                };
                 let (value, commit) = if volatile {
                     let (value, revision) =
                         oxifoc_host_lib::ops::config::apply_fields(&runtime.cmd_tx, g, &fields)?;
@@ -976,6 +993,29 @@ fn main() -> Result<()> {
                 } else {
                     config_cli::set_fields(&runtime.cmd_tx, g, &fields)?
                 };
+                if let Some(active_hz) = active_pwm_hz {
+                    anyhow::ensure!(commit.persisted, "device did not persist the PWM config");
+                    let restart_required = value["freq_hz"].as_u64() != Some(u64::from(active_hz));
+                    let status = if restart_required {
+                        "applies after restart"
+                    } else {
+                        "already active"
+                    };
+                    emit(
+                        json,
+                        json!({
+                            "group": group,
+                            "applied": !restart_required,
+                            "persisted": true,
+                            "restart_required": restart_required,
+                            "revision": commit.revision,
+                            "active_freq_hz": active_hz,
+                            "value": value,
+                        }),
+                        format!("{group} saved ({status}, active {active_hz} Hz): {value:#}"),
+                    );
+                    return Ok(());
+                }
                 emit(
                     json,
                     json!({

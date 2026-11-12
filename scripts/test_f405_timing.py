@@ -15,16 +15,24 @@ class PeripheralContractTests(unittest.TestCase):
             0x40012100:adc(0x100,0x100001,0x1008,0x8,0x20b960),
             0x40012200:adc(0x180,0x100001,0x240,0x40,0x213580)}
 
-    def decode(self, registers):
+    def decode(self, registers, pwm_hz=20_000):
         clocks = dict(tim1_hz=167835842, adc_hz=20979480)
         with patch.object(timing.probe, 'clocks', return_value=clocks), patch.object(
             timing.probe, 'read', side_effect=lambda addr, words=1: registers[addr]):
-            return timing.snapshot()
+            return timing.snapshot(pwm_hz)
 
     def test_stock_contract(self):
         x = self.decode(self.fixture())
         self.assertAlmostEqual(x['adcs'][0]['sequence_conversion_us'],3.8609155)
         self.assertEqual(x['adcs'][2]['channels'], [12,13,2])
+
+    def test_15_khz_timer_keeps_the_injected_adc_contract(self):
+        registers = self.fixture()
+        tim = registers[0x40010000]
+        tim[11], tim[16] = 5594, 5483
+        result = self.decode(registers, pwm_hz=15_000)
+        self.assertEqual(result['timer_arr'], 5594)
+        self.assertEqual(result['adcs'][2]['sample_cycles'], [15, 15, 15])
 
     def test_rejects_changed_injected_rank(self):
         r = self.fixture();r[0x40012100][14] ^= 1<<5

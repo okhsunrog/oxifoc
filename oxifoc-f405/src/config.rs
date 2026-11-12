@@ -121,12 +121,19 @@ pub const BOARD: BoardConfig = BoardConfig {
 // PWM Configuration
 // ============================================================================
 
-/// Motor PWM configuration
-///
-/// Central source of truth for PWM frequency and timing.
-/// Used by motor.rs for timer setup and control/foc.rs for dt calculation.
+/// Board PWM defaults. The timer determines the actual control timing.
 pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(360);
 // VESC HW_DEAD_TIME_NSEC fallback: 360ns — neither CF2 nor hw60 overrides it
+
+pub const PWM_CONFIG_LIMITS: Option<oxifoc_core::storage::PwmConfigLimits> =
+    if cfg!(feature = "board-vesc6-mk5") {
+        Some(oxifoc_core::storage::PwmConfigLimits {
+            frequencies_hz: &[15_000, 20_000],
+            max_duty_percent: PWM_CONFIG.max_duty_percent,
+        })
+    } else {
+        None
+    };
 
 // Effective command-side correction is separate from gate safety timing.
 // Start with the old amplitude, but blend through a provisional 1 A per-phase

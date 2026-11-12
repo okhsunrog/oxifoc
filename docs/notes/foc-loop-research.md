@@ -771,3 +771,17 @@ with nine timeline ACKs, three terminal Stops, maximum ACK 30.8 ms, and
 zero faults or SPI errors. The new release is installed and stopped in
 Hall mode. Artifacts are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-ccm-bss-2026-11-11/`.
+
+### MK5 PWM frequency at boot
+
+On MK5, `config set pwm-config freq_hz=15000` saves the requested rate.
+Use `20000` for the default rate. Restart to apply it, then read
+`config get pwm-config` to compare the saved and active rates.
+
+On the same SPI release image, TIM1 read back 15,001.416 Hz (ARR 5594) and
+20,004.272 Hz (ARR 4195). ADC1–3 retained the three injected ranks and
+15-cycle acquisition. The ADC IRQ counter confirmed one interrupt per
+PWM period within the SWD timing uncertainty. Stopped native-rate
+captures held 30,288 and 40,485 samples without gaps or producer drops.
+The MK5 was left stopped at 20 kHz. Raw evidence is under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-pwm-config/`.

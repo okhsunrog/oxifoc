@@ -234,6 +234,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
         oxifoc_core::types::ControlTiming::from_hz(PWM_CONFIG.pwm_freq_hz),
         BOARD.max_phase_current_a,
         true,
+        None,
     )
     .await;
 }

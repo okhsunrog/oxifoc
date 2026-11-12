@@ -32,7 +32,7 @@ def read(address, words=1):
             for x in line.split(":", 1)[1].split()]
 
 
-def clocks():
+def clocks(expected_pwm_hz=20_000):
     deadline = time.monotonic() + 5
     while True:
         cr, pll, cfgr = read(0x40023800, 3)
@@ -58,7 +58,7 @@ def clocks():
     assert p1 <= 42_000_000 and p2 <= 84_000_000 and adc_hz <= 36_000_000
     assert flash & 7 == min(7, (hclk - 1) // 30_000_000), "FLASH wait state mismatch"
     assert read(0x40010020)[0] & 0x555 == 0, "phase output enabled"
-    assert 19_800 <= hz <= 20_200, "PWM/ADC rate changed"
+    assert abs(hz - expected_pwm_hz) <= expected_pwm_hz / 100, "PWM/ADC rate changed"
     return dict(cpu_hz=hclk, apb1_hz=p1, apb2_hz=p2, adc_hz=adc_hz,
                 spi_hz=spi_hz, tim1_hz=timer, pwm_hz=hz, flash_ws=flash & 7,
                 flash_access_hz=hclk / ((flash & 7) + 1), rcc=[cr, pll, cfgr])

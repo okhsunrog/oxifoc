@@ -32,7 +32,7 @@ use crate::RUNTIME_CONFIG;
 use crate::calibration::{
     calibrate_hall_ez, measure_flux_linkage_ez, measure_inductance_ez, measure_resistance_ez,
 };
-use crate::config::{BOARD, PWM_CONFIG, measured_board};
+use crate::config::{BOARD, PWM_CONFIG_LIMITS, measured_board};
 #[cfg(feature = "transport-usb")]
 use crate::config::{MAX_PACKET_SIZE, USB_OUT_QUEUE_SIZE};
 use crate::control::foc::VBUS_MV;
@@ -130,7 +130,7 @@ pub async fn usb_io_task(
 
 /// All protocol servers running concurrently in a single task
 #[embassy_executor::task]
-pub async fn protocol_servers(stack: &'static Stack) {
+pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32) {
     #[cfg(feature = "bench-scheduler-deadline")]
     crate::diagnostics::deadline::register(3, 500).await;
     #[cfg(feature = "task-priority")]
@@ -163,7 +163,7 @@ pub async fn protocol_servers(stack: &'static Stack) {
         sw,
         mcu,
         uuid,
-        foc_freq_hz: PWM_CONFIG.pwm_freq_hz,
+        foc_freq_hz,
         max_current_a: BOARD.max_phase_current_a,
         calib: measured_board().calib,
     };
@@ -185,10 +185,11 @@ pub async fn protocol_servers(stack: &'static Stack) {
         &STATE,
         &FAULT_REGISTRY,
         &RUNTIME_CONFIG,
-        PWM_CONFIG.pwm_freq_hz,
+        foc_freq_hz,
         *crate::config::CONTROL_TIMING.get().await,
         BOARD.max_phase_current_a,
         true,
+        PWM_CONFIG_LIMITS,
     )
     .await;
 }
@@ -479,8 +480,9 @@ pub fn spawn_servers(
     idents: &heapless::Vec<crate::transport::InterfaceIdent, 3>,
     defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
     detection_boot: u64,
+    foc_freq_hz: u32,
 ) {
-    spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
+    spawner.spawn(defmt::unwrap!(protocol_servers(stack, foc_freq_hz)));
     #[cfg(feature = "bench-raw-codec")]
     spawner.spawn(defmt::unwrap!(
         crate::diagnostics::codec_bench::report_task(stack)

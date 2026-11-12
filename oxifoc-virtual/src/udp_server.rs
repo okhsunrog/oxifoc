@@ -128,6 +128,7 @@ pub async fn run(
                 oxifoc_core::types::ControlTiming::from_hz(foc_freq_hz),
                 max_current_a,
                 true,
+                None,
             ))
             .await;
         }
