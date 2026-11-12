@@ -362,3 +362,19 @@ Captures, exact trace, comparison plots and the diagnostic patch are under
 (`hall-CyegD0`, `hall-BeR0j1`). The normal image was restored and verified.
 The saved configuration matched after boot offset recalibration, with Hall
 selected, motor stopped and zero faults.
+
+VESC 7.00 (`1ad6eab3`, recording patches), same H5055 and MK5. The native
+E-Skate / Medium Outrunner wizard completed with Hall and no current fault.
+Bench settings were 5 A input, −2 mA in the command (zero selects −60 A),
+22/23 V regen cutoff for an effective zero at 24 V, and a 26 V trip.
+The last R plateau averaged 20.10 A Iq. L used bursts up to 6.90 A dq.
+Flux held about 14.2 A Iq. Hall held 11.88 A Id, close to OxiFOC's 11.80 A.
+VESC disabled PWM directly at 11.85 A Id and Vbus rose by about 0.16 V over
+the next few milliseconds. This includes load removal and does not establish
+supply-lead regeneration. VESC limits Iq from the input current limits and
+has no equivalent milliampere trip on the signed inverter estimate.
+R/L and Hall were complete at native 5 and 15 kHz. The run lost 29,871 of
+465,478 samples overall, including 23,105 during 20 kHz flux excitation.
+The comparative plots and raw data are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/vesc-h5055-source-limit/run-ErHWfO/`.
+The OxiFOC image and saved configuration were verified after restoration.
