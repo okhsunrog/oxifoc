@@ -337,3 +337,28 @@ Artifacts live under
 screen rendered. The actual device Save path was exercised through the CLI.
 TCP simulation additionally checked exact Save replay, changed-payload
 rejection and revision/persistence acknowledgements for all three groups.
+
+### Source limit at the end of Hall
+
+MK5/H5055, 24 V, Medium Outrunner, 5 A input and 0 A regen, no Advanced
+ceiling. Four full reruns (three with a temporary CCM trace, one with the
+normal image) stopped on `SourceLimited` during the inductance step. Two
+standalone Hall runs repeated the original full sequence's Hall request
+(120 W, 63.703 mΩ) and reproduced the stop during ramp-down at a 0.354 A
+request. Both retained every Packed28 sample at 20,004 Hz.
+
+The exact 2 ms filtered inverter-input estimate was −1.001 and −1.003 mA at
+the −1 mA trip threshold. The equivalent estimates from phase-voltage ADC and
+phase currents were −0.625 and −0.596 mA. Both estimates indicate a small
+reverse-power transient, with disagreement in magnitude. Neither measures
+current in the supply lead. Vbus showed no repeatable rise above its sample
+scatter. The grant calculation also clips the d-axis target to zero when
+the applied d-axis modulation projects negative power at zero regen.
+
+The temporary instrumentation recorded the last 256 source checks in CCM
+and was read over SWD after Stop. The usual stream and limit logic were used.
+Captures, exact trace, comparison plots and the diagnostic patch are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-commissioning-source/`
+(`hall-CyegD0`, `hall-BeR0j1`). The normal image was restored and verified.
+The saved configuration matched after boot offset recalibration, with Hall
+selected, motor stopped and zero faults.
