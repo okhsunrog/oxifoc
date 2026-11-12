@@ -869,3 +869,13 @@ and extremes of 150.8 and 184.8 during load transitions. The bus stayed
 near 24 V. The controller finished stopped, with zero faults, at 15 kHz.
 The applied torque was unmeasured. Plot and capture are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-15k-load/`.
+
+The 20 s repeat at +350 electrical rad/s recorded 333,457 samples without
+loss. At low load it held near +350. Late in the run, 100 ms mean Iq
+reached 7.8 A, versus 0.96 A at +160. Hall travel showed a dip to roughly
+220 rad/s and a rebound to roughly 720 rad/s around 19.8 s, followed by
+oscillation until the scheduled Stop. The FOC speed estimate also showed
+the rebound. Stop was acknowledged and the controller ended fault-free.
+The load was unmeasured and the release capture has no observer blend
+weight or velocity PI state. See `load-350.png` and `350-statistics.json`
+in the same directory.
