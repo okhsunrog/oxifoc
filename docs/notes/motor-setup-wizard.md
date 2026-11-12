@@ -299,3 +299,21 @@ and unmeasured fundamental inductances. Host-lib constructs the candidate from
 this detection; CLI JSON includes it for review. This is a value/preparation
 boundary only: installation, aggregate storage and migration are not connected
 yet. No firmware flash or physical test was performed for this step.
+
+
+### Frozen aggregate record and interrupted-write tests (2026-11-12)
+
+`drive_setup::record::SetupRecord::V1` owns a frozen primitive layout for the
+whole motor, feedback geometry, source limits and Auto/Override choice. It does
+not embed evolving config structs, board protection or duplicate derived motor
+ratings. Decoding revalidates against the actual controller protection.
+Truncated payloads and unknown versions are rejected. Roundtrip tests cover Hall
+and sensorless, Auto and Override, and a reduced protection limit after reboot.
+
+The sequential-storage mock test interrupts replacement at 1,024 byte-countdown
+positions across 12 successive append/page positions (12,288 attempts). Reopening
+with a fresh cache recovered the complete old or new setup in every case; both
+interrupted and successful writes occurred. This is simulated flash acceptance,
+not a physical power-cut test. Core suite: 725 passed, 2 ignored. The format is
+not yet connected to the storage worker, migration, stopped installation or Save;
+existing device behavior and flash contents are unchanged.

@@ -1,5 +1,7 @@
 //! Reviewed motor setup, independent of board calibration and protection.
 //! Wire/storage values must be validated against the actual inverter before use.
+pub mod record;
+
 use crate::storage::{CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConfig};
 use crate::types::commissioning::SourceLimits;
 
