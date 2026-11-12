@@ -1784,17 +1784,14 @@ pub async fn measure_inductance_auto<H: DetectionHardware, T: Timer, S: SinCos>(
         T::after_millis(500).await;
     }
 
-    // Current-limited voltage pulse (the only L method with hfi-detect off).
-    // `params.hold_current_a` is the power/bus-safe current run_full_detection
-    // settled on; split that budget between a modest locking hold and the pulse
-    // excursion, and let measure_inductance_pulse size the step to that
-    // excursion. The peak (hold + di) then stays within the safe current for
-    // ANY inductance — a fixed vbus·0.577 step instead drives di = V·dt/L,
-    // which spikes a low-L drone winding tens of amps in a single period and
-    // only gets worse on a bigger bus.
-    let safe_current = params.hold_current_a.max(0.2);
-    let lock_current = (safe_current * 0.4).max(0.1);
-    let current_target = (safe_current * 0.5).max(0.1);
+    // Commissioning already separates the DC alignment bias and AC response
+    // target. Use the bias directly and give a short pulse an excursion of
+    // up to twice the continuous HFI RMS target, bounded by the peak budget.
+    let lock_current = params.hold_current_a;
+    let current_target = (2.0 * params.hfi_current_a).min(params.max_current_a - lock_current);
+    if !current_target.is_finite() || current_target <= 0.0 {
+        return Err(DetectionError::OutOfRange);
+    }
     let v_hold = params.resistance_ohm * lock_current;
     let pulse_ceiling = if params.vbus > 0.0 {
         (params.vbus * 0.577 - v_hold).max(0.5)
