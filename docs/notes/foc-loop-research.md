@@ -836,3 +836,26 @@ trace shows a similar voltage shift at both plateaus, so it largely cancels
 in ΔV/ΔI. Keep the R-stage default at 20 kHz for this workflow. The sweep
 compares repeatability on one H5055. The plot and plateau data are `r-sweep.png` and
 `analysis.json` in the same artifact directory.
+
+### Native-rate recording on MK5
+
+On `fee9f1d`, repeated 320→40 and staged +640 twice per condition on the
+unloaded H5055, with Hall fallback and Packed28 over the C5 bridge. Checked
+TIM1 and injected ADC registers at each PWM rate on the same release image.
+
+| PWM | Requested / actual capture | Received rows | Producer drops | Worst timeline ACK |
+| --- | --- | ---: | ---: | ---: |
+| 15 kHz | 15 kHz / 15,001.416 Hz | 553,656 | 0 | 9.07 ms |
+| 20 kHz | 15 kHz / 20,004.272 Hz | 676,534 | 62,248 | 49.87 ms |
+| 20 kHz | 10 kHz / 10,002.136 Hz | 368,985 | 0 | 11.49 ms |
+
+`capture.fast_hz` and `record --fast-hz` request an integer stride. A 15 kHz
+request uses stride 1 at either PWM setting. At 20 kHz PWM, stride 2 gives
+the verified 10 kHz mode. The native 20 kHz captures lost 6–11% per run from
+the STM32 producer queue, with the highest loss around slower rotation and
+the return toward +40. Host drops were zero. All 54 timeline commands
+were acknowledged. The motor ended stopped with zero faults at the original
+20 kHz setting. Loaded comparison is pending a reproducible load fixture.
+
+Captures, overlays and `loss-and-ack.json` are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-native-rate-ab/`.
