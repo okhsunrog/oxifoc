@@ -103,15 +103,8 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
         next_states: [0, 3, 6, 2, 5, 1, 4, 0],
     });
     let prepare = |id, expected| {
-        ModelApplyGuard::prepare_hall(
-            calibration.clone(),
-            config,
-            revisions,
-            cache,
-            ReqId(id),
-            expected,
-        )
-        .unwrap()
+        ModelApplyGuard::prepare_hall(calibration, config, revisions, cache, ReqId(id), expected)
+            .unwrap()
     };
     let mut cx = Context::from_waker(Waker::noop());
 
@@ -429,7 +422,7 @@ fn detector_cannot_install_hall_before_explicit_apply() {
     // A regular config transaction cannot borrow the detector's maintenance
     // ownership, even though it uses the same stopped installation machinery.
     let ordinary = ModelApplyGuard::prepare_hall(
-        calibration.clone(),
+        calibration,
         config,
         &coordinator.revisions,
         &coordinator.actions,

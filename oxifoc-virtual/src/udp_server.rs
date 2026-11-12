@@ -135,7 +135,14 @@ pub async fn run(
     tokio::spawn({
         let endpoints = stack.endpoints();
         async move {
-            detect_server(endpoints, vbus, max_current_a, foc_freq_hz, motor_params).await;
+            Box::pin(detect_server(
+                endpoints,
+                vbus,
+                max_current_a,
+                foc_freq_hz,
+                motor_params,
+            ))
+            .await;
         }
     });
     // Well-known socket-query handler: answers the host's connect-time

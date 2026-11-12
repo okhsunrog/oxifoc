@@ -312,6 +312,10 @@ async fn main(spawner: Spawner) {
     );
 
     // ========== STEP 13: Initialize FOC Controller ==========
+    #[expect(
+        clippy::large_futures,
+        reason = "startup owns the PWM and ADC peripherals"
+    )]
     control::foc::init(motor_pwm, adc_handles, &runtime_config).await;
 
     // FOC ISR is running now — arm the watchdog it feeds.

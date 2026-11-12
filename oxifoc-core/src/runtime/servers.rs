@@ -30,13 +30,19 @@ use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::{join, join3};
 use embassy_futures::select::{Either, select};
 
+#[cfg(feature = "storage")]
 use crate::foc::velocity::VelocityLoopConfig;
+#[cfg(feature = "storage")]
 use crate::motor::derating::DeratingConfig;
+#[cfg(feature = "storage")]
 use crate::motor::failsafe::FailsafeConfig;
+#[cfg(feature = "storage")]
 use crate::motor::foc_driver::CurrentLimits;
 #[cfg(feature = "storage")]
+use crate::state::FlashPendingGuard;
+#[cfg(feature = "storage")]
 use crate::state::model::{CONFIG_COORDINATOR, CachedConfigAck, ModelApplyGuard};
-use crate::state::{DriverCommand, DriverOperation, FlashPendingGuard};
+use crate::state::{DriverCommand, DriverOperation};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::fault::{FaultRegistry, PlatformFault};
@@ -322,7 +328,7 @@ fn config_value(
     match group {
         G::BoardCalibration => cfg.board_calibration.map(V::BoardCalibration),
         G::MotorParams => cfg.motor_params.clone().map(V::MotorParams),
-        G::HallCalibration => cfg.hall_calibration.clone().map(V::HallCalibration),
+        G::HallCalibration => cfg.hall_calibration.map(V::HallCalibration),
         G::DcOffsets => cfg.dc_offsets.clone().map(V::DcOffsets),
         G::CurrentLimits => cfg.current_limits.clone().map(V::CurrentLimits),
         G::VoltageLimits => cfg.voltage_limits.clone().map(V::VoltageLimits),
@@ -571,7 +577,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             }
                             if let ConfigWrite::HallCalibration(value) = &write {
                                 let Some(guard) = ModelApplyGuard::prepare_hall(
-                                    value.clone(),
+                                    *value,
                                     runtime_config,
                                     revisions,
                                     action_cache,
@@ -656,7 +662,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                         cfg.hall_tuning = Some(v.clone());
                                     }
                                     ConfigWrite::HallCalibration(v) => {
-                                        cfg.hall_calibration = Some(v.clone());
+                                        cfg.hall_calibration = Some(*v);
                                     }
                                     ConfigWrite::DcOffsets(v) => {
                                         cfg.dc_offsets = Some(v.clone());
@@ -878,7 +884,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             ) {
                                 critical_section::with(|cs| {
                                     *setup_ack.borrow(cs).borrow_mut() =
-                                        Some((request, reply.clone()))
+                                        Some((request, reply.clone()));
                                 });
                             }
                             reply

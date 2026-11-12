@@ -415,10 +415,10 @@ mod tests {
             ..Default::default()
         };
         assert!(config.is_calibrated());
-        let json = group_value(&ConfigValue::HallCalibration(config.clone())).unwrap();
+        let json = group_value(&ConfigValue::HallCalibration(config)).unwrap();
         assert_eq!(
             write_from_value(group, json.clone()).unwrap(),
-            ConfigWrite::HallCalibration(config.clone())
+            ConfigWrite::HallCalibration(config)
         );
         let (_, write) =
             patch_fields(group, default, &[format!("geometry={}", json["geometry"])]).unwrap();

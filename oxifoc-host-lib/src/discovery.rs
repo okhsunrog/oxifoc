@@ -276,7 +276,7 @@ mod tests {
         let stlink = port("stlink", 0x0483, 0x3754);
         let c5 = port("c5", 0x303a, 0x1001);
         assert!(usb_serial_jtag_port(&[]).is_err());
-        assert!(usb_serial_jtag_port(&[stlink.clone()]).is_err());
+        assert!(usb_serial_jtag_port(std::slice::from_ref(&stlink)).is_err());
         assert_eq!(usb_serial_jtag_port(&[stlink, c5.clone()]).unwrap(), "c5");
         assert!(usb_serial_jtag_port(&[c5, port("second", 0x303a, 0x1001)]).is_err());
     }

@@ -553,6 +553,10 @@ fn map_err(e: DetectionError) -> DetectError {
     }
 }
 
+fn config_revisions() -> [u32; crate::types::ConfigGroupId::COUNT] {
+    critical_section::with(|cs| *CONFIG_COORDINATOR.revisions.borrow(cs).borrow())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,8 +705,4 @@ mod tests {
             ));
         }
     }
-}
-
-fn config_revisions() -> [u32; crate::types::ConfigGroupId::COUNT] {
-    critical_section::with(|cs| *CONFIG_COORDINATOR.revisions.borrow(cs).borrow())
 }

@@ -339,7 +339,7 @@ pub async fn detect_server(stack: &'static Stack, boot_epoch: u64) {
 struct F405Backend;
 
 impl DetectionBackend for F405Backend {
-    type Timer = oxifoc_core::timer::EmbassyTimer;
+    type Timer = EmbassyTimer;
 
     fn vbus(&self) -> f32 {
         VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0

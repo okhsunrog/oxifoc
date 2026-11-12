@@ -1290,7 +1290,7 @@ mod tests {
             postcard::from_bytes::<HallCalibrationConfig>(&expected).is_err(),
             "legacy flash must use its explicit frozen decoder"
         );
-        let record = HallCalibrationRecord::from(migrated.clone());
+        let record = HallCalibrationRecord::from(migrated);
         let mut versioned = [0u8; 42];
         versioned[34..40].fill(1);
         assert_eq!(postcard::to_slice(&record, &mut buf).unwrap(), versioned);
@@ -1308,14 +1308,14 @@ mod tests {
         );
         let config = measured_hall_config();
         assert_eq!(
-            postcard::to_slice(&ConfigWrite::HallCalibration(config.clone()), &mut buf).unwrap()[0],
+            postcard::to_slice(&ConfigWrite::HallCalibration(config), &mut buf).unwrap()[0],
             6
         );
         assert_eq!(
-            postcard::to_slice(&ConfigValue::HallCalibration(config.clone()), &mut buf).unwrap()[0],
+            postcard::to_slice(&ConfigValue::HallCalibration(config), &mut buf).unwrap()[0],
             6
         );
-        let record = HallCalibrationRecord::from(config.clone());
+        let record = HallCalibrationRecord::from(config);
         let bytes = postcard::to_slice(&record, &mut buf).unwrap();
         assert_eq!(
             postcard::from_bytes::<HallCalibrationRecord>(bytes)
@@ -1347,11 +1347,11 @@ mod tests {
             good,
             "a detection result must retain the complete geometry on the wire"
         );
-        let mut bad = good.clone();
+        let mut bad = good;
         bad.geometry.as_mut().unwrap().next_states[1] = 1;
         assert!(!bad.is_calibrated());
         assert!(HallCalibrationRecord::from(bad).validated().is_none());
-        let mut bad = good.clone();
+        let mut bad = good;
         bad.geometry.as_mut().unwrap().entry_angles[1] = f32::NAN;
         assert!(!bad.is_calibrated());
         let mut bad = good;
@@ -1413,12 +1413,12 @@ mod tests {
         ready(storage.store_item(
             &mut buf,
             &ConfigKey::HallCalibrationRecord,
-            &HallCalibrationRecord::from(new.clone()),
+            &HallCalibrationRecord::from(new),
         ))
         .unwrap();
         assert_eq!(
             ready(load_all(&mut storage, &mut buf)).hall_calibration,
-            Some(new.clone())
+            Some(new)
         );
         // A present unknown version shadows the still-valid legacy key.
         ready(storage.store_item(&mut buf, &ConfigKey::HallCalibrationRecord, &99u8)).unwrap();
@@ -1760,17 +1760,17 @@ mod tests {
         let good = HallCalibrationConfig::default();
         assert!(good.is_calibrated());
 
-        let mut missing = good.clone();
+        let mut missing = good;
         missing.valid[3] = false;
         assert!(!missing.is_calibrated());
 
-        let mut shifted = good.clone();
+        let mut shifted = good;
         shifted.valid[3] = false;
         shifted.valid[0] = true;
         assert!(!shifted.is_calibrated());
 
         for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut non_finite = good.clone();
+            let mut non_finite = good;
             non_finite.angles[4] = invalid;
             assert!(!non_finite.is_calibrated());
         }

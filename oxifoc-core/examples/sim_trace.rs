@@ -237,7 +237,11 @@ fn main() -> std::io::Result<()> {
             // limit the opposing load to what can stop the rotor in one
             // sample, based on the last sampled electromagnetic torque.
             let stopping_torque = rig.params.j * omega_m / DT;
-            let friction = (sample.torque - load + stopping_torque).clamp(-coulomb, coulomb);
+            let friction = oxifoc_core::foc::clamp_f32(
+                sample.torque - load + stopping_torque,
+                -coulomb,
+                coulomb,
+            );
             rig.step_with_load(load + friction)
         } else {
             rig.step()

@@ -53,7 +53,7 @@ pub fn init_clock() -> Peripherals {
     // Bench A/B 2026-07-07 (Stopped state, 20 kHz ISR): ART off = 2868 cy
     // avg / 34% load; ART on = 2236 cy / 26%. The gap widens on the
     // branchier drive path — never remove these bits without re-measuring.
-    embassy_stm32::pac::FLASH.acr().modify(|w| {
+    pac::FLASH.acr().modify(|w| {
         w.set_prften(true);
         w.set_icen(true);
         w.set_dcen(true);
@@ -101,9 +101,9 @@ pub fn init_status_leds(
 
 /// ADC handles for injected conversions
 pub struct AdcHandles {
-    pub adc1: InjectedAdc<'static, embassy_stm32::pac::adc::Adc, Blocking>,
-    pub adc2: InjectedAdc<'static, embassy_stm32::pac::adc::Adc, Blocking>,
-    pub adc3: InjectedAdc<'static, embassy_stm32::pac::adc::Adc, Blocking>,
+    pub adc1: InjectedAdc<'static, pac::adc::Adc, Blocking>,
+    pub adc2: InjectedAdc<'static, pac::adc::Adc, Blocking>,
+    pub adc3: InjectedAdc<'static, pac::adc::Adc, Blocking>,
 }
 
 /// Existing 15-cycle sample + 12-cycle 12-bit conversion at 21 MHz. Phase
@@ -222,9 +222,7 @@ pub async fn init_adc(
         InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_CH4, Exten::RisingEdge),
         Blocking,
     );
-    embassy_stm32::pac::ADC3
-        .cr1()
-        .modify(|w| w.set_jeocie(true));
+    pac::ADC3.cr1().modify(|w| w.set_jeocie(true));
 
     // NOTE: ADC interrupt is NOT enabled here.
     // foc::init() enables it after installing ADC handles into statics.

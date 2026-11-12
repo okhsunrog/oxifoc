@@ -21,5 +21,5 @@ pub async fn storage_worker(board_trip_a: f32) {
     // Ride the shared core worker instead of a local copy: the hand-written
     // load_all here had drifted (it silently skipped the Derating group, so
     // a persisted derating config was lost on every restart).
-    run_storage_worker(&mut storage, &mut buf, board_trip_a).await;
+    Box::pin(run_storage_worker(&mut storage, &mut buf, board_trip_a)).await;
 }

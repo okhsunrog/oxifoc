@@ -197,7 +197,7 @@ impl Rig {
             let prepared = PreparedHallCalibration::from_config(config)
                 .expect("invalid Hall reference in sim config");
             hall.install_prepared_calibration(&prepared);
-            config.geometry.clone()
+            config.geometry
         });
         if let Some(geometry) = &hall_geometry {
             out.hall_state = measured_hall_state(geometry, out.angle_rad);

@@ -106,7 +106,7 @@ impl ModelConfigUpdate {
             Self::MotorParams(value) => config.motor_params = Some(value.clone()),
             Self::VoltageFeedforward(value) => config.voltage_feedforward = Some(*value),
             Self::HallCalibration(value) => {
-                config.hall_calibration = Some(value.clone());
+                config.hall_calibration = Some(*value);
                 config.hall_calibration_invalid = false;
             }
             #[cfg(all(feature = "detection", feature = "delivery"))]

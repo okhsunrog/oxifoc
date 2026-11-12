@@ -338,7 +338,7 @@ impl DetectionSession {
     ) -> Result<Self> {
         use oxifoc_core::types::measurement::{Reply, Request};
         anyhow::ensure!(
-            plan.is_none_or(|p| p.is_valid()),
+            plan.is_none_or(oxifoc_core::types::commissioning::CommissioningPlan::is_valid),
             "invalid commissioning plan"
         );
         let Reply::Session(expected) = measurement_request(cmd, Request::Inspect)? else {
