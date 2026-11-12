@@ -167,6 +167,10 @@ pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32) {
         max_current_a: BOARD.max_phase_current_a,
         calib: measured_board().calib,
     };
+    #[cfg(feature = "board-vesc6-mk5")]
+    {
+        device_info.capabilities |= oxifoc_core::types::CAP_PWM_TIMING_FROM_ARR;
+    }
     if let Some(phase) = measured_board().phase_sense {
         device_info.set_phase_voltage_info(oxifoc_core::types::PhaseVoltageInfo {
             divider_ratio: phase.divider_ratio,
@@ -344,6 +348,42 @@ impl DetectionBackend for F405Backend {
 
     fn vbus(&self) -> f32 {
         VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
+    #[cfg(feature = "board-vesc6-mk5")]
+    fn prepare_timing(
+        &mut self,
+        request: &oxifoc_core::types::DetectRequest,
+        drive_foc_hz: f32,
+    ) -> Result<f32, oxifoc_core::types::DetectError> {
+        use crate::config::detection_pwm;
+        use oxifoc_core::types::{ControlTiming, DetectError, DetectRequest};
+
+        let requested_hz = match request {
+            DetectRequest::MeasureResistance { .. } => detection_pwm::RESISTANCE_HZ,
+            DetectRequest::MeasureInductance { .. } => detection_pwm::INDUCTANCE_HZ,
+            DetectRequest::MeasureFlux { .. } => detection_pwm::FLUX_HZ,
+            DetectRequest::CalibrateHall { .. } => detection_pwm::HALL_HZ,
+            DetectRequest::MeasureCurrentOffsets { .. } => return Ok(drive_foc_hz),
+        };
+        let drive = crate::config::CONTROL_TIMING
+            .try_get()
+            .ok_or(DetectError::Busy)?;
+        let timing = ControlTiming {
+            clock_hz: drive.clock_hz,
+            period_ticks: 2 * (drive.clock_hz / (2 * requested_hz)),
+        };
+        if !crate::control::foc::retime_for_detection(timing) {
+            return Err(DetectError::Busy);
+        }
+        Ok(timing.frequency_hz())
+    }
+
+    #[cfg(feature = "board-vesc6-mk5")]
+    fn restore_timing(&mut self) -> bool {
+        crate::config::CONTROL_TIMING
+            .try_get()
+            .is_some_and(|timing| crate::control::foc::retime_for_detection(*timing))
     }
     // Pure pass-throughs return the inner future directly (`fn -> impl
     // Future` instead of `async fn`) — an `async` body here would wrap the

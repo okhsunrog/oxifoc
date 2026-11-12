@@ -634,6 +634,9 @@ pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
 pub const CAP_PHASE_VOLTAGE_CAPTURE: u32 = 1 << 1;
 /// Captured phase voltages have hardware RC filtering enabled.
 pub const CAP_PHASE_VOLTAGE_FILTERED: u32 = 1 << 2;
+/// Telemetry carries ARR for an unprescaled center-aligned carrier with
+/// one FOC iteration per period of `2 * ARR` timer ticks.
+pub const CAP_PWM_TIMING_FROM_ARR: u32 = 1 << 3;
 
 /// Static acquisition metadata. The existing fixed-size bootstrap extension
 /// carries divider f32 LE in bytes 0..4 and current-to-voltage sample offset

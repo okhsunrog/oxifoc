@@ -135,6 +135,15 @@ pub const PWM_CONFIG_LIMITS: Option<oxifoc_core::storage::PwmConfigLimits> =
         None
     };
 
+#[cfg(feature = "board-vesc6-mk5")]
+pub mod detection_pwm {
+    // Measurement recipes have their own carrier, independent of drive PWM.
+    pub const RESISTANCE_HZ: u32 = 20_000;
+    pub const INDUCTANCE_HZ: u32 = 20_000;
+    pub const FLUX_HZ: u32 = 20_000;
+    pub const HALL_HZ: u32 = 20_000;
+}
+
 // Effective command-side correction is separate from gate safety timing.
 // Start with the old amplitude, but blend through a provisional 1 A per-phase
 // region to avoid a full voltage step at the first tiny current reference.

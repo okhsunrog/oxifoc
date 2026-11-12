@@ -233,6 +233,59 @@ fn publish_velocity_debug(
 static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
+/// Re-prime TIM1 from the same stopped state as boot, then start a fresh ADC
+/// sequence. The commissioning lease excludes drive commands until restore.
+#[cfg(feature = "board-vesc6-mk5")]
+pub(crate) fn retime_for_detection(timing: oxifoc_core::types::ControlTiming) -> bool {
+    use embassy_stm32::interrupt::typelevel::Interrupt;
+    use embassy_stm32::pac;
+    let Some(drive) = crate::config::CONTROL_TIMING.try_get() else {
+        return false;
+    };
+    if timing.clock_hz != drive.clock_hz
+        || timing.period_ticks == 0
+        || !timing.period_ticks.is_multiple_of(2)
+    {
+        return false;
+    }
+    let Ok(arr) = u16::try_from(timing.period_ticks / 2) else {
+        return false;
+    };
+    critical_section::with(|cs| {
+        if !oxifoc_core::state::DETECTION_ACTIVE.load(Ordering::Acquire)
+            || oxifoc_core::state::FLASH_OP_PENDING.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        let tim = pac::TIM1;
+        if tim.arr().read().arr() == arr {
+            return true;
+        }
+        let mut driver = FOC_DRIVER.borrow(cs).borrow_mut();
+        let Some(driver) = driver.as_mut() else {
+            return false;
+        };
+        if !driver.retime_stopped(timing, crate::config::DEAD_TIME_COMP_NS, |pwm| {
+            pwm.install_stopped_period(arr);
+        }) {
+            return false;
+        }
+        // TIM1 is stopped. Allow a previously triggered three-rank injected
+        // conversion (~3.9 us on MK5) to finish, then discard that old sample.
+        cortex_m::asm::delay(CPU_HZ / 100_000);
+        for adc in [pac::ADC1, pac::ADC2, pac::ADC3] {
+            adc.sr().write(|_| {});
+        }
+        interrupt::typelevel::ADC::unpend();
+        let budget = (u64::from(CPU_HZ) * u64::from(timing.period_ticks)
+            / u64::from(timing.clock_hz)) as u32;
+        ISR_BUDGET_CYCLES.store(budget, Ordering::Relaxed);
+        ISR_LAST_START.store(0, Ordering::Relaxed);
+        MotorPwm::resume_control_timer();
+        true
+    })
+}
+
 // ========== Initialization ==========
 
 /// Initialize FOC driver with motor PWM, sensors, and stored config.

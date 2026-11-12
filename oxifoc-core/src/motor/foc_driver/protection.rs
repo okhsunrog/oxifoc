@@ -219,6 +219,11 @@ impl ProtectionMonitor {
     pub(super) fn configure(&mut self, config: DeratingConfig) {
         self.config = config;
     }
+
+    pub(super) fn set_control_period(&mut self, dt: f32) {
+        self.voltage_decay = 1.0 - (dt / 0.005).min(1.0);
+    }
+
     pub(super) fn config(&self) -> &DeratingConfig {
         &self.config
     }

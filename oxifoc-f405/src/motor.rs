@@ -324,6 +324,28 @@ impl<'d> MotorPwm<'d> {
             .modify(|w| w.set_cce(3, true));
     }
 
+    #[cfg(feature = "board-vesc6-mk5")]
+    pub(crate) fn install_stopped_period(&mut self, arr: u16) {
+        let tim = embassy_stm32::pac::TIM1;
+        tim.cr1().modify(|w| w.set_cen(false));
+        tim.arr().write(|w| w.set_arr(arr));
+        tim.ccr(3).write(|w| w.set_ccr(arr - arr / 50));
+        Self::prepare_peak_updates();
+        self.max_duty = u32::from(arr);
+        self.duty_limit = u32::from(pwm::duty_limit(
+            arr,
+            crate::config::PWM_CONFIG.max_duty_percent,
+        ));
+    }
+
+    #[cfg(feature = "board-vesc6-mk5")]
+    pub(crate) fn resume_control_timer() {
+        let tim = embassy_stm32::pac::TIM1;
+        tim.ccer().modify(|w| w.set_cce(3, true));
+        tim.bdtr().modify(|w| w.set_moe(true));
+        tim.cr1().modify(|w| w.set_cen(true));
+    }
+
     /// Emergency stop - disable all outputs
     pub fn emergency_stop(&mut self) {
         self.write_pwm_preloads(|this| {

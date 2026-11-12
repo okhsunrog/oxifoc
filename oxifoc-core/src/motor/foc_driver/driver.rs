@@ -217,6 +217,37 @@ where
         self.dt
     }
 
+    /// Reconfigure the carrier and its dependent control state with the
+    /// bridge off. The platform must exclude the control IRQ during the change.
+    pub fn retime_stopped(
+        &mut self,
+        timing: crate::types::ControlTiming,
+        dead_time_comp_ns: u32,
+        configure_pwm: impl FnOnce(&mut P),
+    ) -> bool {
+        if !timing.is_valid()
+            || self.mode != ControlMode::Stopped
+            || self.current_offset_active()
+            || self.failsafe_active()
+            || self.commissioning.is_some()
+        {
+            return false;
+        }
+        self.pwm.disable();
+        self.pwm_off = true;
+        configure_pwm(&mut self.pwm);
+        self.dt = timing.dt_s();
+        self.protection.set_control_period(self.dt);
+        self.controller
+            .set_dead_time_comp_factor(dead_time_comp_ns as f32 * 1e-9 / self.dt);
+        self.controller
+            .set_duty_cap(f32::from(self.pwm.duty_limit()) / f32::from(self.pwm.max_duty()));
+        self.controller.reset();
+        self.invalidate_velocity();
+        self.actuation.clear();
+        true
+    }
+
     /// Set current limits.
     pub fn set_current_limits(&mut self, limits: CurrentLimits) {
         self.end_commissioning();

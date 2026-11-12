@@ -70,6 +70,21 @@ pub trait DetectionBackend {
     /// Present DC bus voltage in volts (read from the platform ADC / sim).
     fn vbus(&self) -> f32;
 
+    /// Select the stage timebase while the commissioning lease owns the
+    /// stopped actuator. Platforms with fixed timing use the boot rate.
+    fn prepare_timing(
+        &mut self,
+        _request: &DetectRequest,
+        drive_foc_hz: f32,
+    ) -> Result<f32, DetectError> {
+        Ok(drive_foc_hz)
+    }
+
+    /// Restore the drive timebase after the ISR has disarmed commissioning.
+    fn restore_timing(&mut self) -> bool {
+        true
+    }
+
     /// Measure phase-to-neutral resistance (Ω).
     async fn measure_resistance(
         &mut self,
@@ -171,6 +186,12 @@ pub async fn detect_server<NS, B>(
             while !guard.end::<B::Timer>().await {
                 guard.cancel();
             }
+            // Hold the lease through restoration, including after timeout or
+            // cancellation. Never advertise completion with the stage rate.
+            while !backend.restore_timing() {
+                guard.cancel();
+                <B::Timer as crate::timer::Timer>::after_millis(1).await;
+            }
             if crate::state::detection_cancelled()
                 && !matches!(
                     result,
@@ -265,6 +286,10 @@ async fn run_step<B: DetectionBackend>(
     };
     let prepared = match prepared {
         Ok(prepared) => prepared,
+        Err(error) => return DetectResponse::Error(error),
+    };
+    let foc_freq_hz = match backend.prepare_timing(&req, foc_freq_hz) {
+        Ok(hz) => hz,
         Err(error) => return DetectResponse::Error(error),
     };
     if !detection.begin::<B::Timer>(prepared).await {

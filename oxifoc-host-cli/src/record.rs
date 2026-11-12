@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use oxifoc_core::foc::telemetry::{EnrichCtx, RichSample};
-use oxifoc_core::types::{FastTelemetry, HardwareInfo};
+use oxifoc_core::types::{CAP_PWM_TIMING_FROM_ARR, ControlTiming, FastTelemetry, HardwareInfo};
 use oxifoc_host_lib::{HostRuntime, build_enrich_ctx};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::data_type::{DoubleType, Int32Type, Int64Type};
@@ -73,6 +73,7 @@ pub struct RecordSummary {
     pub rows: usize,
     pub fast_hz_actual: u16,
     pub fast_hz_derived: f64,
+    pub pwm_timing_segments: Vec<PwmTimingSegment>,
     pub decimation_m: u32,
     pub duration_s: f64,
     /// Number of places where seq jumped by more than M.
@@ -84,6 +85,60 @@ pub struct RecordSummary {
     pub raw_telemetry: Option<oxifoc_host_lib::raw_telemetry::RawCaptureReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub velocity_debug_path: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct PwmTimingSegment {
+    pub first_row: usize,
+    pub first_cycle: u64,
+    pub first_t_s: f64,
+    pub control_timing: ControlTiming,
+    pub fast_hz: f64,
+}
+
+/// Integrate wrapping FOC sequence deltas. A timer restart does not advance
+/// the sequence while paused. Charge the interval ending at a rate change to
+/// the previous segment, since the exact wall-clock boundary is unavailable.
+fn sample_timing(
+    samples: &[FastTelemetry],
+    initial: ControlTiming,
+    decimation: u32,
+    use_arr: bool,
+) -> (Vec<f64>, Vec<PwmTimingSegment>) {
+    let mut times = Vec::with_capacity(samples.len());
+    let mut segments = Vec::new();
+    let mut timing = initial;
+    let mut prev = samples.first().map_or(0, |sample| sample.seq);
+    let mut cycles = 0_u64;
+    let mut ticks = 0_u64;
+    for (row, sample) in samples.iter().enumerate() {
+        let delta = u64::from(sample.seq.wrapping_sub(prev));
+        cycles += delta;
+        ticks += delta * u64::from(timing.period_ticks);
+        prev = sample.seq;
+        let time = if initial.is_valid() {
+            ticks as f64 / f64::from(initial.clock_hz)
+        } else {
+            f64::NAN
+        };
+        times.push(time);
+        let period = if use_arr && sample.pwm_arr != 0 {
+            2 * u32::from(sample.pwm_arr)
+        } else {
+            timing.period_ticks
+        };
+        if row == 0 || period != timing.period_ticks {
+            timing.period_ticks = period;
+            segments.push(PwmTimingSegment {
+                first_row: row,
+                first_cycle: cycles,
+                first_t_s: time,
+                control_timing: timing,
+                fast_hz: f64::from(timing.clock_hz) / f64::from(period) / f64::from(decimation),
+            });
+        }
+    }
+    (times, segments)
 }
 
 /// Latest hardware info the backend has seen (handshake), if any.
@@ -101,7 +156,7 @@ pub struct Capture {
     /// Sampled after the stream ACK, while calibration changes are blocked.
     pub board_calibration: oxifoc_core::types::ConfigSnapshot,
     pub hw: Option<HardwareInfo>,
-    pub control_timing: oxifoc_core::types::ControlTiming,
+    pub control_timing: ControlTiming,
     pub fast_hz_requested: u16,
     pub fast_hz_actual: u16,
     pub decimation_m: u32,
@@ -347,7 +402,7 @@ impl Capture {
             "oxifoc.board_calibration".to_string(),
             serde_json::to_string(&self.board_calibration)?,
         ));
-        write_parquet(
+        let pwm_timing_segments = write_parquet(
             out_path,
             &self.samples,
             self.hw.as_ref(),
@@ -376,8 +431,7 @@ impl Capture {
                     &frames,
                     self.samples[0].seq,
                     self.expected_step(),
-                    f64::from(self.control_timing.clock_hz)
-                        / f64::from(self.control_timing.period_ticks),
+                    &pwm_timing_segments,
                 )?;
             }
             raw.wait_end_for(session, Duration::ZERO)?
@@ -390,6 +444,7 @@ impl Capture {
             fast_hz_derived: f64::from(self.control_timing.clock_hz)
                 / f64::from(self.control_timing.period_ticks)
                 / f64::from(self.expected_step()),
+            pwm_timing_segments,
             decimation_m: self.expected_step(),
             duration_s: self.started.elapsed().as_secs_f64(),
             gaps,
@@ -406,7 +461,7 @@ fn write_velocity_csv(
     frames: &[oxifoc_core::velocity_telemetry::VelocityDebugFrame],
     first_fast_seq: u16,
     stride: u32,
-    foc_hz: f64,
+    timing_segments: &[PwmTimingSegment],
 ) -> Result<()> {
     use std::io::{BufWriter, Write};
     // The diagnostic origin is produced before native publish in the same ISR.
@@ -427,7 +482,14 @@ fn write_velocity_csv(
     )?;
     for frame in frames {
         let delta = frame.sequence.wrapping_sub(frames[0].sequence);
-        let time = (f64::from(delta) - f64::from(offset)) / foc_hz;
+        let cycle = i64::from(delta) - i64::from(offset);
+        let index = timing_segments
+            .partition_point(|segment| segment.first_cycle as i64 <= cycle)
+            .saturating_sub(1);
+        let segment = &timing_segments[index];
+        let dt = f64::from(segment.control_timing.period_ticks)
+            / f64::from(segment.control_timing.clock_hz);
+        let time = segment.first_t_s + (cycle - segment.first_cycle as i64) as f64 * dt;
         let speed = |word| f64::from(word) / 8.0;
         let current = |word| f64::from(word) / 100.0;
         writeln!(
@@ -477,7 +539,7 @@ fn write_parquet(
     samples: &[FastTelemetry],
     hw: Option<&HardwareInfo>,
     enrich: Option<&EnrichCtx>,
-    control_timing: oxifoc_core::types::ControlTiming,
+    control_timing: ControlTiming,
     fast_hz_requested: u16,
     fast_hz_actual: u16,
     decimation_m: u32,
@@ -485,7 +547,9 @@ fn write_parquet(
     gaps: usize,
     samples_lost: u64,
     extra_meta: &[(String, String)],
-) -> Result<()> {
+) -> Result<Vec<PwmTimingSegment>> {
+    let use_arr = hw.is_some_and(|h| h.capabilities & CAP_PWM_TIMING_FROM_ARR != 0);
+    let (t_s, timing_segments) = sample_timing(samples, control_timing, decimation_m, use_arr);
     let kv = |k: &str, v: String| KeyValue {
         key: k.to_string(),
         value: Some(v),
@@ -503,6 +567,7 @@ fn write_parquet(
         kv("oxifoc.fast_hz_actual", fast_hz_actual.to_string()),
         kv("oxifoc.decimation_m", decimation_m.to_string()),
         kv("oxifoc.control_timing", serde_json::to_string(&control_timing)?),
+        kv("oxifoc.pwm_timing_segments", serde_json::to_string(&timing_segments)?),
         kv("oxifoc.foc_hz_derived", (f64::from(control_timing.clock_hz)
             / f64::from(control_timing.period_ticks)).to_string()),
         kv("oxifoc.fast_hz_derived", (f64::from(control_timing.clock_hz)
@@ -529,7 +594,9 @@ fn write_parquet(
              ARR=0 means unavailable. pwm_enables bits 0..2 are high-side A/B/C, \
              3..5 low-side A/B/C, bit 6 main enable. CCR may be a preload register; \
              it is not a gate-waveform measurement. vd_v/vq_v are PI commands \
-             before compensation, not ADC-measured applied voltages."
+             before compensation, not ADC-measured applied voltages. The top-level \
+             rates describe stream arming; pwm_timing_segments records actual rates \
+             by row. Sequence-derived t_s excludes any pause during timer restart."
                 .to_string(),
         ),
         kv("oxifoc.config", config_snapshot.to_string()),
@@ -572,29 +639,7 @@ fn write_parquet(
     let file = File::create(path).with_context(|| format!("create {path}"))?;
     let mut writer = SerializedFileWriter::new(file, schema, props)?;
 
-    // Column vectors. Time axis from raw seq against the device FOC clock —
-    // immune to host-side batching jitter. The device `seq` is a u16 FOC-cycle
-    // counter (wraps every 65536 cycles ≈ 3.3 s at 20 kHz), so a single
-    // `wrapping_sub(seq0)` only stays monotonic within one wrap period — past
-    // it `t_s` would sawtooth back to 0. Accumulate the per-sample wrapping
-    // deltas into a u64 cycle count instead (each delta ≈ M ≪ 65536, so every
-    // wrap is unambiguous), matching the `FastTelemetry::seq` contract. The raw
-    // `seq` column stays untouched — maneuver events anchor to it by raw value.
-    let dt = f64::from(control_timing.period_ticks) / f64::from(control_timing.clock_hz);
-    let mut cycles: u64 = 0;
-    let mut prev = samples[0].seq;
-    let t_s: Vec<f64> = samples
-        .iter()
-        .map(|s| {
-            cycles += u64::from(s.seq.wrapping_sub(prev));
-            prev = s.seq;
-            if control_timing.is_valid() {
-                cycles as f64 * dt
-            } else {
-                f64::NAN
-            }
-        })
-        .collect();
+    // Keep the raw sequence for maneuver events that anchor to its value.
     let seq: Vec<i64> = samples.iter().map(|s| i64::from(s.seq)).collect();
     // Raw uncalibrated ADC counts (12-bit) for the three shunts.
     let ia: Vec<i32> = samples.iter().map(|s| i32::from(s.ia)).collect();
@@ -705,7 +750,7 @@ fn write_parquet(
     }
     rg.close()?;
     writer.close()?;
-    Ok(())
+    Ok(timing_segments)
 }
 
 #[cfg(test)]
@@ -715,6 +760,34 @@ mod tests {
     use oxifoc_core::types::{ConfigGroupId, ConfigSnapshot, ConfigValue};
     use parquet::file::reader::{FileReader, SerializedFileReader};
     use parquet::record::RowAccessor;
+
+    #[test]
+    fn pwm_timing_segments_preserve_sequence_wrap_and_rate_changes() {
+        let drive = ControlTiming {
+            clock_hz: 168_000_000,
+            period_ticks: 11_200,
+        };
+        let samples =
+            [(65532, 5600), (0, 4200), (4, 4200), (8, 5600), (12, 5600)].map(|(seq, pwm_arr)| {
+                FastTelemetry {
+                    seq,
+                    pwm_arr,
+                    ..Default::default()
+                }
+            });
+        let (times, segments) = sample_timing(&samples, drive, 4, true);
+        for (time, ticks) in times.into_iter().zip([0, 44_800, 78_400, 112_000, 156_800]) {
+            assert!((time - f64::from(ticks) / f64::from(drive.clock_hz)).abs() < 1e-14);
+        }
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[1].first_row, 1);
+        assert_eq!(segments[1].first_cycle, 4);
+        assert_eq!(segments[1].control_timing.period_ticks, 8400);
+        assert_eq!(segments[1].fast_hz, 5000.0);
+        assert_eq!(segments[2].first_row, 3);
+        assert_eq!(segments[2].control_timing, drive);
+        assert_eq!(sample_timing(&samples, drive, 4, false).1.len(), 1);
+    }
 
     #[test]
     fn parquet_records_projection_and_unprojected_current_residual() {
@@ -767,7 +840,7 @@ mod tests {
             &[frame],
             Some(&hw),
             Some(&ctx),
-            oxifoc_core::types::ControlTiming::from_hz(20_000),
+            ControlTiming::from_hz(20_000),
             20_000,
             20_000,
             1,
@@ -818,7 +891,7 @@ mod tests {
 
     #[test]
     fn parquet_time_uses_timer_ratio_across_sequence_wrap_and_decimation() {
-        let timing = oxifoc_core::types::ControlTiming {
+        let timing = ControlTiming {
             clock_hz: 167_835_842,
             period_ticks: 8390,
         };
@@ -866,7 +939,7 @@ mod tests {
             .file_metadata()
             .key_value_metadata()
             .unwrap();
-        let saved: oxifoc_core::types::ControlTiming = serde_json::from_str(
+        let saved: ControlTiming = serde_json::from_str(
             meta.iter()
                 .find(|x| x.key == "oxifoc.control_timing")
                 .unwrap()
@@ -892,7 +965,7 @@ mod tests {
                 value: Some(ConfigValue::BoardCalibration(gain)),
             },
             hw: None,
-            control_timing: oxifoc_core::types::ControlTiming::from_hz(1000),
+            control_timing: ControlTiming::from_hz(1000),
             fast_hz_requested: 500,
             fast_hz_actual: 500,
             decimation_m: 2,

@@ -2,6 +2,12 @@
 
 ## Resume here
 
+2026-11-12 update. MK5 now supports 15/20 kHz drive PWM at boot and separate
+20 kHz timing for each motor-detection stage. The Flipsky H5055 unloaded A/B
+found about 15 µs more PWM-write margin at 15 kHz and similar speed tracking.
+Low-speed ripple remains at both rates. See the latest measurements at the end
+of this note. The next drive decision needs a matched comparison under load.
+
 Updated: 2026-11-11. Baseline commit: `3ee9089`.
 Goal: shorten the real F405 FOC/ADC path at 20 kHz, including worst observed
 cycles and PWM-update timing, while preserving protections and native telemetry.
@@ -785,3 +791,48 @@ PWM period within the SWD timing uncertainty. Stopped native-rate
 captures held 30,288 and 40,485 samples without gaps or producer drops.
 The MK5 was left stopped at 20 kHz. Raw evidence is under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-pwm-config/`.
+
+### MK5 15/20 kHz drive comparison
+
+Same deadline-instrumented image, Flipsky H5055 without load, Hall fallback,
+5 kHz Packed28 recording. Two 320→40 runs and two staged +640 runs per rate.
+All commands and terminal Stops acknowledged. Zero gaps across 368,909
+samples and zero late, ambiguous or masked PWM commits across 1,162,367 writes.
+Minimum PWM-write margin was 8.65 µs at 20 kHz and 23.65 µs at 15 kHz.
+TIM1 and all three ADC register contracts were checked at both rates.
+
+At +320, the medians of Hall travel over 200 ms were 319.91–319.97 electrical
+rad/s. At +640 they were 639.42–639.81. The speed and current traces overlap
+closely at the higher speeds. The residual oscillation and short current peaks
+near +40 occur at both rates. The recorded FOC–Hall angle difference gives
+an indirect view of the handover.
+`manifest.json`, `comparison.json` and both overlays are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-pwm-ab/`.
+
+### Independent timing for detection
+
+MK5 changes the carrier with the bridge off, reprimes TIM1 and the injected
+ADC trigger, and updates FOC `dt`, duty limits and software dead-time correction.
+The measurement lease covers restoration of drive timing before the terminal
+reply. Packed28 preserves ARR across the transition. The Parquet sequence
+timebase records each rate segment and excludes the short pause in TIM1.
+
+Full Medium Outrunner detection at 5 A input / 0 A regen with 15 kHz drive
+recorded 653,291 rows without gaps or producer drops. Every stage contained a
+15→20→15 kHz sequence and the controller ended stopped without faults. The
+measured model was 63.49 mΩ, 31.97/51.39 µH and 3.993 mWb, with all six Hall
+states valid. The cancel test interrupted L while running, returned to 15 kHz
+within the 18.65 ms measured cancellation round trip, and recorded 17,340 rows
+without gaps. Both tests ran in diagnostic mode without `--apply`.
+Artifacts are under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-detection-pwm/`.
+
+The R sweep varied only the R-stage carrier. Two runs per frequency at
+2.4 and 12.0 A Id, with 15 kHz drive and the same 5 A / 0 A source limits.
+All 669,718 samples arrived. Firmware R in mΩ was 63.766/63.930 at 5 kHz,
+63.921/63.959 at 10 kHz, 63.856/63.915 at 15 kHz and 63.780/63.793 at 20 kHz.
+The total spread was 0.193 mΩ (0.30%). Fitting the two settled plateaus from
+the measured phase voltages independently gave 63.675–63.888 mΩ. The 5 kHz
+trace shows a similar voltage shift at both plateaus, so it largely cancels
+in ΔV/ΔI. Keep the R-stage default at 20 kHz for this workflow. The sweep
+compares repeatability on one H5055. The plot and plateau data are `r-sweep.png` and
+`analysis.json` in the same artifact directory.

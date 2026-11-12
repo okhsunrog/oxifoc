@@ -46,6 +46,11 @@ impl Default for ActuationModel {
 }
 
 impl ActuationModel {
+    pub(super) fn clear(&mut self) {
+        self.history = [(0.0, 0.0); V_HIST];
+        self.head = 0;
+    }
+
     pub(super) fn delay_cycles(&self) -> f32 {
         self.delay.whole as f32 + self.delay.older_weight
     }
