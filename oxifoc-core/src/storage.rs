@@ -9,6 +9,7 @@
 //! All value types implement [`PostcardValue`] via the marker trait,
 //! giving them automatic postcard serialization for sequential-storage.
 
+pub use crate::motor::drive_limits::DriveLimitsConfig;
 pub use crate::types::VoltageFeedforwardMode;
 use sequential_storage::map::{Key, PostcardValue, SerializationError};
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,7 @@ pub enum ConfigKey {
     HallCalibrationRecord = 14,
     InstalledDrive = 15,
     MotorTemperature = 16,
+    DriveLimits = 17,
 }
 
 impl Key for ConfigKey {
@@ -96,6 +98,7 @@ impl Key for ConfigKey {
             14 => Self::HallCalibrationRecord,
             15 => Self::InstalledDrive,
             16 => Self::MotorTemperature,
+            17 => Self::DriveLimits,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -797,6 +800,8 @@ pub struct MotorTemperatureConfig {
 
 impl PostcardValue<'_> for MotorTemperatureConfig {}
 
+impl PostcardValue<'_> for DriveLimitsConfig {}
+
 /// Fields are `None` if not yet stored in flash (use board defaults).
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeConfig {
@@ -820,9 +825,15 @@ pub struct RuntimeConfig {
     /// Missing records retain plain PI control.
     pub voltage_feedforward: Option<VoltageFeedforwardConfig>,
     pub motor_temperature: Option<MotorTemperatureConfig>,
+    pub drive_limits: Option<DriveLimitsConfig>,
+    pub drive_limits_invalid: bool,
 }
 
 impl RuntimeConfig {
+    pub fn drive_limits_are_valid(&self) -> bool {
+        !self.drive_limits_invalid && self.drive_limits.is_none_or(DriveLimitsConfig::is_sane)
+    }
+
     pub fn board_calibration_is_valid(&self) -> bool {
         !self.board_calibration_invalid && self.board_calibration.is_none_or(|v| v.is_sane())
     }
@@ -954,6 +965,7 @@ pub enum ConfigPayload {
     Derating(DeratingConfigStored),
     VoltageFeedforward(VoltageFeedforwardConfig),
     MotorTemperature(MotorTemperatureConfig),
+    DriveLimits(DriveLimitsConfig),
 }
 
 // ============================================================================
@@ -1079,6 +1091,7 @@ where
                     ConfigPayload::Failsafe(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::Velocity(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::Derating(v) => storage.store_item(buf, &key, &v).await,
+                    ConfigPayload::DriveLimits(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::VoltageFeedforward(v) => storage.store_item(buf, &key, &v).await,
                     ConfigPayload::MotorTemperature(v) => storage.store_item(buf, &key, &v).await,
                 };
@@ -1158,6 +1171,14 @@ where
     load!(derating, Derating);
     load!(voltage_feedforward, VoltageFeedforward);
     load!(motor_temperature, MotorTemperature);
+    match storage
+        .fetch_item::<DriveLimitsConfig>(buf, &ConfigKey::DriveLimits)
+        .await
+    {
+        Ok(Some(value)) if value.is_sane() => cfg.drive_limits = Some(value),
+        Ok(None) => {}
+        _ => cfg.drive_limits_invalid = true,
+    }
 
     match storage
         .fetch_item::<HallCalibrationRecord>(buf, &ConfigKey::HallCalibrationRecord)

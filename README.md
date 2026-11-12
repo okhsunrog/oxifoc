@@ -146,6 +146,22 @@ for a RAM-only change; modes are `Disabled`, `CrossCoupling`, `BackEmf`, and
 `Both`. `config get voltage-feedforward` reads the current policy. The generic
 `config set` behavior is unchanged: omitting `--volatile` requests persistence.
 
+With the motor stopped, the `drive-limits` config sets the rider's direction
+and directional speed ceilings in electrical rad/s.
+
+```sh
+just cli-bridge config set drive-limits invert_direction=true max_forward_erad_s=650 max_reverse_erad_s=150 --volatile
+just cli-bridge config drive-profile e-skate --volatile
+```
+
+A speed ceiling of `null` inherits the legacy `derating.max_speed_erad_s`.
+Use `0` to disable the ceiling for that direction. The E-Skate preset starts
+the duty taper at 85% of the effective modulation limit. You can set
+`duty_start_frac` directly, with `1` disabling this taper. The signed
+`throttle` command uses a fraction in `[-1, 1]` of the live current budget.
+`start --iq` continues to request amps. Fast telemetry uses the motor's
+electrical coordinates.
+
 **Virtual device** (`oxifoc-virtual`) — Simulated motor controller over TCP/UDP. Host tools connect exactly as to real hardware.
 
 Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB (nusb).

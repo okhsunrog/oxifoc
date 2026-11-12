@@ -162,6 +162,7 @@ where
     fn maybe_restart_sensorless(&mut self, dt: f32) {
         let drive_cmd = match self.mode {
             ControlMode::CurrentControl { iq_target, .. } => iq_target,
+            ControlMode::Throttle { fraction } => fraction,
             ControlMode::VelocityControl { target_vel } => target_vel,
             _ => 0.0,
         };

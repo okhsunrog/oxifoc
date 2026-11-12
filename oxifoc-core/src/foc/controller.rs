@@ -488,7 +488,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
     /// Circular voltage limit (V): the modulation limit, tightened to what
     /// the duty cap leaves (the SVPWM duty spread is `√3·|V|/vbus`).
-    fn voltage_limit(&self) -> f32 {
+    pub(crate) fn voltage_limit(&self) -> f32 {
         self.vbus * self.modulation.effective
     }
 

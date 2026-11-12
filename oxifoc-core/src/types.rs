@@ -158,6 +158,8 @@ pub enum ControlMode {
     /// at speed dumps an uncontrolled current (~λ/L) through the FETs, so
     /// `process_commands` rejects it above a small velocity threshold.
     Brake,
+    /// Signed fraction of the currently available traction or brake current.
+    Throttle { fraction: f32 },
 }
 
 // ============================================================================
@@ -169,7 +171,7 @@ pub enum ControlMode {
 /// Note: Fault information is now platform-specific. Use the platform's
 /// fault endpoint to get detailed fault information.
 impl ControlMode {
-    /// All f32 payload fields are finite.
+    /// All numeric payloads are finite and normalized throttle is in range.
     ///
     /// Wire input is arbitrary bits: a NaN/inf target doesn't panic (float
     /// math never does), but it propagates through the PI loop into a
@@ -183,6 +185,7 @@ impl ControlMode {
                 id_target,
             } => iq_target.is_finite() && id_target.is_finite(),
             Self::VelocityControl { target_vel } => target_vel.is_finite(),
+            Self::Throttle { fraction } => (-1.0..=1.0).contains(&fraction),
             Self::PositionControl { target_pos } => target_pos.is_finite(),
             Self::OpenLoop {
                 angle_rad,
@@ -625,7 +628,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 17;
+pub const ICD_PROTO_VERSION: u16 = 18;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1027,6 +1030,7 @@ mod config_types {
     };
 
     use super::*;
+    use crate::motor::drive_limits::DriveLimitsConfig;
 
     /// Configuration request from host.
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
@@ -1069,10 +1073,11 @@ mod config_types {
         BoardCalibration,
         VoltageFeedforward,
         MotorTemperature,
+        DriveLimits,
     }
 
     impl ConfigGroupId {
-        pub const COUNT: usize = 14;
+        pub const COUNT: usize = 15;
         pub const ALL: [Self; Self::COUNT] = [
             Self::MotorParams,
             Self::HallCalibration,
@@ -1088,6 +1093,7 @@ mod config_types {
             Self::BoardCalibration,
             Self::VoltageFeedforward,
             Self::MotorTemperature,
+            Self::DriveLimits,
         ];
 
         pub const fn index(self) -> usize {
@@ -1106,6 +1112,7 @@ mod config_types {
                 Self::BoardCalibration => 11,
                 Self::VoltageFeedforward => 12,
                 Self::MotorTemperature => 13,
+                Self::DriveLimits => 14,
             }
         }
     }
@@ -1134,6 +1141,7 @@ mod config_types {
         BoardCalibration(BoardCalibrationConfig),
         VoltageFeedforward(VoltageFeedforwardConfig),
         MotorTemperature(MotorTemperatureConfig),
+        DriveLimits(DriveLimitsConfig),
     }
 
     impl ConfigWrite {
@@ -1153,6 +1161,7 @@ mod config_types {
                 Self::BoardCalibration(_) => ConfigGroupId::BoardCalibration,
                 Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
                 Self::MotorTemperature(_) => ConfigGroupId::MotorTemperature,
+                Self::DriveLimits(_) => ConfigGroupId::DriveLimits,
             }
         }
     }
@@ -1189,6 +1198,7 @@ mod config_types {
         BoardCalibration(BoardCalibrationConfig),
         VoltageFeedforward(VoltageFeedforwardConfig),
         MotorTemperature(MotorTemperatureConfig),
+        DriveLimits(DriveLimitsConfig),
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]

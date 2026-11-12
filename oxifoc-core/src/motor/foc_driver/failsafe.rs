@@ -174,6 +174,7 @@ where
         // estimate's frame, sign included. Zero is the honest seed there.
         let current_iq = match self.mode {
             ControlMode::CurrentControl { iq_target, .. } => iq_target,
+            ControlMode::Throttle { .. } => self.last_granted_iq,
             ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
                 if self.velocity_feedback_available =>
             {

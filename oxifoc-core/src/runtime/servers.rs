@@ -290,6 +290,7 @@ fn write_is_acceptable(
         ConfigWrite::BoardCalibration(v) => v.is_sane(),
         ConfigWrite::CurrentLimits(v) => v.is_coherent(),
         ConfigWrite::Derating(v) => DeratingConfig::from(v).is_sane(),
+        ConfigWrite::DriveLimits(v) => v.is_sane(),
         ConfigWrite::DcOffsets(v) => {
             counts_ok(v.phase_a) && counts_ok(v.phase_b) && counts_ok(v.phase_c)
         }
@@ -340,6 +341,7 @@ fn config_value(
         G::Derating => cfg.derating.clone().map(V::Derating),
         G::VoltageFeedforward => cfg.voltage_feedforward.map(V::VoltageFeedforward),
         G::MotorTemperature => cfg.motor_temperature.map(V::MotorTemperature),
+        G::DriveLimits => cfg.drive_limits.map(V::DriveLimits),
     }
 }
 
@@ -365,6 +367,7 @@ fn flash_parts(value: crate::types::ConfigValue) -> (ConfigKey, ConfigPayload) {
         V::Failsafe(v) => (ConfigKey::Failsafe, ConfigPayload::Failsafe(v)),
         V::Velocity(v) => (ConfigKey::Velocity, ConfigPayload::Velocity(v)),
         V::Derating(v) => (ConfigKey::Derating, ConfigPayload::Derating(v)),
+        V::DriveLimits(v) => (ConfigKey::DriveLimits, ConfigPayload::DriveLimits(v)),
         V::VoltageFeedforward(v) => (
             ConfigKey::VoltageFeedforward,
             ConfigPayload::VoltageFeedforward(v),
@@ -492,6 +495,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     ConfigGroupId::HallCalibration => {
                                         cfg.hall_calibration_is_valid()
                                     }
+                                    ConfigGroupId::DriveLimits => cfg.drive_limits_are_valid(),
                                     _ => true,
                                 },
                                 persisted: persisted_revisions.borrow(cs).borrow()[group.index()]
@@ -601,6 +605,17 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 };
                                 return guard.apply::<T>().await;
                             }
+                            if let ConfigWrite::DriveLimits(value) = &write {
+                                let Some(guard) = ModelApplyGuard::prepare_drive_limits(
+                                    *value,
+                                    runtime_config,
+                                    keyed.id,
+                                    current_revision,
+                                ) else {
+                                    return ConfigResponse::Busy;
+                                };
+                                return guard.apply::<T>().await;
+                            }
                             let model_update = match &write {
                                 ConfigWrite::MotorParams(value) => {
                                     Some(crate::state::model::ModelConfigUpdate::MotorParams(
@@ -654,8 +669,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     ConfigWrite::CurrentLimits(v) => {
                                         cfg.current_limits = Some(v.clone());
                                     }
-                                    ConfigWrite::VoltageLimits(_) => {
-                                        unreachable!("handled by durable voltage apply");
+                                    ConfigWrite::VoltageLimits(_) | ConfigWrite::DriveLimits(_) => {
+                                        unreachable!("handled by durable driver apply");
                                     }
                                     ConfigWrite::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
                                     ConfigWrite::PiGains(v) => cfg.pi_gains = Some(v.clone()),
@@ -719,6 +734,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 ConfigWrite::MotorParams(_)
                                 | ConfigWrite::VoltageFeedforward(_)
                                 | ConfigWrite::VoltageLimits(_)
+                                | ConfigWrite::DriveLimits(_)
                                 | ConfigWrite::HallCalibration(_) => {
                                     unreachable!("handled by coherent model transaction")
                                 }

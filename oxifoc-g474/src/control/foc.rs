@@ -120,6 +120,7 @@ pub async fn init(
     foc_driver.set_derating(oxifoc_core::motor::derating::DeratingConfig::from_stored(
         config.derating.as_ref(),
     ));
+    foc_driver.load_drive_limits(config);
 
     // Store ADC handles for ISR access
     ADC1_INJECTED.lock(|cell| cell.replace(Some(adc1)));

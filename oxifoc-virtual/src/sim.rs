@@ -158,6 +158,7 @@ pub async fn foc_loop(
         .expect("stored voltage limits must fit the board");
     driver.set_velocity_config(VelocityLoopConfig::from_stored(config.velocity.as_ref()));
     driver.set_derating(DeratingConfig::from_stored(config.derating.as_ref()));
+    driver.load_drive_limits(&config);
     let prepared_board = PreparedBoardConfig::new(board);
 
     let mut seq = 0u32;

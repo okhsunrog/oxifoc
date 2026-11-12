@@ -238,11 +238,15 @@ impl DeratingConfig {
     /// The driver's iq clamp therefore evaluates this fresh every cycle
     /// and combines it with the decimated scales.
     pub fn speed_cut(&self, omega_e_rad_s: f32) -> f32 {
-        if self.max_speed_erad_s <= 0.0 {
+        self.speed_cut_at(omega_e_rad_s, self.max_speed_erad_s)
+    }
+
+    pub(super) fn speed_cut_at(&self, omega_e_rad_s: f32, ceiling: f32) -> f32 {
+        if ceiling <= 0.0 {
             return 1.0;
         }
-        let start = self.max_speed_erad_s * clamp_f32(self.speed_start_frac, 0.0, 1.0);
-        ramp_down(omega_e_rad_s.abs(), start, self.max_speed_erad_s)
+        let start = ceiling * clamp_f32(self.speed_start_frac, 0.0, 1.0);
+        ramp_down(omega_e_rad_s.abs(), start, ceiling)
     }
 }
 

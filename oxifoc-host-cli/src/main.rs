@@ -331,6 +331,11 @@ enum Command {
         )]
         id: f32,
     },
+    /// Request a signed fraction of the available drive or brake current
+    Throttle {
+        #[arg(allow_hyphen_values = true, help = "Fraction in -1..=1")]
+        fraction: f32,
+    },
     /// Stop the motor (PWM off)
     Stop,
     /// Coast — all FETs off, motor spins freely
@@ -567,11 +572,25 @@ enum ConfigAction {
         )]
         volatile: bool,
     },
+    /// Apply the duty taper preset, retaining direction and speed settings
+    DriveProfile {
+        #[arg(value_enum)]
+        profile: DriveProfile,
+        #[arg(long)]
+        volatile: bool,
+    },
     /// Erase ALL stored config groups (factory reset; requires --yes)
     Reset {
         #[arg(long, help = "Confirm the erase")]
         yes: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum DriveProfile {
+    Generic,
+    #[value(name = "e-skate")]
+    ESkate,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -762,6 +781,21 @@ fn main() -> Result<()> {
                 json,
                 json!({"sent": {"iq": iq, "id": id}, "device": format!("{status:?}")}),
                 format!("Motor started at iq={iq:.1} A — device: {status:?}"),
+            );
+        }
+        Command::Throttle { fraction } => {
+            anyhow::ensure!(
+                (-1.0..=1.0).contains(&fraction),
+                "throttle must be in -1..=1"
+            );
+            let status = send_motor_acked(&runtime, ControlMode::Throttle { fraction })?;
+            emit(
+                json,
+                json!({"sent": {"fraction": fraction}, "device": status}),
+                format!(
+                    "Throttle set to {fraction:.1}% — device: {status:?}",
+                    fraction = fraction * 100.0
+                ),
             );
         }
         Command::Stop => {
@@ -1033,6 +1067,35 @@ fn main() -> Result<()> {
                         } else {
                             "volatile"
                         }
+                    ),
+                );
+            }
+            ConfigAction::DriveProfile { profile, volatile } => {
+                use oxifoc_core::storage::DriveLimitsConfig;
+                use oxifoc_host_lib::ops::config;
+                let start = match profile {
+                    DriveProfile::Generic => DriveLimitsConfig::DEFAULT.duty_start_frac,
+                    DriveProfile::ESkate => DriveLimitsConfig::E_SKATE_DUTY_START,
+                };
+                let fields = [format!("duty_start_frac={start}")];
+                let (value, revision, persisted) = if volatile {
+                    let (value, revision) =
+                        config::apply_fields(&runtime.cmd_tx, ConfigGroupId::DriveLimits, &fields)?;
+                    (value, revision, false)
+                } else {
+                    let (value, commit) = config_cli::set_fields(
+                        &runtime.cmd_tx,
+                        ConfigGroupId::DriveLimits,
+                        &fields,
+                    )?;
+                    (value, commit.revision, commit.persisted)
+                };
+                emit(
+                    json,
+                    json!({"value": value, "revision": revision, "persisted": persisted}),
+                    format!(
+                        "Drive profile {profile:?}, duty taper starts at {}% of the limit",
+                        start * 100.0
                     ),
                 );
             }

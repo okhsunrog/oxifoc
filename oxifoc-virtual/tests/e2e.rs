@@ -576,6 +576,61 @@ fn run_e2e(transport: TransportType) {
 }
 
 #[test]
+fn drive_limits_apply_to_the_throttle_command() {
+    use oxifoc_core::storage::DriveLimitsConfig;
+    use oxifoc_host_lib::ops::config::{apply_write, read_group};
+
+    let port = free_tcp_port();
+    let _device = spawn_device("tcp", port);
+    let rt = start_host(HostConfig {
+        transport: Some(TransportType::Tcp),
+        tcp_host: Some("127.0.0.1".into()),
+        tcp_port: Some(port),
+        fast_hz: Some(500),
+        stream_defmt: Some(false),
+        ..Default::default()
+    });
+    assert!(rt.wait_for_connection(Duration::from_secs(15)));
+    let limits = DriveLimitsConfig {
+        invert_direction: true,
+        max_forward_erad_s: Some(350.0),
+        max_reverse_erad_s: Some(120.0),
+        duty_start_frac: DriveLimitsConfig::E_SKATE_DUTY_START,
+    };
+    let group = ConfigGroupId::DriveLimits;
+    let revision = apply_write(&rt.cmd_tx, 0, ConfigWrite::DriveLimits(limits)).unwrap();
+    let snapshot = read_group(&rt.cmd_tx, group).unwrap();
+    assert_eq!(snapshot.revision, revision);
+    assert_eq!(snapshot.value, Some(ConfigValue::DriveLimits(limits)));
+
+    let send = |mode| {
+        let (tx, rx) = motor_channel();
+        rt.cmd_tx.send(HostCommand::MotorAck(mode, tx)).unwrap();
+        rx.blocking_recv().unwrap().unwrap()
+    };
+    let throttle = ControlMode::Throttle { fraction: 0.1 };
+    let ack = send(throttle);
+    assert_eq!(ack.outcome, MotorCommandOutcome::Applied);
+    assert_eq!(ack.mode, throttle);
+    assert!(wait_until(Duration::from_secs(2), || {
+        rt.fast_rx.try_iter().any(|sample| sample.rpm < 0)
+    }));
+    assert!(
+        apply_write(
+            &rt.cmd_tx,
+            revision,
+            ConfigWrite::DriveLimits(DriveLimitsConfig::DEFAULT),
+        )
+        .is_err()
+    );
+    assert_eq!(
+        send(ControlMode::Stopped).outcome,
+        MotorCommandOutcome::Applied
+    );
+    rt.shutdown();
+}
+
+#[test]
 fn e2e_motor_and_detect_over_tcp() {
     run_e2e(TransportType::Tcp);
 }

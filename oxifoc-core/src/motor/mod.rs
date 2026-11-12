@@ -2,6 +2,7 @@
 
 pub mod derating;
 pub mod dissipation;
+pub mod drive_limits;
 pub mod failsafe;
 pub mod foc_driver;
 

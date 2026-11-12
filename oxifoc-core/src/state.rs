@@ -1056,11 +1056,25 @@ where
             }
 
             #[cfg(feature = "storage")]
+            if !foc.drive_limits_valid()
+                && matches!(
+                    mode,
+                    ControlMode::CurrentControl { .. }
+                        | ControlMode::Throttle { .. }
+                        | ControlMode::VelocityControl { .. }
+                        | ControlMode::PositionControl { .. }
+                )
+            {
+                return MotorCommandOutcome::RejectedSafety;
+            }
+
+            #[cfg(feature = "storage")]
             if !state.hall_calibration_valid
                 && foc.phase().requires_hall_reference()
                 && (matches!(
                     mode,
                     ControlMode::CurrentControl { .. }
+                        | ControlMode::Throttle { .. }
                         | ControlMode::VelocityControl { .. }
                         | ControlMode::PositionControl { .. }
                 ) || mode == ControlMode::Brake
@@ -1130,7 +1144,12 @@ where
             if let Some(request) = protocol_request {
                 state.drive_ownership.record_applied(request);
             }
-            foc.set_mode(mode);
+            let physical_mode = if protocol_request.is_some() {
+                foc.orient_drive_command(mode)
+            } else {
+                mode
+            };
+            foc.set_mode(physical_mode);
             MotorCommandOutcome::Applied
         });
         if let Some(request) = protocol_request {

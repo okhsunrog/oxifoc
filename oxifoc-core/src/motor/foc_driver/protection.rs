@@ -22,6 +22,7 @@ use crate::motor::derating::DeratingScales;
 use crate::motor::dissipation::RegenBudget;
 use crate::motor::dissipation::WindingModel;
 use crate::motor::dissipation::dissipate_with_id;
+use crate::motor::drive_limits::DriveLimitsConfig;
 
 struct BusIqBounds {
     lo: f32,
@@ -176,6 +177,11 @@ pub(super) struct ProtectionMonitor {
     board_voltage: Option<PreparedVoltageLimits>,
     voltage: Option<PreparedVoltageLimits>,
     config: DeratingConfig,
+    drive_limits: DriveLimitsConfig,
+    #[cfg(feature = "storage")]
+    drive_limits_valid: bool,
+    environment_drive: f32,
+    duty_utilization: f32,
     scales: DeratingScales,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     protection_tick: u16,
@@ -208,6 +214,11 @@ impl ProtectionMonitor {
             board_voltage: None,
             voltage: None,
             config: DeratingConfig::default(),
+            drive_limits: DriveLimitsConfig::default(),
+            #[cfg(feature = "storage")]
+            drive_limits_valid: true,
+            environment_drive: 1.0,
+            duty_utilization: 0.0,
             scales: DeratingScales::default(),
             protection_tick: 0,
             ov_integral_vs: 0.0,
@@ -231,7 +242,28 @@ impl ProtectionMonitor {
         self.scales
     }
     pub(super) fn set_scales(&mut self, scales: DeratingScales) {
+        self.environment_drive = scales.drive;
         self.scales = scales;
+    }
+
+    fn speed_ceiling(&self, physical_direction: f32) -> f32 {
+        self.drive_limits
+            .ceiling(physical_direction, self.config.max_speed_erad_s)
+    }
+
+    fn drive_cut(&self, omega: f32) -> f32 {
+        self.config
+            .speed_cut_at(omega, self.speed_ceiling(omega))
+            .min(self.duty_cut())
+    }
+
+    fn duty_cut(&self) -> f32 {
+        let start = self.drive_limits.duty_start_frac;
+        if start >= 1.0 || self.duty_utilization <= start {
+            1.0
+        } else {
+            clamp_f32((1.0 - self.duty_utilization) / (1.0 - start), 0.0, 1.0)
+        }
     }
 
     /// Integrate voltage excursions each cycle, check temperature and update
@@ -323,7 +355,9 @@ impl ProtectionMonitor {
         self.protection_tick = self.protection_tick.wrapping_add(1);
         if self.protection_tick.is_multiple_of(256) {
             let omega = sample.velocity;
-            self.scales = self.config.compute(fet_c, motor_c, sample.vbus_v, omega);
+            self.scales = self.config.compute(fet_c, motor_c, sample.vbus_v, 0.0);
+            self.environment_drive = self.scales.drive;
+            self.scales.drive = self.scales.drive.min(self.drive_cut(omega));
             let worst = self.scales.worst();
             if worst < 0.8 {
                 if let Some(f) = F::from_category(FaultCategory::Derating) {
@@ -347,6 +381,82 @@ where
     pub fn set_derating(&mut self, cfg: DeratingConfig) {
         self.protection.configure(cfg);
         self.velocity_schedule.clear_request();
+    }
+
+    /// Install the rider-facing configuration at boot or at the stopped apply boundary.
+    #[cfg(feature = "storage")]
+    pub fn set_drive_limits(
+        &mut self,
+        cfg: DriveLimitsConfig,
+    ) -> Result<(), super::MotorModelError> {
+        if !cfg.is_sane() {
+            return Err(super::MotorModelError::Invalid);
+        }
+        if self.mode() != crate::types::ControlMode::Stopped || self.current_offset_active() {
+            return Err(super::MotorModelError::Busy);
+        }
+        self.protection.drive_limits = cfg;
+        self.protection.drive_limits_valid = true;
+        self.reset_duty_utilization();
+        Ok(())
+    }
+
+    #[cfg(feature = "storage")]
+    pub fn load_drive_limits(&mut self, config: &crate::storage::RuntimeConfig) {
+        self.protection.drive_limits_valid = config.drive_limits_are_valid();
+        self.protection.drive_limits = if self.protection.drive_limits_valid {
+            config.drive_limits.unwrap_or_default()
+        } else {
+            DriveLimitsConfig::DEFAULT
+        };
+        self.reset_duty_utilization();
+    }
+
+    #[cfg(all(feature = "runtime", feature = "storage"))]
+    pub(crate) fn drive_limits_valid(&self) -> bool {
+        self.protection.drive_limits_valid
+    }
+
+    #[cfg(feature = "runtime")]
+    pub(crate) fn orient_drive_command(
+        &self,
+        mode: crate::types::ControlMode,
+    ) -> crate::types::ControlMode {
+        self.protection.drive_limits.orient(mode)
+    }
+
+    pub(super) fn speed_ceiling(&self, physical_direction: f32) -> f32 {
+        self.protection.speed_ceiling(physical_direction)
+    }
+
+    pub(super) fn reset_duty_utilization(&mut self) {
+        self.protection.duty_utilization = 0.0;
+    }
+
+    pub(super) fn update_duty_utilization(&mut self, vd: f32, vq: f32, dt: f32) {
+        if self.protection.drive_limits.duty_start_frac < 1.0 {
+            let voltage_limit = self.controller.voltage_limit();
+            if voltage_limit > 0.0 {
+                let utilization = (sqrtf(vd * vd + vq * vq) / voltage_limit).min(1.0);
+                let alpha = (dt / 0.002).min(1.0);
+                self.protection.duty_utilization +=
+                    alpha * (utilization - self.protection.duty_utilization);
+            }
+        }
+    }
+
+    pub(super) fn throttle_current(&self, fraction: f32) -> f32 {
+        let omega = self.torque_speed();
+        let limit = if fraction * omega >= 0.0 {
+            self.current_limits.max_current_a
+        } else {
+            self.current_limits.max_brake_a
+        };
+        let (_, full_request) = self
+            .current_limits
+            .clamp_targets(0.0, limit.copysign(fraction));
+        let (_, available) = self.grant_torque(0.0, full_request, omega);
+        available * fraction.abs()
     }
 
     /// Current derating configuration.
@@ -447,9 +557,9 @@ where
         if iq_target * omega >= 0.0 {
             let lim = limits.max_current_a
                 * self
-                    .derating()
-                    .drive
-                    .min(self.derating_cfg().speed_cut(omega));
+                    .protection
+                    .environment_drive
+                    .min(self.protection.drive_cut(omega));
             return (
                 id_target,
                 self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
@@ -475,9 +585,9 @@ where
             (
                 limits.max_current_a
                     * self
-                        .derating()
-                        .drive
-                        .min(self.derating_cfg().speed_cut(omega)),
+                        .protection
+                        .environment_drive
+                        .min(self.protection.drive_cut(omega)),
                 limits.max_brake_a * self.derating().brake.min(self.derating().regen),
             )
         } else {

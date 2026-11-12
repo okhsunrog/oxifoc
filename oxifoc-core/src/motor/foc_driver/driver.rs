@@ -336,6 +336,12 @@ where
     /// async caller's future. Cancellation must still reach Stop or failsafe
     /// to end that sequence and restore the working gains.
     pub fn set_mode(&mut self, mode: ControlMode) {
+        if matches!(
+            mode,
+            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
+        ) {
+            self.reset_duty_utilization();
+        }
         if self.commissioning.is_some()
             && !matches!(
                 mode,
@@ -469,6 +475,7 @@ where
         );
         let start_dir = match mode {
             ControlMode::CurrentControl { iq_target, .. } => iq_target,
+            ControlMode::Throttle { fraction } => fraction,
             ControlMode::VelocityControl { target_vel } => target_vel,
             _ => 0.0,
         };

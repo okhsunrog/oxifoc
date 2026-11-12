@@ -56,6 +56,8 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
         failsafe: None,
         velocity: None,
         derating: None,
+        drive_limits: None,
+        drive_limits_invalid: false,
     },
 ));
 

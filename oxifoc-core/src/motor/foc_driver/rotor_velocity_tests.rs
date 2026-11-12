@@ -2,6 +2,8 @@ use super::*;
 use crate::foc::phase::{PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::DeratingConfig;
+#[cfg(feature = "storage")]
+use crate::motor::drive_limits::DriveLimitsConfig;
 
 struct SplitPhase {
     frame_velocity: f32,
@@ -41,6 +43,62 @@ fn split_driver(
     );
     driver.set_current_limits(CurrentLimits::from_max_current(3.0));
     driver
+}
+
+#[test]
+#[cfg(feature = "storage")]
+fn inverted_directional_limits_follow_rider_and_preserve_braking() {
+    let mut driver = split_driver(-90.0, Some(-90.0));
+    driver.set_derating(DeratingConfig {
+        max_speed_erad_s: 50.0,
+        ..Default::default()
+    });
+    driver
+        .set_drive_limits(DriveLimitsConfig {
+            invert_direction: true,
+            max_forward_erad_s: Some(100.0),
+            max_reverse_erad_s: None,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(driver.speed_ceiling(-90.0), 100.0);
+    assert_eq!(driver.speed_ceiling(90.0), 50.0);
+    assert_eq!(driver.grant_torque(0.0, -3.0, -90.0).1, -1.5);
+    assert_eq!(driver.grant_torque(0.0, 3.0, 90.0).1, 0.0);
+    assert_eq!(driver.grant_torque(0.0, 1.0, -90.0).1, 1.0);
+
+    let mode = ControlMode::Throttle { fraction: 0.5 };
+    #[cfg(feature = "runtime")]
+    let mode = driver.orient_drive_command(mode);
+    #[cfg(feature = "runtime")]
+    {
+        driver.set_mode(mode);
+        driver.step(50).unwrap();
+        assert_eq!(driver.last_granted_iq, -0.75);
+        assert!(driver.set_drive_limits(DriveLimitsConfig::DEFAULT).is_err());
+    }
+    #[cfg(not(feature = "runtime"))]
+    let _ = mode;
+}
+
+#[test]
+#[cfg(feature = "storage")]
+fn duty_taper_scales_throttle_and_clamps_only_larger_amp_requests() {
+    let mut driver = split_driver(100.0, Some(100.0));
+    driver
+        .set_drive_limits(DriveLimitsConfig {
+            duty_start_frac: DriveLimitsConfig::E_SKATE_DUTY_START,
+            ..Default::default()
+        })
+        .unwrap();
+    let voltage_limit = driver.controller.voltage_limit();
+    driver.update_duty_utilization(0.0, 0.925 * voltage_limit, 0.002);
+    assert!((driver.throttle_current(0.5) - 0.75).abs() < 1e-5);
+    assert!((driver.grant_torque(0.0, 3.0, 100.0).1 - 1.5).abs() < 1e-5);
+    assert_eq!(driver.grant_torque(0.0, 1.0, 100.0).1, 1.0);
+    assert_eq!(driver.grant_torque(0.0, -3.0, 100.0).1, -3.0);
+    driver.set_mode(ControlMode::Stopped);
+    assert_eq!(driver.throttle_current(0.5), 1.5);
 }
 
 #[test]

@@ -59,6 +59,8 @@ static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig
         failsafe: None,
         velocity: None,
         derating: None,
+        drive_limits: None,
+        drive_limits_invalid: false,
     }));
 
 #[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]

@@ -36,6 +36,11 @@ or the integer ACK rate. Stop also returns the timing, with decimation zero.
 Hosts must not infer decimation by dividing rounded frequencies. Firmware and
 host must both be upgraded; v8/v9 connections fail at the frozen bootstrap.
 
+ICD v18 adds the signed fractional `Throttle` control mode and the
+`DriveLimits` config group. Legacy derating records keep their existing
+flash encoding and supply the symmetric speed ceiling for unset directions.
+The bootstrap requires a matching host and device version.
+
 The host validates, in order:
 
 1. bootstrap magic;

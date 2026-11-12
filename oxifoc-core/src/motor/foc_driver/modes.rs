@@ -232,7 +232,7 @@ where
         // The derating speed ceiling also caps the cruise reference: the
         // current-side rolloff alone would leave the PI winding up against
         // an unreachable target.
-        let max_speed = self.derating_cfg().max_speed_erad_s;
+        let max_speed = self.speed_ceiling(target_vel);
         let target_vel = if max_speed > 0.0 {
             clamp_f32(target_vel, -max_speed, max_speed)
         } else {
@@ -476,6 +476,7 @@ where
 
         // Track the q-axis modulation for the bus-limit clamp (next cycle).
         self.update_bus_mod_q(self.controller.bus_mod_q(), dt);
+        self.update_duty_utilization(out.vd, out.vq, dt);
         self.last_iq_meas = out.iq;
 
         self.pwm.set_duties(out.duties);
@@ -729,6 +730,9 @@ where
                 iq_target,
                 id_target,
             } => self.step_current_control(iq_target, id_target, dt, now_ticks),
+            ControlMode::Throttle { fraction } => {
+                self.step_current_control(self.throttle_current(fraction), 0.0, dt, now_ticks)
+            }
             ControlMode::VelocityControl { target_vel } => {
                 self.step_velocity_control(target_vel, dt, now_ticks)
             }

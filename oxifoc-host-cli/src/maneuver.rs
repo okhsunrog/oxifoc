@@ -154,6 +154,9 @@ pub enum Cmd {
     Velocity {
         rad_s: f32,
     },
+    Throttle {
+        fraction: f32,
+    },
     Openloop {
         current: f32,
         #[serde(default)]
@@ -186,6 +189,7 @@ impl Cmd {
                 id_target: id,
             },
             Self::Velocity { rad_s } => ControlMode::VelocityControl { target_vel: rad_s },
+            Self::Throttle { fraction } => ControlMode::Throttle { fraction },
             Self::Openloop {
                 current,
                 velocity,
@@ -262,7 +266,7 @@ pub fn validate(m: &Maneuver) -> Result<()> {
         prev = step.t;
         let mode = step.cmd.to_mode();
         if !mode.is_finite() {
-            bail!("step {i}: non-finite command payload");
+            bail!("step {i}: invalid command payload");
         }
     }
     Ok(())

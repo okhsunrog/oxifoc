@@ -435,6 +435,7 @@ pub async fn init(
     // Graduated derating ramps from stored config (default = FET thermal
     // rolloff only; see motor::derating).
     foc_driver.set_derating(DeratingConfig::from_stored(config.derating.as_ref()));
+    foc_driver.load_drive_limits(config);
 
     CURRENT_OFFSET_DONE.reset();
     let calibration_started = foc_driver
