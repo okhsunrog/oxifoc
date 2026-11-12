@@ -277,6 +277,10 @@ pub enum HostCommand {
     ConfigRead(ConfigGroupId, ConfigResponseSender),
     ConfigApply(Keyed<ConfigApply>, ConfigResponseSender),
     ConfigPersist(Keyed<ConfigPersist>, ConfigResponseSender),
+    SaveDriveSetup(
+        Keyed<oxifoc_core::types::SaveDriveSetup>,
+        ConfigResponseSender,
+    ),
     /// Erase every stored config group (factory reset).
     ConfigResetAll(ConfigResponseSender),
     /// Identity belongs to the logical operation, not to a transport attempt.
@@ -1125,6 +1129,7 @@ fn reject_unverified_command(cmd: HostCommand) {
         HostCommand::ConfigRead(_, reply)
         | HostCommand::ConfigApply(_, reply)
         | HostCommand::ConfigPersist(_, reply)
+        | HostCommand::SaveDriveSetup(_, reply)
         | HostCommand::ConfigResetAll(reply) => {
             let _ = reply.send(Err(error()));
         }
@@ -1487,6 +1492,21 @@ async fn handle_command<NS>(
                     &req,
                     Some("config"),
                     &SETPOINT_POLICY,
+                )
+                .await;
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
+        }
+        HostCommand::SaveDriveSetup(request, reply_tx) => {
+            let res = client
+                .at_least_once::<ConfigEndpoint>(
+                    device_addr,
+                    &oxifoc_core::types::ConfigRequest::SaveDriveSetup(request),
+                    Some("config"),
+                    &RetryPolicy {
+                        deadline_ms: 15_000,
+                        attempt_timeout_ms: 5_000,
+                        ..SETPOINT_POLICY
+                    },
                 )
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));

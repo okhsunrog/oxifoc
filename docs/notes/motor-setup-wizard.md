@@ -1,7 +1,7 @@
 # Motor setup wizard and commissioning architecture
 
-Status: immutable session plan and non-mutating full detection implemented and
-bench-tested (2026-11-11); aggregate Save is still pending. The wizard requires explicit DC source limits before it
+Status: protocol 16 wizard and aggregate Save implemented. Hall and sensorless
+installation, persistence and reload verified on MK5 (2026-11-12). The wizard requires explicit DC source limits before it
 can energize a motor. Commissioning uses a temporary device-owned control
 session. A successful session produces a motor model and a proposed drive
 limit for review.
@@ -227,20 +227,6 @@ flux 4.003 mWb, Kv 196.75, Hall valid. No flash Save; final state Stopped,
 fault_count 0. Core validation: 718 passed, 2 ignored. Host CLI/GUI/virtual
 checks and the MK5 release build passed.
 
-### Remaining wizard work
-
-1. Add the typed source limits and temporary device envelope. Prove
-   enforcement in current, voltage packet, and spin/coast paths. Exercise
-   Stop, disconnect, low source ceilings and zero regen in simulation and on
-   the MK5 with an independent DC current reference.
-2. Keep orchestration in host-lib; collect a side-effect-free candidate, including Hall. Add
-   stopped atomic Save and legacy readback. Verify that an old drive limit
-   cannot change a new motor's run and that inverter protection still can.
-3. Bind one host workflow to the Slint wizard and CLI. Test missing source
-   input, explicit zero, reconfiguration of a saved source, sensorless
-   installation after a Hall motor, and full H5055 detection with lossless
-   20 kHz capture before enabling the normal wizard path.
-
 ### Immutable commissioning plan (implemented, protocol 15)
 
 The motor preset catalog lives in core. Full detection opens one session with
@@ -279,14 +265,6 @@ source limits without first persisting legacy CurrentLimits; board protection
 still bounds excitation. After flashing the final build and resetting, old-boot
 Start/Status/Cancel were rejected again without energizing the motor.
 
-Next required boundary: replace legacy multi-group `apply_sequence` with a
-coherent `DriveSetup` Save, including the confirmed source, explicit feedback
-selection and derived effective current limit. The existing Save path still
-writes separate motor/Hall groups and is **not** the new atomic wizard Save.
-Do not qualify the final wizard as complete or perform a setup Save on the bench
-until migration, partial-write recovery and exact-revision acknowledgements
-are covered. Then finish the run/review/save UI and CLI workflow.
-
 ### DriveSetup value boundary (2026-11-12)
 
 Core now defines explicit `Feedback::{Hall, Sensorless}`, `DriveCurrent::{Auto,
@@ -296,9 +274,7 @@ thermal estimate from the effective inverter-bounded current; overrides above
 either bound are rejected. The candidate does not carry board calibration or
 change the independent trip. A new setup resets inherited dissipative braking
 and unmeasured fundamental inductances. Host-lib constructs the candidate from
-this detection; CLI JSON includes it for review. This is a value/preparation
-boundary only: installation, aggregate storage and migration are not connected
-yet. No firmware flash or physical test was performed for this step.
+this detection; CLI JSON includes it for review. This milestone introduced the value boundary later used by the installer.
 
 
 ### Frozen aggregate record and interrupted-write tests (2026-11-12)
@@ -314,6 +290,50 @@ The sequential-storage mock test interrupts replacement at 1,024 byte-countdown
 positions across 12 successive append/page positions (12,288 attempts). Reopening
 with a fresh cache recovered the complete old or new setup in every case; both
 interrupted and successful writes occurred. This is simulated flash acceptance,
-not a physical power-cut test. Core suite: 725 passed, 2 ignored. The format is
-not yet connected to the storage worker, migration, stopped installation or Save;
-existing device behavior and flash contents are unchanged.
+not a physical power-cut test. The regression now exercises the installed
+record under its actual storage key.
+
+
+### Complete wizard and aggregate Save (protocol 16)
+
+Save verifies that the supplied motor parameters, Hall result and source limits
+match the current completed measurement session and its original configuration
+revisions. The operator can choose Auto or a bounded Override. The device
+reserves a stopped installation, writes the versioned aggregate, then installs
+the prepared model at the ISR boundary. The acknowledgement means that both
+steps completed. Repeated requests with the same key and payload replay their
+answer. A changed payload with that key is rejected. After a flash write with
+uncertain outcome or failed live installation, the drive remains inhibited
+until recovery or restart.
+
+Boot reads legacy motor, Hall and current-limit groups when the installed record
+is absent. A saved setup takes precedence for all three groups together. A
+sensorless setup explicitly clears the Hall calibration and selects Observer.
+Individual config saves update only the requested group in the durable aggregate;
+unsaved changes to other groups do not leak into that record. Reset advances
+revisions so a pre-reset review cannot be saved afterward.
+
+CLI `detect all` shows the reviewed setup and effective current. Interactive
+runs can confirm Save after reviewing the result. Non-interactive runs require
+`--apply` to save. `--drive-current-a` selects Override. The GUI has a Review
+page with the confirmed source, measured values, Auto ceiling, Override field,
+Save and Finish without saving. Both use the same host-lib Save path.
+
+MK5/H5055, 24 V, input 5 A / regeneration 0 A: legacy config loaded after the
+firmware update (current offsets are recalibrated at boot). A Hall setup with
+Auto, a sensorless replacement with Override 10 A and a final Hall setup with
+Auto were saved and read back after reset. An independent source-limit edit to
+4.5 A survived reset and preserved the motor and Hall data. Restoring 5 A and
+resetting returned the complete final config. Final Hall/Stopped, faults 0,
+configured trip 30 A, effective phase limit 23.08 A, thermal estimate 35.53 A.
+The three successful runs recorded 1,597,970 native-rate samples with zero loss.
+They used the Advanced 10 A measurement ceiling. Earlier runs aborted on
+`SourceLimited` or a host capture overflow before saving. Neither source
+protection nor the inverter trip was relaxed.
+
+Artifacts live under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-operation-contracts-20261111/`
+(`atomic-*` and `setup-review.png`). The GUI was compiled and its review
+screen rendered. The actual device Save path was exercised through the CLI.
+TCP simulation additionally checked exact Save replay, changed-payload
+rejection and revision/persistence acknowledgements for all three groups.

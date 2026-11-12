@@ -88,6 +88,8 @@ pub(crate) enum ModelConfigUpdate {
     MotorParams(MotorParamsConfig),
     VoltageFeedforward(VoltageFeedforwardConfig),
     HallCalibration(HallCalibrationConfig),
+    #[cfg(all(feature = "detection", feature = "delivery"))]
+    DriveSetup(crate::drive_setup::ValidatedDriveSetup),
     Reset,
 }
 
@@ -107,6 +109,8 @@ impl ModelConfigUpdate {
                 config.hall_calibration = Some(value.clone());
                 config.hall_calibration_invalid = false;
             }
+            #[cfg(all(feature = "detection", feature = "delivery"))]
+            Self::DriveSetup(value) => value.project(config),
             Self::Reset => *config = RuntimeConfig::default(),
         }
     }
@@ -114,6 +118,8 @@ impl ModelConfigUpdate {
     fn group(&self) -> ConfigGroupId {
         match self {
             Self::VoltageLimits(_) => ConfigGroupId::VoltageLimits,
+            #[cfg(all(feature = "detection", feature = "delivery"))]
+            Self::DriveSetup(_) => ConfigGroupId::MotorParams,
             Self::MotorParams(_) | Self::Reset => ConfigGroupId::MotorParams,
             Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
             Self::HallCalibration(_) => ConfigGroupId::HallCalibration,
@@ -481,7 +487,10 @@ pub(super) fn apply<P, C, Ph, S>(
                 if matches!(pending.update, ModelConfigUpdate::Reset) {
                     foc.reset_voltage_limits();
                     *pending.config.borrow(cs).borrow_mut() = RuntimeConfig::default();
-                    *pending.revisions.borrow(cs).borrow_mut() = [0; ConfigGroupId::COUNT];
+                    for revision in pending.revisions.borrow(cs).borrow_mut().iter_mut() {
+                        *revision = revision.wrapping_add(1);
+                    }
+                    super::set_drive_setup_recovery(false);
                     if let Some(persisted) = pending.persisted {
                         *persisted.borrow(cs).borrow_mut() = [None; ConfigGroupId::COUNT];
                     }
@@ -505,13 +514,29 @@ pub(super) fn apply<P, C, Ph, S>(
                 }
                 let revision = current_revision.wrapping_add(1);
                 pending.revisions.borrow(cs).borrow_mut()[group.index()] = revision;
-                pending
-                    .cache
-                    .borrow(cs)
-                    .borrow_mut()
-                    .insert(pending.request, CachedConfigAck::Applied(revision));
+                #[cfg(all(feature = "detection", feature = "delivery"))]
+                let setup = matches!(pending.update, ModelConfigUpdate::DriveSetup(_));
+                #[cfg(not(all(feature = "detection", feature = "delivery")))]
+                let setup = false;
+                if setup {
+                    let mut revisions = pending.revisions.borrow(cs).borrow_mut();
+                    let mut persisted = CONFIG_COORDINATOR.persisted.borrow(cs).borrow_mut();
+                    for group in [ConfigGroupId::HallCalibration, ConfigGroupId::CurrentLimits] {
+                        let index = group.index();
+                        revisions[index] = revisions[index].wrapping_add(1);
+                        persisted[index] = Some(revisions[index]);
+                    }
+                    persisted[ConfigGroupId::MotorParams.index()] = Some(revision);
+                    super::set_drive_setup_recovery(false);
+                } else {
+                    pending
+                        .cache
+                        .borrow(cs)
+                        .borrow_mut()
+                        .insert(pending.request, CachedConfigAck::Applied(revision));
+                }
                 let mut state = state.borrow(cs).borrow_mut();
-                if matches!(pending.update, ModelConfigUpdate::HallCalibration(_)) {
+                if setup || matches!(pending.update, ModelConfigUpdate::HallCalibration(_)) {
                     state.hall_calibration_valid = true;
                 }
                 if let Some(source) = source {

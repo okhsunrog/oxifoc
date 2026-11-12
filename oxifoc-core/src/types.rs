@@ -625,7 +625,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 15;
+pub const ICD_PROTO_VERSION: u16 = 16;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1037,6 +1037,14 @@ mod config_types {
         Persist(Keyed<ConfigPersist>),
         /// Reset all config to defaults (erase flash)
         ResetAll,
+        SaveDriveSetup(Keyed<SaveDriveSetup>),
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    pub struct SaveDriveSetup {
+        pub session: measurement::SessionId,
+        pub setup: crate::drive_setup::DriveSetup,
     }
 
     /// Config group identifier for read requests
@@ -1216,6 +1224,10 @@ mod config_types {
         },
         /// Persistence is unavailable on this baked-config firmware profile.
         Unsupported,
+        /// Record is durable, but live installation failed. Drive stays inhibited.
+        SetupRequiresRestart {
+            req_id: ReqId,
+        },
     }
 }
 

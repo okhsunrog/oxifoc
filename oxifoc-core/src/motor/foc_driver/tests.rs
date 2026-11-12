@@ -6227,7 +6227,7 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         assert!(config.borrow(cs).borrow().motor_params.is_none());
         assert!(config.borrow(cs).borrow().voltage_feedforward.is_none());
         assert_eq!(state.borrow(cs).borrow().motor_pole_pairs, 0);
-        assert_eq!(revisions.borrow(cs).borrow()[0], 0);
+        assert_eq!(revisions.borrow(cs).borrow()[0], 4);
         assert!(persisted.borrow(cs).borrow().iter().all(Option::is_none));
         assert!(cache.borrow(cs).borrow().get(ReqId(3)).is_none());
     });

@@ -31,6 +31,32 @@ use crate::state::model::CONFIG_COORDINATOR;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse};
 
+struct ReadySetup {
+    session: crate::types::measurement::SessionId,
+    revisions: [u32; crate::types::ConfigGroupId::COUNT],
+    setup: crate::drive_setup::DriveSetup,
+}
+static READY_SETUP: CriticalSectionMutex<RefCell<Option<ReadySetup>>> =
+    CriticalSectionMutex::new(RefCell::new(None));
+
+pub(super) fn setup_is_current(request: &crate::types::SaveDriveSetup) -> bool {
+    critical_section::with(|cs| {
+        let ready = READY_SETUP.borrow(cs).borrow();
+        ready.as_ref().is_some_and(|ready| {
+            let mut offered = request.setup.clone();
+            offered.current = crate::drive_setup::DriveCurrent::Auto;
+            offered.motor.max_current_a = 0.0;
+            ready.session == request.session
+                && offered == ready.setup
+                && ready.revisions == *CONFIG_COORDINATOR.revisions.borrow(cs).borrow()
+        })
+    })
+}
+
+pub(super) fn invalidate_setup_candidate() {
+    critical_section::with(|cs| *READY_SETUP.borrow(cs).borrow_mut() = None);
+}
+
 /// The platform-specific half of detection: the raw measurements, bound to the
 /// hardware (or to the virtual-motor sim). Everything else — parameter
 /// computation, dedup, error mapping, candidate validation — is handled by
@@ -106,6 +132,7 @@ pub async fn detect_server<NS, B>(
             continue;
         };
         let dispatch = session.handle_with_revisions(msg.t, config_revisions());
+        session.publish_candidate();
         let _ = endpoints
             .clone()
             .respond_owned::<DetectEndpoint>(&msg.hdr, &dispatch.reply);
@@ -163,6 +190,7 @@ pub async fn detect_server<NS, B>(
             match select(operation.as_mut(), h.recv_manual()).await {
                 Either::First(outcome) => {
                     session.finish(measurement.id, outcome);
+                    session.publish_candidate();
                     break;
                 }
                 Either::Second(Ok(msg)) => {

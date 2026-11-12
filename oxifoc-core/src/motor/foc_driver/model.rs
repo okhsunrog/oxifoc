@@ -28,6 +28,14 @@ impl PreparedMotorModel {
         }
     }
 
+    #[cfg(all(feature = "runtime", feature = "detection", feature = "delivery"))]
+    pub(crate) fn prepare_setup_feedback(
+        &mut self,
+        hall: Option<crate::storage::HallCalibrationConfig>,
+    ) -> Option<()> {
+        self.phase.as_mut()?.prepare_setup_feedback(hall)
+    }
+
     pub fn from_config(config: &RuntimeConfig, vbus: f32, board_max_current_a: f32) -> Self {
         let controller =
             FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(config, vbus);

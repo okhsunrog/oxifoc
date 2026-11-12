@@ -29,8 +29,8 @@ use oxifoc_core::types::{
     FaultRequest, FaultResponse, Keyed, MotorCommandOutcome, ReqId,
 };
 use oxifoc_host_lib::{
-    HostCommand, HostConfig, ReconnectPolicy, TransportType, config_channel, detect_channel,
-    fault_channel, motor_channel, start_host,
+    HostCommand, HostConfig, ReconnectPolicy, TransportType, config_channel, fault_channel,
+    motor_channel, start_host,
 };
 
 /// Kills the spawned virtual device when the test ends (even on panic).
@@ -182,6 +182,8 @@ fn run_e2e(transport: TransportType) {
         0,
         ConfigWrite::CurrentLimits(CurrentLimitsConfig {
             max_iq_a: 1.0,
+            bus_in_max_a: 5.0,
+            bus_regen_max_a: 0.0,
             ..Default::default()
         }),
     )
@@ -240,29 +242,15 @@ fn run_e2e(transport: TransportType) {
         .unwrap();
     rx.blocking_recv().unwrap().expect("stop before detection");
 
-    // 3) Detect effectively_once: routes via Reliable::effectively_once (Keyed
-    //    request + device-side dedup) and returns a measured resistance.
-    let (tx, mut rx) = detect_channel();
-    rt.cmd_tx
-        .send(HostCommand::Detect(
-            DetectRequest::MeasureResistance {
-                max_power_loss_w: 8.0,
-                current_limit_a: None,
-            },
-            tx,
-        ))
-        .expect("send detect command");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let result = loop {
-        if let Ok(res) = rx.try_recv() {
-            break res;
-        }
-        if Instant::now() >= deadline {
-            panic!("[{transport_arg}] detect did not respond within 30s");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    let resp = result.expect("detect should succeed");
+    // 3) The host opens a measurement session and waits for a terminal result.
+    let resp = oxifoc_host_lib::ops::detect::run_step(
+        &rt.cmd_tx,
+        DetectRequest::MeasureResistance {
+            max_power_loss_w: 8.0,
+            current_limit_a: None,
+        },
+    )
+    .expect("detect should succeed");
     assert!(
         matches!(resp, DetectResponse::Resistance { .. }),
         "[{transport_arg}] expected a Resistance result, got {resp:?}"
@@ -796,4 +784,83 @@ fn board_calibration_e2e_tcp() {
         }),
         "reset must restore the identity scale immediately"
     );
+}
+
+#[test]
+fn drive_setup_save_replays_exact_request_and_commits_all_groups() {
+    use oxifoc_core::drive_setup::DriveCurrent;
+    use oxifoc_core::types::{ConfigValue, SaveDriveSetup, commissioning::SourceLimits};
+    use oxifoc_host_lib::ops::{config::read_group, detect};
+
+    let port = free_tcp_port();
+    let _device = spawn_device("tcp", port);
+    let rt = start_host(HostConfig {
+        transport: Some(TransportType::Tcp),
+        tcp_host: Some("127.0.0.1".into()),
+        tcp_port: Some(port),
+        fast_hz: Some(0),
+        stream_defmt: Some(false),
+        reconnect: Some(ReconnectPolicy::Limited(20)),
+        ..Default::default()
+    });
+    assert!(rt.wait_for_connection(Duration::from_secs(15)));
+    let mut plan = detect::DetectionPlan::from(
+        detect::PRESETS
+            .iter()
+            .find(|preset| preset.id == "medium-outrunner")
+            .unwrap(),
+    );
+    plan.source = Some(SourceLimits {
+        input_a: 5.0,
+        regen_a: 0.0,
+    });
+    plan.calibrate_hall = false;
+    let outcome = detect::run_sequence(&rt.cmd_tx, plan, |_, request| {
+        detect::run_measurement(&rt.cmd_tx, request)
+    })
+    .unwrap();
+    let request = Keyed::new(
+        ReqId(0x5516),
+        SaveDriveSetup {
+            session: outcome.session.unwrap(),
+            setup: outcome.setup(plan, DriveCurrent::Override(10.0)).unwrap(),
+        },
+    );
+    let send = |request| {
+        let (tx, rx) = config_channel();
+        rt.cmd_tx
+            .send(HostCommand::SaveDriveSetup(request, tx))
+            .unwrap();
+        rx.blocking_recv().unwrap().unwrap()
+    };
+    let mut tampered = request.clone();
+    tampered.inner.setup.source.input_a = 6.0;
+    assert_eq!(send(tampered.clone()), ConfigResponse::Invalid);
+    let ack = send(request.clone());
+    assert_eq!(
+        ack,
+        ConfigResponse::Persisted {
+            req_id: request.id,
+            revision: 1
+        }
+    );
+    assert_eq!(send(request), ack);
+    assert_eq!(send(tampered), ConfigResponse::Invalid);
+    let limits = read_group(&rt.cmd_tx, ConfigGroupId::CurrentLimits).unwrap();
+    assert!(limits.persisted && limits.revision == 1);
+    let Some(ConfigValue::CurrentLimits(limits)) = limits.value else {
+        panic!("missing limits")
+    };
+    assert_eq!(limits.max_iq_a, 10.0);
+    assert_eq!(limits.bus_in_max_a, 5.0);
+    assert_eq!(limits.bus_regen_max_a, 0.0);
+    let hall = read_group(&rt.cmd_tx, ConfigGroupId::HallCalibration).unwrap();
+    assert!(hall.persisted && hall.revision == 1 && hall.value.is_none());
+    let motor = read_group(&rt.cmd_tx, ConfigGroupId::MotorParams).unwrap();
+    assert!(motor.persisted && motor.revision == 1);
+    let Some(ConfigValue::MotorParams(motor)) = motor.value else {
+        panic!("missing motor")
+    };
+    assert_eq!(motor.resistance_ohm, outcome.resistance_ohm);
+    assert_eq!(motor.flux_linkage_wb, outcome.flux_linkage_wb);
 }

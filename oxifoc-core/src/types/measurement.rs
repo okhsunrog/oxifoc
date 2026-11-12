@@ -3,6 +3,7 @@ use super::{DetectError, DetectRequest, DetectResponse};
 #[derive(
     serde::Serialize, serde::Deserialize, postcard_schema::Schema, Clone, Copy, Debug, PartialEq, Eq,
 )]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SessionId {
     pub boot: u64,
     pub generation: u32,

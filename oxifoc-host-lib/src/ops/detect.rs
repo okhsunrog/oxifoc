@@ -363,21 +363,59 @@ pub fn run_sequence(
     Ok(out)
 }
 
-/// Save the reviewed motor model and the exact Hall result from this run.
+/// Use the same current resolution as firmware for the review screen.
+pub fn preview_setup(
+    cmd: &CommandSender,
+    setup: oxifoc_core::drive_setup::DriveSetup,
+    board_trip_a: f32,
+) -> Result<oxifoc_core::drive_setup::ValidatedDriveSetup> {
+    let limits = config::read_group(cmd, ConfigGroupId::CurrentLimits)?;
+    let trip = match limits.value {
+        Some(oxifoc_core::types::ConfigValue::CurrentLimits(value)) => value.max_phase_current_a,
+        None => 0.0,
+        _ => bail!("controller returned an unexpected current-limits value"),
+    };
+    setup
+        .validate(board_trip_a, trip)
+        .map_err(|e| anyhow::anyhow!("invalid drive setup: {e:?}"))
+}
+
+/// Install and persist the reviewed setup with one addressed request.
 pub fn apply_sequence(
     cmd: &CommandSender,
     outcome: &DetectionOutcome,
     plan: DetectionPlan,
+    current: oxifoc_core::drive_setup::DriveCurrent,
 ) -> Result<()> {
-    anyhow::ensure!(
-        plan.calibrate_hall == outcome.hall_ok,
-        "detection result is incomplete"
-    );
-    apply_motor_params(cmd, outcome, plan.pole_pairs, plan.max_power_loss_w)?;
-    if let Some(hall) = outcome.hall {
-        apply_step(cmd, &DetectResponse::HallCalibrated(hall))?;
+    use oxifoc_core::types::{ConfigResponse, Keyed, SaveDriveSetup};
+    let setup = outcome.setup(plan, current)?;
+    let session = outcome.session.context("missing measurement session")?;
+    let id = config::next_config_id();
+    let (tx, rx) = crate::config_channel();
+    cmd.send(HostCommand::SaveDriveSetup(
+        Keyed::new(id, SaveDriveSetup { session, setup }),
+        tx,
+    ))
+    .context("send setup save")?;
+    match rx
+        .blocking_recv()
+        .context("setup save outcome unknown")?
+        .context("setup save outcome unknown; check the controller before retrying")?
+    {
+        ConfigResponse::Persisted { req_id, .. } if req_id == id => Ok(()),
+        ConfigResponse::SetupRequiresRestart { req_id } if req_id == id => {
+            bail!("setup was saved to flash; restart the controller to load it")
+        }
+        ConfigResponse::Invalid => {
+            bail!("setup rejected: check the measured values, current limits and session freshness")
+        }
+        ConfigResponse::Busy => bail!("stop the controller before saving"),
+        ConfigResponse::Unsupported => bail!("this firmware does not support setup persistence"),
+        ConfigResponse::Error => {
+            bail!("setup flash write failed; restart and check the stored configuration")
+        }
+        other => bail!("unexpected setup save response: {other:?}"),
     }
-    Ok(())
 }
 
 /// Apply a SINGLE detection step's result into config, patching only what
@@ -451,42 +489,4 @@ pub fn apply_step(cmd: &CommandSender, resp: &DetectResponse) -> Result<serde_js
             Ok(value)
         }
     }
-}
-
-/// Write the measured parameters into the `motor-params` group: the four
-/// measured fields, the supplied pole pairs, and the thermal current rating.
-/// PI gains are intentionally *not* written — the device retunes them.
-pub fn apply_motor_params(
-    cmd: &CommandSender,
-    outcome: &DetectionOutcome,
-    pole_pairs: u8,
-    max_power_loss_w: f32,
-) -> Result<()> {
-    let (mut value, state) = config::current_value(cmd, ConfigGroupId::MotorParams)?;
-    let obj = value
-        .as_object_mut()
-        .context("motor-params is not a JSON object")?;
-    obj.insert("resistance_ohm".into(), json!(outcome.resistance_ohm));
-    obj.insert("inductance_d_h".into(), json!(outcome.inductance_d_h));
-    obj.insert("inductance_q_h".into(), json!(outcome.inductance_q_h));
-    // A new motor model cannot inherit a low-frequency estimate from an
-    // earlier motor. This sequence only measured the HFI inductances.
-    obj.insert("ld_fundamental_h".into(), json!(0.0));
-    obj.insert("lq_fundamental_h".into(), json!(0.0));
-    obj.insert("flux_linkage_wb".into(), json!(outcome.flux_linkage_wb));
-    obj.insert("pole_pairs".into(), json!(pole_pairs));
-    obj.insert(
-        "max_current_a".into(),
-        json!(rating_from_loss(outcome.resistance_ohm, max_power_loss_w)),
-    );
-    obj.insert("max_power_loss_w".into(), json!(max_power_loss_w));
-
-    let write = config::write_from_value(ConfigGroupId::MotorParams, value)
-        .context("patched motor-params no longer deserializes")?;
-    let revision = config::apply_write(cmd, state.revision, write)?;
-    anyhow::ensure!(
-        config::persist_group(cmd, ConfigGroupId::MotorParams, revision)?,
-        "motor parameter persistence is unsupported"
-    );
-    Ok(())
 }

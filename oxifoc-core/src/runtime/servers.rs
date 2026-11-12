@@ -416,6 +416,14 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     critical_section::with(|cs| *persisted_revisions.borrow(cs).borrow_mut() = initially_persisted);
     let action_cache = &CONFIG_COORDINATOR.actions;
 
+    let setup_ack = CriticalSectionMutex::new(RefCell::new(
+        None::<(
+            crate::types::Keyed<crate::types::SaveDriveSetup>,
+            ConfigResponse,
+        )>,
+    ));
+    let setup_ack = &setup_ack;
+
     loop {
         let _ = h
             .serve(|req: &ConfigRequest| {
@@ -434,7 +442,9 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                     let action_id = match &req {
                         ConfigRequest::Apply(keyed) => Some(keyed.id),
                         ConfigRequest::Persist(keyed) => Some(keyed.id),
-                        ConfigRequest::Read(_) | ConfigRequest::ResetAll => None,
+                        ConfigRequest::Read(_)
+                        | ConfigRequest::ResetAll
+                        | ConfigRequest::SaveDriveSetup(_) => None,
                     };
                     if let Some((id, ack)) = action_id.and_then(|id| {
                         critical_section::with(|cs| {
@@ -736,6 +746,16 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 return ConfigResponse::Unsupported;
                             }
                             let group = keyed.inner.group;
+                            if crate::state::drive_setup_recovery_required()
+                                && matches!(
+                                    group,
+                                    ConfigGroupId::MotorParams
+                                        | ConfigGroupId::CurrentLimits
+                                        | ConfigGroupId::HallCalibration
+                                )
+                            {
+                                return ConfigResponse::Busy;
+                            }
                             let current_revision = critical_section::with(|cs| {
                                 revisions.borrow(cs).borrow()[group.index()]
                             });
@@ -796,6 +816,44 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 revision: current_revision,
                             }
                         }
+                        ConfigRequest::SaveDriveSetup(request) => {
+                            let replay = critical_section::with(|cs| {
+                                let cache = setup_ack.borrow(cs).borrow();
+                                cache
+                                    .as_ref()
+                                    .filter(|(saved, _)| saved.id == request.id)
+                                    .map(|(saved, reply)| {
+                                        if saved == &request {
+                                            reply.clone()
+                                        } else {
+                                            ConfigResponse::Invalid
+                                        }
+                                    })
+                            });
+                            if let Some(reply) = replay {
+                                return reply;
+                            }
+                            let reply = save_drive_setup::<T>(
+                                &request,
+                                runtime_config,
+                                state_mutex,
+                                hw_max_current_a,
+                                persist,
+                            )
+                            .await;
+                            if matches!(
+                                reply,
+                                ConfigResponse::Persisted { .. }
+                                    | ConfigResponse::SetupRequiresRestart { .. }
+                                    | ConfigResponse::Error
+                            ) {
+                                critical_section::with(|cs| {
+                                    *setup_ack.borrow(cs).borrow_mut() =
+                                        Some((request, reply.clone()))
+                                });
+                            }
+                            reply
+                        }
                         ConfigRequest::ResetAll => {
                             let _calibration_pending = FlashPendingGuard::arm();
                             if !critical_section::with(|cs| {
@@ -848,12 +906,113 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 return ConfigResponse::Busy;
                             };
                             drop(_calibration_pending);
-                            guard.apply::<T>().await
+                            let reply = guard.apply::<T>().await;
+                            if matches!(reply, ConfigResponse::Reset) {
+                                critical_section::with(|cs| {
+                                    *setup_ack.borrow(cs).borrow_mut() = None;
+                                });
+                                #[cfg(all(feature = "detection", feature = "delivery"))]
+                                super::detect::invalidate_setup_candidate();
+                            }
+                            reply
                         }
                     }
                 }
             })
             .await;
+    }
+}
+
+#[cfg(feature = "storage")]
+async fn save_drive_setup<T: crate::timer::Timer>(
+    request: &crate::types::Keyed<crate::types::SaveDriveSetup>,
+    runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
+    state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
+    board_trip_a: f32,
+    persist: bool,
+) -> ConfigResponse {
+    #[cfg(not(all(feature = "detection", feature = "delivery")))]
+    {
+        let _ = (request, runtime_config, state_mutex, board_trip_a, persist);
+        ConfigResponse::Unsupported
+    }
+    #[cfg(all(feature = "detection", feature = "delivery"))]
+    {
+        use crate::state::DETECTION_ACTIVE;
+        use crate::types::{ConfigGroupId, ControlMode, MotorState};
+        use core::sync::atomic::Ordering;
+        if !persist {
+            return ConfigResponse::Unsupported;
+        }
+        let flash_pending = FlashPendingGuard::arm();
+        let stopped = critical_section::with(|cs| {
+            let state = state_mutex.borrow(cs).borrow();
+            state.motor_state == MotorState::Stopped
+                && state.control_mode == ControlMode::Stopped
+                && !state.actuator_busy()
+                && state.board_calibration_valid
+                && !DETECTION_ACTIVE.load(Ordering::Acquire)
+        });
+        if !stopped {
+            return ConfigResponse::Busy;
+        }
+        if !super::detect::setup_is_current(&request.inner) {
+            return ConfigResponse::Invalid;
+        }
+        let (mut config, revision, vbus) = critical_section::with(|cs| {
+            (
+                runtime_config.borrow(cs).borrow().clone(),
+                CONFIG_COORDINATOR.revisions.borrow(cs).borrow()
+                    [ConfigGroupId::MotorParams.index()],
+                state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0,
+            )
+        });
+        let trip = config
+            .current_limits
+            .as_ref()
+            .map_or(0.0, |limits| limits.max_phase_current_a);
+        let Ok(setup) = request.inner.setup.clone().validate(board_trip_a, trip) else {
+            return ConfigResponse::Invalid;
+        };
+        let record = crate::storage::InstalledDrive::new(&setup);
+        setup.project(&mut config);
+        let mut model =
+            crate::motor::foc_driver::PreparedMotorModel::from_config(&config, vbus, board_trip_a);
+        if model.prepare_setup_feedback(setup.hall()).is_none() {
+            return ConfigResponse::Invalid;
+        }
+        let Some(guard) = ModelApplyGuard::prepare(
+            model,
+            crate::state::model::ModelConfigUpdate::DriveSetup(setup),
+            runtime_config,
+            &CONFIG_COORDINATOR.revisions,
+            &CONFIG_COORDINATOR.actions,
+            request.id,
+            revision,
+        ) else {
+            return ConfigResponse::Busy;
+        };
+        FLASH_DONE.reset();
+        if FLASH_CHANNEL
+            .try_send(FlashOperation::SaveInstalledDrive(record))
+            .is_err()
+        {
+            return ConfigResponse::Error;
+        }
+        // Once a write is queued, an error may leave a complete new record.
+        // Inhibit starts until the prepared model is installed or reboot loads it.
+        crate::state::set_drive_setup_recovery(true);
+        if !FLASH_DONE.wait().await {
+            return ConfigResponse::Error;
+        }
+        drop(flash_pending);
+        match guard.apply::<T>().await {
+            ConfigResponse::Applied { revision, .. } => ConfigResponse::Persisted {
+                req_id: request.id,
+                revision,
+            },
+            _ => ConfigResponse::SetupRequiresRestart { req_id: request.id },
+        }
     }
 }
 

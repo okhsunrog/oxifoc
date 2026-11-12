@@ -11,6 +11,10 @@ pub struct Session {
     active: Option<OperationId>,
     plan: Option<CommissioningPlan>,
     revisions: [u32; ConfigGroupId::COUNT],
+    measured: [f32; 4],
+    completed: u32,
+    candidate: Option<crate::drive_setup::DriveSetup>,
+    matching_stage: bool,
     operations: Operations<DetectRequest, DetectResponse, DetectError>,
 }
 
@@ -40,6 +44,10 @@ impl Session {
             active: None,
             plan: None,
             revisions: [0; ConfigGroupId::COUNT],
+            measured: [0.0; 4],
+            completed: 0,
+            candidate: None,
+            matching_stage: false,
             operations: Operations::new(id),
         }
     }
@@ -88,6 +96,8 @@ impl Session {
                 self.id.generation = generation;
                 self.operations = Operations::new(self.id);
                 self.plan = plan;
+                self.completed = 0;
+                self.candidate = None;
                 self.revisions = revisions;
                 Reply::Session(self.id).into()
             }
@@ -111,6 +121,28 @@ impl Session {
                 match self.operations.begin(id, request) {
                     Ok(Admission::Start) => {
                         self.active = Some(id);
+                        self.candidate = None;
+                        self.matching_stage = id.sequence == self.completed + 1
+                            && match (id.sequence, request) {
+                                (1, DetectRequest::MeasureResistance { .. }) => true,
+                                (2, DetectRequest::MeasureInductance { resistance_ohm, .. })
+                                | (4, DetectRequest::CalibrateHall { resistance_ohm, .. }) => {
+                                    resistance_ohm == self.measured[0]
+                                }
+                                (
+                                    3,
+                                    DetectRequest::MeasureFlux {
+                                        resistance_ohm,
+                                        inductance_h,
+                                        ..
+                                    },
+                                ) => {
+                                    resistance_ohm == self.measured[0]
+                                        && inductance_h
+                                            == (self.measured[1] + self.measured[2]) / 2.0
+                                }
+                                _ => false,
+                            };
                         Dispatch {
                             reply: Reply::Operation(State::Running),
                             start: Some(Measurement { id, request }),
@@ -138,10 +170,85 @@ impl Session {
             },
         }
     }
+    pub(super) fn publish_candidate(&self) {
+        critical_section::with(|cs| {
+            let mut ready = super::READY_SETUP.borrow(cs).borrow_mut();
+            *ready = self.candidate.clone().map(|setup| super::ReadySetup {
+                session: self.id,
+                revisions: self.revisions,
+                setup,
+            });
+        });
+    }
+
     /// Execution calls this only after acknowledged actuator cleanup.
     pub fn finish(&mut self, id: OperationId, outcome: Outcome<DetectResponse, DetectError>) {
-        if self.operations.finish(id, outcome).is_ok() {
-            self.active = None;
+        if self.operations.finish(id, outcome).is_err() {
+            return;
+        }
+        self.active = None;
+        let Some(plan) = self.plan else {
+            return;
+        };
+        if !self.matching_stage {
+            return;
+        }
+        let Ok(State::Finished(Outcome::Completed(result))) = self.operations.status(id) else {
+            return;
+        };
+        use crate::drive_setup::{DriveCurrent, DriveSetup, Feedback};
+        let feedback = match (id.sequence, result) {
+            (1, DetectResponse::Resistance { resistance_ohm }) => {
+                self.measured[0] = resistance_ohm;
+                None
+            }
+            (
+                2,
+                DetectResponse::Inductance {
+                    inductance_d_h,
+                    inductance_q_h,
+                },
+            ) => {
+                self.measured[1] = inductance_d_h;
+                self.measured[2] = inductance_q_h;
+                None
+            }
+            (
+                3,
+                DetectResponse::FluxLinkage {
+                    flux_linkage_wb, ..
+                },
+            ) => {
+                self.measured[3] = flux_linkage_wb;
+                (!plan.calibrate_hall).then_some(Feedback::Sensorless)
+            }
+            (4, DetectResponse::HallCalibrated(hall)) if plan.calibrate_hall => {
+                Some(Feedback::Hall(hall))
+            }
+            _ => return,
+        };
+        self.completed = id.sequence;
+        if let Some(feedback) = feedback {
+            let [
+                resistance_ohm,
+                inductance_d_h,
+                inductance_q_h,
+                flux_linkage_wb,
+            ] = self.measured;
+            self.candidate = Some(DriveSetup {
+                motor: crate::storage::MotorParamsConfig {
+                    resistance_ohm,
+                    inductance_d_h,
+                    inductance_q_h,
+                    flux_linkage_wb,
+                    pole_pairs: plan.pole_pairs,
+                    max_power_loss_w: plan.motor_class.preset().max_power_loss_w,
+                    ..Default::default()
+                },
+                feedback,
+                source: plan.source,
+                current: DriveCurrent::Auto,
+            });
         }
     }
 }
@@ -292,6 +399,78 @@ mod plan_tests {
             calibrate_hall: true,
         }
     }
+    #[test]
+    fn setup_requires_completed_measurements_with_matching_prerequisites() {
+        let mut p = plan();
+        p.calibrate_hall = false;
+        for inductance_input in [0.063, 0.05] {
+            let mut s = Session::new(42);
+            let Reply::Session(session) = s
+                .handle(Request::Open {
+                    expected: s.id,
+                    client: crate::types::ReqId(1),
+                    plan: Some(p),
+                })
+                .reply
+            else {
+                panic!("session open failed")
+            };
+            let steps = [
+                (
+                    DetectRequest::MeasureResistance {
+                        max_power_loss_w: 120.,
+                        current_limit_a: None,
+                    },
+                    DetectResponse::Resistance {
+                        resistance_ohm: 0.063,
+                    },
+                ),
+                (
+                    DetectRequest::MeasureInductance {
+                        max_power_loss_w: 120.,
+                        current_limit_a: None,
+                        resistance_ohm: inductance_input,
+                    },
+                    DetectResponse::Inductance {
+                        inductance_d_h: 31e-6,
+                        inductance_q_h: 51e-6,
+                    },
+                ),
+                (
+                    DetectRequest::MeasureFlux {
+                        max_power_loss_w: 120.,
+                        current_limit_a: None,
+                        resistance_ohm: 0.063,
+                        inductance_h: (31e-6 + 51e-6) / 2.0,
+                        pole_pairs: 7,
+                        openloop_erpm: 4000.,
+                    },
+                    DetectResponse::FluxLinkage {
+                        flux_linkage_wb: 0.004,
+                        kv_rpm_per_v: 197.0,
+                    },
+                ),
+            ];
+            for (step, (request, result)) in steps.into_iter().enumerate() {
+                let id = OperationId {
+                    session,
+                    sequence: step as u32 + 1,
+                };
+                assert!(s.handle(Request::Start { id, request }).start.is_some());
+                assert!(s.candidate.is_none());
+                s.finish(id, Outcome::Completed(result));
+            }
+            if inductance_input == 0.063 {
+                let setup = s.candidate.unwrap();
+                assert_eq!(setup.source, p.source);
+                assert_eq!(setup.motor.resistance_ohm, 0.063);
+                assert_eq!(setup.feedback, crate::drive_setup::Feedback::Sensorless);
+            } else {
+                assert!(s.candidate.is_none());
+            }
+        }
+    }
+
     #[test]
     fn session_binds_plan_and_revisions_without_losing_terminal_replay() {
         let mut s = Session::new(42);

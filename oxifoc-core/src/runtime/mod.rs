@@ -27,8 +27,8 @@ pub mod velocity_debug;
 
 /// Shared motor-detection server with effectively-once dedup.
 ///
-/// Requires `delivery` (for the dedup combinator) and `storage` (to persist
-/// the Hall calibration result). Platforms provide a [`detect::DetectionBackend`]
+/// Requires `delivery` and `storage` for session-bound commissioning and setup.
+/// Platforms provide a [`detect::DetectionBackend`]
 /// and call [`detect::detect_server`] instead of hand-rolling the serve loop.
 #[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 pub mod detect;

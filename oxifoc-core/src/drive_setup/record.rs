@@ -143,6 +143,7 @@ mod tests {
 
     #[test]
     fn interrupted_replacement_recovers_one_complete_setup() {
+        use crate::storage::{ConfigKey, InstalledDrive, RuntimeConfig};
         use sequential_storage::{
             cache::Cache,
             map::{MapConfig, MapStorage},
@@ -176,47 +177,52 @@ mod tests {
             regen_a: 2.0,
         };
         let next = next.validate(70.0, 30.0).unwrap();
-        let mut store = MapStorage::<u8, _, _>::new(
+        let mut store = MapStorage::<ConfigKey, _, _>::new(
             Flash::new(WriteCountCheck::TwiceWithZero, None, true),
             MapConfig::new(Flash::FULL_FLASH_RANGE),
             Cache::new_uncached(),
         );
-        let mut buf = [0; 256];
+        let old_record = InstalledDrive::new(&old);
+        let next_record = InstalledDrive::new(&next);
+        let key = ConfigKey::InstalledDrive;
+        let mut buf = [0; 512];
         let mut interrupted = 0;
         let mut completed = 0;
         // Exercise fresh append and successive page positions, including reclaim.
         for _ in 0..12 {
-            ready(store.store_item(&mut buf, &1, &SetupRecord::from(&old))).unwrap();
+            ready(store.store_item(&mut buf, &key, &old_record)).unwrap();
             let image = store.flash().clone();
             for cut in 0..1024 {
                 let mut flash = image.clone();
                 flash.bytes_until_shutoff = Some(cut);
-                let mut attempt = MapStorage::<u8, _, _>::new(
+                let mut attempt = MapStorage::<ConfigKey, _, _>::new(
                     flash,
                     MapConfig::new(Flash::FULL_FLASH_RANGE),
                     Cache::new_uncached(),
                 );
-                if ready(attempt.store_item(&mut buf, &1, &SetupRecord::from(&next))).is_ok() {
+                if ready(attempt.store_item(&mut buf, &key, &next_record)).is_ok() {
                     completed += 1;
                 } else {
                     interrupted += 1;
                 }
                 let (mut flash, _) = attempt.destroy();
                 flash.bytes_until_shutoff = None;
-                let mut reboot = MapStorage::<u8, _, _>::new(
+                let mut reboot = MapStorage::<ConfigKey, _, _>::new(
                     flash,
                     MapConfig::new(Flash::FULL_FLASH_RANGE),
                     Cache::new_uncached(),
                 );
-                let loaded = ready(reboot.fetch_item::<SetupRecord>(&mut buf, &1))
+                let loaded = ready(reboot.fetch_item::<InstalledDrive>(&mut buf, &key))
                     .unwrap()
-                    .unwrap()
-                    .validate(70.0, 30.0)
                     .unwrap();
-                assert!(
-                    loaded.setup() == old.setup() || loaded.setup() == next.setup(),
-                    "mixed setup at cut {cut}"
-                );
+                let mut config = RuntimeConfig::default();
+                assert!(loaded.project(&mut config, 70.0));
+                let matches = |setup: &ValidatedDriveSetup| {
+                    config.motor_params.as_ref() == Some(&setup.setup().motor)
+                        && config.current_limits.as_ref() == Some(setup.limits())
+                        && config.hall_calibration == setup.hall()
+                };
+                assert!(matches(&old) || matches(&next), "mixed setup at cut {cut}");
             }
         }
         assert!(interrupted > 0 && completed > 0);
@@ -260,7 +266,7 @@ mod tests {
                 match current {
                     DriveCurrent::Auto => assert_eq!(lowered.unwrap().limits().max_iq_a, 10.0),
                     DriveCurrent::Override(_) => {
-                        assert!(matches!(lowered, Err(SetupError::Current)))
+                        assert!(matches!(lowered, Err(SetupError::Current)));
                     }
                 }
                 for end in 0..bytes.len() {

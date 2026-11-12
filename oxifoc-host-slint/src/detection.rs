@@ -5,6 +5,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use oxifoc_core::drive_setup::DriveCurrent;
 use oxifoc_core::types::measurement::{OperationId, Request};
 use oxifoc_host_lib::CommandSender;
 use oxifoc_host_lib::ops::detect::{self, DetectionOutcome, DetectionPlan, PRESETS};
@@ -103,6 +104,10 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
             app.set_detect_running(true);
             app.set_detect_cancellable(true);
             app.set_detect_status("Checking controller".into());
+            app.set_detect_drive_override(false);
+            app.set_detect_drive_override_a("".into());
+            app.set_detect_saved(false);
+            let board_trip_a = app.get_device_max_current();
             let weak = weak.clone();
             let result = result.clone();
             let cancelled = cancelled.clone();
@@ -120,6 +125,11 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
                         app.set_detect_status(format!("Measuring {stage}").into());
                     });
                     detect::run_measurement(&cmd, request)
+                })
+                .and_then(|out| {
+                    let setup = out.setup(plan, DriveCurrent::Auto)?;
+                    let preview = detect::preview_setup(&cmd, setup, board_trip_a)?;
+                    Ok((out, preview.limits().max_iq_a))
                 });
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     app.set_detect_running(false);
@@ -129,9 +139,11 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
                         return;
                     }
                     match measured {
-                        Ok(out) => {
+                        Ok((out, effective)) => {
                             *result.lock().unwrap() = Some((cmd, plan, out));
                             show_result(&app, plan, out);
+                            app.set_detect_effective_current(format!("{effective:.2}").into());
+                            app.set_detect_page(3);
                         }
                         Err(error) => app.set_detect_status(format!("{error:#}").into()),
                     }
@@ -155,6 +167,18 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
         });
     }
 
+    {
+        let result = result.clone();
+        let weak = app.as_weak();
+        app.on_detect_finish(move || {
+            let app = weak.unwrap();
+            *result.lock().unwrap() = None;
+            app.set_detect_status("".into());
+            app.set_detect_resistance("".into());
+            app.set_detect_page(0);
+        });
+    }
+
     let rt = runtime.clone();
     let weak = app.as_weak();
     app.on_detect_apply(move || {
@@ -174,15 +198,34 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
             app.set_detect_status("Controller changed. Run detection again.".into());
             return;
         }
+        let current = if app.get_detect_drive_override() {
+            match app.get_detect_drive_override_a().trim().parse::<f32>() {
+                Ok(a) if a.is_finite() && a > 0.0 => DriveCurrent::Override(a),
+                _ => {
+                    app.set_detect_status("Enter a finite, positive drive current".into());
+                    return;
+                }
+            }
+        } else {
+            DriveCurrent::Auto
+        };
+        let board_trip_a = app.get_device_max_current();
         app.set_detect_running(true);
         app.set_detect_status("Saving configuration".into());
         let weak = weak.clone();
         std::thread::spawn(move || {
-            let saved = detect::apply_sequence(&cmd, &out, plan);
+            let saved = out.setup(plan, current).and_then(|setup| {
+                let preview = detect::preview_setup(&cmd, setup, board_trip_a)?;
+                detect::apply_sequence(&cmd, &out, plan, current)?;
+                Ok(preview.limits().max_iq_a)
+            });
             let _ = weak.upgrade_in_event_loop(move |app| {
                 app.set_detect_running(false);
                 app.set_detect_status(match saved {
-                    Ok(()) => "Saved to controller".into(),
+                    Ok(effective) => {
+                        app.set_detect_saved(true);
+                        format!("Saved · Drive current limit {effective:.2} A").into()
+                    }
                     Err(error) => format!("Save failed: {error:#}").into(),
                 });
             });
@@ -201,6 +244,16 @@ fn show_result(app: &App, plan: DetectionPlan, out: DetectionOutcome) {
     let (kp, ki) = detect::suggested_pi_gains(out.resistance_ohm, out.l_avg());
     app.set_detect_kp(format!("{kp:.4}").into());
     app.set_detect_ki(format!("{ki:.2}").into());
+    if let Some(source) = plan.source {
+        let feedback = if out.hall_ok { "Hall" } else { "Sensorless" };
+        app.set_detect_setup_summary(
+            format!(
+                "{feedback} · Input {} A · Regeneration {} A",
+                source.input_a, source.regen_a
+            )
+            .into(),
+        );
+    }
     app.set_detect_status(
         if out.hall_ok {
             "Ready to save · Hall calibrated"

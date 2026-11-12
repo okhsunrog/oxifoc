@@ -25,6 +25,7 @@ impl MotorClass {
 #[derive(
     Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
 )]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SourceLimits {
     pub input_a: f32,
     pub regen_a: f32,

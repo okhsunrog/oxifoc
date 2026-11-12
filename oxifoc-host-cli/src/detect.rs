@@ -1,9 +1,11 @@
 //! `detect` subcommand: on-device motor detection orchestration.
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use oxifoc_core::drive_setup::DriveCurrent;
 use oxifoc_core::types::{ConfigGroupId, DetectRequest, DetectResponse, HardwareInfo};
 use oxifoc_host_lib::ops::detect::{self, DetectionPlan};
 use oxifoc_host_lib::{HostCommand, HostRuntime};
@@ -35,6 +37,7 @@ pub fn run_detect(
     offset_method: OffsetMethodArg,
     samples: u16,
     stationary: bool,
+    drive_current_a: Option<f32>,
     apply: bool,
     record_out: Option<String>,
     record_hz: Option<u16>,
@@ -45,8 +48,26 @@ pub fn run_detect(
             resistance.is_none() && inductance.is_none(),
             "full detection measures its own resistance and inductance"
         );
-        return run_all(runtime, plan, record_out.as_deref(), record_hz, apply, json);
+        let current = drive_current_a.map_or(DriveCurrent::Auto, DriveCurrent::Override);
+        anyhow::ensure!(
+            drive_current_a.is_none_or(|a| a.is_finite() && a > 0.0),
+            "drive current must be finite and positive"
+        );
+        return run_all(
+            runtime,
+            plan,
+            record_out.as_deref(),
+            record_hz,
+            current,
+            apply,
+            json,
+        );
     }
+
+    anyhow::ensure!(
+        drive_current_a.is_none(),
+        "drive-current override is only available for detect all"
+    );
 
     if matches!(step, DetectStep::OffsetsCompare) {
         if apply {
@@ -187,6 +208,7 @@ fn run_all(
     plan: DetectionPlan,
     record_out: Option<&str>,
     record_hz: Option<u16>,
+    current: DriveCurrent,
     apply: bool,
     json: bool,
 ) -> Result<()> {
@@ -217,15 +239,49 @@ fn run_all(
         captures.insert(stage.into(), capture);
         Ok(response)
     })?;
-    let setup = outcome.setup(plan, oxifoc_core::drive_setup::DriveCurrent::Auto)?;
+    let setup = outcome.setup(plan, current)?;
+    let info = record::latest_hw_info(runtime)
+        .or(hardware)
+        .context("controller hardware info unavailable")?;
+    let preview = detect::preview_setup(&runtime.cmd_tx, setup.clone(), info.max_current_a)?;
+    let thermal = preview.thermal_current_a();
+    let effective = preview.limits().max_iq_a;
+    let apply = if !apply && !json && std::io::stdin().is_terminal() {
+        eprintln!(
+            "R {:.3} mΩ · Ld/Lq {:.3}/{:.3} µH · Flux {:.3} mWb · {}",
+            outcome.resistance_ohm * 1e3,
+            outcome.inductance_d_h * 1e6,
+            outcome.inductance_q_h * 1e6,
+            outcome.flux_linkage_wb * 1e3,
+            if outcome.hall_ok {
+                "Hall"
+            } else {
+                "Sensorless"
+            }
+        );
+        eprintln!(
+            "Input {} A · Regeneration {} A · Thermal estimate {thermal:.2} A · Drive limit {effective:.2} A",
+            setup.source.input_a, setup.source.regen_a,
+        );
+        matches!(
+            prompt("Save this setup? [y/N]")?
+                .to_ascii_lowercase()
+                .as_str(),
+            "y" | "yes"
+        )
+    } else {
+        apply
+    };
     if apply {
-        detect::apply_sequence(&runtime.cmd_tx, &outcome, plan)?;
+        detect::apply_sequence(&runtime.cmd_tx, &outcome, plan, current)?;
     }
     let (kp, ki) = detect::suggested_pi_gains(outcome.resistance_ohm, outcome.l_avg());
     emit(
         json,
-        json!({"setup": setup, "plan": plan, "result": outcome, "kp": kp, "ki": ki, "applied": apply, "captures": captures}),
-        format!("{outcome:?}\nCurrent PI: Kp={kp:.5}, Ki={ki:.4}"),
+        json!({"setup": setup, "plan": plan, "result": outcome, "kp": kp, "ki": ki, "applied": apply, "thermal_current_a": thermal, "effective_drive_current_a": effective, "captures": captures}),
+        format!(
+            "{outcome:?}\nThermal estimate: {thermal:.2} A · Drive limit: {effective:.2} A\nCurrent PI: Kp={kp:.5}, Ki={ki:.4}"
+        ),
     );
     Ok(())
 }
@@ -286,19 +342,52 @@ fn measure_operation(
     // plus margin, so the CLI cannot give up before the backend does.
     let deadline =
         Instant::now() + Duration::from_millis(oxifoc_host_lib::DETECT_POLICY.deadline_ms + 5_000);
+    let mut interrupted = false;
     let detect_result: Result<DetectResponse> = loop {
-        if let Ok(res) = rx.try_recv() {
-            break res;
+        if let Ok(result) = rx.try_recv() {
+            break result;
+        }
+        if rx.is_terminated() {
+            interrupted = true;
+            break Err(anyhow::anyhow!("Detection response channel closed"));
         }
         if Instant::now() >= deadline {
+            interrupted = true;
             break Err(anyhow::anyhow!("Detection timed out"));
         }
-        // While waiting, keep draining telemetry (or just sleep).
-        match &mut cap {
-            Some(c) => c.drain_until(runtime, Instant::now() + Duration::from_millis(100))?,
-            None => std::thread::sleep(Duration::from_millis(100)),
+        if let Some(c) = &mut cap {
+            if let Err(error) = c.drain_until(runtime, Instant::now() + Duration::from_millis(100))
+            {
+                interrupted = true;
+                break Err(error);
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(100));
         }
     };
+
+    if interrupted {
+        use oxifoc_core::types::measurement::{Reply, Request, State};
+        let stop_deadline = Instant::now() + Duration::from_secs(5);
+        let mut terminal = false;
+        let mut request = Request::Cancel { id: operation.id };
+        loop {
+            match oxifoc_host_lib::measurement_request(&runtime.cmd_tx, request) {
+                Ok(Reply::Operation(State::Finished(_))) => {
+                    terminal = true;
+                    break;
+                }
+                Ok(Reply::Operation(_)) if Instant::now() < stop_deadline => {
+                    request = Request::Status { id: operation.id };
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                _ => break,
+            }
+        }
+        if !terminal && let Err(error) = crate::send_emergency_stop(runtime) {
+            eprintln!("could not confirm Stop after interrupted detection: {error:#}");
+        }
+    }
 
     // The capture is written BEFORE the detect outcome is propagated —
     // dissecting failures is the primary use case.
@@ -350,6 +439,54 @@ fn measure_operation(
         );
     }
     Ok((resp, capture_summary))
+}
+
+fn prompt(label: &str) -> Result<String> {
+    use std::io::Write;
+    anyhow::ensure!(
+        std::io::stdin().is_terminal(),
+        "{label}: supply an explicit command-line option in non-interactive mode"
+    );
+    eprint!("{label}: ");
+    std::io::stderr().flush()?;
+    let mut value = String::new();
+    anyhow::ensure!(std::io::stdin().read_line(&mut value)? > 0, "input closed");
+    Ok(value.trim().to_owned())
+}
+
+pub fn select_motor_class(value: Option<String>) -> Result<String> {
+    if let Some(value) = value {
+        return Ok(value);
+    }
+    eprintln!("Motor class:");
+    for preset in detect::PRESETS {
+        eprintln!("  {} — {}", preset.id, preset.name);
+    }
+    prompt("Motor class (--motor-class)")
+}
+
+pub fn confirm_source(
+    input: Option<f32>,
+    regen: Option<f32>,
+) -> Result<oxifoc_core::types::commissioning::SourceLimits> {
+    let input_a = match input {
+        Some(v) => v,
+        None => prompt("Input current limit (A), --input-current-a")?
+            .parse()
+            .context("invalid input current")?,
+    };
+    let regen_a = match regen {
+        Some(v) => v,
+        None => prompt("Regenerative current limit (A), 0 = no regeneration, --regen-current-a")?
+            .parse()
+            .context("invalid regenerative current")?,
+    };
+    let source = oxifoc_core::types::commissioning::SourceLimits { input_a, regen_a };
+    anyhow::ensure!(
+        source.is_valid(),
+        "input current must be positive and regenerative current nonnegative; both must be finite"
+    );
+    Ok(source)
 }
 
 #[cfg(test)]
@@ -594,52 +731,4 @@ mod hardware_tests {
         runtime.shutdown();
         Ok(())
     }
-}
-
-fn prompt(label: &str) -> Result<String> {
-    use std::io::{IsTerminal, Write};
-    anyhow::ensure!(
-        std::io::stdin().is_terminal(),
-        "{label}: supply an explicit command-line option in non-interactive mode"
-    );
-    eprint!("{label}: ");
-    std::io::stderr().flush()?;
-    let mut value = String::new();
-    anyhow::ensure!(std::io::stdin().read_line(&mut value)? > 0, "input closed");
-    Ok(value.trim().to_owned())
-}
-
-pub fn select_motor_class(value: Option<String>) -> Result<String> {
-    if let Some(value) = value {
-        return Ok(value);
-    }
-    eprintln!("Motor class:");
-    for preset in detect::PRESETS {
-        eprintln!("  {} — {}", preset.id, preset.name);
-    }
-    prompt("Motor class (--motor-class)")
-}
-
-pub fn confirm_source(
-    input: Option<f32>,
-    regen: Option<f32>,
-) -> Result<oxifoc_core::types::commissioning::SourceLimits> {
-    let input_a = match input {
-        Some(v) => v,
-        None => prompt("Input current limit (A), --input-current-a")?
-            .parse()
-            .context("invalid input current")?,
-    };
-    let regen_a = match regen {
-        Some(v) => v,
-        None => prompt("Regenerative current limit (A), 0 = no regeneration, --regen-current-a")?
-            .parse()
-            .context("invalid regenerative current")?,
-    };
-    let source = oxifoc_core::types::commissioning::SourceLimits { input_a, regen_a };
-    anyhow::ensure!(
-        source.is_valid(),
-        "input current must be positive and regenerative current nonnegative; both must be finite"
-    );
-    Ok(source)
 }

@@ -26,6 +26,7 @@ pub enum Feedback {
 #[derive(
     Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
 )]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DriveSetup {
     pub motor: MotorParamsConfig,
     pub feedback: Feedback,
@@ -67,10 +68,10 @@ impl DriveSetup {
         {
             return Err(SetupError::Motor);
         }
-        if let Feedback::Hall(hall) = &self.feedback {
-            if !hall.is_calibrated() {
-                return Err(SetupError::Hall);
-            }
+        if let Feedback::Hall(hall) = &self.feedback
+            && !hall.is_calibrated()
+        {
+            return Err(SetupError::Hall);
         }
         if !self.source.is_valid() {
             return Err(SetupError::Source);
@@ -125,6 +126,21 @@ impl ValidatedDriveSetup {
     pub fn limits(&self) -> &CurrentLimitsConfig {
         &self.limits
     }
+    pub fn hall(&self) -> Option<HallCalibrationConfig> {
+        match self.setup.feedback {
+            Feedback::Hall(hall) => Some(hall),
+            Feedback::Sensorless => None,
+        }
+    }
+
+    #[cfg(all(feature = "runtime", feature = "detection", feature = "delivery"))]
+    pub(crate) fn project(&self, config: &mut crate::storage::RuntimeConfig) {
+        config.motor_params = Some(self.setup.motor.clone());
+        config.hall_calibration = self.hall();
+        config.hall_calibration_invalid = false;
+        config.current_limits = Some(self.limits.clone());
+    }
+
     pub fn thermal_current_a(&self) -> f32 {
         self.thermal_current_a
     }

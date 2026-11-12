@@ -12,6 +12,7 @@ use crate::storage::RuntimeConfig;
 /// Fully initialized estimator model. Construction (including filter setup)
 /// belongs to boot or the configuration task, never to the periodic FOC path.
 pub struct PreparedPhaseModel {
+    pub(super) setup_source: Option<PhaseSource>,
     reset_hall: Option<crate::foc::hall_sensor::PreparedHallCalibration>,
     observer: Observer,
     #[cfg(feature = "hfi")]
@@ -23,6 +24,7 @@ impl PreparedPhaseModel {
     pub fn from_config(config: &RuntimeConfig, vbus: f32) -> Self {
         let mut prepared = Self {
             reset_hall: None,
+            setup_source: None,
             observer: Observer::None,
             #[cfg(feature = "hfi")]
             hfi: None,
@@ -72,6 +74,24 @@ impl PreparedPhaseModel {
         self.reset_hall = Some(crate::foc::hall_sensor::PreparedHallCalibration::nominal());
     }
 
+    #[cfg(all(feature = "runtime", feature = "detection", feature = "delivery"))]
+    pub(crate) fn prepare_setup_feedback(
+        &mut self,
+        hall: Option<crate::storage::HallCalibrationConfig>,
+    ) -> Option<()> {
+        use crate::foc::hall_sensor::PreparedHallCalibration;
+        self.reset_hall = Some(match hall {
+            Some(value) => PreparedHallCalibration::from_config(&value)?,
+            None => PreparedHallCalibration::nominal(),
+        });
+        self.setup_source = Some(if hall.is_some() {
+            PhaseSource::Hall
+        } else {
+            PhaseSource::Observer
+        });
+        Some(())
+    }
+
     pub(crate) fn hall_reset(&self) -> Option<&crate::foc::hall_sensor::PreparedHallCalibration> {
         self.reset_hall.as_ref()
     }
@@ -91,7 +111,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             self.hfi_was_active = false;
         }
         self.tracker = core::mem::take(&mut prepared.tracker);
-        let old_source = self.source;
+        let old_source = prepared.setup_source.unwrap_or(self.source);
         if self.set_source(old_source).is_err() {
             // Manual is always available and does not consult unwired sensors.
             let _ = self.set_source(PhaseSource::Manual);

@@ -21,7 +21,7 @@ pub use oxifoc_core::storage::*;
 /// Storage region: last 4KB of 512KB flash (bank 2, 2 x 2KB pages)
 const STORAGE_START: u32 = 0x7F000; // 508KB offset
 const STORAGE_SIZE: u32 = 4 * 1024;
-const BUFFER_SIZE: usize = 128;
+const BUFFER_SIZE: usize = 512;
 
 // Compile-time check: storage must not overlap firmware.
 // FIRMWARE_END_OFFSET is parsed from memory.x by build.rs (ORIGIN - 0x08000000 + LENGTH).
@@ -71,5 +71,5 @@ pub async fn storage_worker(flash: AsyncFlash) {
         WRITE_SIZE
     );
 
-    run_storage_worker(&mut storage, buf).await;
+    run_storage_worker(&mut storage, buf, crate::config::BOARD.max_phase_current_a).await;
 }

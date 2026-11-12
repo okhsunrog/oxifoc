@@ -464,6 +464,11 @@ enum Command {
             help = "Lower the detection current ceiling (A)"
         )]
         current_limit_a: Option<f32>,
+        #[arg(
+            long,
+            help = "Override the installed drive current (A) for full detection"
+        )]
+        drive_current_a: Option<f32>,
         #[arg(long, help = "Skip Hall calibration in the full sequence")]
         sensorless: bool,
         #[arg(long, help = "Resistance (Ω); default: stored motor-params")]
@@ -508,7 +513,7 @@ enum Command {
         record_hz: Option<u16>,
         #[arg(
             long,
-            help = "Persist the measured values in their appropriate config group"
+            help = "Save the complete setup for all, or persist the individual diagnostic result"
         )]
         apply: bool,
     },
@@ -1036,6 +1041,7 @@ fn main() -> Result<()> {
             regen_current_a,
             advanced: _,
             current_limit_a,
+            drive_current_a,
             sensorless,
             resistance,
             inductance,
@@ -1079,6 +1085,7 @@ fn main() -> Result<()> {
                 offset_method,
                 samples,
                 stationary,
+                drive_current_a,
                 apply,
                 record,
                 record_hz,

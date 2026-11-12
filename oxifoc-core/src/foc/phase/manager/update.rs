@@ -171,6 +171,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
 
     #[cfg(feature = "storage")]
     fn apply_motor_model(&mut self, model: &mut super::PreparedPhaseModel) -> Option<PhaseSource> {
+        if model
+            .setup_source
+            .is_some_and(|source| source.requires_hall())
+            && !self.has_hall()
+        {
+            return None;
+        }
         // ResetAll owns both the default model and default Hall frame. A
         // structurally absent sensor needs no reset; a present unsupported
         // sensor must reject before any estimator/model state is changed.

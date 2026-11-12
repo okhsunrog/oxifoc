@@ -142,12 +142,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Storage worker uses !Send futures (sequential-storage internals),
     // so run it on a dedicated thread with a LocalSet.
-    std::thread::spawn(|| {
+    let board_trip_a = args.max_current;
+    std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(storage::storage_worker());
+        rt.block_on(storage::storage_worker(board_trip_a));
     });
 
     let mut loaded_config = CONFIG_LOADED.wait().await;

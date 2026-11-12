@@ -62,6 +62,7 @@ pub enum ConfigKey {
     VoltageFeedforward = 13,
     /// Complete versioned Hall calibration, including optional edge geometry.
     HallCalibrationRecord = 14,
+    InstalledDrive = 15,
 }
 
 impl Key for ConfigKey {
@@ -92,6 +93,7 @@ impl Key for ConfigKey {
             12 => Self::BoardCalibration,
             13 => Self::VoltageFeedforward,
             14 => Self::HallCalibrationRecord,
+            15 => Self::InstalledDrive,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -795,6 +797,83 @@ impl RuntimeConfig {
     }
 }
 
+/// Effective setup and later individually persisted edits live under one key.
+/// The legacy keys are read only when an installed drive record is absent.
+#[cfg(any(feature = "runtime", test))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum InstalledDrive {
+    V1(InstalledDriveV1),
+}
+
+#[cfg(any(feature = "runtime", test))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InstalledDriveV1 {
+    setup: crate::drive_setup::record::SetupRecord,
+    configured_trip_a: f32,
+    // The legacy records below already have fixed on-flash layouts.
+    motor_override: Option<MotorParamsConfig>,
+    limits_override: Option<CurrentLimitsConfig>,
+    hall_override: Option<HallCalibrationRecord>,
+}
+
+#[cfg(any(feature = "runtime", test))]
+impl PostcardValue<'_> for InstalledDrive {}
+
+#[cfg(any(feature = "runtime", test))]
+impl InstalledDrive {
+    pub fn new(setup: &crate::drive_setup::ValidatedDriveSetup) -> Self {
+        Self::V1(InstalledDriveV1 {
+            setup: setup.into(),
+            configured_trip_a: setup.limits().max_phase_current_a,
+            motor_override: None,
+            limits_override: None,
+            hall_override: None,
+        })
+    }
+
+    pub(crate) fn project(&self, config: &mut RuntimeConfig, board_trip_a: f32) -> bool {
+        let Self::V1(record) = self;
+        let Ok(setup) = record
+            .setup
+            .clone()
+            .validate(board_trip_a, record.configured_trip_a)
+        else {
+            return false;
+        };
+        let motor = record
+            .motor_override
+            .as_ref()
+            .unwrap_or(&setup.setup().motor);
+        let limits = record.limits_override.as_ref().unwrap_or(setup.limits());
+        let hall = match &record.hall_override {
+            Some(record) => match record.clone().validated() {
+                Some(hall) => Some(hall),
+                None => return false,
+            },
+            None => setup.hall(),
+        };
+        if !motor.is_valid() || !limits.is_coherent() {
+            return false;
+        }
+        config.motor_params = Some(motor.clone());
+        config.current_limits = Some(limits.clone());
+        config.hall_calibration = hall;
+        config.hall_calibration_invalid = false;
+        true
+    }
+
+    fn with_edit(&self, payload: &ConfigPayload) -> Option<Self> {
+        let Self::V1(mut next) = self.clone();
+        match payload {
+            ConfigPayload::MotorParams(value) => next.motor_override = Some(value.clone()),
+            ConfigPayload::CurrentLimits(value) => next.limits_override = Some(value.clone()),
+            ConfigPayload::HallCalibration(value) => next.hall_override = Some((*value).into()),
+            _ => return None,
+        }
+        Some(Self::V1(next))
+    }
+}
+
 // ============================================================================
 // Flash Operation Messages (shared across platforms)
 // ============================================================================
@@ -803,11 +882,20 @@ impl RuntimeConfig {
 ///
 /// Sent from protocol servers to the platform storage worker task.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "runtime",
+    expect(
+        clippy::large_enum_variant,
+        reason = "The embedded worker queues complete flash records without an allocator."
+    )
+)]
 pub enum FlashOperation {
     /// Save a config group to flash
     Save(ConfigKey, ConfigPayload),
     /// Erase all stored configuration
     EraseAll,
+    #[cfg(feature = "runtime")]
+    SaveInstalledDrive(InstalledDrive),
 }
 
 /// Payload variants for each config group.
@@ -867,12 +955,19 @@ pub use channels::*;
 pub async fn run_storage_worker<F>(
     storage: &mut sequential_storage::map::MapStorage<ConfigKey, F, UncachedStorage<ConfigKey>>,
     buf: &mut [u8],
+    board_trip_a: f32,
 ) -> !
 where
     F: embedded_storage_async::nor_flash::NorFlash,
 {
     // Boot-time: load all stored configs
-    let cfg = load_all(storage, buf).await;
+    let mut cfg = load_all(storage, buf).await;
+    let mut installed = storage
+        .fetch_item::<InstalledDrive>(buf, &ConfigKey::InstalledDrive)
+        .await;
+    if !load_installed_drive(&mut cfg, &installed, board_trip_a) {
+        crate::state::set_drive_setup_recovery(true);
+    }
     CONFIG_LOADED.signal(cfg);
 
     // Runtime: handle write operations
@@ -880,7 +975,45 @@ where
         let op = FLASH_CHANNEL.receive().await;
 
         let success = match op {
+            FlashOperation::SaveInstalledDrive(record) => {
+                if storage
+                    .store_item(buf, &ConfigKey::InstalledDrive, &record)
+                    .await
+                    .is_ok()
+                {
+                    installed = Ok(Some(record));
+                    true
+                } else {
+                    false
+                }
+            }
             FlashOperation::Save(key, payload) => {
+                let aggregate_edit = matches!(
+                    &payload,
+                    ConfigPayload::MotorParams(_)
+                        | ConfigPayload::HallCalibration(_)
+                        | ConfigPayload::CurrentLimits(_)
+                );
+                if aggregate_edit && !matches!(&installed, Ok(None)) {
+                    let success = if let Ok(Some(current)) = &installed
+                        && let Some(next) = current.with_edit(&payload)
+                    {
+                        if storage
+                            .store_item(buf, &ConfigKey::InstalledDrive, &next)
+                            .await
+                            .is_ok()
+                        {
+                            installed = Ok(Some(next));
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    FLASH_DONE.signal(success);
+                    continue;
+                }
                 let result = match payload {
                     ConfigPayload::BoardCalibration(v) => {
                         storage
@@ -916,6 +1049,9 @@ where
             }
             FlashOperation::EraseAll => {
                 let result = storage.erase_all().await;
+                if result.is_ok() {
+                    installed = Ok(None);
+                }
                 if result.is_err() {
                     #[cfg(feature = "defmt")]
                     defmt::error!("Failed to erase storage");
@@ -926,6 +1062,25 @@ where
 
         FLASH_DONE.signal(success);
     }
+}
+
+#[cfg(any(feature = "runtime", test))]
+fn load_installed_drive<E>(
+    config: &mut RuntimeConfig,
+    installed: &Result<Option<InstalledDrive>, E>,
+    board_trip_a: f32,
+) -> bool {
+    match installed {
+        Ok(Some(record)) if record.project(config, board_trip_a) => return true,
+        Ok(None) => return true,
+        _ => {}
+    }
+    // A present but unreadable record shadows all three legacy groups.
+    config.motor_params = None;
+    config.hall_calibration = None;
+    config.hall_calibration_invalid = true;
+    config.current_limits = None;
+    false
 }
 
 /// Load stored configs. Safety-relevant calibration failures remain distinct
@@ -1002,6 +1157,71 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aggregate_load_shadows_legacy_and_preserves_independently_saved_edits() {
+        use crate::drive_setup::{DriveCurrent, DriveSetup, Feedback};
+        use crate::types::commissioning::SourceLimits;
+        let mut legacy = RuntimeConfig {
+            motor_params: Some(MotorParamsConfig {
+                resistance_ohm: 0.2,
+                ..Default::default()
+            }),
+            hall_calibration: Some(measured_hall_config()),
+            current_limits: Some(CurrentLimitsConfig {
+                bus_in_max_a: 20.0,
+                ..Default::default()
+            }),
+            board_calibration: Some(BoardCalibrationConfig { vbus_gain: 1.01 }),
+            ..Default::default()
+        };
+        assert!(load_installed_drive(&mut legacy, &Ok::<_, ()>(None), 70.0));
+        assert_eq!(legacy.motor_params.as_ref().unwrap().resistance_ohm, 0.2);
+        let setup = DriveSetup {
+            motor: MotorParamsConfig {
+                resistance_ohm: 0.063,
+                inductance_d_h: 31e-6,
+                inductance_q_h: 51e-6,
+                flux_linkage_wb: 0.004,
+                pole_pairs: 7,
+                max_power_loss_w: 120.0,
+                ..Default::default()
+            },
+            feedback: Feedback::Sensorless,
+            source: SourceLimits {
+                input_a: 5.0,
+                regen_a: 0.0,
+            },
+            current: DriveCurrent::Auto,
+        }
+        .validate(70.0, 30.0)
+        .unwrap();
+        let installed = InstalledDrive::new(&setup);
+        assert!(load_installed_drive(
+            &mut legacy,
+            &Ok::<_, ()>(Some(installed.clone())),
+            70.0
+        ));
+        assert_eq!(legacy.motor_params.as_ref(), Some(&setup.setup().motor));
+        assert_eq!(legacy.current_limits.as_ref(), Some(setup.limits()));
+        assert!(legacy.hall_calibration.is_none());
+        let mut limits = setup.limits().clone();
+        limits.bus_in_max_a = 8.0;
+        let edited = installed
+            .with_edit(&ConfigPayload::CurrentLimits(limits.clone()))
+            .unwrap();
+        assert!(load_installed_drive(
+            &mut legacy,
+            &Ok::<_, ()>(Some(edited)),
+            70.0
+        ));
+        assert_eq!(legacy.current_limits.as_ref(), Some(&limits));
+        assert_eq!(legacy.motor_params.as_ref(), Some(&setup.setup().motor));
+        assert!(legacy.hall_calibration.is_none());
+        assert!(!load_installed_drive(&mut legacy, &Err(()), 70.0));
+        assert!(legacy.motor_params.is_none() && legacy.current_limits.is_none());
+        assert_eq!(legacy.board_calibration.unwrap().vbus_gain, 1.01);
+    }
 
     fn measured_hall_config() -> HallCalibrationConfig {
         use core::f32::consts::TAU;

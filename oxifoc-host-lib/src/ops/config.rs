@@ -62,7 +62,7 @@ pub fn group_name(group: ConfigGroupId) -> &'static str {
         .unwrap_or("?")
 }
 
-fn next_config_id() -> ReqId {
+pub(super) fn next_config_id() -> ReqId {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CTR: std::sync::OnceLock<AtomicU64> = std::sync::OnceLock::new();
     let ctr = CTR.get_or_init(|| {

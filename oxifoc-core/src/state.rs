@@ -250,6 +250,18 @@ impl CycleNotification {
 /// whichever side wins the race, the unsafe overlap is impossible.
 pub static FLASH_OP_PENDING: AtomicBool = AtomicBool::new(false);
 
+static DRIVE_SETUP_RECOVERY: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "storage")]
+pub(crate) fn set_drive_setup_recovery(required: bool) {
+    DRIVE_SETUP_RECOVERY.store(required, Ordering::Release);
+}
+
+#[cfg(feature = "storage")]
+pub(crate) fn drive_setup_recovery_required() -> bool {
+    DRIVE_SETUP_RECOVERY.load(Ordering::Acquire)
+}
+
 /// Set while a device-side detection step is actively driving the motor.
 ///
 /// Detection is host-initiated but device-driven: the host then blocks on the
@@ -385,7 +397,10 @@ impl DetectionActiveGuard {
                 return None;
             }
             #[cfg(feature = "storage")]
-            if model_apply_pending() {
+            if model_apply_pending()
+                || FLASH_OP_PENDING.load(Ordering::Acquire)
+                || DRIVE_SETUP_RECOVERY.load(Ordering::Acquire)
+            {
                 return None;
             }
             let generation = DETECTION_GENERATION.load(Ordering::Relaxed).wrapping_add(1);
@@ -1009,7 +1024,9 @@ where
             // A queued flash write/erase would stall the chip mid-spin —
             // refuse to start until it finishes (see FLASH_OP_PENDING).
             if mode != ControlMode::Stopped
-                && (FLASH_OP_PENDING.load(Ordering::SeqCst) || model_apply_pending())
+                && (FLASH_OP_PENDING.load(Ordering::SeqCst)
+                    || model_apply_pending()
+                    || DRIVE_SETUP_RECOVERY.load(Ordering::Acquire))
             {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("Motor start rejected: flash operation in flight");
