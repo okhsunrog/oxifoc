@@ -859,3 +859,13 @@ were acknowledged. The motor ended stopped with zero faults at the original
 
 Captures, overlays and `loss-and-ack.json` are under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-native-rate-ab/`.
+
+First light-load pilot on the H5055 at 15 kHz PWM and capture, +160
+electrical rad/s, Hall fallback. The hold ran for 20.0 s with 333,453
+samples and zero drops. The three main load intervals raised 100 ms mean
+Iq from about 0.23 A unloaded to a maximum of 0.96 A. Hall travel over
+100 ms had a median of 159.9 rad/s, a 5th–95th percentile of 156.2–165.2,
+and extremes of 150.8 and 184.8 during load transitions. The bus stayed
+near 24 V. The controller finished stopped, with zero faults, at 15 kHz.
+The applied torque was unmeasured. Plot and capture are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-15k-load/`.
