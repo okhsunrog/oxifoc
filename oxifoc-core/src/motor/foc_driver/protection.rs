@@ -181,6 +181,10 @@ pub(super) struct ProtectionMonitor {
     #[cfg(feature = "storage")]
     drive_config_valid: bool,
     environment_drive: f32,
+    #[cfg(feature = "fast-telemetry")]
+    temperature_drive: f32,
+    #[cfg(feature = "fast-telemetry")]
+    bus_voltage_drive: f32,
     duty_utilization: f32,
     scales: DeratingScales,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
@@ -218,6 +222,10 @@ impl ProtectionMonitor {
             #[cfg(feature = "storage")]
             drive_config_valid: true,
             environment_drive: 1.0,
+            #[cfg(feature = "fast-telemetry")]
+            temperature_drive: 1.0,
+            #[cfg(feature = "fast-telemetry")]
+            bus_voltage_drive: 1.0,
             duty_utilization: 0.0,
             scales: DeratingScales::default(),
             protection_tick: 0,
@@ -357,8 +365,19 @@ impl ProtectionMonitor {
         self.protection_tick = self.protection_tick.wrapping_add(1);
         if self.protection_tick.is_multiple_of(256) {
             let omega = sample.velocity;
-            self.scales = self.config.compute(fet_c, motor_c, sample.vbus_v);
-            self.environment_drive = self.scales.drive;
+            let temperature = self.config.thermal_scales(fet_c, motor_c);
+            let bus_voltage = self.config.bus_voltage_scales(sample.vbus_v);
+            self.environment_drive = temperature.drive.min(bus_voltage.drive);
+            #[cfg(feature = "fast-telemetry")]
+            {
+                self.temperature_drive = temperature.drive;
+                self.bus_voltage_drive = bus_voltage.drive;
+            }
+            self.scales = DeratingScales {
+                drive: self.environment_drive,
+                brake: temperature.brake,
+                regen: bus_voltage.regen,
+            };
             self.scales.drive = self.scales.drive.min(self.drive_cut(omega));
             let worst = self.scales.worst();
             if worst < 0.8 {
@@ -575,6 +594,82 @@ where
             );
         };
         self.grant_dissipative_brake(id_target, iq_target, omega, brake, model, None)
+    }
+
+    #[cfg(feature = "fast-telemetry")]
+    #[inline(never)]
+    pub(super) fn current_limit_flags(
+        &self,
+        requested: f32,
+        (clamped, before_grant): (f32, f32),
+        granted: f32,
+        omega: f32,
+    ) -> u16 {
+        use crate::velocity_telemetry as trace;
+        if (requested - granted).abs() <= 1e-4 {
+            return 0;
+        }
+        let mut flags = trace::GRANT_CLIPPED;
+        if (requested - clamped).abs() > 1e-4 {
+            flags |= trace::LIMIT_PHASE_CURRENT;
+        }
+        if (clamped - before_grant).abs() > 1e-4 {
+            flags |= if !self.phase.angle_trustworthy() {
+                trace::LIMIT_ANGLE
+            } else {
+                trace::STARTUP_CURRENT_SHAPING
+            };
+        }
+        if (before_grant - granted).abs() <= 1e-4 {
+            return flags;
+        }
+        let limits = &self.current_limits;
+        let mut phase = before_grant;
+        if limits.is_enabled() && before_grant * omega >= 0.0 {
+            let p = &self.protection;
+            let speed = p.config.speed.speed_cut(p.drive.rider_sign(omega));
+            let duty = p.duty_cut();
+            let scale = p.environment_drive.min(speed.min(duty));
+            let ceiling = limits.max_current_a * scale;
+            phase = clamp_f32(before_grant, -ceiling, ceiling);
+            if (before_grant - phase).abs() > 1e-4 {
+                for (value, reason) in [
+                    (speed, trace::LIMIT_SPEED),
+                    (duty, trace::LIMIT_MODULATION),
+                    (p.temperature_drive, trace::LIMIT_TEMPERATURE),
+                    (p.bus_voltage_drive, trace::LIMIT_BUS_VOLTAGE),
+                ] {
+                    if value < 1.0 && value <= scale {
+                        flags |= reason;
+                    }
+                }
+            }
+        } else if limits.is_enabled() {
+            let thermal = self.protection.scales.brake;
+            let regen = self.protection.scales.regen;
+            let ceiling = limits.max_brake_a * thermal.min(regen);
+            if self.dissipation_model().is_some() {
+                // The dissipative solver may change both axes. Do not infer
+                // individual limits from its nonlinear grant.
+                return flags;
+            }
+            phase = clamp_f32(before_grant, -ceiling, ceiling);
+            if (before_grant - phase).abs() > 1e-4 {
+                if thermal <= regen && thermal < 1.0 {
+                    flags |= trace::LIMIT_TEMPERATURE;
+                }
+                if regen <= thermal && regen < 1.0 {
+                    flags |= trace::LIMIT_BUS_VOLTAGE;
+                }
+                if thermal == 1.0 && regen == 1.0 {
+                    flags |= trace::LIMIT_PHASE_CURRENT;
+                }
+            }
+        }
+        if (phase - granted).abs() > 1e-4 {
+            flags |= trace::LIMIT_BUS_CURRENT;
+        }
+        flags
     }
 
     /// Prepare shared scalar bounds for the velocity PI's two authority probes

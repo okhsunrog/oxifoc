@@ -899,3 +899,14 @@ steady-state current pulsing. The initial overshoot remained. Both captures
 were lossless and the original derating config was restored after each run.
 See `speed-cut-comparison.png` and `comparison.json` under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-speed-cut/`.
+
+The configuration v20 follow-up recorded native Packed28 at 15,001.4 Hz
+and current grants every 16 cycles on the Flipsky bench. Two unloaded
+1 A runs at a 650 electrical rad/s ceiling recorded 105,413 and 105,428
+samples with zero gaps. For taper starts of 80% and 25%, the 100 ms
+speed peaks were 705 and 696 electrical rad/s, with steady medians of
+648 and 644. Granted Iq reached zero at the first speed crossing in both
+runs. On the 3–5 s plateau, its 5th–95th percentile narrowed from
+0.21–0.31 A to 0.24–0.27 A. The current trace flagged only speed limiting.
+See `current-speed-taper.png` and `current-speed-taper.json` under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-config-v20/`.

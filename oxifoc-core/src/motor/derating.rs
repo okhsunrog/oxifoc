@@ -273,9 +273,22 @@ impl DeratingConfig {
         motor_temp_c: Option<f32>,
         vbus_v: f32,
     ) -> DeratingScales {
+        let thermal = self.thermal_scales(fet_temp_c, motor_temp_c);
+        let bus = self.bus_voltage_scales(vbus_v);
+        DeratingScales {
+            drive: thermal.drive.min(bus.drive),
+            brake: thermal.brake,
+            regen: bus.regen,
+        }
+    }
+
+    pub(super) fn thermal_scales(
+        &self,
+        fet_temp_c: Option<f32>,
+        motor_temp_c: Option<f32>,
+    ) -> DeratingScales {
         let mut drive = 1.0f32;
         let mut brake = 1.0f32;
-        let mut regen = 1.0f32;
 
         let mut thermal = |temp: Option<f32>, start: f32, end: f32| {
             let Some(t) = temp else { return };
@@ -303,6 +316,16 @@ impl DeratingConfig {
             self.temperature.temp_motor_end_c,
         );
 
+        DeratingScales {
+            drive,
+            brake,
+            regen: 1.0,
+        }
+    }
+
+    pub(super) fn bus_voltage_scales(&self, vbus_v: f32) -> DeratingScales {
+        let mut drive = 1.0f32;
+        let mut regen = 1.0f32;
         if self.bus_voltage.vbus_cut_start_v > 0.0
             && self.bus_voltage.vbus_cut_start_v > self.bus_voltage.vbus_cut_end_v
         {
@@ -327,7 +350,7 @@ impl DeratingConfig {
 
         DeratingScales {
             drive,
-            brake,
+            brake: 1.0,
             regen,
         }
     }

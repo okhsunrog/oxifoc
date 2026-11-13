@@ -478,7 +478,7 @@ fn write_velocity_csv(
     let mut file = BufWriter::new(File::create(path)?);
     writeln!(
         file,
-        "t_s,foc_sequence,tick_us,target_rad_s,reference_rad_s,feedback_rad_s,requested_iq_a,granted_iq_a,granted_id_a,integral_iq_a,iq_min_a,iq_max_a,hall_raw,hall_age_us,hall_direction,flags"
+        "t_s,foc_sequence,tick_us,target_rad_s,reference_rad_s,feedback_rad_s,requested_iq_a,granted_iq_a,granted_id_a,integral_iq_a,iq_min_a,iq_max_a,hall_raw,hall_age_us,hall_direction,flags,current_control,speed_limit,modulation_limit,temperature_limit,bus_voltage_limit,bus_current_limit,phase_current_limit,angle_limit,startup_shaping"
     )?;
     for frame in frames {
         let delta = frame.sequence.wrapping_sub(frames[0].sequence);
@@ -492,9 +492,12 @@ fn write_velocity_csv(
         let time = segment.first_t_s + (cycle - segment.first_cycle as i64) as f64 * dt;
         let speed = |word| f64::from(word) / 8.0;
         let current = |word| f64::from(word) / 100.0;
+        use oxifoc_core::velocity_telemetry as trace;
+        let current_control = frame.flags & trace::CURRENT_CONTROL != 0;
+        let limited = |flag| u8::from(current_control && frame.flags & flag != 0);
         writeln!(
             file,
-            "{time:.9},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{time:.9},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             frame.sequence,
             frame.tick_us,
             speed(frame.target),
@@ -509,7 +512,16 @@ fn write_velocity_csv(
             frame.hall_raw,
             u32::from(frame.hall_age_100us) * 100,
             frame.hall_direction,
-            frame.flags
+            frame.flags,
+            u8::from(current_control),
+            limited(trace::LIMIT_SPEED),
+            limited(trace::LIMIT_MODULATION),
+            limited(trace::LIMIT_TEMPERATURE),
+            limited(trace::LIMIT_BUS_VOLTAGE),
+            limited(trace::LIMIT_BUS_CURRENT),
+            limited(trace::LIMIT_PHASE_CURRENT),
+            limited(trace::LIMIT_ANGLE),
+            limited(trace::STARTUP_CURRENT_SHAPING),
         )?;
     }
     file.flush()?;

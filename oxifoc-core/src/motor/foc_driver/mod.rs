@@ -300,6 +300,10 @@ where
     #[cfg(feature = "fast-telemetry")]
     record_velocity_updates: bool,
     /// Last final q-current grant, after all target/trust/torque clamps.
+    #[cfg(feature = "fast-telemetry")]
+    current_debug_due: bool,
+    #[cfg(feature = "fast-telemetry")]
+    last_current_debug: Option<crate::velocity_telemetry::VelocityDebugFrame>,
     last_granted_iq: f32,
     last_granted_id: f32,
     /// The rotor's unwrapped electrical position, followed every cycle in

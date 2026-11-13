@@ -1,4 +1,4 @@
-//! Fixed-size velocity-loop observations, correlated with the native FOC sequence.
+//! Fixed-size control-loop observations, correlated with the native FOC sequence.
 //! Wire units: speed 1/8 electrical rad/s, current 1/100 A, Hall age 100 us.
 //! Clipping and missing values are explicit flags, never plausible zero readings.
 
@@ -19,6 +19,16 @@ pub const QUANTIZATION_CLIPPED: u16 = 1 << 10;
 pub const HALL_UNAVAILABLE: u16 = 1 << 11;
 pub const HALL_AGE_CLIPPED: u16 = 1 << 12;
 pub const SESSION_START: u16 = 1 << 13;
+/// Current-control samples reuse flags that are specific to the velocity PI.
+pub const CURRENT_CONTROL: u16 = 1 << 14;
+pub const STARTUP_CURRENT_SHAPING: u16 = FEEDBACK_VALID;
+pub const LIMIT_SPEED: u16 = LOWER_BOUND;
+pub const LIMIT_MODULATION: u16 = UPPER_BOUND;
+pub const LIMIT_TEMPERATURE: u16 = VOLTAGE_POSITIVE;
+pub const LIMIT_BUS_VOLTAGE: u16 = VOLTAGE_NEGATIVE;
+pub const LIMIT_BUS_CURRENT: u16 = BLOCKED_POSITIVE;
+pub const LIMIT_PHASE_CURRENT: u16 = BLOCKED_NEGATIVE;
+pub const LIMIT_ANGLE: u16 = 1 << 15;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VelocityDebugFrame {

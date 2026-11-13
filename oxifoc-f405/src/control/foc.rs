@@ -183,14 +183,15 @@ fn publish_velocity_debug(
 ) {
     use oxifoc_core::{runtime::velocity_debug, velocity_telemetry as trace};
     let update = driver.velocity_update_at(tick_us);
-    if update.is_none() && !velocity_debug::start_pending() {
+    let current = driver.current_debug_sample();
+    if update.is_none() && current.is_none() && !velocity_debug::start_pending() {
         return;
     }
     let mut frame = trace::VelocityDebugFrame {
         sequence,
         tick_us: tick_us as u32,
         hall_raw: hall::read_hall_state_raw(),
-        ..Default::default()
+        ..current.unwrap_or_default()
     };
     if let Some(hall) = hall_snapshot {
         use oxifoc_core::foc::hall_sensor::Direction;
@@ -221,7 +222,7 @@ fn publish_velocity_debug(
         if (snapshot.requested_iq_a - snapshot.granted_iq_a).abs() > 1e-4 {
             frame.flags |= trace::GRANT_CLIPPED;
         }
-    } else if !velocity_debug::start_pending() {
+    } else if current.is_none() && !velocity_debug::start_pending() {
         // Position-control reuses the loop, but this stream describes velocity mode.
         return;
     }
@@ -706,7 +707,11 @@ fn ADC() {
             #[cfg(feature = "fast-telemetry")]
             let velocity_debug = oxifoc_core::runtime::velocity_debug::enabled();
             #[cfg(feature = "fast-telemetry")]
-            driver.record_velocity_updates(velocity_debug);
+            {
+                driver.record_velocity_updates(velocity_debug);
+                // Sample the current grant once per 16 native cycles (~938 Hz at 15 kHz).
+                driver.arm_current_debug(velocity_debug && *SEQ & 15 == 0);
+            }
             let output = run_foc_cycle(
                 &STATE,
                 &FAULT_REGISTRY,

@@ -83,6 +83,10 @@ where
             last_velocity_update: None,
             #[cfg(feature = "fast-telemetry")]
             record_velocity_updates: false,
+            #[cfg(feature = "fast-telemetry")]
+            current_debug_due: false,
+            #[cfg(feature = "fast-telemetry")]
+            last_current_debug: None,
             last_granted_iq: 0.0,
             last_granted_id: 0.0,
             position: PositionTracker::default(),
@@ -292,6 +296,23 @@ where
             granted_id_a: self.last_granted_id,
             measured_iq_a: self.last_iq_meas,
         })
+    }
+
+    #[cfg(feature = "fast-telemetry")]
+    pub fn arm_current_debug(&mut self, due: bool) {
+        self.current_debug_due = due;
+        if due {
+            self.last_current_debug = None;
+        }
+    }
+
+    #[cfg(feature = "fast-telemetry")]
+    pub fn current_debug_sample(&self) -> Option<crate::velocity_telemetry::VelocityDebugFrame> {
+        if self.current_debug_due {
+            self.last_current_debug
+        } else {
+            None
+        }
     }
 
     #[cfg(feature = "fast-telemetry")]

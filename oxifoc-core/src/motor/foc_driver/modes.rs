@@ -343,6 +343,30 @@ where
         );
     }
 
+    #[cfg(feature = "fast-telemetry")]
+    #[inline(never)]
+    fn record_current_debug(
+        &mut self,
+        requested: f32,
+        before_grant: (f32, f32),
+        granted: f32,
+        id: f32,
+        omega: f32,
+    ) {
+        use crate::velocity_telemetry as trace;
+        let mut frame = trace::VelocityDebugFrame {
+            flags: trace::ACTIVE
+                | trace::CURRENT_CONTROL
+                | self.current_limit_flags(requested, before_grant, granted, omega),
+            ..Default::default()
+        };
+        frame.feedback = frame.quantize(omega, 8.0);
+        frame.requested_iq = frame.quantize(requested, 100.0);
+        frame.granted_iq = frame.quantize(granted, 100.0);
+        frame.granted_id = frame.quantize(id, 100.0);
+        self.last_current_debug = Some(frame);
+    }
+
     /// Execute current control step
     #[inline(always)]
     pub(super) fn step_current_control(
@@ -376,8 +400,12 @@ where
             return Err(StepError::NotCalibrated);
         }
 
+        #[cfg(feature = "fast-telemetry")]
+        let requested_iq = iq_target;
         // Layer 1: Clamp current targets (prevents absurd commands)
         let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
+        #[cfg(feature = "fast-telemetry")]
+        let clamped_iq = iq_target;
 
         // Startup capture floor (see STARTUP_MIN_DRIVE_A): while the
         // sequencer owns commutation a weak drive command is raised to a
@@ -417,7 +445,19 @@ where
             0.0
         };
 
-        let (id_target, iq_target) = self.grant_torque(id_target, iq_target, self.torque_speed());
+        let omega = self.torque_speed();
+        let (id_target, granted_iq) = self.grant_torque(id_target, iq_target, omega);
+        #[cfg(feature = "fast-telemetry")]
+        if self.current_debug_due && matches!(self.mode, ControlMode::CurrentControl { .. }) {
+            self.record_current_debug(
+                requested_iq,
+                (clamped_iq, iq_target),
+                granted_iq,
+                id_target,
+                omega,
+            );
+        }
+        let iq_target = granted_iq;
 
         self.last_granted_iq = iq_target;
         self.last_granted_id = id_target;
