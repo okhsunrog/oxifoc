@@ -921,6 +921,9 @@ difference. The capture does not carry the observer blend weight.
 
 ### Hall policy and high-speed comparison
 
+See [Hall-to-observer tuning](hall-observer-tuning.md) for the estimator
+and the next controlled comparisons.
+
 Unloaded H5055, MK5 at 24 V, PWM and injected ADC at 15,001.4 Hz. Compared
 Hall without crossover, Hall with 150–300 electrical rad/s crossover, and
 the same OxiFOC algorithm with the VESC 2500–4000 eRPM thresholds
