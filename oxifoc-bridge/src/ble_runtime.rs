@@ -23,7 +23,7 @@ pub async fn run(
     // ========== BLE setup ==========
     let bt_transport = BleConnector::new(bt, Default::default()).expect("BLE connector init");
     let ble_controller = ExternalController::<_, CONNECTIONS_MAX>::new(bt_transport);
-    let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
+    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
 
     let address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);

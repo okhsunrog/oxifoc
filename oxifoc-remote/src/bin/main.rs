@@ -55,9 +55,7 @@ async fn main(_spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 65536);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw_interrupt =
-        esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     info!("Oxifoc Remote initialized!");
 
@@ -69,12 +67,11 @@ async fn main(_spawner: Spawner) -> ! {
         HostResources::new();
 
     let address = Address::random([0xff, 0x8f, 0x2b, 0x06, 0xe5, 0xff]);
-    let ble_stack = trouble_host::new(ble_controller, &mut resources).set_random_address(address);
-    let Host {
-        mut central,
-        mut runner,
-        ..
-    } = ble_stack.build();
+    let ble_stack = trouble_host::new(ble_controller, &mut resources)
+        .set_random_address(address)
+        .build();
+    let mut central = ble_stack.central();
+    let mut runner = ble_stack.runner();
 
     let bridge_addr = Address::random(BRIDGE_ADDR_BYTES);
 
@@ -117,7 +114,7 @@ async fn main(_spawner: Spawner) -> ! {
                 let connect_config = ConnectConfig {
                     connect_params: Default::default(),
                     scan_config: ScanConfig {
-                        filter_accept_list: &[(bridge_addr.kind, &bridge_addr.addr)],
+                        filter_accept_list: &[bridge_addr],
                         phys: PhySet::M1M2,
                         ..Default::default()
                     },

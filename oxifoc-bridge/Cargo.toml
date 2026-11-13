@@ -32,7 +32,7 @@ esp-rtos = { features = ["defmt", "embassy", "esp-alloc", "esp-radio", "esp32c5"
 defmt                  = "1.1.1"
 esp-bootloader-esp-idf = { features = ["defmt", "esp32c5"], version = "0.6.0" }
 
-bt-hci = "0.9.0"
+bt-hci = "0.11"
 embassy-executor = { version = "0.10.0", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt"] }
 embedded-io = { version = "0.7.1", features = ["defmt"] }
@@ -41,7 +41,7 @@ esp-alloc = { features = ["defmt"], version = "0.11.0" }
 esp-radio = { features = ["ble", "defmt", "esp-alloc", "esp32c5", "unstable"], version = "1.0.0-beta.1" }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
-trouble-host = { features = ["gatt"], version = "0.7.0" }
+trouble-host = { features = ["gatt"], version = "0.8.0", git = "https://github.com/embassy-rs/trouble.git", rev = "042bd1c3bdc5980f66d28e0e698b6e579b15da4e" }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"

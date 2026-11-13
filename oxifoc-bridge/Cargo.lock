@@ -145,6 +145,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bt-hci"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0048816dbf43511d51f46514fada281890aa0190ada5170cf7bbb66259b611e7"
+dependencies = [
+ "bt-hci-transport",
+ "btuuid",
+ "embassy-sync 0.7.2",
+ "embedded-io 0.7.1",
+ "embedded-io-async 0.7.0",
+ "futures-intrusive",
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "bt-hci-transport"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1199,7 +1214,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50247f4e91000fc87661e77254126c74acc4535f822ee247f7778807202dc938"
 dependencies = [
  "allocator-api2",
- "bt-hci",
+ "bt-hci 0.9.0",
  "bt-hci-transport",
  "defmt 1.1.1",
  "docsplay",
@@ -2020,7 +2035,7 @@ name = "oxifoc-bridge"
 version = "0.1.0"
 dependencies = [
  "bbqueue",
- "bt-hci",
+ "bt-hci 0.11.0",
  "critical-section",
  "defmt 1.1.1",
  "embassy-executor",
@@ -2765,11 +2780,10 @@ dependencies = [
 
 [[package]]
 name = "trouble-host"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb9fe2be24000037431b036ba244cdb1d26f40e1719548553fb43c3fc62d496b"
+version = "0.8.0"
+source = "git+https://github.com/embassy-rs/trouble.git?rev=042bd1c3bdc5980f66d28e0e698b6e579b15da4e#042bd1c3bdc5980f66d28e0e698b6e579b15da4e"
 dependencies = [
- "bt-hci",
+ "bt-hci 0.11.0",
  "embassy-futures 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "embassy-sync 0.8.0",
  "embassy-time",
@@ -2783,9 +2797,8 @@ dependencies = [
 
 [[package]]
 name = "trouble-host-macros"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2562dc74f79ad12f7bf088da55c936d5eb1d022f2caac9849175326307a5eec1"
+version = "0.6.0"
+source = "git+https://github.com/embassy-rs/trouble.git?rev=042bd1c3bdc5980f66d28e0e698b6e579b15da4e#042bd1c3bdc5980f66d28e0e698b6e579b15da4e"
 dependencies = [
  "convert_case",
  "darling 0.20.11",
