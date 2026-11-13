@@ -52,6 +52,13 @@ rate for full-rate data, or a lower rate when the analysis allows it. Check
 the capture's loss counters and command acknowledgements before using it
 as evidence.
 
+To use BLE with the C5 bridge, flash it with `just flash-bridge ble`.
+The host uses the same controller commands over Ergot/NUS, for example
+`just cli --transport ble --ble-name "Oxifoc Bridge" --wait-secs 12 status`.
+For slow telemetry use `monitor --fast-hz 0`. Use USB Serial/JTAG for
+native-rate captures. The optional BLE service currently accepts unpaired
+clients, so enable it only on a controlled bench.
+
 ## Develop
 
 ```sh

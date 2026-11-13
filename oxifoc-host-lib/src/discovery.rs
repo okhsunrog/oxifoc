@@ -224,12 +224,31 @@ async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<B
     let adapter = Adapter::default().await?;
     adapter.wait_available().await?;
 
+    let mut devices = Vec::new();
+    // On BlueZ a previous CLI invocation can leave the system link active.
+    // Connected peripherals do not advertise, so include known NUS peers.
+    #[cfg(target_os = "linux")]
+    {
+        let services = [crate::transport::ble::NUS_SERVICE_UUID];
+        let connected = adapter.connected_devices_with_services(&services);
+        if let Ok(Ok(connected)) = tokio::time::timeout(Duration::from_secs(1), connected).await {
+            for device in connected {
+                let id = format!("{}", device.id());
+                let name = device.name_async().await.ok();
+                devices.push(BleDeviceInfo {
+                    device,
+                    id,
+                    name,
+                    rssi: None,
+                });
+            }
+        }
+    }
+
     let services: &[bluest::Uuid] = &[];
     let mut scan: std::pin::Pin<
         Box<dyn futures::Stream<Item = bluest::AdvertisingDevice> + Send + '_>,
     > = Box::pin(adapter.scan(services).await?);
-    let mut devices: Vec<BleDeviceInfo> = Vec::new();
-
     let collect = async {
         while let Some(adv) = scan.next().await {
             let name = adv.adv_data.local_name.clone();

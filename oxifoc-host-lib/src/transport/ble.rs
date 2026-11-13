@@ -22,7 +22,7 @@ type StdQueue = ergot::interface_manager::utils::std::StdQueue;
 type WaitQueue = ergot::toolkits::tokio_stream::WaitQueue;
 
 // NUS UUIDs
-const NUS_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
+pub(crate) const NUS_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
 const NUS_RX_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
 const NUS_TX_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
 
@@ -79,11 +79,26 @@ pub async fn register(
     let adapter = Adapter::default()
         .await
         .context("Failed to get BLE adapter")?;
-    info!("Connecting to BLE device...");
-    adapter
-        .connect_device(device)
+    // The CLI scans on a short-lived runtime. On Linux the scanned handle's
+    // BlueZ session is tied to that runtime, so reopen it on the backend.
+    #[cfg(target_os = "linux")]
+    let reopened = adapter
+        .open_device(&device.id())
         .await
-        .context("BLE connection failed")?;
+        .context("Failed to open BLE device")?;
+    #[cfg(target_os = "linux")]
+    let device = &reopened;
+    #[cfg(target_os = "linux")]
+    let should_connect = !device.is_connected().await;
+    #[cfg(not(target_os = "linux"))]
+    let should_connect = true;
+    if should_connect {
+        info!("Connecting to BLE device...");
+        adapter
+            .connect_device(device)
+            .await
+            .context("BLE connection failed")?;
+    }
     info!("BLE connected");
 
     // Discover NUS service
