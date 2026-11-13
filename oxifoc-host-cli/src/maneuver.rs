@@ -31,14 +31,13 @@
 //! }
 //! ```
 
-use oxifoc_core::types::ConfigGroupId;
-
-use crate::config_cli::current_value;
 use crate::record::RecordSummary;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use oxifoc_core::types::{ControlMode, FastTelemetry, MotorStatus};
+use oxifoc_core::types::{
+    ConfigGroupId, ConfigSnapshot, ConfigValue, ControlMode, FastTelemetry, MotorStatus,
+};
 use oxifoc_host_lib::{HostCommand, HostRuntime, MotorResponseReceiver, motor_channel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -243,44 +242,70 @@ pub fn load(path: &str) -> Result<Maneuver> {
 
 /// Offline (schema-level) validation: monotonic timeline, finite values.
 pub fn validate(m: &Maneuver) -> Result<()> {
-    if m.timeline.is_empty() {
-        bail!("timeline is empty");
-    }
-    if m.capture.fast_hz == 0 {
-        bail!("capture.fast_hz must be nonzero");
-    }
-    if !m.capture.tail_s.is_finite() || m.capture.tail_s < 0.0 {
-        bail!("capture.tail_s must be finite and ≥ 0");
-    }
-    let mut prev = 0.0f64;
-    for (i, step) in m.timeline.iter().enumerate() {
-        if !step.t.is_finite() || step.t < 0.0 {
-            bail!("step {i}: t must be finite and ≥ 0");
-        }
-        if step.t < prev {
-            bail!(
-                "step {i}: t={} goes backwards (previous {prev}) — the timeline must be sorted",
-                step.t
-            );
-        }
-        prev = step.t;
-        let mode = step.cmd.to_mode();
-        if !mode.is_finite() {
-            bail!("step {i}: invalid command payload");
-        }
-    }
-    Ok(())
+    Schedule::from_maneuver(m).map(|_| ())
 }
 
-/// Online check against the device's stored current limits.
+struct Schedule {
+    steps: Vec<Duration>,
+    end: Duration,
+}
+
+impl Schedule {
+    fn from_maneuver(m: &Maneuver) -> Result<Self> {
+        if m.timeline.is_empty() {
+            bail!("timeline is empty");
+        }
+        if m.capture.fast_hz == 0 {
+            bail!("capture.fast_hz must be nonzero");
+        }
+        let tail =
+            Duration::try_from_secs_f64(m.capture.tail_s).context("invalid capture.tail_s")?;
+        let mut steps = Vec::with_capacity(m.timeline.len());
+        let mut prev = 0.0f64;
+        for (i, step) in m.timeline.iter().enumerate() {
+            let offset = Duration::try_from_secs_f64(step.t)
+                .with_context(|| format!("step {i}: invalid t"))?;
+            if step.t < prev {
+                bail!(
+                    "step {i}: t={} goes backwards (previous {prev}) — the timeline must be sorted",
+                    step.t
+                );
+            }
+            prev = step.t;
+            steps.push(offset);
+            let mode = step.cmd.to_mode();
+            if !mode.is_finite() {
+                bail!("step {i}: invalid command payload");
+            }
+        }
+        let last = steps.last().copied().context("timeline is empty")?;
+        let end = last
+            .checked_add(tail)
+            .context("capture duration overflows")?;
+        let horizon = end
+            .checked_add(COMMAND_ACK_TIMEOUT.max(SCHEDULE_TOLERANCE))
+            .context("maneuver deadlines overflow")?;
+        Instant::now()
+            .checked_add(horizon)
+            .context("maneuver deadlines out of range")?;
+        Ok(Self { steps, end })
+    }
+}
+
+/// Online check against the current limit actually applied by the controller.
 fn check_limits(runtime: &HostRuntime, m: &Maneuver) -> Result<()> {
-    let (limits, _stored) = current_value(&runtime.cmd_tx, ConfigGroupId::CurrentLimits)?;
-    let max_iq = limits
-        .get("max_iq_a")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0) as f32;
-    if max_iq <= 0.0 {
-        return Ok(());
+    let snapshot =
+        oxifoc_host_lib::ops::config::read_group(&runtime.cmd_tx, ConfigGroupId::CurrentLimits)?;
+    check_effective_limits(&snapshot, m)
+}
+
+fn check_effective_limits(snapshot: &ConfigSnapshot, m: &Maneuver) -> Result<()> {
+    let Some(ConfigValue::CurrentLimits(limits)) = &snapshot.effective else {
+        bail!("controller did not report effective current limits");
+    };
+    let max_iq = limits.max_iq_a;
+    if !snapshot.valid || !max_iq.is_finite() || max_iq <= 0.0 {
+        bail!("controller reported invalid effective current limits");
     }
     for (i, step) in m.timeline.iter().enumerate() {
         if let Some(demand) = step.cmd.current_demand()
@@ -330,6 +355,7 @@ pub fn run(
     force: bool,
     config_snapshot: Value,
 ) -> Result<ManeuverSummary> {
+    let schedule = Schedule::from_maneuver(m)?;
     if !force {
         check_limits(runtime, m)?;
     }
@@ -341,8 +367,10 @@ pub fn run(
     // into the terminal command below.
     let mut events: Vec<EventRecord> = Vec::new();
     let exec: Result<()> = (|| {
-        for (i, step) in m.timeline.iter().enumerate() {
-            let event_at = t0 + Duration::from_secs_f64(step.t);
+        for (i, (step, offset)) in m.timeline.iter().zip(&schedule.steps).enumerate() {
+            let event_at = t0
+                .checked_add(*offset)
+                .context("step deadline out of range")?;
             cap.drain_until(runtime, event_at)?;
             if Instant::now().saturating_duration_since(event_at) > SCHEDULE_TOLERANCE {
                 bail!("step {i}: maneuver is behind schedule; refusing a late command");
@@ -350,12 +378,18 @@ pub fn run(
 
             let seq_before = cap.last_seq();
             let t_sent = t0.elapsed().as_secs_f64();
-            let next_slot = m
-                .timeline
+            let next_slot = schedule
+                .steps
                 .get(i + 1)
-                .map(|s| t0 + Duration::from_secs_f64(s.t) + SCHEDULE_TOLERANCE);
-            let deadline = (event_at + COMMAND_ACK_TIMEOUT)
-                .min(next_slot.unwrap_or(event_at + COMMAND_ACK_TIMEOUT));
+                .map(|offset| {
+                    t0.checked_add(*offset + SCHEDULE_TOLERANCE)
+                        .context("next step deadline out of range")
+                })
+                .transpose()?;
+            let ack_deadline = event_at
+                .checked_add(COMMAND_ACK_TIMEOUT)
+                .context("command ACK deadline out of range")?;
+            let deadline = ack_deadline.min(next_slot.unwrap_or(ack_deadline));
             let res = send_motor_captured(runtime, &mut cap, step.cmd.to_mode(), deadline);
             let t_acked = t0.elapsed().as_secs_f64();
             // A couple of frames may have queued during the ack round-trip;
@@ -387,8 +421,8 @@ pub fn run(
         }
         // Tail capture after the last command.
         let tail_end = t0
-            + Duration::from_secs_f64(m.timeline.last().map(|s| s.t).unwrap_or(0.0))
-            + Duration::from_secs_f64(m.capture.tail_s);
+            .checked_add(schedule.end)
+            .context("capture deadline out of range")?;
         cap.drain_until(runtime, tail_end)?;
         Ok(())
     })();
@@ -489,8 +523,53 @@ pub fn summary_json(s: &ManeuverSummary) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxifoc_core::types::{ConfigSnapshot, FastTelemetry};
+    use oxifoc_core::storage::CurrentLimitsConfig;
     use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    #[test]
+    fn schedule_rejects_unrepresentable_time_before_execution() {
+        let mut m = serde_json::from_value::<Maneuver>(json!({
+            "name": "time", "capture": {"fast_hz": 15000, "tail_s": 1e100},
+            "timeline": [{"t": 0.3, "cmd": {"start": {"iq": 1}}}]
+        }))
+        .unwrap();
+        assert!(validate(&m).unwrap_err().to_string().contains("tail_s"));
+        m.capture.tail_s = 0.0;
+        m.timeline[0].t = 1e100;
+        assert!(validate(&m).unwrap_err().to_string().contains("invalid t"));
+        m.timeline[0].t = 1e19;
+        assert!(validate(&m).is_err());
+    }
+
+    #[test]
+    fn current_preflight_checks_resolved_auto_limit() {
+        let m = serde_json::from_value::<Maneuver>(json!({
+            "name": "limit", "capture": {"fast_hz": 15000},
+            "timeline": [{"t": 0.3, "cmd": {"start": {"iq": 4}}}]
+        }))
+        .unwrap();
+        let mut snapshot = ConfigSnapshot {
+            effective: Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
+                max_iq_a: 3.0,
+                ..CurrentLimitsConfig::AUTO
+            })),
+            default: None,
+            boot_epoch: 0,
+            group: ConfigGroupId::CurrentLimits,
+            revision: 0,
+            persisted: true,
+            valid: true,
+            value: Some(ConfigValue::CurrentLimits(CurrentLimitsConfig::AUTO)),
+        };
+        assert!(
+            check_effective_limits(&snapshot, &m)
+                .unwrap_err()
+                .to_string()
+                .contains("3.0 A")
+        );
+        snapshot.effective = None;
+        assert!(check_effective_limits(&snapshot, &m).is_err());
+    }
 
     fn test_capture() -> Capture {
         Capture {
