@@ -171,6 +171,12 @@ impl RawTelemetryState {
         self.changed.notify_all();
     }
 
+    pub(crate) fn control_ready(&self) {
+        if self.source == FastSource::ErgotRaw {
+            self.reader_ready();
+        }
+    }
+
     pub(crate) fn connection_lost(&self, error: impl ToString) {
         self.fail(error);
         self.inner.lock().unwrap().ready = false;
@@ -286,12 +292,16 @@ impl RawTelemetryState {
             .map(|c| c.report.session)
     }
 
-    pub(crate) fn reject_arm(&self, session: u64, error: impl ToString) {
+    fn fail_capture(&self, session: u64, error: impl ToString) {
         let mut inner = self.inner.lock().unwrap();
         if let Some(capture) = &mut inner.capture
             && capture.report.session == session
+            && !capture.report.ended
         {
-            capture.report.error = Some(error.to_string());
+            capture
+                .report
+                .error
+                .get_or_insert_with(|| error.to_string());
         }
         self.changed.notify_all();
     }
@@ -638,7 +648,7 @@ where
     if let Err(error) = &result
         && fast_hz != 0
     {
-        state.reject_arm(session, error);
+        state.fail_capture(session, error);
     }
     result
 }
@@ -726,14 +736,12 @@ pub(crate) fn spawn_ergot_subscriber<NS>(
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            let result = tokio::select! {
+            // Capture failures belong to their cookie. Keep listening for
+            // the next capture on this stack.
+            tokio::select! {
                 _ = cancel.cancelled() => break,
-                _ = ticker.tick() => state.check(),
-                block = handle.recv() => ingress.push(&block.t.data),
-            };
-            if let Err(error) = result {
-                state.connection_lost(error);
-                break;
+                _ = ticker.tick() => { let _ = state.check(); }
+                block = handle.recv() => { let _ = ingress.push(&block.t.data); }
             }
         }
     });
@@ -768,14 +776,24 @@ impl RawIngress {
 
     pub(crate) fn push(&mut self, data: &[u8]) -> Result<()> {
         let result = self.push_inner(data);
-        if let Err(error) = &result {
-            self.state.fail(error);
+        if let Err(error) = &result
+            && let Some(session) = self.session
+        {
+            self.state.fail_capture(session, error);
         }
         result
     }
 
     fn push_inner(&mut self, data: &[u8]) -> Result<()> {
-        let session = self.state.active_session();
+        let session = self
+            .state
+            .inner
+            .lock()
+            .unwrap()
+            .capture
+            .as_ref()
+            .filter(|capture| capture.report.error.is_none())
+            .map(|capture| capture.report.session);
         if session != self.session {
             self.session = session;
             self.decoder.reset();
@@ -908,11 +926,7 @@ mod tests {
                         ..FastTelemetry::default()
                     })
                     .collect();
-                for bytes in [
-                    data(session.wrapping_sub(1), 0, encoding, &samples, 0),
-                    data(session, 0, encoding, &samples, 0),
-                    end(session, if missing { 2 } else { 1 }, encoding, 64, 0),
-                ] {
+                let publish = |bytes: Vec<u8>| {
                     let mut block = RawTelemetryBlock {
                         data: Default::default(),
                     };
@@ -928,6 +942,13 @@ mod tests {
                             &block,
                         )
                         .unwrap();
+                };
+                for bytes in [
+                    data(session.wrapping_sub(1), 0, encoding, &samples, 0),
+                    data(session, 0, encoding, &samples, 0),
+                    end(session, if missing { 2 } else { 1 }, encoding, 64, 0),
+                ] {
+                    publish(bytes);
                 }
                 tokio::time::timeout(Duration::from_secs(1), async {
                     loop {
@@ -940,16 +961,29 @@ mod tests {
                 })
                 .await
                 .unwrap();
-                cancel.cancel();
                 let report = state.report().unwrap();
                 assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
                 if missing {
                     assert!(report.error.as_deref().unwrap().contains("block index 2"));
                     assert!(!report.ended);
+                    let next = state.arm().unwrap();
+                    publish(end(session, 1, encoding, 64, 0));
+                    publish(data(next, 0, encoding, &samples, 0));
+                    publish(end(next, 1, encoding, 64, 0));
+                    let recovered = tokio::task::spawn_blocking({
+                        let state = state.clone();
+                        move || state.wait_end_for(next, Duration::from_secs(1))
+                    })
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    recovered.validate_export(next, 64).unwrap();
+                    assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
                 } else {
                     report.validate_export(session, 64).unwrap();
                     assert_eq!(report.source, FastSource::ErgotRaw);
                 }
+                cancel.cancel();
             }
         }
     }

@@ -263,7 +263,10 @@ where
             // and requested rate are never resumed by a new connection.
             let setup = raw_telemetry::prepare_connection(&stack, raw, resolved);
             match tokio::select! { result = setup => result, _ = cancel.cancelled() => break } {
-                Ok(_) => true,
+                Ok(_) => {
+                    raw.control_ready();
+                    true
+                }
                 Err(error) => {
                     raw.fail(&error);
                     tracing::error!("raw setup failed: {error:#}");
