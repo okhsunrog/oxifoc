@@ -12,7 +12,7 @@ use crate::storage::RuntimeConfig;
 /// Fully initialized estimator model. Construction (including filter setup)
 /// belongs to boot or the configuration task, never to the periodic FOC path.
 pub struct PreparedPhaseModel {
-    pub(super) setup_source: Option<PhaseSource>,
+    pub(super) selected_source: Option<PhaseSource>,
     reset_hall: Option<crate::foc::hall_sensor::PreparedHallCalibration>,
     observer: Observer,
     #[cfg(feature = "hfi")]
@@ -24,7 +24,7 @@ impl PreparedPhaseModel {
     pub fn from_config(config: &RuntimeConfig, vbus: f32) -> Self {
         let mut prepared = Self {
             reset_hall: None,
-            setup_source: None,
+            selected_source: config.configured_feedback_source(),
             observer: Observer::None,
             #[cfg(feature = "hfi")]
             hfi: None,
@@ -84,7 +84,7 @@ impl PreparedPhaseModel {
             Some(value) => PreparedHallCalibration::from_config(&value)?,
             None => PreparedHallCalibration::nominal(),
         });
-        self.setup_source = Some(if hall.is_some() {
+        self.selected_source = Some(if hall.is_some() {
             PhaseSource::Hall
         } else {
             PhaseSource::Observer
@@ -111,7 +111,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             self.hfi_was_active = false;
         }
         self.tracker = core::mem::take(&mut prepared.tracker);
-        let old_source = prepared.setup_source.unwrap_or(self.source);
+        let old_source = prepared.selected_source.unwrap_or(self.source);
         if self.set_source(old_source).is_err() {
             // Manual is always available and does not consult unwired sensors.
             let _ = self.set_source(PhaseSource::Manual);

@@ -155,6 +155,7 @@ pub(crate) enum ModelConfigUpdate {
     Drive(DriveConfig),
     VoltageLimits(crate::storage::VoltageLimitsConfig),
     MotorParams(MotorParamsConfig),
+    MotorFeedback(crate::storage::MotorFeedbackConfig),
     VoltageFeedforward(VoltageFeedforwardConfig),
     HallCalibration(HallCalibrationConfig),
     #[cfg(all(feature = "detection", feature = "delivery"))]
@@ -221,6 +222,10 @@ impl ModelConfigUpdate {
             }
             Self::VoltageLimits(value) => config.voltage_limits = Some(value.clone()),
             Self::MotorParams(value) => config.motor_params = Some(value.clone()),
+            Self::MotorFeedback(value) => {
+                config.motor_feedback = Some(*value);
+                config.motor_feedback_invalid = false;
+            }
             Self::VoltageFeedforward(value) => config.voltage_feedforward = Some(*value),
             Self::HallCalibration(value) => {
                 config.hall_calibration = Some(*value);
@@ -241,6 +246,7 @@ impl ModelConfigUpdate {
             #[cfg(all(feature = "detection", feature = "delivery"))]
             Self::DriveSetup(_) => ConfigGroupId::MotorParams,
             Self::MotorParams(_) | Self::Reset => ConfigGroupId::MotorParams,
+            Self::MotorFeedback(_) => ConfigGroupId::MotorFeedback,
             Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
             Self::HallCalibration(_) => ConfigGroupId::HallCalibration,
         }
@@ -254,6 +260,7 @@ impl ModelConfigUpdate {
 enum PreparedUpdate {
     Tuning { board_trip_a: f32, rating_a: f32 },
     Drive(DriveConfig),
+    PhaseSource(crate::foc::phase::PhaseSource),
     VoltageLimits(crate::motor::foc_driver::PreparedVoltageLimits),
     Motor(PreparedMotorModel),
     Hall(crate::foc::hall_sensor::PreparedHallCalibration),
@@ -263,7 +270,7 @@ impl PreparedUpdate {
     fn pole_pairs(&self) -> Option<u8> {
         match self {
             Self::Motor(model) => Some(model.pole_pairs),
-            Self::Hall(_) | Self::VoltageLimits(_) | Self::Drive(_) | Self::Tuning { .. } => None,
+            _ => None,
         }
     }
 }
@@ -457,6 +464,26 @@ impl ModelApplyGuard {
         Self::prepare_inner(
             PreparedUpdate::Drive(value),
             ModelConfigUpdate::Drive(value),
+            None,
+            config,
+            &coordinator.revisions,
+            &coordinator.actions,
+            request,
+            expected_revision,
+        )
+    }
+
+    pub fn prepare_motor_feedback(
+        value: crate::storage::MotorFeedbackConfig,
+        source: crate::foc::phase::PhaseSource,
+        config: &'static Mutex<RefCell<RuntimeConfig>>,
+        coordinator: &'static ConfigCoordinator,
+        request: ReqId,
+        expected_revision: u32,
+    ) -> Option<Self> {
+        Self::prepare_inner(
+            PreparedUpdate::PhaseSource(source),
+            ModelConfigUpdate::MotorFeedback(value),
             None,
             config,
             &coordinator.revisions,
@@ -690,6 +717,13 @@ pub(super) fn apply<P, C, Ph, S>(
                 }
             }
             PreparedUpdate::Drive(value) => foc.set_drive_config(*value).map(|()| None),
+            PreparedUpdate::PhaseSource(source) => {
+                if foc.request_phase_source(*source) {
+                    Ok(Some(*source))
+                } else {
+                    Err(crate::motor::foc_driver::MotorModelError::Unsupported)
+                }
+            }
             PreparedUpdate::VoltageLimits(prepared) => {
                 foc.apply_voltage_limits(*prepared).map(|()| None)
             }
@@ -737,6 +771,7 @@ pub(super) fn apply<P, C, Ph, S>(
                     state.board_calibration_valid = true;
                     super::set_motor_temperature_input(Default::default());
                     state.hall_calibration_valid = true;
+                    state.motor_feedback_valid = true;
                     if let Some(pole_pairs) = pending.prepared.pole_pairs() {
                         state.motor_pole_pairs = pole_pairs;
                     }
@@ -764,6 +799,9 @@ pub(super) fn apply<P, C, Ph, S>(
                         revisions[index] = revisions[index].wrapping_add(1);
                         persisted[index] = Some(revisions[index]);
                     }
+                    let feedback = ConfigGroupId::MotorFeedback.index();
+                    revisions[feedback] = revisions[feedback].wrapping_add(1);
+                    persisted[feedback] = None;
                     persisted[ConfigGroupId::MotorParams.index()] = Some(revision);
                     super::set_drive_setup_recovery(false);
                 } else {
@@ -776,6 +814,9 @@ pub(super) fn apply<P, C, Ph, S>(
                 let mut state = state.borrow(cs).borrow_mut();
                 if setup || matches!(pending.update, ModelConfigUpdate::HallCalibration(_)) {
                     state.hall_calibration_valid = true;
+                }
+                if setup || matches!(pending.update, ModelConfigUpdate::MotorFeedback(_)) {
+                    state.motor_feedback_valid = true;
                 }
                 if let Some(source) = source {
                     state.phase_source = source;

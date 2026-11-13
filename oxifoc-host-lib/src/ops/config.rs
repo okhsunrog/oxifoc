@@ -37,6 +37,7 @@ pub const GROUPS: [(&str, ConfigGroupId); ConfigGroupId::COUNT] = [
     ("voltage-feedforward", ConfigGroupId::VoltageFeedforward),
     ("motor-temperature", ConfigGroupId::MotorTemperature),
     ("drive", ConfigGroupId::Drive),
+    ("motor-feedback", ConfigGroupId::MotorFeedback),
 ];
 
 /// Parse a kebab-case group name into its id.
@@ -127,6 +128,7 @@ pub fn group_value(value: &ConfigValue) -> Option<Value> {
         ConfigValue::VoltageFeedforward(v) => serde_json::to_value(v).ok(),
         ConfigValue::MotorTemperature(v) => serde_json::to_value(v).ok(),
         ConfigValue::Drive(v) => serde_json::to_value(v).ok(),
+        ConfigValue::MotorFeedback(v) => serde_json::to_value(v).ok(),
     }
 }
 
@@ -151,6 +153,7 @@ pub fn group_default_value(group: ConfigGroupId) -> Value {
         G::VoltageFeedforward => serde_json::to_value(st::VoltageFeedforwardConfig::default()),
         G::MotorTemperature => serde_json::to_value(st::MotorTemperatureConfig::default()),
         G::Drive => serde_json::to_value(st::DriveConfig::default()),
+        G::MotorFeedback => serde_json::to_value(st::MotorFeedbackConfig::default()),
     };
     v.expect("stored-config structs always serialize")
 }
@@ -174,6 +177,7 @@ pub fn write_from_value(group: ConfigGroupId, v: Value) -> Result<ConfigValue> {
         G::VoltageFeedforward => ConfigValue::VoltageFeedforward(serde_json::from_value(v)?),
         G::MotorTemperature => ConfigValue::MotorTemperature(serde_json::from_value(v)?),
         G::Drive => ConfigValue::Drive(serde_json::from_value(v)?),
+        G::MotorFeedback => ConfigValue::MotorFeedback(serde_json::from_value(v)?),
     })
 }
 
@@ -259,6 +263,9 @@ fn write_revision(
         ConfigResponse::Invalid if group == ConfigGroupId::Derating => bail!(
             "device rejected derating configuration. Speed ceilings must be finite and non-negative, \
              speed_start_frac strictly between 0 and 1, and duty_start_frac in 0..=1"
+        ),
+        ConfigResponse::Invalid if group == ConfigGroupId::MotorFeedback => bail!(
+            "feedback requires the selected sensors and a valid motor model for observer modes. Blend thresholds must be positive and increasing"
         ),
         ConfigResponse::Invalid => bail!(
             "device refused the write: value fails validation. Rules: all fields \

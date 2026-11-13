@@ -105,6 +105,8 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
         derating: None,
         drive: None,
         drive_invalid: false,
+        motor_feedback: None,
+        motor_feedback_invalid: false,
         motor_temperature: None,
     },
 ));
@@ -280,6 +282,7 @@ async fn main(spawner: Spawner) {
         let mut state = STATE.borrow(cs).borrow_mut();
         state.load_board_calibration(&runtime_config);
         state.load_hall_calibration(&runtime_config);
+        state.load_motor_feedback(&runtime_config);
     });
     defmt::info!("Config loaded from flash");
     // Publish config revisions/persistence only after the boot load is complete.

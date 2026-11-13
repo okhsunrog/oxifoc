@@ -168,6 +168,18 @@ Hall tuning applies on the stopped controller. PWM is staged, saved to
 flash, and loaded after restart. `config get pwm-config` reports the
 active frequency alongside the staged configuration.
 
+Use `motor-feedback` on a stopped controller to select the commutation
+source at startup. The Hall-to-observer mode requires calibrated Hall sensors
+and a motor model with flux linkage. Its thresholds are in electrical rad/s.
+
+```sh
+just cli-bridge config set motor-feedback mode=hall-to-observer blend_low_erad_s=150 blend_high_erad_s=300
+just cli-bridge config get motor-feedback
+```
+
+A new motor setup returns to automatic source selection. The `source`
+command remains available for temporary bench tests.
+
 **Virtual device** (`oxifoc-virtual`) — Simulated motor controller over TCP/UDP. Host tools connect exactly as to real hardware.
 
 Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB (nusb).

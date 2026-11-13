@@ -61,6 +61,8 @@ static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig
         derating: None,
         drive: None,
         drive_invalid: false,
+        motor_feedback: None,
+        motor_feedback_invalid: false,
     }));
 
 #[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]

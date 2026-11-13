@@ -512,6 +512,8 @@ pub struct MotorControlState {
     /// Stored Hall reference validity; gates only Hall-dependent actuation.
     #[cfg(feature = "storage")]
     pub hall_calibration_valid: bool,
+    #[cfg(feature = "storage")]
+    pub motor_feedback_valid: bool,
     /// Current motor state (Stopped/Running/Error)
     pub motor_state: MotorState,
     /// Current control mode
@@ -554,6 +556,8 @@ impl MotorControlState {
             board_calibration_valid: true,
             #[cfg(feature = "storage")]
             hall_calibration_valid: true,
+            #[cfg(feature = "storage")]
+            motor_feedback_valid: true,
             motor_state: MotorState::Stopped,
             control_mode: ControlMode::Stopped,
             last_hall: None,
@@ -590,6 +594,11 @@ impl MotorControlState {
     #[cfg(feature = "storage")]
     pub fn load_hall_calibration(&mut self, config: &crate::storage::RuntimeConfig) {
         self.hall_calibration_valid = config.hall_calibration_is_valid();
+    }
+
+    #[cfg(feature = "storage")]
+    pub fn load_motor_feedback(&mut self, config: &crate::storage::RuntimeConfig) {
+        self.motor_feedback_valid = config.motor_feedback_is_valid();
     }
 
     /// Called under the same critical section as the live config/revision
@@ -1085,7 +1094,7 @@ where
             }
 
             #[cfg(feature = "storage")]
-            if !foc.drive_config_valid()
+            if (!foc.drive_config_valid() || !state.motor_feedback_valid)
                 && matches!(
                     mode,
                     ControlMode::CurrentControl { .. }

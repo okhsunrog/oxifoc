@@ -122,6 +122,7 @@ impl ValidatedDriveSetup {
         &self.limits
     }
 
+    #[cfg(any(feature = "runtime", test))]
     pub(crate) fn current_policy(&self) -> CurrentLimitsConfig {
         match self.setup.current {
             DriveCurrent::Auto => CurrentLimitsConfig {
@@ -133,6 +134,7 @@ impl ValidatedDriveSetup {
         }
     }
 
+    #[cfg(any(feature = "runtime", test))]
     pub(crate) fn motor_policy(&self) -> MotorParamsConfig {
         MotorParamsConfig {
             max_current_a: 0.0,
@@ -152,6 +154,8 @@ impl ValidatedDriveSetup {
         config.hall_calibration = self.hall();
         config.hall_calibration_invalid = false;
         config.current_limits = Some(self.current_policy());
+        config.motor_feedback = None;
+        config.motor_feedback_invalid = false;
     }
 
     pub fn thermal_current_a(&self) -> f32 {

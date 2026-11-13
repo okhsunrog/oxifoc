@@ -283,6 +283,7 @@ fn write_is_acceptable(
         ConfigValue::CurrentLimits(v) => v.is_coherent(),
         ConfigValue::Derating(v) => v.is_sane(),
         ConfigValue::Drive(_) => true,
+        ConfigValue::MotorFeedback(v) => v.is_sane(),
         ConfigValue::DcOffsets(v) => {
             counts_ok(v.phase_a) && counts_ok(v.phase_b) && counts_ok(v.phase_c)
         }
@@ -329,6 +330,7 @@ fn config_value(
         G::VoltageFeedforward => cfg.voltage_feedforward.map(V::VoltageFeedforward),
         G::MotorTemperature => cfg.motor_temperature.map(V::MotorTemperature),
         G::Drive => cfg.drive.map(V::Drive),
+        G::MotorFeedback => cfg.motor_feedback.map(V::MotorFeedback),
     }
 }
 
@@ -551,6 +553,9 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                             cfg.hall_calibration_is_valid()
                                         }
                                         ConfigGroupId::Drive => cfg.drive_is_valid(),
+                                        ConfigGroupId::MotorFeedback => {
+                                            cfg.motor_feedback_is_valid()
+                                        }
                                         _ => true,
                                     },
                                     persisted: persisted_revisions.borrow(cs).borrow()
@@ -685,6 +690,25 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 };
                                 return guard.apply::<T>().await;
                             }
+                            if let ConfigValue::MotorFeedback(value) = &write {
+                                let source = critical_section::with(|cs| {
+                                    value.source(&runtime_config.borrow(cs).borrow())
+                                });
+                                let Some(source) = source else {
+                                    return ConfigResponse::Invalid;
+                                };
+                                let Some(guard) = ModelApplyGuard::prepare_motor_feedback(
+                                    *value,
+                                    source,
+                                    runtime_config,
+                                    &CONFIG_COORDINATOR,
+                                    keyed.id,
+                                    current_revision,
+                                ) else {
+                                    return ConfigResponse::Busy;
+                                };
+                                return guard.apply::<T>().await;
+                            }
                             let model_update = match &write {
                                 ConfigValue::MotorParams(value) => {
                                     Some(crate::state::model::ModelConfigUpdate::MotorParams(
@@ -703,6 +727,12 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     runtime_config.borrow(cs).borrow().clone()
                                 });
                                 update.apply_to_config(&mut config);
+                                if config
+                                    .motor_feedback
+                                    .is_some_and(|v| v.source(&config).is_none())
+                                {
+                                    return ConfigResponse::Invalid;
+                                }
                                 let vbus = critical_section::with(|cs| {
                                     state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0
                                 });

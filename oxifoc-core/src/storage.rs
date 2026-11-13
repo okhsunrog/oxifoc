@@ -74,6 +74,7 @@ pub enum ConfigKey {
     Reserved19 = 19,
     Drive = 20,
     Derating = 21,
+    MotorFeedback = 22,
 }
 
 impl Key for ConfigKey {
@@ -111,6 +112,7 @@ impl Key for ConfigKey {
             19 => Self::Reserved19,
             20 => Self::Drive,
             21 => Self::Derating,
+            22 => Self::MotorFeedback,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -758,6 +760,85 @@ impl PostcardValue<'_> for MotorTemperatureConfig {}
 
 impl PostcardValue<'_> for DriveConfig {}
 
+/// Commissioned commutation choices. Diagnostic sources remain transient.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, postcard_schema::Schema,
+)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[serde(rename_all = "kebab-case")]
+pub enum MotorFeedbackMode {
+    #[default]
+    Auto,
+    Hall,
+    Observer,
+    HallToObserver,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[serde(deny_unknown_fields)]
+pub struct MotorFeedbackConfig {
+    pub mode: MotorFeedbackMode,
+    pub blend_low_erad_s: f32,
+    pub blend_high_erad_s: f32,
+}
+
+impl Default for MotorFeedbackConfig {
+    fn default() -> Self {
+        Self {
+            mode: MotorFeedbackMode::Auto,
+            blend_low_erad_s: 150.0,
+            blend_high_erad_s: 300.0,
+        }
+    }
+}
+
+impl MotorFeedbackConfig {
+    pub fn is_sane(self) -> bool {
+        self.blend_low_erad_s.is_finite()
+            && self.blend_high_erad_s.is_finite()
+            && self.blend_low_erad_s > 0.0
+            && self.blend_high_erad_s > self.blend_low_erad_s
+    }
+
+    pub(crate) fn source(self, config: &RuntimeConfig) -> Option<crate::foc::phase::PhaseSource> {
+        let hall = config.hall_calibration_is_valid()
+            && config
+                .hall_calibration
+                .as_ref()
+                .is_some_and(HallCalibrationConfig::is_calibrated);
+        self.source_for(hall, config.motor_params.as_ref())
+    }
+
+    fn source_for(
+        self,
+        hall: bool,
+        motor: Option<&MotorParamsConfig>,
+    ) -> Option<crate::foc::phase::PhaseSource> {
+        use crate::foc::phase::PhaseSource;
+        if !self.is_sane() {
+            return None;
+        }
+        let observer = motor.is_some_and(|motor| motor.is_valid() && motor.flux_linkage_wb > 0.0);
+        match self.mode {
+            MotorFeedbackMode::Auto if hall => Some(PhaseSource::Hall),
+            MotorFeedbackMode::Auto if observer => Some(PhaseSource::Observer),
+            MotorFeedbackMode::Auto => Some(PhaseSource::Manual),
+            MotorFeedbackMode::Hall if hall => Some(PhaseSource::Hall),
+            MotorFeedbackMode::Observer if observer => Some(PhaseSource::Observer),
+            MotorFeedbackMode::HallToObserver if hall && observer => {
+                Some(PhaseSource::HallToObserver {
+                    blend_low: self.blend_low_erad_s,
+                    blend_high: self.blend_high_erad_s,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+impl PostcardValue<'_> for MotorFeedbackConfig {}
+
 /// Fields are `None` if not yet stored in flash (use board defaults).
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeConfig {
@@ -783,9 +864,36 @@ pub struct RuntimeConfig {
     pub motor_temperature: Option<MotorTemperatureConfig>,
     pub drive: Option<DriveConfig>,
     pub drive_invalid: bool,
+    pub motor_feedback: Option<MotorFeedbackConfig>,
+    pub motor_feedback_invalid: bool,
 }
 
 impl RuntimeConfig {
+    /// Resolve the installed policy after loading the motor and Hall records.
+    pub fn boot_feedback_source(&self) -> crate::foc::phase::PhaseSource {
+        self.configured_feedback_source().unwrap_or_else(|| {
+            MotorFeedbackConfig::default()
+                .source(self)
+                .expect("automatic feedback always resolves")
+        })
+    }
+
+    pub(crate) fn configured_feedback_source(&self) -> Option<crate::foc::phase::PhaseSource> {
+        use crate::foc::phase::PhaseSource;
+        if self.motor_feedback_invalid {
+            return Some(PhaseSource::Manual);
+        }
+        self.motor_feedback
+            .map(|policy| policy.source(self).unwrap_or(PhaseSource::Manual))
+    }
+
+    pub fn motor_feedback_is_valid(&self) -> bool {
+        !self.motor_feedback_invalid
+            && self
+                .motor_feedback
+                .is_none_or(|value| value.source(self).is_some())
+    }
+
     pub fn effective_velocity(&self) -> VelocityLoopConfig {
         self.velocity
             .filter(VelocityLoopConfig::is_sane)
@@ -822,6 +930,7 @@ impl RuntimeConfig {
 pub enum InstalledDrive {
     V1(InstalledDriveV1),
     V2(InstalledDriveV2),
+    V3(InstalledDriveV3),
 }
 
 #[cfg(any(feature = "runtime", test))]
@@ -844,6 +953,13 @@ pub struct InstalledDriveV2 {
     source: InstalledSourceLimits,
     phase: InstalledPhaseLimits,
     trip_a: f32,
+}
+
+#[cfg(any(feature = "runtime", test))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InstalledDriveV3 {
+    values: InstalledDriveV2,
+    feedback: Option<MotorFeedbackConfig>,
 }
 
 #[cfg(any(feature = "runtime", test))]
@@ -902,17 +1018,21 @@ impl PostcardValue<'_> for InstalledDrive {}
 #[cfg(any(feature = "runtime", test))]
 impl InstalledDrive {
     pub fn new(setup: &crate::drive_setup::ValidatedDriveSetup) -> Self {
-        Self::V2(InstalledDriveV2::new(
-            setup.motor_policy(),
-            setup.hall().map(Into::into),
-            &setup.current_policy(),
-        ))
+        Self::V3(InstalledDriveV3 {
+            values: InstalledDriveV2::new(
+                setup.motor_policy(),
+                setup.hall().map(Into::into),
+                &setup.current_policy(),
+            ),
+            feedback: None,
+        })
     }
 
     fn canonical(&self, board_trip_a: f32) -> Option<InstalledDriveV2> {
         let record = match self {
             Self::V1(record) => record,
             Self::V2(record) => return Some(record.clone()),
+            Self::V3(record) => return Some(record.values.clone()),
         };
         let setup = record
             .setup
@@ -954,20 +1074,38 @@ impl InstalledDrive {
         config.current_limits = Some(limits);
         config.hall_calibration = hall;
         config.hall_calibration_invalid = false;
+        config.motor_feedback = self.feedback();
+        config.motor_feedback_invalid = false;
         true
+    }
+
+    fn feedback(&self) -> Option<MotorFeedbackConfig> {
+        match self {
+            Self::V3(record) => record.feedback,
+            _ => None,
+        }
     }
 
     fn with_edit(&self, payload: &ConfigValue, board_trip_a: f32) -> Option<Self> {
         let mut next = self.canonical(board_trip_a)?;
+        let mut feedback = self.feedback();
         match payload {
             ConfigValue::MotorParams(value) => next.motor = value.clone(),
             ConfigValue::CurrentLimits(value) => {
                 next = InstalledDriveV2::new(next.motor, next.hall, value);
             }
             ConfigValue::HallCalibration(value) => next.hall = Some((*value).into()),
+            ConfigValue::MotorFeedback(value) => feedback = Some(*value),
             _ => return None,
         }
-        Some(Self::V2(next))
+        if let Some(policy) = feedback {
+            let hall = next.hall.clone().and_then(HallCalibrationRecord::validated);
+            policy.source_for(hall.is_some(), Some(&next.motor))?;
+        }
+        Some(Self::V3(InstalledDriveV3 {
+            values: next,
+            feedback,
+        }))
     }
 }
 
@@ -1137,6 +1275,9 @@ where
                         storage.store_item(buf, &ConfigKey::Derating, &v).await
                     }
                     ConfigValue::Drive(v) => storage.store_item(buf, &ConfigKey::Drive, &v).await,
+                    ConfigValue::MotorFeedback(v) => {
+                        storage.store_item(buf, &ConfigKey::MotorFeedback, &v).await
+                    }
                     ConfigValue::VoltageFeedforward(v) => {
                         storage
                             .store_item(buf, &ConfigKey::VoltageFeedforward, &v)
@@ -1187,6 +1328,8 @@ fn load_installed_drive<E>(
     config.hall_calibration = None;
     config.hall_calibration_invalid = true;
     config.current_limits = None;
+    config.motor_feedback = None;
+    config.motor_feedback_invalid = true;
     false
 }
 
@@ -1224,6 +1367,14 @@ where
     load!(derating, Derating);
     load!(voltage_feedforward, VoltageFeedforward);
     load!(motor_temperature, MotorTemperature);
+    match storage
+        .fetch_item::<MotorFeedbackConfig>(buf, &ConfigKey::MotorFeedback)
+        .await
+    {
+        Ok(Some(value)) => cfg.motor_feedback = Some(value),
+        Ok(None) => {}
+        Err(_) => cfg.motor_feedback_invalid = true,
+    }
     match storage
         .fetch_item::<DriveConfig>(buf, &ConfigKey::Drive)
         .await
@@ -1273,6 +1424,58 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feedback_requires_calibration_and_model_and_survives_other_edits() {
+        use crate::foc::phase::PhaseSource;
+        let feedback = MotorFeedbackConfig {
+            mode: MotorFeedbackMode::HallToObserver,
+            ..Default::default()
+        };
+        let mut config = RuntimeConfig {
+            motor_feedback: Some(feedback),
+            ..Default::default()
+        };
+        assert!(!config.motor_feedback_is_valid());
+        assert_eq!(config.boot_feedback_source(), PhaseSource::Manual);
+        let motor = MotorParamsConfig {
+            resistance_ohm: 0.063,
+            inductance_d_h: 31e-6,
+            inductance_q_h: 51e-6,
+            flux_linkage_wb: 0.004,
+            pole_pairs: 7,
+            ..Default::default()
+        };
+        let installed = InstalledDrive::V2(InstalledDriveV2::new(
+            motor.clone(),
+            Some(measured_hall_config().into()),
+            &CurrentLimitsConfig::AUTO,
+        ));
+        let edited = installed
+            .with_edit(&ConfigValue::MotorFeedback(feedback), 70.0)
+            .unwrap()
+            .with_edit(&ConfigValue::MotorParams(motor), 70.0)
+            .unwrap();
+        assert!(edited.project(&mut config, 70.0));
+        assert!(config.motor_feedback_is_valid());
+        assert_eq!(
+            config.boot_feedback_source(),
+            PhaseSource::HallToObserver {
+                blend_low: 150.0,
+                blend_high: 300.0,
+            }
+        );
+        assert!(
+            !MotorFeedbackConfig {
+                blend_high_erad_s: 100.0,
+                ..feedback
+            }
+            .is_sane()
+        );
+        config.hall_calibration = None;
+        assert!(!config.motor_feedback_is_valid());
+        assert_eq!(config.boot_feedback_source(), PhaseSource::Manual);
+    }
 
     #[test]
     fn aggregate_load_shadows_legacy_and_preserves_independently_saved_edits() {
@@ -1335,7 +1538,7 @@ mod tests {
         let edited = installed
             .with_edit(&ConfigValue::CurrentLimits(limits.clone()), 70.0)
             .unwrap();
-        assert!(matches!(edited, InstalledDrive::V2(_)));
+        assert!(matches!(edited, InstalledDrive::V3(_)));
         assert!(load_installed_drive(
             &mut legacy,
             &Ok::<_, ()>(Some(edited.clone())),

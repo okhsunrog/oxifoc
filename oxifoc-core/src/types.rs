@@ -628,7 +628,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 20;
+pub const ICD_PROTO_VERSION: u16 = 21;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1024,9 +1024,9 @@ pub use config_types::*;
 mod config_types {
     use crate::storage::{
         BoardCalibrationConfig, CurrentLimitsConfig, DcOffsetsConfig, DeratingConfig,
-        FailsafeConfigStored, HallCalibrationConfig, HallTuningConfig, MotorParamsConfig,
-        MotorTemperatureConfig, PiGainsConfig, PwmConfigStored, VelocityLoopConfig,
-        VoltageFeedforwardConfig, VoltageLimitsConfig,
+        FailsafeConfigStored, HallCalibrationConfig, HallTuningConfig, MotorFeedbackConfig,
+        MotorParamsConfig, MotorTemperatureConfig, PiGainsConfig, PwmConfigStored,
+        VelocityLoopConfig, VoltageFeedforwardConfig, VoltageLimitsConfig,
     };
 
     use super::*;
@@ -1074,10 +1074,11 @@ mod config_types {
         VoltageFeedforward,
         MotorTemperature,
         Drive,
+        MotorFeedback,
     }
 
     impl ConfigGroupId {
-        pub const COUNT: usize = Self::Drive as usize + 1;
+        pub const COUNT: usize = Self::MotorFeedback as usize + 1;
         pub const ALL: [Self; Self::COUNT] = [
             Self::MotorParams,
             Self::HallCalibration,
@@ -1094,6 +1095,7 @@ mod config_types {
             Self::VoltageFeedforward,
             Self::MotorTemperature,
             Self::Drive,
+            Self::MotorFeedback,
         ];
 
         pub const fn index(self) -> usize {
@@ -1104,7 +1106,10 @@ mod config_types {
         pub(crate) const fn is_setup_component(self) -> bool {
             matches!(
                 self,
-                Self::MotorParams | Self::HallCalibration | Self::CurrentLimits
+                Self::MotorParams
+                    | Self::HallCalibration
+                    | Self::CurrentLimits
+                    | Self::MotorFeedback
             )
         }
     }
@@ -1127,6 +1132,7 @@ mod config_types {
                 Self::VoltageFeedforward(_) => ConfigGroupId::VoltageFeedforward,
                 Self::MotorTemperature(_) => ConfigGroupId::MotorTemperature,
                 Self::Drive(_) => ConfigGroupId::Drive,
+                Self::MotorFeedback(_) => ConfigGroupId::MotorFeedback,
             }
         }
     }
@@ -1166,6 +1172,7 @@ mod config_types {
         VoltageFeedforward(VoltageFeedforwardConfig),
         MotorTemperature(MotorTemperatureConfig),
         Drive(DriveConfig),
+        MotorFeedback(MotorFeedbackConfig),
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]

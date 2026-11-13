@@ -379,48 +379,19 @@ pub async fn init(
         initial_vbus_v,
         BOARD.max_phase_current_a,
     );
-    let source = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
+    let _ = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
+    let boot_source = config.boot_feedback_source();
+    let source = if foc_driver.request_phase_source(boot_source) {
+        boot_source
+    } else {
+        let _ = foc_driver.request_phase_source(PhaseSource::Manual);
+        PhaseSource::Manual
+    };
     critical_section::with(|cs| {
         let mut state = STATE.borrow(cs).borrow_mut();
         state.motor_pole_pairs = model.pole_pairs;
         state.phase_source = source;
     });
-    // Boot angle source is CONFIG-driven (this board persists config, so no
-    // compile-time SENSORLESS switch like the g431): a stored hall
-    // calibration means a sensored motor — keep the Hall boot. No hall
-    // calibration means sensorless — boot on the back-EMF observer once
-    // detection has filled motor params (before that, Manual: commutation
-    // stays inert until the host drives it, and unwired hall inputs never
-    // get consulted, so they can't spam HallError).
-    if !config
-        .hall_calibration
-        .as_ref()
-        .is_some_and(oxifoc_core::storage::HallCalibrationConfig::is_calibrated)
-    {
-        let boot_source = if config.motor_params.is_some() {
-            PhaseSource::Observer
-        } else {
-            PhaseSource::Manual
-        };
-        let applied = if foc_driver.phase_mut().set_source(boot_source).is_err() {
-            // Observer rejects a PARTIAL param set (R/L present, flux step
-            // never ran). Fall back to Manual, not Hall — same rationale as
-            // the g431 sensorless boot.
-            defmt::warn!(
-                "sensorless boot source rejected (partial motor params?); falling back to Manual"
-            );
-            let _ = foc_driver.phase_mut().set_source(PhaseSource::Manual);
-            PhaseSource::Manual
-        } else {
-            boot_source
-        };
-        // Mirror into shared state: the runtime only syncs phase_source on
-        // host-commanded changes (DriverCommand::SetPhaseSource), so without
-        // this the status endpoint reports the struct default (Hall) forever.
-        critical_section::with(|cs| {
-            STATE.borrow(cs).borrow_mut().phase_source = applied;
-        });
-    }
     // Failsafe: command-staleness deadman + reaction policy from stored config
     // (or board defaults); the OV trip feeds the regen-brake derate.
     foc_driver.set_failsafe(FailsafeConfig::from_stored(config.failsafe.as_ref()));

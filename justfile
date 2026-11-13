@@ -662,7 +662,11 @@ test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_
     if test {{quote(link)}} = bridge; then cli=(just cli-bridge); fi
     trap '"${cli[@]}" stop >/dev/null' EXIT
     export RUST_LOG="${RUST_LOG:-warn},device=info"
-    "${cli[@]}" source {{quote(phase_source)}} > {{quote(capture + ".source.json")}}
+    if test {{quote(phase_source)}} = configured; then
+        "${cli[@]}" status > {{quote(capture + ".source.json")}}
+    else
+        "${cli[@]}" source {{quote(phase_source)}} > {{quote(capture + ".source.json")}}
+    fi
     "${cli[@]}" --fast-source {{quote(source)}} --fast-encoding {{quote(encoding)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
 
 # Matching bench-executor-trace firmware must already be flashed.

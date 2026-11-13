@@ -13,5 +13,5 @@ runner = ["bash", "../scripts/probe_run.sh"]
 rustflags = ["-C", "target-feature=+vfp2,-fp64"]
 
 [env]
-# Show all defmt levels unless overridden
-DEFMT_LOG = "debug"
+# Keep the default dual-transport image within flash bank 1.
+DEFMT_LOG = "warn"

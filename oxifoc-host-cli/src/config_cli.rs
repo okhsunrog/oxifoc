@@ -98,6 +98,7 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
     println!("        board_calibration_invalid: false,");
     println!("        hall_calibration_invalid: false,");
     println!("        drive_invalid: false,");
+    println!("        motor_feedback_invalid: false,");
     println!("    }}");
     println!("}}");
     Ok(())
@@ -124,6 +125,7 @@ fn rust_struct_name(group: oxifoc_core::types::ConfigGroupId) -> &'static str {
         G::VoltageFeedforward => "VoltageFeedforwardConfig",
         G::MotorTemperature => "MotorTemperatureConfig",
         G::Drive => "DriveConfig",
+        G::MotorFeedback => "MotorFeedbackConfig",
     }
 }
 
@@ -154,6 +156,11 @@ fn rust_field_literal(
         use oxifoc_core::storage::MotorTemperatureSensor;
         let sensor = serde_json::from_value::<MotorTemperatureSensor>(value.clone())?;
         return Ok(format!("MotorTemperatureSensor::{sensor:?}"));
+    }
+    if group == ConfigGroupId::MotorFeedback && field == "mode" {
+        use oxifoc_core::storage::MotorFeedbackMode;
+        let mode = serde_json::from_value::<MotorFeedbackMode>(value.clone())?;
+        return Ok(format!("MotorFeedbackMode::{mode:?}"));
     }
     if group == ConfigGroupId::VoltageFeedforward && field == "mode" {
         let mode = serde_json::from_value::<VoltageFeedforwardMode>(value.clone())?;

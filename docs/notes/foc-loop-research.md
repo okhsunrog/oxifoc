@@ -910,3 +910,11 @@ runs. On the 3–5 s plateau, its 5th–95th percentile narrowed from
 0.21–0.31 A to 0.24–0.27 A. The current trace flagged only speed limiting.
 See `current-speed-taper.png` and `current-speed-taper.json` under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-config-v20/`.
+
+The same directory contains the post-reboot Hall-to-observer run at
+150/300 electrical rad/s blend thresholds. The 320→40 maneuver recorded
+58,900 samples with zero loss, acknowledged all 16 commands, and stopped
+with zero faults. Median native speed was 320 electrical rad/s from 1.0 to
+1.6 s. The return to the Hall range still showed low-speed oscillations.
+`feedback-320-to40.png` shows velocity feedback and the FOC/Hall angle
+difference. The capture does not carry the observer blend weight.
