@@ -3792,8 +3792,11 @@ mod severity_gate {
                 let mut state = state.borrow(cs).borrow_mut();
                 state.set_running(program.hold_mode());
                 state.excitation.arm(program).unwrap();
-                for i in 0..usize::from(program.samples) {
-                    state.excitation.voltages[i] = program.injection::<LibmSinCos>(i);
+                for (index, voltage) in state.excitation.voltages[..usize::from(program.samples)]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *voltage = program.injection::<LibmSinCos>(index);
                 }
                 state.excitation.preparing = false;
             });

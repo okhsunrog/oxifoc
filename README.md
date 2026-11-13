@@ -7,8 +7,9 @@ Embassy for hardware and async tasks, and ergot for commands and telemetry.
 ## Get started
 
 Enter the development environment on NixOS with `nix develop` or
-`direnv allow`. The repository pins the Rust toolchains for both host and
-firmware builds.
+`direnv allow`. The host workspace follows the stable Rust channel. Run
+`rustup update stable` to install the latest release locally. Firmware and
+on-target tests use a pinned nightly from their own directories.
 
 ```sh
 just cli --help

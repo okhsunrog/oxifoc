@@ -24,7 +24,7 @@ jobs:
 
       - name: install device toolchains
         run: |
-          for crate in oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote; do
+          for crate in oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote tests/stm32g474 tests/stm32f405; do
             channel=$(grep '^channel' "$crate/rust-toolchain.toml" | sed 's/.*= *"\(.*\)"/\1/')
             rustup toolchain install "$channel" --component rustfmt
           done

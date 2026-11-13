@@ -1666,7 +1666,7 @@ mod tests {
         ]);
         for (boundary, chunk) in [0.01_f32, 0.02, 0.025, 0.05]
             .into_iter()
-            .zip(intervals[12..].chunks_exact_mut(3))
+            .zip(intervals[12..].as_chunks_mut::<3>().0)
         {
             chunk.copy_from_slice(&[
                 f32::from_bits(boundary.to_bits() - 1),

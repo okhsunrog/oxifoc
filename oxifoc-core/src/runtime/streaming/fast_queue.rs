@@ -39,7 +39,7 @@ impl<const N: usize> FastTelemetryQueue<N> {
             // consumers release only whole-record prefixes, including at wrap.
             debug_assert!(grant.len().is_multiple_of(FRAME_BYTES));
             let mut records = 0;
-            for frame in grant.chunks_exact(FRAME_BYTES) {
+            for frame in grant.as_chunks::<FRAME_BYTES>().0 {
                 if batch.is_full() || !batch.push_bytes(frame) {
                     break;
                 }

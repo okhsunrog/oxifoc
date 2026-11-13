@@ -151,7 +151,7 @@ impl Snapshot {
     }
 
     pub fn average(&self, section: Section, samples: core::num::NonZeroU32) -> u32 {
-        self.cycles[section as usize] / samples.get()
+        self.cycles[section as usize] / samples
     }
 }
 

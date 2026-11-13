@@ -508,7 +508,7 @@ impl HallSensor {
     /// Returns `None` if no edge has been received yet.
     pub fn time_since_edge_us(&self, now_ticks: u64) -> Option<u32> {
         self.time_since_edge(now_ticks)
-            .map(|ticks| ((ticks * 1_000_000) / self.timebase.ticks_per_sec.get()) as u32)
+            .map(|ticks| ((ticks * 1_000_000) / self.timebase.ticks_per_sec) as u32)
     }
 
     /// Per-bit wire-break detector — accounting half (the verdict is taken
@@ -551,9 +551,9 @@ impl HallSensor {
             return;
         }
         let changed = (prev_raw ^ raw_state) & 0x07;
-        for bit in 0..3 {
+        for (bit, count) in self.wire_bit_changes.iter_mut().enumerate() {
             if changed & (1 << bit) != 0 {
-                self.wire_bit_changes[bit] = self.wire_bit_changes[bit].saturating_add(1);
+                *count = count.saturating_add(1);
             }
         }
         if raw_state == 0 || raw_state > 6 {
@@ -567,8 +567,8 @@ impl HallSensor {
             // live behavior (and the fault details) track the present.
             self.wire_dead_mask = if self.wire_window_invalids >= WIRE_WINDOW_MIN_INVALIDS {
                 let mut mask = 0u8;
-                for bit in 0..3 {
-                    if self.wire_bit_changes[bit] == 0 {
+                for (bit, &count) in self.wire_bit_changes.iter().enumerate() {
+                    if count == 0 {
                         mask |= 1 << bit;
                     }
                 }
@@ -1559,9 +1559,10 @@ mod tests {
             "reference apply cannot hide a wire glitch"
         );
         let mut accumulator = crate::foc::hall_calibration::HallCalibrator::new();
-        for state in 1..=6 {
+        for (index, &angle) in config.angles[1..=6].iter().enumerate() {
+            let state = (index + 1) as u8;
             for _ in 0..30 {
-                accumulator.record(config.angles[state], state as u8);
+                accumulator.record(angle, state);
             }
         }
         let mut forged = accumulator.finish().unwrap();

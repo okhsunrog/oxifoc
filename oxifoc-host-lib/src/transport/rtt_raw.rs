@@ -444,8 +444,8 @@ mod tests {
     #[test]
     fn live_rtt_header_and_physical_ring_are_bounded_before_access() {
         let mut header = [0_u32; 6];
-        for (word, bytes) in header[..4].iter_mut().zip(RTT_ID.chunks_exact(4)) {
-            *word = u32::from_le_bytes(bytes.try_into().unwrap());
+        for (word, &bytes) in header[..4].iter_mut().zip(RTT_ID.as_chunks::<4>().0) {
+            *word = u32::from_le_bytes(bytes);
         }
         header[4] = 3;
         assert!(validate_header(SRAM.start, &header).is_ok());

@@ -711,7 +711,10 @@ impl PlotRenderer {
         let mut rgb = Vec::with_capacity((width * height * 3) as usize);
         for row in 0..height {
             let start = (row * padded_row) as usize;
-            for px in data[start..start + unpadded_row as usize].chunks_exact(4) {
+            for px in data[start..start + unpadded_row as usize]
+                .as_chunks::<4>()
+                .0
+            {
                 let a = f32::from(px[3]) / 255.0;
                 for ch in 0..3 {
                     rgb.push((f32::from(px[ch]) * a + bg[ch] * (1.0 - a)).round() as u8);

@@ -203,7 +203,10 @@ pub async fn capture_model_voltage_burst<H: DetectionHardware, S: SinCos>(
         return Err(DetectionError::OutOfRange);
     }
     let mut capture = BurstCapture::default();
-    for index in 0..usize::from(program.samples) {
+    for (index, sample) in capture.samples[..usize::from(program.samples)]
+        .iter_mut()
+        .enumerate()
+    {
         hw.check_health()?;
         hw.wait_telemetry().await;
         hw.check_health()?;
@@ -212,7 +215,7 @@ pub async fn capture_model_voltage_burst<H: DetectionHardware, S: SinCos>(
             hw.send_command(ControlMode::Stopped).await;
             return Err(DetectionError::HardwareFault);
         }
-        capture.samples[index] = BurstSample {
+        *sample = BurstSample {
             alpha,
             beta,
             cycle: index as u32,

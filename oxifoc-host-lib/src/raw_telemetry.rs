@@ -235,7 +235,7 @@ impl RawTelemetryState {
             .unwrap_or_default()
             .as_nanos() as u64;
         let session = NEXT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
                 Some(last.wrapping_add(1).max(now).max(1))
             })
             .unwrap()
@@ -494,7 +494,10 @@ impl RawTelemetryState {
             Ok(())
         })();
         if let Err(error) = &result {
-            capture.report.error.get_or_insert_with(|| error.to_string());
+            capture
+                .report
+                .error
+                .get_or_insert_with(|| error.to_string());
         }
         self.changed.notify_all();
         result.map(|()| true)

@@ -2,9 +2,9 @@
 //! Wire/storage values must be validated against the actual inverter before use.
 pub mod record;
 
+use crate::storage::{CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConfig};
 #[cfg(any(feature = "runtime", test))]
 use crate::storage::{MotorFeedbackConfig, MotorFeedbackMode};
-use crate::storage::{CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConfig};
 use crate::types::commissioning::SourceLimits;
 
 #[derive(

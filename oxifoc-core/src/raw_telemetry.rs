@@ -322,7 +322,7 @@ fn pack26(f: &FastTelemetry, out: &mut [u8]) {
 fn unpack26(b: &[u8], header: RawBlockHeader, index: usize) -> FastTelemetry {
     let mut w = [0; 17];
     let mut adc = [0; 6];
-    for (i, p) in b[..9].chunks_exact(3).enumerate() {
+    for (i, p) in b[..9].as_chunks::<3>().0.iter().enumerate() {
         adc[i * 2] = u16::from(p[0]) | (u16::from(p[1] & 15) << 8);
         adc[i * 2 + 1] = u16::from(p[1] >> 4) | (u16::from(p[2]) << 4);
     }
@@ -546,7 +546,10 @@ pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError>
     let mut samples = heapless::Vec::new();
     let mut velocity = heapless::Vec::new();
     if header.is_velocity() {
-        for record in bytes[RAW_HEADER_BYTES..].chunks_exact(VELOCITY_RECORD_BYTES) {
+        for record in bytes[RAW_HEADER_BYTES..]
+            .as_chunks::<VELOCITY_RECORD_BYTES>()
+            .0
+        {
             velocity
                 .push(VelocityDebugFrame::decode(record).ok_or(RawDecodeError::Length)?)
                 .map_err(|_| RawDecodeError::Length)?;

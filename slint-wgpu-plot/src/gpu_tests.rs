@@ -83,7 +83,9 @@ fn peak_tail_line_mode_reset_and_cache() {
     let texture = renderer.render(&buffer, 64, 64, 32768, 0, 1.0).texture;
     assert!(
         pixels(&device, &queue, &texture)
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|p| p[3] == 0)
     );
     buffer.push_batch(&[0.0, 0.0]);
