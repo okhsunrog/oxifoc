@@ -1,5 +1,7 @@
 # Motor setup wizard and commissioning architecture
 
+For the current operator workflow, see [Motor commissioning](../commissioning.md).
+
 Status: protocol 16 wizard and aggregate Save implemented. Hall and sensorless
 installation, persistence and reload verified on MK5 (2026-11-12). The wizard requires explicit DC source limits before it
 can energize a motor. Commissioning uses a temporary device-owned control

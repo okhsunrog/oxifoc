@@ -1,6 +1,7 @@
 //! Embassy-based detection hardware implementation
 //!
-//! Provides [`EmbassyDetectionHardware`] and [`EmbassyHallReader`] for platforms
+//! Provides [`EmbassyDetectionHardware`](crate::foc::detection::embassy_hw::EmbassyDetectionHardware)
+//! and [`EmbassyHallReader`](crate::foc::detection::embassy_hw::EmbassyHallReader) for platforms
 //! using embassy-time and critical-section mutexes for motor parameter detection.
 
 #![allow(dead_code)]

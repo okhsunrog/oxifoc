@@ -29,7 +29,7 @@ Status legend: **[done]** implemented · **[planned]** not yet · **[idea]** to 
 
 | Layer | Failure it catches | Mechanism | Reaction time | Status |
 |------|--------------------|-----------|---------------|--------|
-| 1. Link gate | Host disconnected / link silent | ergot liveness → `state_notify` → `state_monitor` clears `link_active` → FOC routes through the failsafe policy | liveness timeout (1 s) | **[done]** |
+| 1. Link gate | Host disconnected / link silent | Transport state clears `link_active` and FOC routes through the failsafe policy | Transport-dependent | **[done]** |
 | 2. ISR command-staleness deadman | Host alive but not commanding; **async executor hung** | Stamp `last_cmd_tick` in ISR when draining `CMD_CHANNEL`; if `now - last_cmd_tick > thr` → configurable failsafe mode | ~150 ms (configurable) | **[done]** |
 | 3. Panic/HardFault gate kill | **Firmware panicked / hard-faulted** | Custom handlers clear `TIM1 BDTR.MOE` (+ EN_GATE low on F405) *before* any reporting (`safety.rs` per board) | immediate | **[done]** |
 | 4. Independent watchdog (IWDG) | **FOC ISR itself stopped** (lockup, clock fault, priority lock) | IWDG petted from the FOC ISR; if even the ISR stops → MCU reset → PWM goes high-Z/off | 3 s (F405) | **[done]** (G474 pending — FOC ISR dormant) |
@@ -52,8 +52,8 @@ again.
 
 Now that Layer 2 exists, this gate **routes through the same failsafe policy**
 (`process_commands` → `FocDriver::enter_failsafe`) rather than a hard `Stopped`,
-and the liveness timeout was shortened 5 s → 1 s
-([`LIVENESS_TIMEOUT_MS`](../oxifoc-core/src/icd.rs)). Layer 2 is the fast net.
+and the liveness timeout depends on the transport. Layer 2 normally reacts
+sooner than link liveness.
 The gate exempts the safe standing states (`Stopped`/`Coast`/`Brake`) and does
 not force the shared state to stopped while the brake still runs — that syncs
 at the failsafe terminal in `run_foc_cycle`, so the config server's
@@ -67,17 +67,17 @@ to a different USB controller before the mismatch is discovered.
 
 ### Layer 2 — ISR command-staleness deadman (implemented 2026-06-11)
 
-`FocDriver` carries `last_cmd_tick`; `process_commands` stamps it on every
-drained `SetMode` (the host re-affirms the active setpoint every 50 ms —
-`AFFIRM_POLICY` in host-lib, fire-and-forget so a dying link isn't masked by
-retries). `run_foc_cycle` checks `now_ticks - last_cmd_tick > staleness_timeout`
+`FocDriver` carries the last accepted drive activity time. An applied setpoint
+or a valid affirmation refreshes it. The host affirms the last acknowledged
+active setpoint every 50 ms. An affirmation names that setpoint's sequence and
+cannot acquire ownership. `run_foc_cycle` checks command staleness
 (default 150 ms) while running and, if stale, raises the **CommTimeout fault**
 (GracefulStop class) — the severity gate then arms the failsafe (see
 [notes/fault-overhaul.md](notes/fault-overhaul.md): the deadman and the
 Layer-1 link gate are *detectors*, the fault gate is the *executor*, and the
-event is visible to the host/remote instead of silent). A drained `SetMode` —
-accepted or not — clears the fault; the re-arm latch still demands the
-explicit safe-mode acknowledgement. The check is ISR-resident (`now_ticks` is
+event is visible to the host/remote instead of silent). Fresh accepted drive
+activity clears the fault. The re-arm latch still demands the explicit
+safe-mode acknowledgement. The check is ISR-resident (`now_ticks` is
 the 1 MHz hall capture timer), so it survives an async-executor hang where
 Layer 1 can't fire.
 
@@ -113,8 +113,7 @@ with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
     below `BRAKE_ENTRY_MAX_E_RAD_S`, else high-Z). A zero crossing read
     below that gate counts as the stop too.
 
-  The angle source losing trust mid-stop (sensorless below the observer's
-  floor, ~150 el rad/s — ~12–15 A of short current on a 5065) hands over
+  The angle source losing trust mid-stop hands over
   to the parking brake with the `ParkBrake` terminal (the short needs no
   angle and guards itself by its current, below), else coasts. Regen
   pushing the bus into the OverVoltage fault exits high-Z via the fault
@@ -137,8 +136,8 @@ The physical limit remains, just higher: the motor can burn only
 that, and the rider's foot is the backstop. Heat is bounded by the budget
 (scaled down with the thermal brake derate) and by the motor rating.
 
-**Scope.** The deadman covers only the *drive* modes (`CurrentControl`, plus
-velocity/position once they exist) — what a vehicle rides on. Exempt:
+**Scope.** The drive deadman covers current, throttle, velocity and position.
+The remaining modes have separate rules.
 
 - `Stopped`/`Coast`/`Brake` — safe standing states (parking `Brake` = all
   low-side FETs on / windings shorted, added 2026-06-11): they need no
@@ -155,16 +154,15 @@ velocity/position once they exist) — what a vehicle rides on. Exempt:
   (the two currents meet there; VESC's vq-sign switch). It never lets go
   on a slope; without a trustworthy angle a short current past the limit
   releases to high-Z instead (the speed behind it is unknown). The board
-  still creeps on a slope — true position hold is a future position-loop
-  feature (see TODO).
-- `OpenLoop`/`DirectVoltage`/`SixStep` — bench/calibration modes: on-device
-  detection dwells up to ~1 s between `SetMode`s (R-measurement settle),
-  which a 150 ms deadman would cut mid-measurement. The Layer-1 link gate
-  (1 s) still covers them against a dead host.
+  still creeps on a slope. Parking brake does not engage position control.
+- `OpenLoop`/`DirectVoltage` use a 10 s ISR timeout so the on-device
+  measurement can finish its bounded dwells. A device-owned measurement
+  temporarily suspends the ordinary link gate. See the
+  [watchdog](../oxifoc-core/src/motor/foc_driver/watchdog.rs) and the
+  [measurement session](notes/motor-setup-wizard.md#firmware-session).
 
 **Re-arm latch.** Every failsafe engagement latches `failsafe_latched` in
-`FocDriver`; while latched, `process_commands` rejects running modes (the
-rejected `SetMode` still stamps the deadman — liveness ≠ acceptance) until
+`FocDriver`; while latched, `process_commands` rejects running modes until
 the host acknowledges with an explicit `Stopped`/`Coast`/`Brake` — "throttle
 back to neutral", as on RC/e-bike systems. Defense in depth: host-lib also
 drops its active setpoint on disconnect (and sends affirms from the same
@@ -172,9 +170,7 @@ task as commands, so an affirm can't overtake a Stop), but the device does
 not trust the host — a reconnecting host replaying a stale throttle cannot
 relaunch the board.
 
-`enter_failsafe` is bumpless (seeds the ramp from the commanded
-`CurrentControl`/`OpenLoop` q-current) and restores six-step-floated phases
-before driving the current loop.
+`enter_failsafe` seeds the ramp from the preceding drive command.
 
 Open: bench-tune the brake constants and confirm no OV trip under regen (see
 [TODO.md](TODO.md#safety)).
@@ -261,25 +257,11 @@ undriven. Bench-blocked; see TODO.
 
 ## Command delivery & idempotency
 
-ergot is **at-most-once** (now-or-never, no built-in ARQ; no QoS/priority —
-telemetry and command responses share one bounded outgoing queue per
-interface). Reliability is the application's job:
-
-- **At-least-once** via host-side `timeout + bounded retry` → requires
-  **idempotent** commands (the receiver must tolerate duplicates).
-- Prefer **declarative / level-triggered** commands (absolute setpoints:
-  `MotorRequest::SetMode`, absolute config values) — idempotent by construction, retry-safe, and
-  they fail safe naturally (absence of fresh setpoint → deadman → safe state).
-- For the few genuine **actions**: either no-op-if-already-running (e.g.
-  `DetectEndpoint` returns `Busy` during a run) or dedup by an app-level
-  `req_id` (effectively-once). ergot's `seq_no` does **not** help dedup (a retry
-  gets a fresh seq).
-- Encode retry policy in the **type** (a `Idempotent` marker trait + `call` /
-  `call_once` host helpers) so it can't be misapplied and there's no per-call
-  boilerplate. `MotorEndpoint` and `ConfigEndpoint` → `Idempotent` at the wire
-  request boundary; `DetectEndpoint` → `Deduplicated`. Config Apply/Persist are
-  internally keyed actions, so replaying the same complete `ConfigRequest` is
-  idempotent even though issuing a fresh key is a new action.
+The [typed delivery policies](../oxifoc-core/src/icd.rs) define which
+operations the host may retry. Motor requests are at-most-once. Resending an
+unconfirmed setpoint could acquire ownership later. Idempotent reads and
+keyed configuration operations can be retried. Commissioning requests use
+session compare-and-set and operation IDs to deduplicate retries.
 
 `MotorEndpoint` adds application ordering above ergot: every request carries a
 fresh process `source_session` and wrapping `seq`. The device accepts active
@@ -313,13 +295,6 @@ first observes `fault_generation`, then sends a keyed Clear for that exact
 generation. Firmware checks and mutates under one registry lock. If an ISR
 raises or refines a fault between those steps, Clear returns `Conflict`; a lost
 ACK retry is deduplicated and cannot erase a later re-occurrence.
-
-## Non-idempotent endpoints (track these)
-
-- **`DetectEndpoint`** — motor characterization is an action, **not idempotent**
-  across runs. Handled: the detect server dedups by `req_id` (replayed request
-  returns the cached response, payload verified), and requests are served one
-  at a time by the single server loop.
 
 ## Multi-motor vehicles — symmetric failsafe
 

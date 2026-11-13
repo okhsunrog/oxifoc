@@ -48,7 +48,7 @@ pub struct ObserverInput {
 /// Runtime-switchable observer implementations
 ///
 /// This is the back-EMF/"fast" estimator slot of `PhaseManager`. The HFI
-/// estimator lives in its own dedicated slot ([`HfiObserver`] directly):
+/// estimator lives in its own dedicated `HfiObserver` slot:
 /// it needs carrier injection plumbed through the control loop, and the
 /// HfiToObserver crossover requires both estimators to run concurrently.
 #[derive(Clone, Debug)]
@@ -316,7 +316,7 @@ pub struct BackEmfObserver {
     lambda_learn_travel: f32,
     /// Schmitt latch for [`Self::is_ready`]: true once readiness was
     /// acquired with the STRICT lock-quality bound, relaxing the held
-    /// bound to [`READY_HOLD_MAX_PHASE_ERR_RAD`]. Updated at the end of
+    /// bound to `READY_HOLD_MAX_PHASE_ERR_RAD`. Updated at the end of
     /// every `update` (evaluated against the previous latch state).
     ready_latched: bool,
     /// PLL velocity of the previous update (rad/s) and its low-passed
@@ -480,7 +480,7 @@ const BEMF_PROXY_TAU_S: f32 = 0.025;
 
 /// External validity: once granted, how long (s) the corroboration must be
 /// violated CONTINUOUSLY before validity is revoked. Grant and revoke are
-/// deliberately asymmetric: granting demands [`READY_MIN_VALID_REVS`]
+/// deliberately asymmetric: granting demands `READY_MIN_VALID_REVS`
 /// coherent revolutions, but revoking on the first bad sample turned the
 /// readiness gate into a torque chopper — every revocation zeroes iq, the
 /// step transient perturbs the estimate further, and the closed-loop sim
@@ -917,7 +917,7 @@ impl BackEmfObserver {
 
     /// External-validity diagnostics: `(bemf_q_filt, valid_travel)` — the
     /// low-passed q-axis back-EMF proxy (V, signed) and the coherent phase
-    /// travel accumulated toward [`READY_MIN_VALID_REVS`] (rad). For bench
+    /// travel accumulated toward `READY_MIN_VALID_REVS` (rad). For bench
     /// telemetry and sims; `is_ready` is the consumer that matters.
     pub fn validity(&self) -> (f32, f32) {
         (self.bemf_q_filt, self.valid_travel)
@@ -928,7 +928,7 @@ impl BackEmfObserver {
     /// `min(|α̂|/ki, ACCEL_LAG_COMP_MAX_RAD)`. A type-2 PLL lags a real
     /// spin-up by α/ki while tracking it perfectly well — counting that
     /// structural lag as lock loss made the trust gate a bang-bang speed
-    /// governor (see [`ACCEL_LAG_COMP_MAX_RAD`]). Computed once per
+    /// governor (see `ACCEL_LAG_COMP_MAX_RAD`). Computed once per
     /// `update` (cached — see the field); for bench telemetry: the trust
     /// gate zeroes iq on this signal, so chop forensics need it next to
     /// the current columns.
@@ -958,7 +958,7 @@ impl BackEmfObserver {
     ///   the first two can hold on pure integrator memory),
     /// - EXTERNAL validity: the terminal voltage carried the back-EMF the
     ///   claimed rotation implies (e_q ≈ λ·ω̂) for
-    ///   [`READY_MIN_VALID_REVS`] consecutive electrical revolutions.
+    ///   `READY_MIN_VALID_REVS` consecutive electrical revolutions.
     ///
     /// The first three are *internal* convergence — and all of them hold on
     /// a phantom lock, where residual inverter distortion feeds the flux
@@ -972,8 +972,8 @@ impl BackEmfObserver {
     /// The lock-quality bound rides the acceleration-lag-COMPENSATED error
     /// (see [`Self::readiness_phase_err`] — a type-2 PLL structurally lags
     /// a real spin-up by α/ki) and is a Schmitt trigger: ACQUIRE demands
-    /// [`READY_MAX_PHASE_ERR_RAD`] (strict — handoff quality), HOLD relaxes
-    /// to [`READY_HOLD_MAX_PHASE_ERR_RAD`] (residual wobble rides the
+    /// `READY_MAX_PHASE_ERR_RAD` (strict — handoff quality), HOLD relaxes
+    /// to `READY_HOLD_MAX_PHASE_ERR_RAD` (residual wobble rides the
     /// strict threshold and a chattering gate chops torque, which itself
     /// pumps the oscillation — see the hold constant's dossier). The other
     /// three criteria have their own slow dynamics and stay un-hysteresed.
@@ -1207,7 +1207,7 @@ pub const HFI_DEFAULT_FREQ_HZ: f32 = 1000.0;
 /// Default HFI carrier amplitude as a fraction of vbus (3 V at 24 V — the
 /// operating point validated in the closed-loop sims; bench-tune per motor).
 /// Acts as the CEILING when the amplitude is solved from measured motor
-/// inductance (see [`HFI_CARRIER_RIPPLE_TARGET_A`]) — on low-L motors the
+/// inductance (see `HFI_CARRIER_RIPPLE_TARGET_A`) — on low-L motors the
 /// raw ratio is dangerously large (3 V across an eskate outrunner's ~25 µH
 /// at 1 kHz would drive tens of amps of carrier ripple).
 #[cfg(feature = "hfi")]
@@ -1228,7 +1228,7 @@ pub const HFI_CARRIER_RIPPLE_TARGET_A: f32 = 2.0;
 /// ripple target when the rating is known (detection's thermal solve,
 /// stored in the MotorParams group). Scales the perturbation to the
 /// motor: ~2 A on a 15 A eskate outrunner, ~0.2 A on a 1.3 A gimbal —
-/// capped by [`HFI_CARRIER_RIPPLE_TARGET_A`]. Deliberately scaled from
+/// capped by `HFI_CARRIER_RIPPLE_TARGET_A`. Deliberately scaled from
 /// the RATING, not the session current limit: a bench config capping iq
 /// at 2 A must not shrink the carrier SNR on a 30 A motor (the carrier
 /// is a perturbation the MOTOR has to tolerate, not the session).

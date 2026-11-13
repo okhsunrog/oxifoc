@@ -2,8 +2,8 @@
 
 What to test on real hardware, in what order, with what commands, and how
 to analyze the captures. Companion to the open items in
-[TODO.md → Bench](TODO.md), the failsafe design in [safety.md](safety.md)
-and the experiment files in [../maneuvers/](../maneuvers/README.md).
+[TODO.md → Bench](../TODO.md), the failsafe design in [safety.md](../safety.md)
+and the experiment files in [../maneuvers/](../../maneuvers/README.md).
 
 Everything here assumes the **lab-PSU-safe profile is baked**
 (`oxifoc-g431/src/baked_config.rs`: failsafe `RampToZero`,
@@ -193,7 +193,7 @@ event log. Diff against the pre-generated `sim-*` captures.
 | `const-speed.json` | commutation centering at speed | mean id over the steady window ≈ 0, flat vs speed |
 | `coast-decay.json` | friction model, λ sanity | erpm decay shape: exponential = viscous, linear tail = coulomb; feeds the sim's friction params |
 
-Epoch cutting recipe is in [../maneuvers/README.md](../maneuvers/README.md)
+Epoch cutting recipe is in [../maneuvers/README.md](../../maneuvers/README.md)
 (`oxifoc.events` metadata, cut by `seq`, align on the measured edge when
 latencies differ).
 

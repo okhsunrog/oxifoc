@@ -1330,7 +1330,7 @@ async fn calibrate_pulse_voltage<H: DetectionHardware>(
 /// alternating q pulse signs cancel their torque impulse.
 ///
 /// With `params.current_target_a > 0` the step amplitude is current-limited
-/// (see [`calibrate_pulse_voltage`]) so the peak current stays bounded on a
+/// (see `calibrate_pulse_voltage`) so the peak current stays bounded on a
 /// low-inductance motor; otherwise `params.pulse_voltage_v` is used as-is.
 ///
 /// Requires previously measured resistance for compensation.
@@ -1760,7 +1760,7 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
 /// can sink below what the ADC resolves even at full bus amplitude — the
 /// pulse method (di/dt over one PWM period) still works there. The
 /// fallback fires when HFI returns an implausible result
-/// ([`validate_inductance`]) or errors out — except `MotorNotResponding`
+/// (`validate_inductance`) or errors out — except `MotorNotResponding`
 /// (open circuit / dead control loop), where pulsing would see the same
 /// nothing and only waste a spin of the motor leads.
 pub async fn measure_inductance_auto<H: DetectionHardware, T: Timer, S: SinCos>(

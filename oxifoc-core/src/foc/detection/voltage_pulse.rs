@@ -17,8 +17,8 @@ const MIN_DI: f32 = 0.005;
 
 /// Accumulator for voltage-pulse inductance measurement on a single axis.
 ///
-/// Call [`record_pulse`] once per pulse with the current before and after
-/// the voltage step.  After `num_pulses` calls, [`finish`] returns the
+/// Call [`record_pulse`](VoltagePulseMeasurement::record_pulse) once per pulse with the current before and after
+/// the voltage step.  After `num_pulses` calls, [`finish`](VoltagePulseMeasurement::finish) returns the
 /// average inductance.
 ///
 /// # Dead-time immunity

@@ -2,7 +2,7 @@
 
 ST reference: MB1419, Rev B (26-March-2019), variant G431CBU6.
 
-Schematic: [mb1419-g431cbu6-b01_schematic.pdf](mb1419-g431cbu6-b01_schematic.pdf)
+Schematic: [mb1419-g431cbu6-b01_schematic.pdf](../hw/B-G431B-ESC1_schematic.pdf)
 
 ## MCU
 

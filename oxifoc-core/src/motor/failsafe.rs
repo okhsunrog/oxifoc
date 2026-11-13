@@ -1,7 +1,7 @@
 //! Self-contained failsafe controller for the command-staleness deadman.
 //!
 //! When fresh setpoints stop reaching the FOC ISR (host gone, async executor
-//! hung, or link dropped — see [`crate::state::run_foc_cycle`]), the driver
+//! hung, or link dropped; see `state::run_foc_cycle`), the driver
 //! arms this controller and runs [`FailsafeController::step`] every cycle. It
 //! takes **no async/channel input** — `FocDriver` pushes in the quantities it
 //! already has (electrical velocity, `dt`, vbus), so it keeps working even

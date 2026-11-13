@@ -1,8 +1,8 @@
 //! Trigonometric function abstractions for FOC control
 //!
-//! Provides a [`SinCos`] trait so platforms can substitute hardware-accelerated
+//! Provides a [`SinCos`](crate::foc::trig::SinCos) trait so platforms can substitute hardware-accelerated
 //! implementations (e.g., STM32 CORDIC peripheral) for the default software
-//! [`LibmSinCos`] fallback, or use the fast [`FastSinCos`] polynomial
+//! [`LibmSinCos`](crate::foc::trig::LibmSinCos) fallback, or use the fast [`FastSinCos`](crate::foc::trig::FastSinCos) polynomial
 //! approximation.
 //!
 //! Combined with `#[inline(always)]` and monomorphization, trait dispatch is

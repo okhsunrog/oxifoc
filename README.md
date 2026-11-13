@@ -1,241 +1,69 @@
 # OxiFOC
 
-Field-Oriented Control (FOC) firmware for STM32 motor controllers, written in Rust with [Embassy](https://embassy.dev/). Device-host communication uses [ergot](https://github.com/jamesmunns/ergot).
+Rust firmware for STM32 field-oriented motor control, with a desktop app,
+command-line tools, and a virtual motor for testing. The firmware uses
+Embassy for hardware and async tasks, and ergot for commands and telemetry.
 
-## Core Architecture (`oxifoc-core`)
+## Get started
 
-All FOC algorithms and motor control logic live in `oxifoc-core` — a `no_std` library with no hardware dependencies. Platform crates provide trait implementations for their specific hardware (ADC, PWM, sensors).
-
-### Trait Abstraction
-
-```mermaid
-graph TD
-    FocDriver["<b>FocDriver&lt;P, C, Ph, S&gt;</b><br/>Integrates everything<br/>Mode management · Current limiting"]
-
-    FocDriver --> PhasePwm["<b>PhasePwm</b><br/>set_duties · disable · enable<br/>set_phase_states (six-step)"]
-    FocDriver --> CurrentSensor["<b>CurrentSensor</b><br/>read_currents · calibrate<br/>update_duties (reconstruction)"]
-    FocDriver --> PhaseProvider["<b>PhaseProvider</b><br/>get() → angle, velocity<br/>injection() → HFI carrier<br/>update(vαβ, iαβ, dt)"]
-    FocDriver --> SinCos["<b>SinCos</b><br/>sin_cos(θ) → (sin, cos)<br/>LibmSinCos · FastSinCos · CordicSinCos"]
-
-    FocDriver --> FocController["<b>FocController&lt;M, S&gt;</b><br/>Clarke · Park · PI · Inv. Park<br/>Dead time comp · Voltage clamping"]
-    FocController --> Modulator["<b>Modulator</b><br/>to_duties(vα, vβ) → [u16; 3]<br/>SvpwmModulator"]
-
-    PhaseProvider --> PhaseManager["<b>PhaseManager&lt;H, E&gt;</b><br/>Source selection · Health tracking<br/>Observer fallback · Open-loop override"]
-    PhaseManager --> AngleSensor["<b>AngleSensor</b><br/>HallSensor · Encoder · NoSensor"]
-    PhaseManager --> Observer["<b>Observer slot</b><br/>BackEmfObserver"]
-    PhaseManager --> Hfi["<b>HFI slot</b><br/>HfiObserver<br/>carrier + polarity probe"]
-```
-
-Platform crates implement `PhasePwm` (TIM1 complementary PWM), `CurrentSensor` (shunt ADC reading), and `SinCos` (CORDIC hardware or software libm). Everything else is shared.
-
-### Phase Source Selection
-
-`PhaseManager` supports multiple angle estimation strategies with runtime
-switching (host command `cmd/phase_source`; the active source is reported
-back via slow telemetry). Both software estimators run concurrently in
-dedicated slots and are armed automatically from stored motor parameters
-at boot:
-
-| Source | Use Case |
-|--------|----------|
-| `Hall` | Direct Hall sensor angle |
-| `Encoder` | Incremental encoder |
-| `Observer` | Back-EMF sensorless (high speed) |
-| `Hfi` | High-frequency injection sensorless (zero/low speed) |
-| `HallToObserver` | Hall at low speed, velocity-blended crossover to observer, automatic fallback on Hall failure |
-| `HfiToObserver` | HFI at standstill, velocity-blended crossover to observer |
-| `Manual` / `OpenLoop` | Calibration and detection |
-
-### Motor Detection
-
-Automated parameter measurement, platform-agnostic via `DetectionHardware` trait:
-
-```mermaid
-graph LR
-    R["<b>Resistance</b><br/>2-point differential<br/>R = ΔV/ΔI (MESC-style)"] --> L["<b>Inductance</b><br/>Rotating HFI + FFT<br/>Separates Ld/Lq via 2nd harmonic"]
-    L --> F["<b>Flux Linkage</b><br/>Spin-down back-EMF<br/>Driven fallback: e⃗ = V⃗ − R·i⃗ − jωL·i⃗"]
-    F --> PI["<b>PI Auto-tune</b><br/>Kp = L·ω_bw<br/>Ki = R·ω_bw"]
-    F --> Hall["<b>Hall Calibration</b><br/>Bidirectional electrical sweep<br/>State→angle and transition geometry"]
-```
-
-Each step uses conservative PI gains (`DETECTION_PI_KP/KI`) delivered via `ControlMode::OpenLoop { pi_gains }`. Detection accuracy validated against 10 simulated motors (`detection_report` example).
-
-Select a motor class before running detection. The class sets a copper-loss
-budget. A low-current probe estimates resistance so the final R step can
-target one fifth of that budget. L uses separate DC alignment and adaptive AC
-excitation. Flux spin-up and Hall use fractions of the thermal current
-estimate. The controller applies the configured current ceilings to every
-stage. The Advanced current ceiling can lower excitation for diagnostics.
-
-On the MK5 bench, `just detect-bridge CAPTURE_DIR medium-outrunner` runs the
-whole sequence and captures each stage at the native FOC rate. Review the
-result before saving the motor model and Hall calibration. For a diagnostic
-comparison, add `--advanced --current-limit-a 6`. Motors without Hall sensors
-can run with `--sensorless`.
-
-### Virtual Motor
-
-`VirtualMotor` simulates a PMSM electrically and mechanically (R, Ld, Lq, flux linkage, inertia, friction). Combined with `FocController`, it enables closed-loop testing of the full detection pipeline and FOC control without hardware.
-
-```bash
-cargo run -p oxifoc-core --example detection_report --features virtual-motor,std
-```
-
-### Control Modes
-
-```rust
-enum ControlMode {
-    Stopped,                        // PWM disabled
-    CurrentControl { iq, id },      // Torque/field control
-    OpenLoop { angle, current, velocity, pi_gains },  // Detection/calibration
-    DirectVoltage { vd, vq, angle },// Bypass PI (HFI measurement)
-    Coast,                          // All FETs off (flux measurement)
-    SixStep { duty },               // Trapezoidal (bringup)
-    VelocityControl, PositionControl, // TODO
-}
-```
-
-### Fast Telemetry
-
-Lock-free ISR → host streaming via bbqueue:
-
-```
-ISR (20kHz) → decimation (atomic period) → bbqueue (2KB) → async drain → ergot topic → host
-```
-
-46 bytes/sample (ia/ib/ic/id/iq/vd/vq/angle/erpm/duty/hall/seq). Zero overhead when disabled. Overflow drops samples silently.
-
-## Network Architecture
-
-All devices communicate via [ergot](https://github.com/jamesmunns/ergot) — a lightweight embedded networking protocol with automatic routing and address assignment.
-
-Every motor controller runs as a **Router** — when standalone it acts as a root, when connected to another controller it becomes a bridge. Host apps and peripherals connect as **Edge** devices. This means identical firmware regardless of network topology.
-
-```
-Motor Controller (Root Router)
-├── PC ─────────────────── Edge (USB / UART / RTT)
-├── Secondary Motor Ctrl ─ Bridge Router (CAN FD)
-│   └── ...               (its own edge devices)
-├── BMS ──────────────── Edge (CAN FD)
-└── ESP32-C6 ──────────── Bridge Router (UART + BLE)
-    ├── ESK8 Remote ───── Edge (BLE, ESP32-C6)
-    └── Android App ───── Edge (BLE)
-```
-
-Roles are determined by topology, not firmware — disconnect two controllers and each becomes its own root. The host app discovers and addresses all devices in the network automatically through the routing tree.
-
-## Hardware
-
-| Board | MCU | Current Sensing | Communication | Gate Driver |
-|-------|-----|-----------------|---------------|-------------|
-| Cheap FOCer 2 | STM32F405RG | DRV8301 (10 V/V) | USB, optional RTT | DRV8301 SPI |
-| Flipsky VESC 6 MK5 | STM32F405RG | DRV8301 (20 V/V) | USB, optional RTT; SPI bridge in bring-up | DRV8301 SPI |
-| NUCLEO-G474RE + IHM08M1 | STM32G474RE | External op-amps | USB + LPUART | L6398 |
-
-All platforms: 20 kHz center-aligned PWM, TIM1-triggered injected ADC, Hall polling via TIM6 (5 us, 7-read majority voting), persistent config in internal flash (`sequential-storage` + `postcard`).
-
-## Host Tools
-
-**GUI** (`oxifoc-host-slint`) — Slint desktop app with GPU-accelerated real-time charts (WGPU). The Monitor offers Focus, Compare, Overview, and 2 × 2 layouts without scrolling the chart workspace. Focus and Compare let you choose chart groups; the current chart can overlay any combination of Ia, Ib, Ic, Id, and Iq on a shared ampere axis. Click Focus or double-click a chart to enlarge it, then use Back or Esc to restore the previous layout. Use Pause/Resume on each chart, scroll/pinch or the on-plot buttons to zoom, drag to pan while paused, and hover for cursor measurements. Motor control, detection wizard, config read/write.
-
-**CLI** (`oxifoc-host-cli`) — Command-line monitor, motor control, detection.
-
-Voltage feedforward is disabled by default. With the motor stopped, use
-`just cli-usb config set voltage-feedforward mode=CrossCoupling --volatile`
-for a RAM-only change; modes are `Disabled`, `CrossCoupling`, `BackEmf`, and
-`Both`. `config get voltage-feedforward` reads the current policy. The generic
-`config set` behavior is unchanged: omitting `--volatile` requests persistence.
-
-With the motor stopped, use `drive` to set what counts as forward and
-`derating` to configure the speed, modulation, temperature and voltage curves.
+Enter the development environment on NixOS with `nix develop` or
+`direnv allow`. The repository pins the Rust toolchains for both host and
+firmware builds.
 
 ```sh
-just cli-bridge config set drive invert_direction=true --volatile
-just cli-bridge config set derating speed.max_forward_erad_s=650 speed.max_reverse_erad_s=150 --volatile
-just cli-bridge config drive-profile e-skate --volatile
+just cli --help
+just gui
+just test-core
 ```
 
-Use `0` to disable the ceiling for that direction. `speed.speed_start_frac` sets
-where motoring torque starts tapering, by default at 80% of the ceiling.
-The E-Skate preset starts
-the duty taper at 85% of the effective modulation limit. You can set
-`modulation.duty_start_frac` directly, with `1` disabling this taper. The signed
-`throttle` command uses a fraction in `[-1, 1]` of the live current budget.
-`start --iq` continues to request amps. Fast telemetry uses the motor's
-electrical coordinates.
+| Target | Build | Connection |
+|---|---|---|
+| [Flipsky VESC 6 MK5](docs/hw/vesc6-mk5.md) | `just build-mk5-spi` | STM32 SPI → ESP32-C5 bridge → USB Serial/JTAG |
+| [Cheap FOCer 2](docs/hw/cheap-focer2-notes.md) | `just build-f405-cf2` | STM32 USB |
+| [NUCLEO-G474RE + IHM08M1](docs/hw/nucleo-g474re-ihm08m1.md) | `just build-g474` | USB and UART; see the board notes for motor-stage status |
+| Virtual motor | `cargo run -p oxifoc-virtual -- --help` | TCP or UDP |
 
-Hall tuning applies on the stopped controller. PWM is staged, saved to
-flash, and loaded after restart. `config get pwm-config` reports the
-active frequency alongside the staged configuration.
+On a wired MK5/C5 bench, build the host CLI once with
+`cargo build --release --locked -p oxifoc-host-cli`. Use
+`just cli-bridge status` to check the controller. Board wiring, flashing
+and recovery are in the [MK5 guide](docs/hw/vesc6-mk5.md).
+The host and motor firmware must agree on the application protocol version.
 
-Use `motor-feedback` on a stopped controller to select the commutation
-source at startup. The Hall-to-observer mode requires calibrated Hall sensors
-and a motor model with flux linkage. Its thresholds are in electrical rad/s.
+## Commission and test a motor
+
+Run the GUI's **Detect** wizard or `just cli-bridge detect all`. Choose the
+motor class, pole pairs and feedback type, and confirm both DC source limits.
+For scripted runs use `--input-current-a` and `--regen-current-a` with the
+values for the connected source. Use zero regeneration for a bench supply
+that cannot sink current. Review the result before saving. The MK5 CLI
+capture recipe `just detect-bridge CAPTURE_DIR MOTOR_CLASS` records each
+stage and prints the result in JSON. It writes the setup only with
+`--apply`. See the [commissioning guide](docs/commissioning.md).
+
+The CLI exposes current, speed and throttle control. The GUI exposes
+current control. The firmware also implements multi-turn position control
+through the shared motor API. The [architecture guide](docs/architecture.md)
+explains feedback, control and config behavior.
+
+Use [maneuvers](maneuvers/README.md) for repeatable captures. On the MK5 the
+SPI image streams Packed28 via ergot and the C5 bridge. Request the native
+rate for full-rate data, or a lower rate when the analysis allows it. Check
+the capture's loss counters and command acknowledgements before using it
+as evidence.
+
+## Develop
 
 ```sh
-just cli-bridge config set motor-feedback mode=hall blend_low_erad_s=150 blend_high_erad_s=300
-just cli-bridge config get motor-feedback
+just check                  # Host and device checks
+cargo test --workspace      # Host tests
+just test-core              # Core tests with virtual motor and HFI enabled
 ```
 
-A new motor setup saves Hall with observer crossover or Sensorless according
-to the selected feedback. Use `hall-without-crossover` for Hall diagnostics
-across the speed range. The `source` command changes the mode temporarily
-for bench tests.
-
-**Virtual device** (`oxifoc-virtual`) — Simulated motor controller over TCP/UDP. Host tools connect exactly as to real hardware.
-
-Transports: Serial (UART VCP), RTT (probe-rs), TCP (virtual), UDP (virtual), USB (nusb).
-
-## Building
-
-On NixOS, enter the development shell before running Cargo or Just:
-
-```bash
-nix develop
-# Alternatively, load it automatically in this directory:
-direnv allow
-```
-
-The shell provides native build dependencies, including D-Bus, fontconfig,
-Wayland, xkbcommon and udev, plus libclang and graphics libraries for the desktop
-tools. It uses rustup with the existing `rust-toolchain.toml` files. In Cursor or
-VS Code, install the recommended `mkhl.direnv` extension and let it load `.envrc`
-so rust-analyzer receives the same environment. The workspace automatically
-restarts extensions when direnv changes the environment.
-
-```bash
-just check                # fmt + clippy + tests (workspace + all device firmware)
-just build-f405-cf2       # Build Cheap FOCer 2 firmware
-just flash-f405-cf2       # Build and flash Cheap FOCer 2 via probe-rs
-just build-f405-vesc6-mk5 # Build Mini V6 MK5 firmware
-just flash-f405-vesc6-mk5 # Build and flash Mini V6 MK5 via probe-rs
-just gui                  # Run Slint GUI
-just cli -- list          # Run CLI
-```
-
-The two F405 variants use separate artifact directories:
-`oxifoc-f405/target/cf2` and `oxifoc-f405/target/vesc6-mk5`.
-
-Device firmware requires Rust nightly (`thumbv7em-none-eabihf`). Host crates build with stable Rust.
-
-## Testing
-
-```bash
-cargo test --workspace                              # Host tests
-cargo test -p oxifoc-core --features virtual-motor  # Virtual motor + detection
-cd tests/stm32f405 && cargo test                    # On-target (requires hardware)
-```
-
-## Development Status
-
-Known gaps and planned work are tracked in [docs/TODO.md](docs/TODO.md);
-safety-layer roadmap in [docs/safety.md](docs/safety.md).
+Start with the [documentation map](docs/README.md) for architecture, safety,
+hardware notes, and bench evidence. Open work is tracked in the
+[backlog](docs/TODO.md).
 
 ## License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
+Licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT),
 at your option.

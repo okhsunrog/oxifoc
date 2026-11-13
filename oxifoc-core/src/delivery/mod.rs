@@ -16,14 +16,14 @@
 //!
 //! | Class            | Repeat is…           | Device memory | Client method        |
 //! |------------------|----------------------|---------------|----------------------|
-//! | [`Idempotent`]   | harmless by nature   | none          | `at_least_once`      |
-//! | [`Deduplicated`] | made harmless by id  | id → response  | `effectively_once`   |
-//! | [`AtMostOnce`]   | harmful, can't dedup | n/a           | `at_most_once`       |
+//! | [`Idempotent`](crate::delivery::Idempotent)   | harmless by nature   | none          | `at_least_once`      |
+//! | [`Deduplicated`](crate::delivery::Deduplicated) | made harmless by id  | id → response  | `effectively_once`   |
+//! | [`AtMostOnce`](crate::delivery::AtMostOnce)   | harmful, can't dedup | n/a           | `at_most_once`       |
 //!
 //! - **Idempotent** — reads and absolute setpoints (`set mode = X`). `f(f(x)) ==
 //!   f(x)`, so retrying blindly is safe; no device-side bookkeeping.
 //! - **Deduplicated** — a side-effecting action tagged with a stable
-//!   [`ReqId`]; the device caches `id → response` and returns the cache on a
+//!   [`ReqId`](crate::types::ReqId); the device caches `id → response` and returns the cache on a
 //!   repeat (see [`crate::delivery`] `Dedup`). Retry is safe because the *effect*
 //!   happens at most once even though delivery is at-least-once.
 //! - **AtMostOnce** — a harmful action that cannot be deduplicated (e.g. reboot:
@@ -32,7 +32,7 @@
 //!   by the response.
 //!
 //! The class a command declares is the compiler-enforced ceiling on which client
-//! method may be used: you cannot `at_least_once` an [`AtMostOnce`] command. The
+//! method may be used: you cannot `at_least_once` an [`AtMostOnce`](crate::delivery::AtMostOnce) command. The
 //! marker is the author's promise that the command really has the stated effect
 //! semantics (like `Send`/`Sync` discipline) — the *ladder* is type-enforced, the
 //! idempotency itself is asserted.

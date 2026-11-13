@@ -6,7 +6,7 @@
 //! Platform crates provide the flash driver and storage task;
 //! this module provides the shared type definitions.
 //!
-//! All value types implement [`PostcardValue`] via the marker trait,
+//! All value types implement [`PostcardValue`](sequential_storage::map::PostcardValue) via the marker trait,
 //! giving them automatic postcard serialization for sequential-storage.
 
 pub use crate::foc::velocity::VelocityLoopConfig;

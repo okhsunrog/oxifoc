@@ -170,9 +170,14 @@ Normal bridge builds do not enable this injection. Idle traffic was 8 slots/s
 for Ergot's upstream ping/reply, not continuous empty polling. Evidence is in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-c5-spi-2026-11-10/handshake-summary.json`.
 
-## Optional CCM placement
+## CCM placement
 
-F405 feature `ccm` moves only `STATE` and `FOC_DRIVER` (7488 bytes) to
+The normal MK5 SPI recipe enables `ccm-telemetry`. It places the 48 KiB
+fast telemetry queue in `.ccm_bss` (NOLOAD). Startup clears the queue before
+use. The queue does not add a 48 KiB payload to the flash image, and the
+SPI DMA buffers stay in ordinary SRAM.
+
+The separate experimental feature `ccm` moves `STATE` and `FOC_DRIVER` to
 CPU-only CCM; code, DMA buffers and stack stay in their usual regions.
 An assembly `__pre_init` enables CCM and copies its initialized FLASH image.
 The linker section precedes `.data` so cortex-m-rt's `__edata` remains in
@@ -296,8 +301,8 @@ Flashing flow:
 2. **Tap the power button** so the stock firmware boots and latches PC5 → the
    board stays on.
 3. Connect SWD (GND + CLK + DIO; VCC to Vtref sense if the probe needs it) and
-   flash with `just flash-f405-vesc6-mk5`. The recipe name includes the board
-   deliberately; there is no generic/default F405 flash command.
+   flash with `just flash-mk5-spi` for the C5 bench. Check the connection with
+   `just cli-bridge status` after reboot.
 
 ### Recovery — don't let a bad flash brick it
 
@@ -315,36 +320,18 @@ the PC5 latch, independent of firmware. So to recover:
 
 Keep this in mind on every first flash of a new image.
 
-## Bring-up checklist (when the board arrives)
+## First bring-up checklist
 
 1. Bench PSU at **≥14 V** (vendor operating minimum — the usual 12 V profile
    is below spec for this board).
 2. Before reflashing: quick VESC Tool connect, confirm reported HW `60_MK5`
    (formality — the listing states it; see the verification-model note).
-3. Flash the exact board build via SWD: `just flash-f405-vesc6-mk5`.
-   Confirm the boot log contains `board=VESC6_MK5`, `MK5 board ctrl`, the
-   bit-bang SPI line and `DRV8301 ready` (including a valid device-ID read).
+3. Flash the C5 bridge and MK5 SPI firmware as described above. Check the
+   controller through `just cli-bridge status`.
 4. Release the power button. The board must remain powered from the PC5 latch.
-5. Before connecting/energising the motor, run `just cli monitor --seconds 5
-   --fast-hz 0` and `just cli faults`. VBUS must match the PSU, temperatures
-   must be plausible and all three phase currents must be near zero.
-6. Check the 1 Hz `isr/s` and `hall/s` log lines before enabling PWM. At a
-   20 kHz PWM setting the ADC/control ISR cadence must be 20 kHz, not 40 kHz;
-   `over=0` is required. Turn the motor by hand and require Hall edges, valid
-   states (1, 3, 2, 6, 4, 5 in one direction or the reverse sequence) and
-   `overcap=0`.
-7. Persist the initial PSU-safe limits while stopped:
-
-   ```sh
-   just cli config set current-limits \
-       max_iq_a=3 max_phase_current_a=5 bus_in_max_a=2 bus_regen_max_a=0
-   just cli config set failsafe staleness_timeout_ms=800 policy=1
-   just cli config get current-limits
-   just cli config get failsafe
-   ```
-
-   `policy=1` is RampToZero. Do not use ControlledStop on a bench PSU until
-   the board/motor pair has been validated for regenerative braking.
-8. Only after those gates pass: motor R/L detection, Hall calibration and a
-   very-low-current spin. Run `scripts/benchsuite.py` after the smoke test;
-   CF2 thresholds are not automatically acceptance limits for this motor/MK5.
+5. Before applying torque, check supply voltage, temperature inputs, current
+   offsets and `just cli-bridge faults`. Confirm the active PWM rate with
+   `just cli-bridge config get pwm-config`.
+6. Follow the [commissioning guide](../commissioning.md) for source limits,
+   detection and Hall calibration. Use a bounded first spin and review the
+   capture before changing controller or power-source limits.

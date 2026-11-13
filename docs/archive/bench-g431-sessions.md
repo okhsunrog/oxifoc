@@ -60,7 +60,7 @@ First real-hardware run of the g431 firmware on a sensorless drone motor
   "high": the pulse method measures ~DC L and L is genuinely
   frequency-dependent (eddy currents, NOT dead-time — disproven on HW
   2026-06-13c, see
-  [notes/inductance-freq-detection.md](notes/inductance-freq-detection.md));
+  [notes/inductance-freq-detection.md](../notes/inductance-freq-detection.md));
   the remaining gap is control-grade AC-L from detection — open item in
   «Algorithms». (2) λ +15 %: resolved 2026-07-05 — additive `V_err/ω`
   bias at the slow default spin, λ_true = 1.145 mWb (see the 2026-07-05

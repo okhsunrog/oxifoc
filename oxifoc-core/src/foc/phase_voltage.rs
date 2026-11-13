@@ -3,14 +3,14 @@
 //! Converts raw phase-terminal ADC counts to phase voltages and the αβ
 //! stationary frame, mirroring [`current_sense::ShuntCurrentSense`]. The board
 //! capability lives in [`config::PhaseSense`]; the per-cycle decision of which
-//! voltage the observer integrates is [`observer_voltage_source`].
+//! voltage the observer integrates is [`observer_voltage_source`](crate::foc::phase_voltage::observer_voltage_source).
 //!
 //! # Common mode
 //!
 //! Unlike the current path — where Kirchhoff guarantees `ia + ib + ic = 0` so
 //! the cheap 2-input Clarke is exact — measured phase voltages carry a
 //! common-mode term (the floating-neutral DC, plus any matched channel bias).
-//! So [`PhaseVoltageSense::alpha_beta`] uses the full 3-input Clarke
+//! So [`PhaseVoltageSense::alpha_beta`](crate::foc::phase_voltage::PhaseVoltageSense::alpha_beta) uses the full 3-input Clarke
 //! `((2Va−Vb−Vc)/3, (Vb−Vc)/√3)`, which cancels common mode. A consequence:
 //! the αβ projection is correct from the matched component alone, so it
 //! degrades gracefully even before the per-phase offsets are calibrated — the

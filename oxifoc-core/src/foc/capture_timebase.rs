@@ -18,7 +18,7 @@
 //!    unaccounted overflow itself — but only if CNT already wrapped (lower
 //!    half). For this test to be sound, the writer must make its
 //!    increment-and-clear-UIF step atomic with respect to readers:
-//!    [`CaptureTimebase::overflow`] and [`CaptureTimebase::capture`] wrap it
+//!    The Embassy `CaptureTimebase::overflow` and `CaptureTimebase::capture` wrap it
 //!    in a critical section, so no reader can ever observe "UIF cleared but
 //!    counter not yet incremented" or the reverse.
 //!

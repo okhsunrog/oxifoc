@@ -1,16 +1,16 @@
 //! Fast-telemetry fixed-point codec + shared raw→engineering enrichment.
 //!
-//! The compact 36-byte [`FastTelemetry`] frame ships raw ADC counts and
+//! The compact 36-byte [`FastTelemetry`](crate::types::FastTelemetry) frame ships raw ADC counts and
 //! fixed-point scalars; the host reconstructs engineering units with the **same
 //! `oxifoc-core` code** the firmware uses, so the two cannot desync:
 //!
-//! - **Scalars** (`vbus`, `vd`, `vq`, `rpm`): encoded/decoded through [`Scale`]
+//! - **Scalars** (`vbus`, `vd`, `vq`, `rpm`): encoded/decoded through [`Scale`](crate::foc::telemetry::Scale)
 //!   — one LSB constant per field defines *both* directions, so
-//!   `build_fast_telemetry`'s encode and [`FastTelemetry::enrich`]'s decode are
+//!   `build_fast_telemetry`'s encode and [`FastTelemetry::enrich`](crate::types::FastTelemetry::enrich)'s decode are
 //!   structurally inverse (round-trip tested below). `angle` is modular, its own
 //!   paired methods over one constant.
 //! - **Currents**: shipped as raw ADC counts, decoded only via
-//!   [`ShuntCurrentSense`] — the firmware's own converter — then Clarke/Park.
+//!   [`ShuntCurrentSense`](crate::foc::current_sense::ShuntCurrentSense) — the firmware's own converter — then Clarke/Park.
 //!
 //! See `docs/notes/telemetry-enrichment.md` for the full design.
 

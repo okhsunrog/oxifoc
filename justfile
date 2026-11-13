@@ -191,11 +191,11 @@ flash-g474:
 
 # Build Cheap FOCer 2 firmware (explicit board selection; no F405 default).
 build-f405-cf2:
-    cd oxifoc-f405 && cargo build --release --target-dir target/cf2
+    cd oxifoc-f405 && cargo build --release --target-dir target/cf2 --no-default-features --features board-cf2,transport-usb
 
 # Build and flash Cheap FOCer 2 firmware.
 flash-f405-cf2:
-    cd oxifoc-f405 && cargo run --release --target-dir target/cf2
+    cd oxifoc-f405 && cargo run --release --target-dir target/cf2 --no-default-features --features board-cf2,transport-usb
 
 # Build Flipsky Mini V6 MK5 firmware.
 build-f405-vesc6-mk5:

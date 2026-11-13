@@ -88,7 +88,7 @@ pub const DEADSHORT_CYCLES: u16 = 8;
 
 /// Shorted-bridge settle time (PWM periods) before the probe starts
 /// measuring. The back-EMF estimate itself needs no settled current (see
-/// [`backemf_from_short`]); what must pass is anything the circuit model
+/// `backemf_from_short`); what must pass is anything the circuit model
 /// does not explain: the bridge-enable glitch (~0.4 A pk over ~200 µs
 /// measured on B-G431B-ESC1 + ZD2808, 2026-07-06 — read as back-EMF it
 /// "caught" a spinning rotor at standstill) and, on the give-up recycle,
@@ -224,7 +224,7 @@ const CONFIRM_RETRY_S: f32 = 0.1;
 /// 219→756 rad/s el (~+54 per retry, internal gates all green) while the
 /// probe consistently measured a real captured rotor at 32–108 —
 /// confirmation against the runaway claim is structurally unreachable, and
-/// waiting for the [`HOLD_GIVEUP_S`] recycle throws away a good capture
+/// waiting for the `HOLD_GIVEUP_S` recycle throws away a good capture
 /// the probe has already measured. Three consecutive strong reads make a
 /// standing-rotor false positive implausible: each probe follows a
 /// [`CONFIRM_SETTLE_CYCLES`] decay window, and the bench enable-transient
@@ -254,7 +254,7 @@ pub enum StartupPhase {
     Deadshort,
     /// Linearly ramping the open-loop velocity 0 → ceiling (from a cold
     /// start this begins at velocity 0 from the last output angle — there
-    /// is no align phase, see [`RAMP_CURRENT_SOFT_START_S`]).
+    /// is no align phase, see `RAMP_CURRENT_SOFT_START_S`).
     Ramp,
     /// Holding at the ceiling, waiting for the observer to converge.
     Hold,
@@ -323,7 +323,7 @@ pub enum ConfirmResult {
     /// either a phantom lock, or a genuinely captured rotor sampled at the
     /// slow phase of its capture hunt. The sequencer returned to Hold and
     /// will re-probe after [`CONFIRM_RETRY_S`]; a phantom that never
-    /// confirms is broken up by the [`HOLD_GIVEUP_S`] recycle.
+    /// confirms is broken up by the `HOLD_GIVEUP_S` recycle.
     Unconfirmed { velocity: f32 },
     /// The probe disagrees with the observer's claim, but it has measured a
     /// genuinely spinning rotor ([`CONFIRM_SEED_PROBES`] consecutive reads
@@ -347,7 +347,7 @@ pub struct SensorlessStartup {
     handoff_vel: f32,
     timer: f32,
     /// Time spent in Hold without a confirmed handoff (s) — drives the
-    /// [`HOLD_GIVEUP_S`] recycle.
+    /// `HOLD_GIVEUP_S` recycle.
     hold_time: f32,
     /// Remaining cooldown (s) before the next confirm probe may start.
     confirm_cooldown: f32,
@@ -368,7 +368,7 @@ pub struct SensorlessStartup {
     /// Samples taken in the probe window.
     ds_cycles: u16,
     /// Running sums of the α/β BACK-EMF over the probe window, one term per
-    /// sample interval (see [`backemf_from_short`]).
+    /// sample interval (see `backemf_from_short`).
     ds_sum_alpha: f32,
     ds_sum_beta: f32,
     /// Back-EMF terms in those sums.
@@ -434,7 +434,7 @@ impl SensorlessStartup {
     /// probe (Phase B): if the rotor is already spinning it is caught and
     /// handed straight to the observer; otherwise the machine falls through to
     /// the ramp→handoff cold start (Phase A; no align — see
-    /// [`RAMP_CURRENT_SOFT_START_S`]).
+    /// `RAMP_CURRENT_SOFT_START_S`).
     pub fn begin_cold_start(&mut self, angle0: f32, direction: f32) {
         self.phase = StartupPhase::Deadshort;
         self.angle = wrap_angle(angle0);
@@ -500,7 +500,7 @@ impl SensorlessStartup {
         self.ds_cycles >= DEADSHORT_CYCLES || i_mag >= DEADSHORT_MAX_CURRENT_A
     }
 
-    /// Rotor estimate from the probe window (see [`backemf_estimate`]).
+    /// Rotor estimate from the probe window (see `backemf_estimate`).
     fn probe_estimate(&self, dt: f32, lambda: f32, min_vel: f32) -> Option<(f32, f32)> {
         if self.ds_emf_terms == 0 {
             return None;
@@ -525,7 +525,7 @@ impl SensorlessStartup {
     }
 
     /// Advance the ISR log rate-limit window (call once per control cycle,
-    /// active or not — see [`LOG_WINDOW_S`]). Returns the number of frames
+    /// active or not — see `LOG_WINDOW_S`). Returns the number of frames
     /// dropped in the window that just closed (0 while a window is still
     /// open) so the caller can log a one-frame suppression summary.
     pub fn log_tick(&mut self, dt: f32) -> u16 {
@@ -586,7 +586,7 @@ impl SensorlessStartup {
 
     /// Whether the give-up recycle fired since the last call (one-shot).
     /// The caller must reset the observer when it did: the recycle exists
-    /// because the observer spent [`HOLD_GIVEUP_S`] failing to confirm —
+    /// because the observer spent `HOLD_GIVEUP_S` failing to confirm —
     /// its state is presumed to be a phantom lock.
     pub fn take_recycled(&mut self) -> bool {
         core::mem::take(&mut self.recycled)
@@ -608,7 +608,7 @@ impl SensorlessStartup {
     }
 
     /// Torque-command scale (0..=1) for the current cycle: ramps in over
-    /// [`RAMP_CURRENT_SOFT_START_S`] at ramp entry, full command everywhere
+    /// `RAMP_CURRENT_SOFT_START_S` at ramp entry, full command everywhere
     /// else (Deadshort holds the bridge shorted, so the value is moot there).
     pub fn current_scale(&self) -> f32 {
         match self.phase {
@@ -753,10 +753,10 @@ impl SensorlessStartup {
     ///
     /// `r`/`l`/`lambda` are the observer's motor model. After the settle,
     /// every sample interval yields a back-EMF vector from the shorted
-    /// circuit itself (`0 = R·i + L·di/dt + e`, see [`backemf_from_short`]);
-    /// over [`DEADSHORT_CYCLES`] samples, or until |i| reaches the abort
+    /// circuit itself (`0 = R·i + L·di/dt + e`, see `backemf_from_short`);
+    /// over `DEADSHORT_CYCLES` samples, or until |i| reaches the abort
     /// cap, their mean gives the rotor angle and speed
-    /// ([`backemf_estimate`]). A spinning rotor → `Caught` and the machine
+    /// (`backemf_estimate`). A spinning rotor → `Caught` and the machine
     /// deactivates (the manager seeds the observer); standstill / too slow
     /// → it falls through to the cold-start ramp, returning `Probing`.
     pub fn feed_deadshort(
@@ -790,13 +790,13 @@ impl SensorlessStartup {
     }
 
     /// Feed one shorted-winding current sample to the handoff-confirm probe
-    /// ([`StartupPhase::Confirm`]; same measurement as [`feed_deadshort`],
+    /// ([`StartupPhase::Confirm`]; same measurement as [`feed_deadshort`](Self::feed_deadshort),
     /// different question and different judge).
     ///
     /// `claim` is the observer's angle/velocity under test. On `Confirmed`
     /// the sequencer deactivates (handoff complete — the observer keeps its
     /// own converged state, no reseed). On `Unconfirmed` it returns to Hold
-    /// for a cooldown-paced retry (see [`ConfirmResult`]).
+    /// for a cooldown-paced retry (see `ConfirmResult`).
     #[allow(clippy::too_many_arguments)] // motor params travel as plain scalars, same as the estimator
     pub fn feed_confirm(
         &mut self,

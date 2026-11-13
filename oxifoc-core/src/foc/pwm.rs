@@ -6,8 +6,8 @@
 //!
 //! # Configuration
 //!
-//! [`MotorPwmConfig`] provides shared PWM configuration with board-specific
-//! defaults via the builder pattern. Platform crates use [`dead_time_ticks`]
+//! [`MotorPwmConfig`](crate::foc::pwm::MotorPwmConfig) provides shared PWM configuration with board-specific
+//! defaults via the builder pattern. Platform crates use [`dead_time_ticks`](crate::foc::pwm::dead_time_ticks)
 //! to convert nanoseconds to timer ticks.
 
 use super::svpwm;

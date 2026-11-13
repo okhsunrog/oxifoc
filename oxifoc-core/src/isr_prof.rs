@@ -3,7 +3,7 @@
 //!
 //! All statics are cycle SUMS since the last reset; the platform's 1 Hz
 //! stats task divides by its own ISR count and swap-resets them. With the
-//! feature off, [`now`] is a constant and [`add`] a no-op, so the marks in
+//! feature off, [`now`](crate::isr_prof::now) is a constant and [`add`](crate::isr_prof::add) a no-op, so the marks in
 //! the shared code cost nothing on host builds.
 
 use core::sync::atomic::AtomicU32;

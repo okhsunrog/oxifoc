@@ -308,7 +308,7 @@ pub enum HallFaultKind {
     StaleAtSpeed,
     /// Specific hall wires identified as dead (bit i set = wire H{i+1},
     /// the H1/H2/H3 inputs). See the per-bit detector in
-    /// [`HallSensor::note_wire_activity`].
+    /// `HallSensor::note_wire_activity`.
     WireDead {
         /// Bitmask of dead wires (bit 0 = H1, bit 1 = H2, bit 2 = H3)
         mask: u8,
@@ -361,7 +361,7 @@ pub const WIRE_WINDOW_UPDATES: u8 = 24;
 
 /// Minimum invalid-state events inside a window for a `WireDead` verdict
 /// (≈ one per electrical revolution with a dead wire — see
-/// [`HallSensor::note_wire_activity`]); two = debounce against a single
+/// `HallSensor::note_wire_activity`); two = debounce against a single
 /// boot/connect glitch.
 pub const WIRE_WINDOW_MIN_INVALIDS: u8 = 2;
 

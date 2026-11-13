@@ -124,7 +124,7 @@ where
 
     /// Set the actuation delay `d` (PWM periods, clamped to
     /// `0..=MAX_ACTUATION_DELAY_CYCLES`; default
-    /// [`DEFAULT_ACTUATION_DELAY_CYCLES`]): the time from a current sample
+    /// [`DEFAULT_ACTUATION_DELAY_CYCLES`](super::DEFAULT_ACTUATION_DELAY_CYCLES)): the time from a current sample
     /// until the duties computed from it start acting — a hardware
     /// property of the timer/ADC/ISR arrangement. Both pipeline
     /// compensations derive from it:
@@ -133,7 +133,7 @@ where
     ///   the Park angle describes (the Park angle itself stays at the
     ///   sample — see `actuation_advance_must_not_displace_current_vector`);
     /// - the estimators integrate the voltage that acted over the last
-    ///   sampling interval (see [`Self::applied_voltage`]).
+    ///   sampling interval (see `Self::applied_voltage`).
     ///
     /// These used to be two unrelated conventions — a fixed 1.0-cycle
     /// advance (= d ½) and a previous-command pairing (= d 0) — so no
@@ -163,7 +163,7 @@ where
     /// - **Commanded** (default; every board without phase filters while
     ///   driving, and every board with no sensing): the voltage that acted
     ///   while these currents built up, reconstructed from the command
-    ///   history and the actuation delay ([`Self::applied_voltage`]; the
+    ///   history and the actuation delay (`Self::applied_voltage`; the
     ///   command computed *this* cycle has not acted yet).
     /// - **Measured**: the phase terminals sampled *this* cycle (concurrent
     ///   with the currents, so no pipeline delay). Used when the bridge is

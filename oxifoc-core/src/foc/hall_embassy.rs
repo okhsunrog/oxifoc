@@ -3,12 +3,12 @@
 //! Provides the static `HALL_ESTIMATOR`, update/query functions, and
 //! `HallAngleProxy` implementing `AngleSensor`. Platform crates keep
 //! GPIO/timer init and the capture ISR itself — the ISR body calls
-//! [`update_hall_edge`] with the GPIO state and the hardware-latched
+//! [`update_hall_edge`](crate::foc::hall_embassy::update_hall_edge) with the GPIO state and the hardware-latched
 //! capture timestamp.
 //!
 //! All timestamps live in the hall capture timer's tick domain (µs on the
 //! current boards), NOT `embassy_time` ticks. The platform registers its
-//! tick source via [`set_tick_source`] so the convenience `AngleSensor`
+//! tick source via [`set_tick_source`](crate::foc::hall_embassy::set_tick_source) so the convenience `AngleSensor`
 //! methods that need "now" stay in the same domain as the edge timestamps.
 
 use crate::foc::hall_sensor::HallFaultKind;

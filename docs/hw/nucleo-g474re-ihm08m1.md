@@ -126,9 +126,9 @@ Applied 2026-06-11: `sensors/hall.rs` is on TIM2/PA15+PB3+PB10 with
 to TIM5, `hardware/resources.rs` carries the corrected pins/CN numbers,
 and `mod sensors` is compiled even while the motor stack is dormant.
 
-Still open for bring-up: the actionable checklist (re-enable
-control/motor/calibration, ADC assignment, BKIN, IWDG, jumpers) lives in the
-single backlog — [TODO.md](TODO.md) (g474 + IHM08M1 section). The load-bearing
+The [open work](../TODO.md#firmware-and-hardware) tracks motor-stage bring-up.
+The [original checklist](../archive/backlog-through-2026-11-13.md#firmware--core)
+records ADC assignment, BKIN, IWDG and jumper details. The load-bearing
 hardware constraint to carry over from this doc: **keep PB15 and PB14 Hi-Z**
 (see the PWM/Protection warnings above — they are CH3N/CH2N on the G474, not
 the F302-era CH1N/BKIN the shield's silkscreen implies).

@@ -5,10 +5,10 @@
 //! on the G431 @ 170 MHz, see docs/perf-bench-2026-06-11.md). The functions
 //! here are the hot-path replacements:
 //!
-//! - [`sqrtf`]: the M4F `vsqrt.f32` instruction (IEEE correctly rounded —
+//! - [`sqrtf`](crate::foc::fast_math::sqrtf): the M4F `vsqrt.f32` instruction (IEEE correctly rounded —
 //!   bit-identical to libm, measured 25 vs 110 cycles) behind a target cfg,
 //!   libm elsewhere. No behavioral divergence between sim and hardware.
-//! - [`atan2f`]: a polynomial approximation (|err| ≤ ~0.011 rad), the same
+//! - [`atan2f`](crate::foc::fast_math::atan2f): a polynomial approximation (|err| ≤ ~0.011 rad), the same
 //!   pure-Rust code on every target — the simulation exercises exactly what
 //!   the firmware runs. 46 vs 169 cycles.
 

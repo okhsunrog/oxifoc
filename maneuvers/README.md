@@ -27,8 +27,9 @@ oxifoc-host-cli --transport tcp --json maneuver run maneuvers/iq-step.json \
 }
 ```
 
-Commands: `start{iq,id}`, `velocity{rad_s}`, `openloop{current,velocity,angle}`,
-`voltage{vd,vq,angle}`, `sixstep{duty}`, `stop{}`, `coast{}`, `brake{}`.
+Commands are `start{iq,id}`, `velocity{rad_s}`, `throttle{fraction}`,
+`openloop{current,velocity,angle}`, `voltage{vd,vq,angle}`, `stop{}`,
+`coast{}`, and `brake{}`.
 The `terminal` command (`stop`/`coast`/`brake`) is sent on EVERY exit path
 of the timeline, including errors. Before anything is sent the timeline is
 checked against the device's stored `max_iq_a` (`--force` skips the check;
@@ -109,4 +110,9 @@ Choose analysis by the measurement question. For stationary resistance, first
 inspect settling, zero-current offsets, signed V/I plateaus and repeat drift.
 FFT/PSD/spectrograms are useful for an observed oscillation, periodic artifact
 or a noise question; they are not required for every recording. Preserve raw
-20 kHz data so that a later hypothesis can be checked without repeating the run.
+native-rate data when the experiment needs it so a later hypothesis can be
+checked without repeating the run. For MK5 captures through the C5, use
+`just test-bridge OUTPUT.parquet MANEUVER.json`. It uses the configured
+feedback source and Packed28. Choose 15 or 20 kHz to match the active PWM
+when recording every cycle. Confirm the actual capture rate, gaps and command
+responses in the JSON report.

@@ -2,12 +2,12 @@
 //!
 //! Two controller types for different anti-windup strategies:
 //!
-//! - [`PIController`] — raw P+I output with external anti-windup via
-//!   [`apply_anti_windup()`](PIController::apply_anti_windup). Used inside
-//!   [`FocController`](super::controller::FocController) where circular
+//! - [`PIController`](crate::foc::pi_controller::PIController) — raw P+I output with external anti-windup via
+//!   [`apply_anti_windup()`](crate::foc::pi_controller::PIController::apply_anti_windup). Used inside
+//!   [`FocController`](crate::foc::controller::FocController) where circular
 //!   voltage clamping handles saturation.
 //!
-//! - [`ClampedPI`] — self-contained PI with rectangular output limits and
+//! - [`ClampedPI`](crate::foc::pi_controller::ClampedPI) — self-contained PI with rectangular output limits and
 //!   conditional integration and bounded integral state. For standalone use (velocity
 //!   loops, thermal controllers, etc.).
 //!

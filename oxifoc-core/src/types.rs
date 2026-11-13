@@ -250,7 +250,7 @@ impl MotorCommand {
     }
 }
 
-/// Sequenced request for [`crate::icd::MotorEndpoint`].
+/// Sequenced request for the ICD's `MotorEndpoint`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MotorRequest {
