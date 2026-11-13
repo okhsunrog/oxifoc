@@ -1004,3 +1004,35 @@ this unloaded MK5 at 15 kHz.
 
 Raw captures, register dumps, ELF reports and reproducible scripts are
 under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-nightly-ab.C6IY3o/`.
+
+### ARM flags on the new nightly
+
+On `a48e90a` with `nightly-2026-11-13`, compared the existing
+`+vfp2,-fp64` (A), no additional flags (B), and `target-cpu=cortex-m4`
+alone (C), all with the same `thumbv7em-none-eabihf` target. The full
+load images differ. A and B even have different LLVM target-feature
+attributes despite exposing the same Rust `cfg` and producing the same
+instructions in the small FPU test. All linked MK5 and CF2 variants
+retain 56 `vsqrt.f32` sites and no double-precision arithmetic instructions.
+
+| Release image | Flash bytes A / B / C | Static SRAM bytes |
+|---|---:|---:|
+| MK5 SPI | 449620 / 450236 / 456652 | 68428 |
+| CF2 USB | 540636 / 541260 / 559604 | 51592 |
+| G474 | 256476 / 257092 / bank overflow by 896 bytes | 40520 for A and B |
+
+MK5 CCM stays at 49172 bytes. Each variant ran twice per speed and per
+diagnostic on unloaded H5055, at +120 and +450 electrical rad/s. The
+TIM1 PWM, ADC clock and sample time matched the preceding comparison.
+ISR p99 upper bins stayed at 52.62 and 51.86 µs for all three variants.
+The largest ISR body at either speed was 57.04 / 57.18 / 56.76 µs for
+A / B / C. Minimum PWM-write margin at +120 was 47.71 / 47.55 / 45.23 µs
+and at +450 it was 55.01 / 54.27 / 53.62 µs. Across 24 valid runs,
+1,774,043 telemetry samples had no loss and 720,205 PWM writes had no
+late, ambiguous or masked updates. One discarded DWT window was repeated.
+
+Keep `nightly-2026-11-13` and variant A. B used more flash with comparable
+ISR timing, and C reduced PWM margin while growing the image. The
+bench was restored to its previous image, stopped with zero faults.
+Evidence is under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-arm-flags.uLpWZf/`.
