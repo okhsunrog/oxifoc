@@ -32,7 +32,6 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
             },
             true,
         ),
-        (PhaseSource::HfiToHall { switch_vel: 100.0 }, false),
     ] {
         let mut hall = HallSensor::new(1_000_000);
         hall.update(1, 0);
@@ -404,22 +403,19 @@ fn hfi_to_sensor_is_untrusted_until_hfi_ready_or_sensor_latched() {
         PhaseManager::with_hall(MockHallSensor::new()).with_encoder(MockHallSensor::new());
     phase.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
 
-    for source in [
-        PhaseSource::HfiToHall { switch_vel: 100.0 },
-        PhaseSource::HfiToEncoder { switch_vel: 100.0 },
-    ] {
-        phase.set_source(source).unwrap();
-        assert!(
-            !phase.angle_trustworthy(),
-            "a cold HFI estimate must not pass the torque trust gate"
-        );
+    phase
+        .set_source(PhaseSource::HfiToEncoder { switch_vel: 100.0 })
+        .unwrap();
+    assert!(
+        !phase.angle_trustworthy(),
+        "a cold HFI estimate must not pass the torque trust gate"
+    );
 
-        phase.crossover_latched = true;
-        assert!(
-            phase.angle_trustworthy(),
-            "the latched hardware sensor carries a trustworthy angle"
-        );
-    }
+    phase.crossover_latched = true;
+    assert!(
+        phase.angle_trustworthy(),
+        "the latched hardware sensor carries a trustworthy angle"
+    );
 }
 
 #[test]
@@ -628,36 +624,6 @@ fn hall_timebase_reset_is_cold_and_encoder_prediction_still_uses_encoder_speed()
     );
     assert_eq!(encoder.get().velocity, 100.0);
     assert!((encoder.get().angle - 0.52).abs() < 0.00001);
-}
-
-#[cfg(feature = "hfi")]
-#[test]
-fn hfi_hall_crossover_uses_continuous_hall_speed_instead_of_raw_edge_speed() {
-    use crate::foc::phase::HfiObserver;
-    let mut phase = PhaseManager::with_hall(MockHallSensor::new());
-    establish_mock_hall_velocity(&mut phase, 1.0, 80.0);
-    phase.set_hfi_observer(HfiObserver::new(1000.0, 0.1));
-    phase
-        .set_source(PhaseSource::HfiToHall { switch_vel: 100.0 })
-        .unwrap();
-    let input = PhaseInput {
-        dt: 0.00005,
-        ..Default::default()
-    };
-    phase.hall_mut().set_reading(1.004, 600.0);
-    phase.update(&input, 100_050);
-    assert!(
-        !phase.crossover_latched,
-        "a raw speed jump must not hand off"
-    );
-    for step in 1..=500_u64 {
-        #[allow(clippy::cast_precision_loss)]
-        let angle = 1.004 + 200.0 * step as f32 * input.dt;
-        phase.hall_mut().set_reading(wrap_angle(angle), 600.0);
-        phase.update(&input, 100_050 + step * 50);
-    }
-    assert!(phase.crossover_latched);
-    assert!((phase.get().velocity - 200.0).abs() < 1.0);
 }
 
 #[test]

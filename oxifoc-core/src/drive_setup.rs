@@ -2,6 +2,8 @@
 //! Wire/storage values must be validated against the actual inverter before use.
 pub mod record;
 
+#[cfg(any(feature = "runtime", test))]
+use crate::storage::{MotorFeedbackConfig, MotorFeedbackMode};
 use crate::storage::{CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConfig};
 use crate::types::commissioning::SourceLimits;
 
@@ -148,13 +150,24 @@ impl ValidatedDriveSetup {
         }
     }
 
+    #[cfg(any(feature = "runtime", test))]
+    pub(crate) fn motor_feedback(&self) -> MotorFeedbackConfig {
+        MotorFeedbackConfig {
+            mode: match self.setup.feedback {
+                Feedback::Hall(_) => MotorFeedbackMode::Hall,
+                Feedback::Sensorless => MotorFeedbackMode::Observer,
+            },
+            ..Default::default()
+        }
+    }
+
     #[cfg(all(feature = "runtime", feature = "detection", feature = "delivery"))]
     pub(crate) fn project(&self, config: &mut crate::storage::RuntimeConfig) {
         config.motor_params = Some(self.motor_policy());
         config.hall_calibration = self.hall();
         config.hall_calibration_invalid = false;
         config.current_limits = Some(self.current_policy());
-        config.motor_feedback = None;
+        config.motor_feedback = Some(self.motor_feedback());
         config.motor_feedback_invalid = false;
     }
 

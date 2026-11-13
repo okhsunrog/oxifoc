@@ -650,11 +650,11 @@ detect-bridge output motor_class *ARGS:
     @shift 2 && just cli-bridge --fast-source ergot-raw --fast-encoding packed28 detect all --motor-class {{quote(motor_class)}} --record {{quote(output)}} "$@"
 
 # Finite maneuver, full native-rate stream, terminal Stop on success or failure.
-test-bridge capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="hall":
+test-bridge capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="configured":
     @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(encoding)}} {{quote(velocity_debug)}} {{quote(phase_source)}}
 
 # USB is a temporary A/B reference; bridge is the production route.
-test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="hall":
+test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="configured":
     #!/usr/bin/env bash
     set -euo pipefail
     test {{quote(link)}} = bridge -o {{quote(link)}} = usb
@@ -710,7 +710,7 @@ bench-mk5-velocity-debug output recovery hall_config repeats="2" cases="velocity
 bench-mk5-cogging output recovery hall_config repeats="2" cases="velocity40-long,velocity120-to40-long,velocity80-sweep" hz="20000":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --cogging-ab --velocity-debug --cases {{quote(cases)}} --capture-hz {{hz}}
 
-bench-mk5-crossover output recovery hall_config repeats="1" phase_source="hall-fallback" cases="velocity320-hold-to40" spi_priority="off" hz="20000":
+bench-mk5-crossover output recovery hall_config repeats="1" phase_source="hall" cases="velocity320-hold-to40" spi_priority="off" hz="20000":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --phase-source {{quote(phase_source)}} --cases {{quote(cases)}} {{if spi_priority == "on" { "--spi-priority" } else { "" }}} --capture-hz {{hz}}
 
 test-velocity-debug:

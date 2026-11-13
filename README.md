@@ -173,12 +173,14 @@ source at startup. The Hall-to-observer mode requires calibrated Hall sensors
 and a motor model with flux linkage. Its thresholds are in electrical rad/s.
 
 ```sh
-just cli-bridge config set motor-feedback mode=hall-to-observer blend_low_erad_s=150 blend_high_erad_s=300
+just cli-bridge config set motor-feedback mode=hall blend_low_erad_s=150 blend_high_erad_s=300
 just cli-bridge config get motor-feedback
 ```
 
-A new motor setup returns to automatic source selection. The `source`
-command remains available for temporary bench tests.
+A new motor setup saves Hall with observer crossover or Sensorless according
+to the selected feedback. Use `hall-without-crossover` for Hall diagnostics
+across the speed range. The `source` command changes the mode temporarily
+for bench tests.
 
 **Virtual device** (`oxifoc-virtual`) — Simulated motor controller over TCP/UDP. Host tools connect exactly as to real hardware.
 

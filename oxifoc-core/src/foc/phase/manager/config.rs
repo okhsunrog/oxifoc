@@ -84,12 +84,7 @@ impl PreparedPhaseModel {
             Some(value) => PreparedHallCalibration::from_config(&value)?,
             None => PreparedHallCalibration::nominal(),
         });
-        self.selected_source = Some(if hall.is_some() {
-            PhaseSource::Hall
-        } else {
-            PhaseSource::Observer
-        });
-        Some(())
+        self.selected_source.map(|_| ())
     }
 
     pub(crate) fn hall_reset(&self) -> Option<&crate::foc::hall_sensor::PreparedHallCalibration> {

@@ -71,12 +71,6 @@ pub enum PhaseSource {
         min_confidence: f32,
     },
 
-    /// HFI at startup, transition to Hall sensor
-    HfiToHall {
-        /// Velocity threshold for switching (rad/s)
-        switch_vel: f32,
-    },
-
     /// HFI at startup, transition to encoder
     HfiToEncoder {
         /// Velocity threshold for switching (rad/s)
@@ -99,9 +93,8 @@ pub enum PhaseSource {
 
     // =========================================================================
     // NOTE: postcard encodes the variant index — append new variants HERE,
-    // never reorder the ones above. (One deliberate renumber 2026-06-12:
-    // HallWithFallback merged into HallToObserver. Safe because PhaseSource
-    // is never persisted and host + firmware build from the same tree.)
+    // keep their order unless changing the application protocol version.
+    // PhaseSource is not persisted.
     // =========================================================================
     /// HFI at low drive voltage, blend to the back-EMF observer above —
     /// MESC-style criterion: |vq − R·iq| (the back-EMF share of the drive
@@ -153,9 +146,7 @@ impl PhaseSource {
                 Self::HfiToObserverVolts { min_confidence, .. } => {
                     (0.0..=1.0).contains(&min_confidence)
                 }
-                Self::HfiToHall { switch_vel } | Self::HfiToEncoder { switch_vel } => {
-                    switch_vel > 0.0
-                }
+                Self::HfiToEncoder { switch_vel } => switch_vel > 0.0,
                 _ => true,
             }
     }
@@ -185,18 +176,13 @@ impl PhaseSource {
                 toggle_v,
                 min_confidence,
             } => toggle_v.is_finite() && toggle_v > 0.0 && min_confidence.is_finite(),
-            Self::HfiToHall { switch_vel } | Self::HfiToEncoder { switch_vel } => {
-                switch_vel.is_finite()
-            }
+            Self::HfiToEncoder { switch_vel } => switch_vel.is_finite(),
         }
     }
 
     /// Check if this source requires a Hall sensor
     pub fn requires_hall(&self) -> bool {
-        matches!(
-            self,
-            Self::Hall | Self::HallToObserver { .. } | Self::HfiToHall { .. }
-        )
+        matches!(self, Self::Hall | Self::HallToObserver { .. })
     }
 
     /// Check if this source requires an encoder
@@ -226,7 +212,6 @@ impl PhaseSource {
             Self::Hfi
                 | Self::HfiToObserver { .. }
                 | Self::HfiToObserverVolts { .. }
-                | Self::HfiToHall { .. }
                 | Self::HfiToEncoder { .. }
         )
     }

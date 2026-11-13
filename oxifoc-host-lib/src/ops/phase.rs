@@ -19,10 +19,10 @@ pub const DEFAULT_MIN_CONFIDENCE: f32 = 0.5;
 /// the combo-box / CLI value-enum order so an index round-trips.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhaseSourceKind {
-    /// Hall sensors only.
+    /// Hall at low speed with observer crossover.
     Hall,
-    /// Hall with observer fallback + velocity blend (default sensored mode).
-    HallFallback,
+    /// Use Hall throughout the speed range, with observer recovery on Hall loss.
+    HallWithoutCrossover,
     /// Back-EMF observer only (needs spin-up).
     Observer,
     /// HFI only (zero/low speed, salient motors).
@@ -37,7 +37,7 @@ impl PhaseSourceKind {
     /// All kinds in selector order; the position is the combo-box index.
     pub const ALL: [Self; 6] = [
         Self::Hall,
-        Self::HallFallback,
+        Self::HallWithoutCrossover,
         Self::Observer,
         Self::Hfi,
         Self::HfiObserver,
@@ -58,8 +58,8 @@ impl PhaseSourceKind {
 #[must_use]
 pub fn preset(kind: PhaseSourceKind, switch_vel: f32, toggle_v: f32) -> PhaseSource {
     match kind {
-        PhaseSourceKind::Hall => PhaseSource::Hall,
-        PhaseSourceKind::HallFallback => PhaseSource::HallToObserver {
+        PhaseSourceKind::HallWithoutCrossover => PhaseSource::Hall,
+        PhaseSourceKind::Hall => PhaseSource::HallToObserver {
             blend_low: switch_vel,
             blend_high: switch_vel * 2.0,
         },
@@ -81,7 +81,7 @@ pub fn preset(kind: PhaseSourceKind, switch_vel: f32, toggle_v: f32) -> PhaseSou
 pub fn label(src: PhaseSource) -> &'static str {
     use PhaseSource as P;
     match src {
-        P::Hall => "Hall",
+        P::Hall => "Hall (no crossover)",
         P::Encoder => "Encoder",
         P::Observer => "Observer",
         P::Hfi => "HFI",
@@ -89,7 +89,6 @@ pub fn label(src: PhaseSource) -> &'static str {
         P::EncoderToObserver { .. } => "Enc→Obs",
         P::HfiToObserver { .. } => "HFI→Obs",
         P::HfiToObserverVolts { .. } => "HFI→Obs(V)",
-        P::HfiToHall { .. } => "HFI→Hall",
         P::HfiToEncoder { .. } => "HFI→Enc",
         P::Manual => "Manual",
         P::OpenLoop => "OpenLoop",

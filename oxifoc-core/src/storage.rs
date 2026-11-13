@@ -769,9 +769,11 @@ impl PostcardValue<'_> for DriveConfig {}
 pub enum MotorFeedbackMode {
     #[default]
     Auto,
-    Hall,
+    // Keep the stored discriminants when renaming these two Hall policies.
+    HallWithoutCrossover,
     Observer,
-    HallToObserver,
+    #[serde(alias = "hall-to-observer")]
+    Hall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, postcard_schema::Schema)]
@@ -820,18 +822,19 @@ impl MotorFeedbackConfig {
             return None;
         }
         let observer = motor.is_some_and(|motor| motor.is_valid() && motor.flux_linkage_wb > 0.0);
+        let hall_with_observer = PhaseSource::HallToObserver {
+            blend_low: self.blend_low_erad_s,
+            blend_high: self.blend_high_erad_s,
+        };
         match self.mode {
+            MotorFeedbackMode::Auto | MotorFeedbackMode::Hall if hall && observer => {
+                Some(hall_with_observer)
+            }
             MotorFeedbackMode::Auto if hall => Some(PhaseSource::Hall),
             MotorFeedbackMode::Auto if observer => Some(PhaseSource::Observer),
             MotorFeedbackMode::Auto => Some(PhaseSource::Manual),
-            MotorFeedbackMode::Hall if hall => Some(PhaseSource::Hall),
+            MotorFeedbackMode::HallWithoutCrossover if hall => Some(PhaseSource::Hall),
             MotorFeedbackMode::Observer if observer => Some(PhaseSource::Observer),
-            MotorFeedbackMode::HallToObserver if hall && observer => {
-                Some(PhaseSource::HallToObserver {
-                    blend_low: self.blend_low_erad_s,
-                    blend_high: self.blend_high_erad_s,
-                })
-            }
             _ => None,
         }
     }
@@ -1024,7 +1027,7 @@ impl InstalledDrive {
                 setup.hall().map(Into::into),
                 &setup.current_policy(),
             ),
-            feedback: None,
+            feedback: Some(setup.motor_feedback()),
         })
     }
 
@@ -1429,7 +1432,7 @@ mod tests {
     fn feedback_requires_calibration_and_model_and_survives_other_edits() {
         use crate::foc::phase::PhaseSource;
         let feedback = MotorFeedbackConfig {
-            mode: MotorFeedbackMode::HallToObserver,
+            mode: MotorFeedbackMode::Hall,
             ..Default::default()
         };
         let mut config = RuntimeConfig {
@@ -1475,6 +1478,43 @@ mod tests {
         config.hall_calibration = None;
         assert!(!config.motor_feedback_is_valid());
         assert_eq!(config.boot_feedback_source(), PhaseSource::Manual);
+    }
+
+    #[test]
+    fn commissioned_hall_and_auto_resolve_to_the_same_crossover() {
+        use crate::drive_setup::{DriveCurrent, DriveSetup, Feedback};
+        use crate::foc::phase::PhaseSource;
+        use crate::types::commissioning::SourceLimits;
+
+        let setup = DriveSetup {
+            motor: MotorParamsConfig {
+                resistance_ohm: 0.063,
+                inductance_d_h: 31e-6,
+                inductance_q_h: 51e-6,
+                flux_linkage_wb: 0.004,
+                pole_pairs: 7,
+                max_power_loss_w: 120.0,
+                ..Default::default()
+            },
+            feedback: Feedback::Hall(measured_hall_config()),
+            source: SourceLimits {
+                input_a: 5.0,
+                regen_a: 0.0,
+            },
+            current: DriveCurrent::Auto,
+        }
+        .validate(70.0, 30.0)
+        .unwrap();
+        let mut config = RuntimeConfig::default();
+        assert!(InstalledDrive::new(&setup).project(&mut config, 70.0));
+        assert_eq!(config.motor_feedback.unwrap().mode, MotorFeedbackMode::Hall);
+        let crossover = PhaseSource::HallToObserver {
+            blend_low: 150.0,
+            blend_high: 300.0,
+        };
+        assert_eq!(config.boot_feedback_source(), crossover);
+        config.motor_feedback = None;
+        assert_eq!(config.boot_feedback_source(), crossover);
     }
 
     #[test]

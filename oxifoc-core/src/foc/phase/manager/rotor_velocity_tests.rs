@@ -438,7 +438,8 @@ fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
     use crate::foc::phase::HfiObserver;
     use core::f32::consts::TAU;
 
-    let mut manager = PhaseManager::with_hall(VelocitySensor::new());
+    let mut manager =
+        PhaseManager::with_hall(VelocitySensor::new()).with_encoder(VelocitySensor::new());
     let mut hfi = HfiObserver::new(1000.0, 3.0);
     hfi.set_phase(0.0); // Trusted polarity; isolate demod readiness from its probe.
     hfi.set_pll_gains(0.0, 0.0);
@@ -460,7 +461,7 @@ fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
     assert_eq!(rotor_speed(&manager), Some(0.0));
 
     manager
-        .set_source(PhaseSource::HfiToHall { switch_vel: 100.0 })
+        .set_source(PhaseSource::HfiToEncoder { switch_vel: 100.0 })
         .unwrap();
     manager.crossover_latched = true;
     manager.output = PhaseOutput {
@@ -468,12 +469,13 @@ fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
         velocity: 123.0,
     };
     let out = manager.compute_phase_with_fallback(
-        Some(PhaseOutput {
-            angle: 0.4,
-            velocity: 10.0,
-        }),
-        RotorVelocityEstimate::new(10.0),
         None,
+        None,
+        Some(AngleSample {
+            angle: 0.4,
+            omega: 10.0,
+            direction: Direction::Clockwise,
+        }),
         input().dt,
         false,
     );

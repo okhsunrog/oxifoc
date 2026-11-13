@@ -63,7 +63,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             PhaseSource::HfiToObserverVolts { toggle_v, .. } => {
                 !self.crossover_latched || self.bemf_proxy_v < toggle_v + HFI_VOLTS_HYSTERESIS
             }
-            PhaseSource::HfiToHall { switch_vel } | PhaseSource::HfiToEncoder { switch_vel } => {
+            PhaseSource::HfiToEncoder { switch_vel } => {
                 !self.crossover_latched
                     || self.output.velocity.abs() < switch_vel * (1.0 + CROSSOVER_HYSTERESIS)
             }
@@ -131,7 +131,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 };
                 (weight < 1.0).then_some(weight)
             }
-            PhaseSource::HfiToHall { .. } if self.crossover_latched => Some(0.0),
             _ => None,
         };
         let Some(update) = self.hall.apply_prepared_hall_calibration(prepared) else {
@@ -574,8 +573,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         let hall_reference_active = matches!(
             self.source,
             PhaseSource::Hall | PhaseSource::HallToObserver { .. }
-        ) || (matches!(self.source, PhaseSource::HfiToHall { .. })
-            && self.crossover_latched);
+        );
         if (hall_reference_active
             && (self.hall_health == HallHealth::Ok) != (previous_hall_health == HallHealth::Ok))
             || self.crossover_latched != previous_crossover
@@ -690,7 +688,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             // present Hall/encoder does not make a cold demodulation estimate
             // safe. After the latch the hardware sensor carries the angle.
             #[cfg(feature = "hfi")]
-            PhaseSource::HfiToHall { .. } | PhaseSource::HfiToEncoder { .. } => {
+            PhaseSource::HfiToEncoder { .. } => {
                 !self.open_loop_override.active
                     && (self.crossover_latched
                         || self.hfi.as_ref().is_some_and(HfiObserver::is_ready))
@@ -701,7 +699,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             PhaseSource::Hfi
             | PhaseSource::HfiToObserver { .. }
             | PhaseSource::HfiToObserverVolts { .. }
-            | PhaseSource::HfiToHall { .. }
             | PhaseSource::HfiToEncoder { .. } => self.observer.is_ready(),
         }
     }

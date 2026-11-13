@@ -596,11 +596,13 @@ enum DriveProfile {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum SourceArg {
-    /// Hall sensors only
+    /// Hall at low speed with observer crossover
+    #[value(alias = "hall-fallback")]
     Hall,
-    /// Hall with observer fallback + velocity blend (default sensored mode)
-    HallFallback,
+    /// Hall throughout the speed range, with observer recovery on Hall loss
+    HallWithoutCrossover,
     /// Back-EMF observer only (needs spin-up)
+    #[value(name = "sensorless", alias = "observer")]
     Observer,
     /// HFI only (zero/low speed, salient motors)
     Hfi,
@@ -615,7 +617,7 @@ impl From<SourceArg> for oxifoc_host_lib::ops::phase::PhaseSourceKind {
     fn from(value: SourceArg) -> Self {
         match value {
             SourceArg::Hall => Self::Hall,
-            SourceArg::HallFallback => Self::HallFallback,
+            SourceArg::HallWithoutCrossover => Self::HallWithoutCrossover,
             SourceArg::Observer => Self::Observer,
             SourceArg::Hfi => Self::Hfi,
             SourceArg::HfiObserver => Self::HfiObserver,

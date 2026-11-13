@@ -164,7 +164,7 @@ have drifted — anchors are function/area names.
   (`x < MIN` style passes NaN): a NaN `r_probe` escalates
   `safe_current` to the raw hardware limit. Newer accumulators use the
   NaN-rejecting `contains` pattern; port it back.
-- [ ] `HfiToHall`/`HfiToEncoder` trust-gate arms report a cold HFI
+- [ ] `HfiToEncoder` trust-gate arm reports a cold HFI
   angle as trustworthy (pure `Hfi` arms gate on `is_ready`).
 - [ ] HFI polarity-probe completion doesn't `restart_demod()` — first
   post-probe readiness rides ~6 ms of corrupted demod state.

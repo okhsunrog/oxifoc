@@ -273,30 +273,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 }
             }
 
-            PhaseSource::HfiToHall { switch_vel } => {
-                let hall = hall_sample.unwrap_or(self.output);
-                if self.crossover_latched {
-                    // Drop back to HFI only below the hysteresis band or on
-                    // hall failure.
-                    if hall_sample.is_none()
-                        || hall.velocity.abs() < switch_vel * (1.0 - CROSSOVER_HYSTERESIS)
-                    {
-                        self.crossover_latched = false;
-                        self.seed_hfi_from_output();
-                    }
-                } else if hall_sample.is_some() && hall.velocity.abs() >= switch_vel {
-                    self.crossover_latched = true;
-                }
-
-                if self.crossover_latched {
-                    self.rotor_velocity = hall_velocity;
-                    hall
-                } else {
-                    self.rotor_velocity = self.hfi_rotor_velocity();
-                    self.hfi_output().unwrap_or(self.output)
-                }
-            }
-
             PhaseSource::HfiToEncoder { switch_vel } => {
                 let enc = sample_to_output(encoder_sample, &self.output);
                 if self.crossover_latched {

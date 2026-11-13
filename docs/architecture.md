@@ -304,9 +304,6 @@ pub enum PhaseSource {
         toggle_v: f32,       // Drive-voltage threshold (V)
         min_confidence: f32,
     },
-    HfiToHall {              // HFI startup, switch to Hall (with hysteresis)
-        switch_vel: f32,
-    },
     HfiToEncoder {           // HFI startup, switch to encoder (with hysteresis)
         switch_vel: f32,
     },
@@ -375,7 +372,7 @@ The `HfiToX` sources use the `crossover_latched` hysteresis flag plus
   HFI estimator from the last managed output via `set_phase()`/
   `set_velocity()` — its own estimate drifted while the carrier was off, and
   the trusted angle also resolves the HFI π ambiguity.
-- **HfiToHall/HfiToEncoder** are sharp switches with the same hysteresis
+- **HfiToEncoder** is a sharp switch with hysteresis
   band: switch up at `switch_vel`, drop back to HFI only below
   `switch_vel × (1 − CROSSOVER_HYSTERESIS)` or on sensor failure (again
   reseeding HFI from the last output).

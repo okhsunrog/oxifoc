@@ -35,7 +35,8 @@ def main():
     parser.add_argument("--velocity-kp", type=float, help="Volatile speed PI proportional gain")
     parser.add_argument("--velocity-debug", action="store_true", help="Record native speed PI updates in the Packed28 session")
     parser.add_argument("--cogging-ab", action="store_true", help="Compare disabled, compensating and inverted 0.25 A profiles")
-    parser.add_argument("--phase-source", choices=("hall", "hall-fallback"), default="hall")
+    parser.add_argument("--phase-source", choices=("hall", "hall-without-crossover"),
+                        default="hall-without-crossover")
     parser.add_argument("--spi-priority", action="store_true")
     parser.add_argument("--capture-hz", type=int, choices=(10000, 20000), default=20000)
     parser.add_argument("--hall-config", type=Path, help="Replay only Hall calibration from a saved config dump, in RAM")
@@ -47,7 +48,7 @@ def main():
     assert len(cases) == len(set(cases))
     assert cases and set(cases) <= MOTION_CASES | SWEEP_CASES
     assert 1 <= args.repeats <= 3
-    assert not args.cogging_ab or args.phase_source == "hall"
+    assert not args.cogging_ab or args.phase_source == "hall-without-crossover"
     args.output.mkdir(parents=True, exist_ok=False)
     crossover = bool({"velocity320-to40", "velocity320-hold-to40"}.intersection(cases))
     manifest = dict(phase_source=args.phase_source, spi_priority=args.spi_priority,

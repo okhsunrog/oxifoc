@@ -918,3 +918,33 @@ with zero faults. Median native speed was 320 electrical rad/s from 1.0 to
 1.6 s. The return to the Hall range still showed low-speed oscillations.
 `feedback-320-to40.png` shows velocity feedback and the FOC/Hall angle
 difference. The capture does not carry the observer blend weight.
+
+### Hall policy and high-speed comparison
+
+Unloaded H5055, MK5 at 24 V, PWM and injected ADC at 15,001.4 Hz. Compared
+Hall without crossover, Hall with 150–300 electrical rad/s crossover, and
+the same OxiFOC algorithm with the VESC 2500–4000 eRPM thresholds
+(262–419 electrical rad/s). Two complete 450→320→40 runs per mode, no
+capture gaps or missed commands. One host scheduling abort was repeated.
+At 320 the observer had full weight with our thresholds and about 37% with
+the VESC thresholds. Both returned to Hall near the bottom of their bands.
+
+Two matched runs per mode at 900 and 1500 electrical rad/s, and one per
+mode at 2300. At 1500, mean measured dq current magnitude was 0.91 A with
+the observer and 2.54 A with Hall. At 2300 it was 1.01 A vs 3.24 A at
+approximately the same median speed. Each source supplied its own speed
+estimate, so the narrower reported speed range with Hall does not establish
+smaller mechanical speed ripple. All six captures were lossless.
+
+Injected the invalid Hall state `111` at the Hall estimator input in a
+diagnostic build. At ~454 electrical rad/s and again at ~320 inside the
+VESC threshold band, the controller logged `HallError` and continued on
+the observer. On the approach to 40 it withdrew torque once the angle
+became untrusted. These were unloaded runs with injected loss of all three
+Hall inputs. The result leaves a loaded crossover and physical or single-wire
+dropout for separate tests. Keep the present lock check, recovery policy,
+and thresholds pending those measurements.
+
+Plots, native captures, register readback, and the injection patch are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-policy.tbY1Ec/`.
+The production SPI image was restored and reported Stopped with zero faults.
