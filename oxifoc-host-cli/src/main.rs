@@ -27,14 +27,7 @@ use serde_json::json;
 /// Send a motor command and wait for the device's acknowledgement — the
 /// process must exit nonzero when the command never reached the device.
 pub(crate) fn send_motor_acked(runtime: &HostRuntime, mode: ControlMode) -> Result<MotorStatus> {
-    // Bounded retry: the backend sends each attempt once (ordered with other
-    // commands) and reports a lost/late response as an error. Setpoints are
-    // idempotent, and under a saturated device ISR (sustained 1.5 A drive at
-    // ~90% budget on the g431 bench) the RESPONSE frame can be dropped at a
-    // full device TX queue even though the command applied — a fresh request
-    // gets a fresh response. Mirrors the retry the old inline
-    // at_least_once(SETPOINT_POLICY) provided before the affirm-starvation
-    // refactor made command sends fire-and-observe.
+    // A fresh attempt is safe only when the backend proves the frame was not sent.
     let mut last: Option<anyhow::Error> = None;
     for attempt in 1..=3u32 {
         let (tx, rx) = motor_channel();
@@ -47,6 +40,14 @@ pub(crate) fn send_motor_acked(runtime: &HostRuntime, mode: ControlMode) -> Resu
             .context("backend dropped the motor command")?
         {
             Ok(status) => return Ok(status),
+            Err(e)
+                if !matches!(
+                    e.downcast_ref::<oxifoc_host_lib::MotorCommandError>(),
+                    Some(oxifoc_host_lib::MotorCommandError::NotSent(_))
+                ) =>
+            {
+                return Err(e);
+            }
             Err(e) => {
                 eprintln!("motor ack attempt {attempt} failed (retrying): {e:?}");
                 last = Some(e);
@@ -881,18 +882,19 @@ fn main() -> Result<()> {
         } => {
             use oxifoc_host_lib::ops::phase;
             let ps = phase::preset(source.into(), switch_vel, toggle_v);
+            let (tx, rx) = motor_channel();
             runtime
                 .cmd_tx
-                .send(HostCommand::SetPhaseSource(ps))
+                .send(HostCommand::SetPhaseSource(ps, Some(tx)))
                 .context("send phase source command")?;
+            let status = rx
+                .blocking_recv()
+                .context("backend dropped the phase source response")??;
             emit(
                 json,
-                json!({"sent": format!("{ps:?}"), "note": "confirm via status — telemetry reports the active source"}),
-                format!(
-                    "Phase source command sent: {ps:?} (confirm via status — telemetry reports the active source)"
-                ),
+                json!({"source": ps, "outcome": status.outcome}),
+                format!("Phase source: {ps:?} ({:?})", status.outcome),
             );
-            std::thread::sleep(Duration::from_millis(800));
         }
         Command::Monitor { seconds, .. } => {
             watch::run_monitor(&runtime, Duration::from_secs(seconds), json)?;

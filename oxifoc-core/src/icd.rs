@@ -20,12 +20,11 @@
 //! | Endpoint | Request | Response | Description |
 //! |----------|---------|----------|-------------|
 //! | `HardwareInfoEndpoint` | `()` | `HardwareInfo` | Hardware information query |
-//! | `MotorEndpoint` | `MotorRequest` | `MotorStatus` | Sequenced motor control and emergency stop |
+//! | `MotorEndpoint` | `MotorRequest` | `MotorStatus` | Setpoint, affirmation, stop, and phase-source selection |
 //! | `SlowTelemetryEndpoint` | `()` | `SlowTelemetry` | System health poll (~10 Hz, doubles as heartbeat) |
 //! | `TelemetryConfigEndpoint` | `TelemetryConfig` | `TelemetryConfigAck` | Configure streaming rates |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
 //! | `DetectEndpoint` | `MeasurementRequest` | `MeasurementReply` | Motor detection |
-//! | `PhaseSourceEndpoint` | `PhaseSource` | `PhaseSourceAck` | Angle source selection |
 //! | `ConfigEndpoint` | `ConfigRequest` | `ConfigResponse` | Revisioned config apply/persist (`storage` feature) |
 
 use ergot::endpoint;
@@ -33,7 +32,6 @@ use ergot::endpoint;
 // Re-export all types for convenience
 pub use crate::types::*;
 
-use crate::foc::phase::PhaseSource;
 use crate::raw_telemetry::{RawTelemetryAck, RawTelemetryRequest, VelocityDebugArm};
 
 // ============================================================================
@@ -185,17 +183,6 @@ endpoint!(
     "cmd/detect"
 );
 
-// Phase source selection endpoint (host → device).
-// Response reports whether the command was enqueued; the actually-active
-// source is read back via SlowTelemetry.phase_source (the ISR-side switch
-// can still reject an invalid source, leaving it unchanged).
-endpoint!(
-    PhaseSourceEndpoint,
-    PhaseSource,
-    PhaseSourceAck,
-    "cmd/phase_source"
-);
-
 // Configuration endpoint (host → device)
 #[cfg(feature = "storage")]
 endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
@@ -227,9 +214,6 @@ mod delivery_classes {
         type Delivery = Idempotent;
     }
     impl Command for MotorEndpoint {
-        type Delivery = Idempotent;
-    }
-    impl Command for PhaseSourceEndpoint {
         type Delivery = Idempotent;
     }
     impl Command for TelemetryConfigEndpoint {

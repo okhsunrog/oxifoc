@@ -40,7 +40,6 @@ use crate::state::model::{CONFIG_COORDINATOR, CachedConfigAck, ModelApplyGuard};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
 use crate::foc::fault::{FaultRegistry, PlatformFault};
-use crate::icd::PhaseSourceEndpoint;
 #[cfg(feature = "storage")]
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::icd::{
@@ -1215,41 +1214,6 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
     }
 }
 
-/// Phase source server — host selects the angle source (hall / observer /
-/// HFI / crossovers).
-///
-/// The command is enqueued to the control ISR; validation happens there
-/// (sensor present, estimators configured), so the ack only confirms
-/// enqueueing. The host reads the actually-active source back via
-/// `SlowTelemetry::phase_source`.
-pub async fn phase_source_server<NS, const N: usize>(endpoints: Endpoints<NS>)
-where
-    NS: NetStackHandle,
-{
-    use crate::foc::phase::PhaseSource;
-    use crate::types::PhaseSourceAck;
-
-    let server = endpoints.bounded_server::<PhaseSourceEndpoint, N>(Some("phase_source"));
-    let server = pin!(server);
-    let mut h = server.attach();
-
-    loop {
-        let _ = h
-            .serve(|source: &PhaseSource| {
-                let source = *source;
-                async move {
-                    // Guaranteed enqueue (ISR drains every cycle); the ack
-                    // still only confirms enqueueing, not application.
-                    CMD_CHANNEL
-                        .send(DriverCommand::SetPhaseSource(source))
-                        .await;
-                    PhaseSourceAck { enqueued: true }
-                }
-            })
-            .await;
-    }
-}
-
 /// Run all protocol servers concurrently in a single task
 ///
 /// This is the recommended way to run servers - it uses `join` to run
@@ -1307,9 +1271,8 @@ pub async fn run_all_servers<NS, F, T>(
             motor_command_server::<NS, F, T, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
-        join3(
+        join(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
-            phase_source_server::<NS, 2>(endpoints.clone()),
             telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz, control_timing),
         ),
     )
@@ -1345,7 +1308,7 @@ pub async fn run_all_servers_with_config<NS, F, T>(
         ),
         join(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
-            join3(
+            join(
                 config_server::<NS, T, 2>(
                     endpoints.clone(),
                     runtime_config,
@@ -1356,7 +1319,6 @@ pub async fn run_all_servers_with_config<NS, F, T>(
                     persist,
                     pwm_limits,
                 ),
-                phase_source_server::<NS, 2>(endpoints.clone()),
                 telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz, control_timing),
             ),
         ),

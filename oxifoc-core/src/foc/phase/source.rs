@@ -122,6 +122,7 @@ pub enum PhaseSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PhaseSourceError {
+    InvalidParameters,
     /// Hall sensor not available
     HallNotAvailable,
     /// Encoder not available
@@ -133,6 +134,32 @@ pub enum PhaseSourceError {
 }
 
 impl PhaseSource {
+    /// Validate thresholds before installing the source in the estimator.
+    pub fn is_sane(&self) -> bool {
+        self.is_finite()
+            && match *self {
+                Self::HallToObserver {
+                    blend_low,
+                    blend_high,
+                }
+                | Self::EncoderToObserver {
+                    blend_low,
+                    blend_high,
+                } => blend_low >= 0.0 && blend_high > blend_low,
+                Self::HfiToObserver {
+                    min_vel,
+                    min_confidence,
+                } => min_vel > 0.0 && (0.0..=1.0).contains(&min_confidence),
+                Self::HfiToObserverVolts { min_confidence, .. } => {
+                    (0.0..=1.0).contains(&min_confidence)
+                }
+                Self::HfiToHall { switch_vel } | Self::HfiToEncoder { switch_vel } => {
+                    switch_vel > 0.0
+                }
+                _ => true,
+            }
+    }
+
     /// All f32 payload fields are finite (see `ControlMode::is_finite`).
     pub fn is_finite(&self) -> bool {
         match *self {

@@ -273,8 +273,8 @@ sensorless source explicitly when it wants one.
 ### PhaseSource Enum
 
 Specifies where electrical angle comes from. `PhaseSource` is a wire type
-(serde + postcard schema) — the host selects it via the
-`PhaseSourceEndpoint`.
+(serde + postcard schema) — the host selects it with
+`MotorCommand::SetPhaseSource`.
 
 ```rust
 pub enum PhaseSource {
@@ -1077,7 +1077,6 @@ generic servers in `runtime/servers.rs`:
 |----------|------|--------------------|
 | `HardwareInfoEndpoint` | `req/hardware_info` | `()` → `HardwareInfo` |
 | `MotorEndpoint` | `cmd/motor` | `MotorRequest` → `MotorStatus` (source session, sequence, ISR outcome, emergency stop) |
-| `PhaseSourceEndpoint` | `cmd/phase_source` | `PhaseSource` → `PhaseSourceAck` |
 | `TelemetryConfigEndpoint` | `cmd/telemetry_config` | `TelemetryConfig` → `TelemetryConfigAck` |
 | `SlowTelemetryEndpoint` | `req/telemetry_slow` | `()` → `SlowTelemetry` |
 | `FaultEndpoint` | `cmd/fault` | `FaultRequest` → `FaultResponse` |
@@ -1085,10 +1084,11 @@ generic servers in `runtime/servers.rs`:
 | `ConfigEndpoint` | `cmd/config` | `ConfigRequest` → `ConfigResponse` |
 
 Notable wire-type details:
-- `PhaseSource` is itself a wire type; `PhaseSourceAck.enqueued` is an
-  *honest* ack — it only confirms the command was enqueued to the ISR. The
-  ISR-side switch can still reject an invalid source, so the host reads the
-  actually-active source back via `SlowTelemetry::phase_source`.
+- The motor endpoint acknowledges source selection after the ISR handles it.
+  A change requires a stopped controller. A repeat of the active source
+  preserves estimator and PI state.
+- A motor affirmation references the accepted setpoint sequence. It can
+  refresh the deadman but cannot apply a setpoint or acquire drive ownership.
 - `SlowTelemetry` temperatures are `i16` in 0.1 °C units (signed —
   sub-zero temperatures are representable): `fet_temp_c_x10`,
   `motor_temp_c_x10`, `board_temp_c_x10`.
@@ -1277,7 +1277,7 @@ oxifoc-core/src/
 ├── timer.rs                 # Timer trait for async delays (+ EmbassyTimer)
 ├── fmt.rs                   # Logging macros (defmt/log/none)
 ├── types.rs                 # Wire types: ControlMode, telemetry, config protocol
-├── icd.rs                   # Ergot endpoints/topics (MotorEndpoint, PhaseSourceEndpoint, ...)
+├── icd.rs                   # Ergot endpoints/topics (MotorEndpoint, ConfigEndpoint, ...)
 ├── state.rs                 # MotorControlState, CMD_CHANNEL, DriverCommand,
 │                            #   process_commands(), run_foc_cycle()
 ├── storage.rs               # Config groups, FLASH_CHANNEL, run_storage_worker()

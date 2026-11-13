@@ -32,6 +32,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     ///
     /// Returns error if the requested source is not available.
     pub fn set_source(&mut self, source: PhaseSource) -> Result<(), PhaseSourceError> {
+        if !source.is_sane() {
+            return Err(PhaseSourceError::InvalidParameters);
+        }
         // Validate source availability
         if source.requires_hall() && !self.has_hall() {
             return Err(PhaseSourceError::HallNotAvailable);

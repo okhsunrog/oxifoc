@@ -24,13 +24,12 @@ use oxifoc_core::icd::{
     ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, FaultTopic, MotorEndpoint,
     SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
 };
-use oxifoc_core::icd::{
-    FaultEndpoint, HardwareInfoEndpoint, LIVENESS_TIMEOUT_MS, PhaseSourceEndpoint,
-};
+use oxifoc_core::icd::{FaultEndpoint, HardwareInfoEndpoint, LIVENESS_TIMEOUT_MS};
 use oxifoc_core::timer::Timer;
 use oxifoc_core::types::{
     ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, DetectRequest, DetectResponse,
-    FaultRequest, FaultSnapshot, HardwareInfo, MotorCommand, MotorRequest, MotorStatus,
+    FaultRequest, FaultSnapshot, HardwareInfo, MotorCommand, MotorCommandOutcome, MotorRequest,
+    MotorStatus,
 };
 use oxifoc_core::types::{
     ControlMode, FastTelemetry, FaultResponse, Keyed, ReqId, SlowTelemetry, TelemetryConfigAck,
@@ -38,7 +37,7 @@ use oxifoc_core::types::{
 use std::{
     fs,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
     },
     thread,
@@ -182,6 +181,65 @@ fn next_motor_request(session: u64, seq: &mut u32, command: MotorCommand) -> Mot
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/// Delivery and ISR outcomes are kept distinct so callers can decide whether
+/// a retry would create a new motor command after a rejection.
+#[derive(Debug)]
+pub enum MotorCommandError {
+    NotSent(ergot::net_stack::ReqRespError),
+    Rejected(MotorCommandOutcome),
+    Response(ergot::net_stack::ReqRespError),
+    NoResponse,
+}
+
+impl std::fmt::Display for MotorCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotSent(error) => write!(f, "motor command not sent: {error:?}"),
+            Self::Rejected(outcome) => write!(f, "motor command rejected: {outcome:?}"),
+            Self::Response(error) => write!(f, "motor response failed: {error:?}"),
+            Self::NoResponse => write!(f, "motor response timed out"),
+        }
+    }
+}
+
+impl std::error::Error for MotorCommandError {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Setpoint {
+    Pending(u32),
+    Accepted(u32),
+}
+
+impl Setpoint {
+    fn seq(self) -> u32 {
+        match self {
+            Self::Pending(seq) | Self::Accepted(seq) => seq,
+        }
+    }
+
+    fn observe(
+        active: &mut Option<Self>,
+        seq: u32,
+        result: Result<MotorStatus, &MotorCommandError>,
+        initial: bool,
+    ) {
+        let Some(current) = active.filter(|current| current.seq() == seq) else {
+            return;
+        };
+        match result {
+            Ok(_) => *active = Some(Self::Accepted(seq)),
+            Err(MotorCommandError::Rejected(outcome))
+                if *outcome != MotorCommandOutcome::TimedOut
+                    && (initial || matches!(current, Self::Accepted(_))) =>
+            {
+                *active = None;
+            }
+            Err(_) if initial && matches!(current, Self::Pending(_)) => *active = None,
+            Err(_) => {}
+        }
+    }
+}
+
 /// Resolve the running firmware ELF path from `cfg.elf` (CLI `--elf`). Used both
 /// for defmt decoding and for pinning the RTT control block to the firmware's
 /// `_SEGGER_RTT` symbol. There is deliberately NO default: guessing the wrong
@@ -269,7 +327,7 @@ pub enum HostCommand {
     /// Immediate high-Z stop through the existing motor endpoint. The device
     /// latches re-arm until a later safe mode command.
     EmergencyStop(MotorResponseSender),
-    SetPhaseSource(PhaseSource),
+    SetPhaseSource(PhaseSource, Option<MotorResponseSender>),
     /// Change the fast-telemetry rate. The optional ack channel receives the
     /// device's response for THIS request; the requested rate also becomes
     /// the rate re-applied after a reconnect.
@@ -398,7 +456,7 @@ pub struct HostRuntime {
     /// never exits while the RTT I/O thread is mid-USB-transaction (which
     /// wedges the ST-Link for the next open). Mutex<Option<..>> so both
     /// `shutdown(&self)` and `Drop` can take it exactly once.
-    backend_thread: std::sync::Mutex<Option<thread::JoinHandle<()>>>,
+    backend_thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl HostRuntime {
@@ -543,14 +601,14 @@ struct BackendCtx {
 #[derive(Clone)]
 struct FaultSnapshotSink {
     tx: Sender<FaultSnapshot>,
-    delivered_generation: Arc<std::sync::Mutex<Option<u32>>>,
+    delivered_generation: Arc<Mutex<Option<u32>>>,
 }
 
 impl FaultSnapshotSink {
     fn new(tx: Sender<FaultSnapshot>) -> Self {
         Self {
             tx,
-            delivered_generation: Arc::new(std::sync::Mutex::new(None)),
+            delivered_generation: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -638,7 +696,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         raw_telemetry,
         device_addr,
         cancel_token,
-        backend_thread: std::sync::Mutex::new(Some(backend_thread)),
+        backend_thread: Mutex::new(Some(backend_thread)),
     }
 }
 
@@ -864,11 +922,8 @@ where
     // be in flight concurrently with a fresh command (in particular a Stop)
     // and land after it on the wire.
     //
-    // Affirmation: while connected with a drive setpoint active, resend it
-    // every AFFIRM_INTERVAL so the device's ISR deadman stays fed (absent
-    // that, the device fail-safes after ~150 ms). The setpoint is idempotent
-    // (MotorEndpoint is `Idempotent`), so re-sending the same absolute value
-    // is safe. Fire-and-forget (no retry).
+    // Affirmations only refresh an already-applied setpoint. Even while its
+    // first ACK is pending they cannot acquire drive ownership or start motion.
     //
     // On disconnect the setpoint is dropped: a reconnect must never resurrect
     // a stale throttle — the device latches its failsafe and waits for an
@@ -891,7 +946,7 @@ where
         async move {
             let drive_session = new_drive_session();
             let mut motor_seq = 0u32;
-            let mut active_setpoint: Option<ControlMode> = None;
+            let active_setpoint = Arc::new(Mutex::new(None));
             let mut ticker = tokio::time::interval(AFFIRM_INTERVAL);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Deadman-margin diagnostics (2026-07-06 trips): the device saw
@@ -907,7 +962,7 @@ where
                     cmd = cmd_rx.recv() => {
                         let Some(cmd) = cmd else { break };
                         if !connected.load(Ordering::Relaxed) {
-                            active_setpoint = None;
+                            *active_setpoint.lock().unwrap() = None;
                             reject_unverified_command(cmd);
                             continue;
                         }
@@ -917,7 +972,7 @@ where
                             &fast_hz_flag,
                             &requested_fast_hz,
                             unpack_addr(device_addr.load(Ordering::Relaxed)),
-                            &mut active_setpoint,
+                            &active_setpoint,
                             drive_session,
                             &mut motor_seq,
                             raw_telemetry.as_ref(),
@@ -932,49 +987,28 @@ where
                         }
                         last_affirm_tick = Some(Instant::now());
                         if !connected.load(Ordering::Relaxed) {
-                            if active_setpoint.take().is_some() {
-                                tracing::info!(
-                                    "link down: dropping active setpoint (no auto-resume on reconnect)"
-                                );
-                            }
+                            *active_setpoint.lock().unwrap() = None;
                             continue;
                         }
-                        if let Some(mode) = active_setpoint {
-                            // Truly fire-and-forget: the send is committed by
-                            // `send_request` before the response future is
-                            // returned (ordered with commands —
-                            // the destination socket name is "motor", the
-                            // device's motor server; `Some("affirm")` once
-                            // pointed at a nonexistent socket and every
-                            // affirm was silently dropped). The response wait
-                            // is detached and swallowed — awaiting it here
-                            // (even with a 40-150 ms budget) let one slow
-                            // round-trip delay the NEXT affirm past the
-                            // device's 150 ms deadman. The device-side
-                            // `stale_max_us` counter is the margin meter.
+                        let active = active_setpoint.lock().unwrap();
+                        if let Some(setpoint) = *active {
+                            let setpoint_seq = setpoint.seq();
                             let request = next_motor_request(
                                 drive_session,
                                 &mut motor_seq,
-                                MotorCommand::SetMode(mode),
+                                MotorCommand::Affirm { setpoint_seq },
                             );
                             let addr = unpack_addr(device_addr.load(Ordering::Relaxed));
                             match send_motor_now(&stack, request, addr) {
-                                Err(e) => {
-                                    tracing::warn!("setpoint affirm send failed: {e:?}");
-                                }
+                                Err(error) => tracing::warn!(?error, "setpoint affirmation send failed"),
                                 Ok(fut) => {
+                                    let active = active_setpoint.clone();
                                     tokio::spawn(async move {
-                                        match tokio::time::timeout(Duration::from_secs(1), fut)
-                                            .await
-                                        {
-                                            Ok(Ok(_)) => {}
-                                            Ok(Err(e)) => {
-                                                tracing::debug!("affirm response error: {e:?}");
-                                            }
-                                            Err(_) => {
-                                                tracing::debug!("affirm response timed out");
-                                            }
-                                        }
+                                        let result = motor_response(fut, Duration::from_secs(1)).await;
+                                        Setpoint::observe(
+                                            &mut active.lock().unwrap(), setpoint_seq,
+                                            result.as_ref().copied(), false,
+                                        );
                                     });
                                 }
                             }
@@ -1117,8 +1151,11 @@ fn reject_unverified_command(cmd: HostCommand) {
         HostCommand::MotorAck(_, reply) | HostCommand::EmergencyStop(reply) => {
             let _ = reply.send(Err(error()));
         }
-        HostCommand::SetPhaseSource(source) => {
+        HostCommand::SetPhaseSource(source, reply) => {
             tracing::warn!("Dropping phase-source command before verified handshake: {source:?}");
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(error()));
+            }
         }
         HostCommand::SetTelemetryConfig(config, reply) => {
             tracing::warn!("Dropping telemetry config before verified handshake: {config:?}");
@@ -1230,15 +1267,6 @@ type MotorResponseFut = std::pin::Pin<
 /// response OUT of that task so response latency cannot stall the affirm
 /// ticker.
 ///
-/// Why this exists (2026-07-06 deadman hunt): the drive-`Start` used to be
-/// awaited inline in the command/affirm `select!` loop. At drive engage the
-/// device-side round-trip inflates to ~100-150 ms (thread-mode latency under
-/// the telemetry stream), the first affirm was delayed by exactly that
-/// round-trip, and the device's 150 ms deadman tripped stochastically
-/// (~2/3 of spins that afternoon). The dropped 70 s inline retry is not
-/// missed: for drive modes the 50 ms affirm cadence IS the retry, and for
-/// stop-class commands a lost frame ends in the deadman failsafe stopping
-/// the motor — the correct direction.
 fn send_motor_now<NS>(
     ns: &NS,
     request: MotorRequest,
@@ -1262,6 +1290,18 @@ where
     }))
 }
 
+async fn motor_response(
+    response: MotorResponseFut,
+    timeout: Duration,
+) -> Result<MotorStatus, MotorCommandError> {
+    match tokio::time::timeout(timeout, response).await {
+        Ok(Ok(status)) if status.outcome.is_success() => Ok(status),
+        Ok(Ok(status)) => Err(MotorCommandError::Rejected(status.outcome)),
+        Ok(Err(error)) => Err(MotorCommandError::Response(error)),
+        Err(_) => Err(MotorCommandError::NoResponse),
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "flat backend dispatch; a struct would just move the names"
@@ -1272,7 +1312,7 @@ async fn handle_command<NS>(
     fast_hz_flag: &Arc<AtomicU16>,
     requested_fast_hz: &Arc<AtomicU16>,
     device_addr: Address,
-    active_setpoint: &mut Option<ControlMode>,
+    active_setpoint: &Arc<Mutex<Option<Setpoint>>>,
     drive_session: u64,
     motor_seq: &mut u32,
     raw: Option<&Arc<raw_telemetry::RawTelemetryState>>,
@@ -1282,128 +1322,86 @@ async fn handle_command<NS>(
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
+    let (command, reply) = match cmd {
+        HostCommand::Motor(mode) => (MotorCommand::SetMode(mode), None),
+        HostCommand::MotorAck(mode, reply) => (MotorCommand::SetMode(mode), Some(reply)),
+        HostCommand::EmergencyStop(reply) => (MotorCommand::EmergencyStop, Some(reply)),
+        HostCommand::SetPhaseSource(source, reply) => (MotorCommand::SetPhaseSource(source), reply),
+        cmd => {
+            handle_non_motor_command(ns, cmd, fast_hz_flag, requested_fast_hz, device_addr, raw)
+                .await;
+            return;
+        }
+    };
+    let request = next_motor_request(drive_session, motor_seq, command);
+    let mut active = active_setpoint.lock().unwrap();
+    let affirm = matches!(command, MotorCommand::SetMode(mode) if mode.needs_affirmation());
+    if matches!(
+        command,
+        MotorCommand::SetMode(_) | MotorCommand::EmergencyStop
+    ) {
+        *active = None;
+    }
+    match send_motor_now(ns, request, device_addr) {
+        Ok(fut) => {
+            if affirm {
+                *active = Some(Setpoint::Pending(request.seq));
+            }
+            let active = active_setpoint.clone();
+            tokio::spawn(async move {
+                let result = motor_response(fut, MOTOR_RESPONSE_TIMEOUT).await;
+                if affirm {
+                    Setpoint::observe(
+                        &mut active.lock().unwrap(),
+                        request.seq,
+                        result.as_ref().copied(),
+                        true,
+                    );
+                }
+                match reply {
+                    Some(reply) => {
+                        let _ = reply.send(result.map_err(Into::into));
+                    }
+                    None => match result {
+                        Ok(status) => {
+                            tracing::debug!(?command, ?status, "motor command acknowledged");
+                        }
+                        Err(error) => tracing::warn!(?command, %error, "motor command failed"),
+                    },
+                }
+            });
+        }
+        Err(error) => {
+            let error = MotorCommandError::NotSent(error);
+            match reply {
+                Some(reply) => {
+                    let _ = reply.send(Err(error.into()));
+                }
+                None => tracing::warn!(?command, %error, "motor command failed"),
+            }
+        }
+    }
+}
+
+async fn handle_non_motor_command<NS>(
+    ns: &NS,
+    cmd: HostCommand,
+    fast_hz_flag: &Arc<AtomicU16>,
+    requested_fast_hz: &Arc<AtomicU16>,
+    device_addr: Address,
+    raw: Option<&Arc<raw_telemetry::RawTelemetryState>>,
+) where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send + Sync,
+{
     let client = ns.clone().reliable::<TokioTimer>();
     match cmd {
-        HostCommand::Motor(ref mc) => {
-            // Track the active drive setpoint for the affirmation tick. A
-            // running mode must keep being re-affirmed to hold off the device
-            // deadman; Stopped/Coast/Brake clear it (safe standing states,
-            // exempt from the device deadman — no affirmation owed).
-            *active_setpoint = if matches!(
-                mc,
-                ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
-            ) {
-                None
-            } else {
-                Some(*mc)
-            };
-            tracing::info!("Sending motor command: {:?}", mc);
-            // Send inline (ordered), observe the response detached — the
-            // await must not hold up this select! loop, or the affirm ticker
-            // starves and the device deadman fires (see send_motor_now).
-            let request = next_motor_request(drive_session, motor_seq, MotorCommand::SetMode(*mc));
-            match send_motor_now(ns, request, device_addr) {
-                Err(e) => tracing::warn!("Motor command send failed: {:?}", e),
-                Ok(fut) => {
-                    tokio::spawn(async move {
-                        match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
-                            Ok(Ok(status)) => tracing::info!("Motor response: {:?}", status),
-                            Ok(Err(e)) => tracing::warn!("Motor command failed: {:?}", e),
-                            Err(_) => tracing::warn!("Motor response lost (sent, no reply)"),
-                        }
-                    });
-                }
-            }
-        }
-        HostCommand::MotorAck(ref mc, reply_tx) => {
-            // Same as Motor (incl. the affirmation tracking), but the caller
-            // gets the device status / delivery error back — a CLI must not
-            // print "sent" and exit 0 when nothing was delivered. The
-            // response wait is detached like Motor's; a lost response
-            // surfaces to the caller as an error after MOTOR_RESPONSE_TIMEOUT.
-            //
-            // The old clear-active_setpoint-on-failure is gone deliberately:
-            // failure now means "no reply", not "70 s of retries exhausted".
-            // The affirm keeps re-sending the human's commanded value — if
-            // the original frame was lost, the next affirm IS the command
-            // (idempotent); if the LINK is dead, the affirms die with it and
-            // the device deadman stops the motor. Disconnect still drops the
-            // setpoint in the ticker arm.
-            *active_setpoint = if matches!(
-                mc,
-                ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
-            ) {
-                None
-            } else {
-                Some(*mc)
-            };
-            tracing::info!("Sending motor command (acked): {:?}", mc);
-            let request = next_motor_request(drive_session, motor_seq, MotorCommand::SetMode(*mc));
-            match send_motor_now(ns, request, device_addr) {
-                Err(error) => {
-                    let _ = reply_tx.send(Err(anyhow::anyhow!("{error:?}")));
-                }
-                Ok(fut) => {
-                    tokio::spawn(async move {
-                        let res = match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
-                            Ok(Ok(status)) if status.outcome.is_success() => Ok(status),
-                            Ok(Ok(status)) => Err(anyhow::anyhow!(
-                                "motor command rejected: {:?}",
-                                status.outcome
-                            )),
-                            Ok(Err(e)) => Err(anyhow::anyhow!("{e:?}")),
-                            Err(_) => Err(anyhow::anyhow!(
-                                "motor response lost (sent, no reply in {MOTOR_RESPONSE_TIMEOUT:?})"
-                            )),
-                        };
-                        let _ = reply_tx.send(res);
-                    });
-                }
-            }
-        }
-        HostCommand::EmergencyStop(reply_tx) => {
-            // Safety commands clear the local affirm immediately, before the
-            // frame is sent, so an older throttle can never follow it.
-            *active_setpoint = None;
-            let request = next_motor_request(drive_session, motor_seq, MotorCommand::EmergencyStop);
-            tracing::warn!("Sending emergency stop");
-            match send_motor_now(ns, request, device_addr) {
-                Err(error) => {
-                    let _ = reply_tx.send(Err(anyhow::anyhow!("{error:?}")));
-                }
-                Ok(fut) => {
-                    tokio::spawn(async move {
-                        let result = match tokio::time::timeout(MOTOR_RESPONSE_TIMEOUT, fut).await {
-                            Ok(Ok(status)) if status.outcome.is_success() => Ok(status),
-                            Ok(Ok(status)) => Err(anyhow::anyhow!(
-                                "emergency stop rejected: {:?}",
-                                status.outcome
-                            )),
-                            Ok(Err(error)) => Err(anyhow::anyhow!("{error:?}")),
-                            Err(_) => Err(anyhow::anyhow!(
-                                "emergency stop response lost (sent, no reply in {MOTOR_RESPONSE_TIMEOUT:?})"
-                            )),
-                        };
-                        let _ = reply_tx.send(result);
-                    });
-                }
-            }
-        }
-        HostCommand::SetPhaseSource(source) => {
-            tracing::info!("Setting phase source: {:?}", source);
-            match client
-                .at_least_once::<PhaseSourceEndpoint>(
-                    device_addr,
-                    &source,
-                    Some("phase_source"),
-                    &SETPOINT_POLICY,
-                )
-                .await
-            {
-                Ok(ack) => tracing::info!("Phase source response: {:?}", ack),
-                Err(e) => tracing::warn!("Phase source command failed: {:?}", e),
-            }
-        }
+        HostCommand::Motor(_)
+        | HostCommand::MotorAck(..)
+        | HostCommand::EmergencyStop(_)
+        | HostCommand::SetPhaseSource(..) => unreachable!("motor command dispatched separately"),
         HostCommand::SetTelemetryConfig(cfg, reply) => {
             if let Some(raw) = raw {
                 // Only the control exchange is awaited here. END is consumed
@@ -1729,6 +1727,24 @@ mod tests {
     };
     use crate::ReconnectPolicy;
     use oxifoc_core::types::FaultSnapshot;
+
+    #[test]
+    fn rejected_and_late_motor_responses_do_not_keep_a_setpoint_alive() {
+        use super::{MotorCommandError, MotorCommandOutcome, MotorStatus, Setpoint};
+        for outcome in [
+            MotorCommandOutcome::RejectedSafety,
+            MotorCommandOutcome::RejectedSourceBusy,
+        ] {
+            let rejected = MotorCommandError::Rejected(outcome);
+            let mut active = Some(Setpoint::Pending(12));
+            Setpoint::observe(&mut active, 11, Err(&rejected), true);
+            assert_eq!(active, Some(Setpoint::Pending(12)));
+            Setpoint::observe(&mut active, 12, Err(&rejected), true);
+            assert_eq!(active, None);
+            Setpoint::observe(&mut active, 12, Ok(MotorStatus::default()), false);
+            assert_eq!(active, None);
+        }
+    }
 
     #[test]
     fn transport_scoped_defmt_restarts_but_network_decoder_does_not() {

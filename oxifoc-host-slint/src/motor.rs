@@ -173,9 +173,7 @@ pub(super) fn bind(
     }
 
     // ── Phase source switch ──────────────────────────────────────────────────
-    // Fire-and-forget like the CLI `source` command: the device validates
-    // (sensor present, estimators configured) and the actually-active source
-    // reads back via SlowTelemetry.phase_source ("Src:" in the dashboard).
+    // The backend logs the ISR's response. The dashboard shows the active source.
     {
         let rt = runtime.clone();
         let weak = app.as_weak();
@@ -194,7 +192,7 @@ pub(super) fn bind(
             let guard = rt.lock().unwrap();
             if let Some(ref runtime) = *guard {
                 tracing::info!("Phase source request: {ps:?}");
-                if let Err(e) = runtime.cmd_tx.send(HostCommand::SetPhaseSource(ps)) {
+                if let Err(e) = runtime.cmd_tx.send(HostCommand::SetPhaseSource(ps, None)) {
                     tracing::error!("Failed to send phase source command: {e}");
                 }
             } else {

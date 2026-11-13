@@ -265,7 +265,7 @@ fn write_revision(
              speed_start_frac strictly between 0 and 1, and duty_start_frac in 0..=1"
         ),
         ConfigResponse::Invalid if group == ConfigGroupId::MotorFeedback => bail!(
-            "feedback requires the selected sensors and a valid motor model for observer modes. Blend thresholds must be positive and increasing"
+            "feedback requires the selected sensors and a valid motor model for observer modes. Blend thresholds must be non-negative and increasing"
         ),
         ConfigResponse::Invalid => bail!(
             "device refused the write: value fails validation. Rules: all fields \

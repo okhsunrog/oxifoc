@@ -215,6 +215,10 @@ impl ControlMode {
     pub fn is_high_z(&self) -> bool {
         matches!(self, Self::Stopped | Self::Coast)
     }
+
+    pub fn needs_affirmation(self) -> bool {
+        !matches!(self, Self::Stopped | Self::Coast | Self::Brake)
+    }
 }
 
 /// One host/remote process generation. A new process chooses a fresh value;
@@ -230,13 +234,18 @@ pub enum MotorCommand {
     /// Immediately float the bridge and latch re-arm until a subsequent safe
     /// neutral command (Stopped/Coast/Brake).
     EmergencyStop,
+    /// Refresh the deadman only while this exact setpoint still owns drive.
+    Affirm { setpoint_seq: u32 },
+    /// Select a temporary commutation source on a stopped controller.
+    SetPhaseSource(PhaseSource),
 }
 
 impl MotorCommand {
     pub fn is_finite(self) -> bool {
         match self {
             Self::SetMode(mode) => mode.is_finite(),
-            Self::EmergencyStop => true,
+            Self::SetPhaseSource(source) => source.is_sane(),
+            Self::EmergencyStop | Self::Affirm { .. } => true,
         }
     }
 }
@@ -301,14 +310,23 @@ impl DriveOwnership {
         Self { owner: None }
     }
 
+    pub fn authorize_affirm(
+        self,
+        session: DriveSessionId,
+        seq: u32,
+    ) -> Result<(), MotorCommandOutcome> {
+        match self.owner {
+            Some(owner) if owner.session != session => Err(MotorCommandOutcome::RejectedSourceBusy),
+            Some(owner) if owner.last_seq == seq => Ok(()),
+            _ => Err(MotorCommandOutcome::RejectedStale),
+        }
+    }
+
     pub fn authorize(self, request: MotorRequest) -> Result<(), MotorCommandOutcome> {
         let MotorCommand::SetMode(mode) = request.command else {
             return Ok(());
         };
-        if matches!(
-            mode,
-            ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
-        ) {
+        if !mode.needs_affirmation() {
             return Ok(());
         }
         let Some(owner) = self.owner else {
@@ -329,18 +347,12 @@ impl DriveOwnership {
 
     pub fn record_applied(&mut self, request: MotorRequest) {
         self.owner = match request.command {
-            MotorCommand::SetMode(mode)
-                if !matches!(
-                    mode,
-                    ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
-                ) =>
-            {
-                Some(DriveOwner {
-                    session: request.source_session,
-                    last_seq: request.seq,
-                })
-            }
+            MotorCommand::SetMode(mode) if mode.needs_affirmation() => Some(DriveOwner {
+                session: request.source_session,
+                last_seq: request.seq,
+            }),
             MotorCommand::SetMode(_) | MotorCommand::EmergencyStop => None,
+            MotorCommand::Affirm { .. } | MotorCommand::SetPhaseSource(_) => self.owner,
         };
     }
 
@@ -543,15 +555,6 @@ pub struct SlowTelemetry {
     pub derate_regen_pct: u8,
 }
 
-/// Response to a phase-source change request.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct PhaseSourceAck {
-    /// Whether the command was enqueued to the control ISR. Confirm the
-    /// actual switch via `SlowTelemetry::phase_source`.
-    pub enqueued: bool,
-}
-
 // TODO: EnergyTelemetry — add when energy tracking is implemented
 // Will include: amp_hours, amp_hours_charged, watt_hours, watt_hours_charged,
 // tachometer (electrical revolutions). Streamed at ~1 Hz.
@@ -628,7 +631,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 21;
+pub const ICD_PROTO_VERSION: u16 = 22;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;

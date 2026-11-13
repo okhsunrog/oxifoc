@@ -95,8 +95,6 @@ pub enum DriverCommand {
     /// Small token referencing the single-flight prepared-model mailbox.
     #[cfg(feature = "storage")]
     ApplyMotorModel(u32),
-    /// Switch the angle source (hall / observer / HFI / crossovers)
-    SetPhaseSource(PhaseSource),
     /// Apply failsafe tuning (deadman timeout + reaction policy + brake params)
     SetFailsafe(FailsafeConfig),
     /// Apply cruise velocity-loop tuning (gains + accel limit)
@@ -137,7 +135,6 @@ impl DriverCommand {
             Self::SetDecoupling(d) => d.is_valid(),
             #[cfg(feature = "storage")]
             Self::ApplyMotorModel(_) => true,
-            Self::SetPhaseSource(source) => source.is_finite(),
             Self::SetFailsafe(cfg) => cfg.is_sane(),
             Self::SetVelocityConfig(cfg) => cfg.is_sane(),
             Self::SetDerating(cfg) => cfg.is_sane(),
@@ -761,11 +758,51 @@ fn signal_motor_completion(request: MotorRequest, outcome: MotorCommandOutcome) 
     MOTOR_COMMAND_DONE.signal((request.source_session, request.seq, outcome));
 }
 
-/// Like [`process_commands`] but reports whether a `SetMode` was drained on
-/// this call via `saw_set_mode` — the command-staleness deadman's "fresh
-/// affirmation" signal (set even for a `SetMode` the gates reject: a rejected
-/// command still proves the host is alive). [`run_foc_cycle`] uses this entry
-/// point; external callers and tests keep using [`process_commands`].
+/// Apply both commissioned and temporary source selections at the ISR boundary.
+fn apply_phase_source<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos>(
+    foc: &mut FocDriver<P, C, Ph, S>,
+    state: &CriticalSectionMutex<RefCell<MotorControlState>>,
+    source: PhaseSource,
+    allowed: bool,
+) -> Result<bool, crate::motor::foc_driver::MotorModelError> {
+    use crate::motor::foc_driver::MotorModelError;
+    if !source.is_sane() {
+        return Err(MotorModelError::Invalid);
+    }
+    critical_section::with(|cs| {
+        let mut state = state.borrow(cs).borrow_mut();
+        #[cfg(feature = "storage")]
+        if source.requires_hall() && !state.hall_calibration_valid {
+            return Err(MotorModelError::Invalid);
+        }
+        if state.phase_source == source {
+            return Ok(false);
+        }
+        if !allowed
+            || state.motor_state != MotorState::Stopped
+            || state.control_mode != ControlMode::Stopped
+            || foc.mode() != ControlMode::Stopped
+            || state.driver_operation != DriverOperation::Idle
+            || foc.current_offset_active()
+            || foc.failsafe_active()
+            || boot_current_offset_pending()
+            || current_offset_request_pending()
+            || FLASH_OP_PENDING.load(Ordering::Acquire)
+            || DETECTION_ACTIVE.load(Ordering::Acquire)
+        {
+            return Err(MotorModelError::Busy);
+        }
+        if !foc.request_phase_source(source) {
+            return Err(MotorModelError::Unsupported);
+        }
+        state.phase_source = source;
+        Ok(true)
+    })
+}
+
+/// Like [`process_commands`] but also reports fresh drive activity for the
+/// deadman. Protocol requests must apply a setpoint or affirm the current
+/// owner. Internal setpoints retain their existing watchdog behavior.
 pub fn process_commands_inner<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     foc: &mut FocDriver<P, C, Ph, S>,
@@ -814,7 +851,6 @@ where
                 DriverCommand::SetCurrentLimits(_)
                     | DriverCommand::SetPiGains { .. }
                     | DriverCommand::SetDecoupling(_)
-                    | DriverCommand::SetPhaseSource(_)
                     | DriverCommand::SetFailsafe(_)
                     | DriverCommand::SetVelocityConfig(_)
                     | DriverCommand::SetDerating(_)
@@ -887,6 +923,49 @@ where
                 mode
             }
             DriverCommand::Motor(request) => match request.command {
+                MotorCommand::Affirm { setpoint_seq } => {
+                    let outcome = critical_section::with(|cs| {
+                        let state = state_mutex.borrow(cs).borrow();
+                        if !link_active
+                            || state.motor_state != MotorState::Running
+                            || fault_registry.any_stopping()
+                        {
+                            return MotorCommandOutcome::RejectedSafety;
+                        }
+                        match state
+                            .drive_ownership
+                            .authorize_affirm(request.source_session, setpoint_seq)
+                        {
+                            Ok(()) => {
+                                *saw_set_mode = true;
+                                MotorCommandOutcome::Applied
+                            }
+                            Err(outcome) => outcome,
+                        }
+                    });
+                    if outcome == MotorCommandOutcome::Applied {
+                        crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    signal_motor_completion(request, outcome);
+                    continue;
+                }
+                MotorCommand::SetPhaseSource(source) => {
+                    use crate::motor::foc_driver::MotorModelError;
+                    let outcome = match apply_phase_source(
+                        foc,
+                        state_mutex,
+                        source,
+                        link_active && !model_apply_pending() && !fault_registry.any_stopping(),
+                    ) {
+                        Ok(true) => MotorCommandOutcome::Applied,
+                        Ok(false) => MotorCommandOutcome::AlreadyApplied,
+                        Err(MotorModelError::Busy) => MotorCommandOutcome::RejectedSafety,
+                        Err(_) => MotorCommandOutcome::RejectedInvalid,
+                    };
+                    signal_motor_completion(request, outcome);
+                    continue;
+                }
                 MotorCommand::EmergencyStop => {
                     cancel_detection();
                     foc.end_commissioning();
@@ -911,9 +990,6 @@ where
                     // including PI holds between finite excitation packets.
                     cancel_detection();
                     foc.end_commissioning();
-                    // Only an authorized, non-duplicate request affirms the
-                    // deadman. Busy/stale traffic cannot keep old torque alive.
-                    *saw_set_mode = true;
                     crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
                         .fetch_add(1, Ordering::Relaxed);
                     mode
@@ -947,29 +1023,6 @@ where
             }
             DriverCommand::SetDecoupling(d) => {
                 foc.set_decoupling(Some(d));
-                continue;
-            }
-            DriverCommand::SetPhaseSource(source) => {
-                #[cfg(feature = "storage")]
-                if source.requires_hall()
-                    && !critical_section::with(|cs| {
-                        state_mutex.borrow(cs).borrow().hall_calibration_valid
-                    })
-                {
-                    continue;
-                }
-                // The provider validates (sensor present, estimators
-                // configured). On success mirror the active source into the
-                // shared state so the host can read it back via telemetry —
-                // an invalid request simply leaves the source unchanged.
-                if foc.request_phase_source(source) {
-                    critical_section::with(|cs| {
-                        state_mutex.borrow(cs).borrow_mut().phase_source = source;
-                    });
-                } else {
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!("Phase source change rejected");
-                }
                 continue;
             }
             DriverCommand::SetFailsafe(cfg) => {
@@ -1191,6 +1244,9 @@ where
             MotorCommandOutcome::Applied
         });
         if let Some(request) = protocol_request {
+            if outcome == MotorCommandOutcome::Applied {
+                *saw_set_mode = true;
+            }
             signal_motor_completion(request, outcome);
         }
     }
@@ -1320,10 +1376,9 @@ where
     // the CommTimeout fault, whose GracefulStop severity the gate below
     // turns into the configured failsafe. See docs/safety.md (Layer 2) and
     // docs/notes/fault-overhaul.md. The deadman/link gate are DETECTORS;
-    // the severity gate is the executor. A drained SetMode — accepted or
-    // not — proves commands are flowing again and clears the fault (the
-    // post-failsafe re-arm latch still demands an explicit safe mode, so
-    // this auto-clear cannot relaunch the motor by itself).
+    // the severity gate is the executor. Fresh drive activity clears the
+    // fault. The post-failsafe re-arm latch still requires an explicit
+    // safe mode before driving again.
     if saw_set_mode {
         driver.note_command_tick(now_ticks);
         fault_registry.clear(FaultCategory::CommTimeout);
@@ -1346,8 +1401,7 @@ where
     if (deadman_expired || link_lost_unacked)
         && let Some(f) = F::from_category(FaultCategory::CommTimeout)
     {
-        // Log the raise edge only (the condition persists until a SetMode
-        // drains), and say which detector fired — the two have very
+        // Log the raise edge only, and say which detector fired — the two have
         // different bench remedies (host affirm cadence vs transport drop).
         if !fault_registry.has_category(FaultCategory::CommTimeout) {
             warn!(

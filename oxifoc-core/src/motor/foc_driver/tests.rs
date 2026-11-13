@@ -717,6 +717,15 @@ fn cmd_channel_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(feature = "hfi")]
 fn process_commands_switches_phase_source() {
     let _serial = cmd_channel_lock();
+    use crate::state::BOOT_CURRENT_OFFSET_PENDING;
+    use core::sync::atomic::Ordering;
+    struct BootFlag(bool);
+    impl Drop for BootFlag {
+        fn drop(&mut self) {
+            BOOT_CURRENT_OFFSET_PENDING.store(self.0, Ordering::Release);
+        }
+    }
+    let _boot = BootFlag(BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel));
     use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
     use crate::foc::phase::{HfiObserver, PhaseManager, PhaseSource};
     use crate::foc::trig::LibmSinCos;
@@ -752,17 +761,29 @@ fn process_commands_switches_phase_source() {
         1.0 / 20_000.0,
     );
     // The driver must stay linked so process_commands doesn't force Stopped.
-    critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+    critical_section::with(|cs| {
+        let mut state = state.borrow(cs).borrow_mut();
+        state.set_link_active();
+        state.phase_source = driver.phase().source();
+    });
 
     // Valid switch: HFI estimator is configured.
-    let _ = CMD_CHANNEL.try_send(DriverCommand::SetPhaseSource(PhaseSource::Hfi));
+    let _ = CMD_CHANNEL.try_send(DriverCommand::Motor(MotorRequest {
+        source_session: 11,
+        seq: 1,
+        command: MotorCommand::SetPhaseSource(PhaseSource::Hfi),
+    }));
     process_commands(&state, &mut driver, &registry);
     assert_eq!(driver.phase().source(), PhaseSource::Hfi);
     let mirrored = critical_section::with(|cs| state.borrow(cs).borrow().phase_source);
     assert_eq!(mirrored, PhaseSource::Hfi);
 
     // Invalid switch: no hall sensor on a sensorless manager.
-    let _ = CMD_CHANNEL.try_send(DriverCommand::SetPhaseSource(PhaseSource::Hall));
+    let _ = CMD_CHANNEL.try_send(DriverCommand::Motor(MotorRequest {
+        source_session: 11,
+        seq: 1,
+        command: MotorCommand::SetPhaseSource(PhaseSource::Hall),
+    }));
     process_commands(&state, &mut driver, &registry);
     assert_eq!(
         driver.phase().source(),
@@ -771,6 +792,64 @@ fn process_commands_switches_phase_source() {
     );
     let mirrored = critical_section::with(|cs| state.borrow(cs).borrow().phase_source);
     assert_eq!(mirrored, PhaseSource::Hfi);
+
+    use crate::foc::phase::PhaseProvider;
+    use crate::state::MOTOR_COMMAND_DONE;
+    use crate::types::{MotorCommand, MotorCommandOutcome, MotorRequest};
+    let mut send = |session, seq, command| {
+        MOTOR_COMMAND_DONE.reset();
+        CMD_CHANNEL
+            .try_send(DriverCommand::Motor(MotorRequest {
+                source_session: session,
+                seq,
+                command,
+            }))
+            .unwrap();
+        process_commands(&state, &mut driver, &registry);
+        MOTOR_COMMAND_DONE.try_take().unwrap().2
+    };
+    assert_eq!(
+        send(11, 2, MotorCommand::SetPhaseSource(PhaseSource::Hfi)),
+        MotorCommandOutcome::AlreadyApplied
+    );
+    let drive = ControlMode::CurrentControl {
+        iq_target: 0.1,
+        id_target: 0.0,
+    };
+    assert_eq!(
+        send(11, 3, MotorCommand::SetMode(drive)),
+        MotorCommandOutcome::Applied
+    );
+    assert_eq!(
+        send(11, 4, MotorCommand::SetPhaseSource(PhaseSource::Manual)),
+        MotorCommandOutcome::RejectedSafety
+    );
+    assert_eq!(
+        send(11, 5, MotorCommand::Affirm { setpoint_seq: 3 }),
+        MotorCommandOutcome::Applied
+    );
+    assert_eq!(
+        send(22, 1, MotorCommand::SetMode(drive)),
+        MotorCommandOutcome::RejectedSourceBusy
+    );
+    assert_eq!(
+        send(11, 6, MotorCommand::SetMode(ControlMode::Stopped)),
+        MotorCommandOutcome::Applied
+    );
+    assert!(!send(11, 7, MotorCommand::Affirm { setpoint_seq: 3 }).is_success());
+    assert!(!send(22, 2, MotorCommand::Affirm { setpoint_seq: 1 }).is_success());
+    let epoch = driver.phase().motion_reference_epoch();
+    assert_eq!(driver.mode(), ControlMode::Stopped);
+    assert_eq!(driver.phase().source(), PhaseSource::Hfi);
+    CMD_CHANNEL
+        .try_send(DriverCommand::Motor(MotorRequest {
+            source_session: 11,
+            seq: 8,
+            command: MotorCommand::SetPhaseSource(PhaseSource::Hfi),
+        }))
+        .unwrap();
+    process_commands(&state, &mut driver, &registry);
+    assert_eq!(driver.phase().motion_reference_epoch(), epoch);
 }
 
 /// Non-finite numbers must die at the command boundary: a NaN target

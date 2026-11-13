@@ -718,11 +718,7 @@ pub(super) fn apply<P, C, Ph, S>(
             }
             PreparedUpdate::Drive(value) => foc.set_drive_config(*value).map(|()| None),
             PreparedUpdate::PhaseSource(source) => {
-                if foc.request_phase_source(*source) {
-                    Ok(Some(*source))
-                } else {
-                    Err(crate::motor::foc_driver::MotorModelError::Unsupported)
-                }
+                super::apply_phase_source(foc, state, *source, allowed).map(|_| Some(*source))
             }
             PreparedUpdate::VoltageLimits(prepared) => {
                 foc.apply_voltage_limits(*prepared).map(|()| None)

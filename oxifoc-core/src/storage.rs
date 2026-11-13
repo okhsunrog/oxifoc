@@ -797,7 +797,7 @@ impl MotorFeedbackConfig {
     pub fn is_sane(self) -> bool {
         self.blend_low_erad_s.is_finite()
             && self.blend_high_erad_s.is_finite()
-            && self.blend_low_erad_s > 0.0
+            && self.blend_low_erad_s >= 0.0
             && self.blend_high_erad_s > self.blend_low_erad_s
     }
 

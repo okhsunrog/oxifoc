@@ -105,42 +105,39 @@ fn checked_apply_model(runtime: &HostRuntime, value: &MotorParamsConfig) -> Resu
     Ok(applied)
 }
 
-/// Source requests only acknowledge enqueueing, so observe subsequent telemetry.
+/// Verify the ISR outcome and the source reported by subsequent telemetry.
 fn select_source(
     runtime: &HostRuntime,
     requested: PhaseSource,
     expected: PhaseSource,
 ) -> Result<SlowTelemetry> {
-    while runtime.slow_rx.try_recv().is_ok() {}
+    let (tx, rx) = motor_channel();
     runtime
         .cmd_tx
-        .send(HostCommand::SetPhaseSource(requested))?;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let rejected = requested != expected;
-    let mut latest = None;
-    while Instant::now() < deadline {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let status = runtime
-            .slow_rx
-            .recv_timeout(left)
-            .with_context(|| format!("waiting for source {requested:?} -> {expected:?}"))?;
-        stopped(&status)?;
-        if !rejected && status.phase_source == expected {
-            return Ok(status);
-        }
-        ensure!(
-            !rejected || status.phase_source == expected,
-            "unavailable source {requested:?} became active: {status:?}"
+        .send(HostCommand::SetPhaseSource(requested, Some(tx)))?;
+    let response = rx.blocking_recv()?;
+    if requested == expected {
+        response?;
+    } else {
+        anyhow::ensure!(
+            matches!(
+                response
+                    .as_ref()
+                    .err()
+                    .and_then(|error| error.downcast_ref::<oxifoc_host_lib::MotorCommandError>()),
+                Some(oxifoc_host_lib::MotorCommandError::Rejected(
+                    oxifoc_core::types::MotorCommandOutcome::RejectedInvalid
+                ))
+            ),
+            "expected the ISR to reject the source, got {response:?}",
         );
-        latest = Some(status);
-        // Cover the backend's two-second source-delivery retry budget.
-        if rejected
-            && deadline.saturating_duration_since(Instant::now()) <= Duration::from_millis(400)
-        {
-            return latest.context("no status after rejected source request");
-        }
     }
-    bail!("source {requested:?} did not settle to {expected:?}: {latest:?}")
+    let status = fresh_status(runtime)?;
+    ensure!(
+        status.phase_source == expected,
+        "unexpected active source: {status:?}"
+    );
+    Ok(status)
 }
 
 struct Restore<'a> {

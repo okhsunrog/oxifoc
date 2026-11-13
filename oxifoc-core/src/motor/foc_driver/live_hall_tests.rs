@@ -328,12 +328,20 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
     }
     for source in [PhaseSource::Manual, PhaseSource::Observer] {
         CMD_CHANNEL
-            .try_send(DriverCommand::SetPhaseSource(source))
+            .try_send(DriverCommand::Motor(crate::types::MotorRequest {
+                source_session: 11,
+                seq: 1,
+                command: crate::types::MotorCommand::SetPhaseSource(source),
+            }))
             .unwrap();
         process_commands(&state, &mut driver, &registry);
         assert_eq!(driver.phase().source(), source);
         CMD_CHANNEL
-            .try_send(DriverCommand::SetPhaseSource(PhaseSource::Hall))
+            .try_send(DriverCommand::Motor(crate::types::MotorRequest {
+                source_session: 11,
+                seq: 1,
+                command: crate::types::MotorCommand::SetPhaseSource(PhaseSource::Hall),
+            }))
             .unwrap();
         process_commands(&state, &mut driver, &registry);
         assert_eq!(
