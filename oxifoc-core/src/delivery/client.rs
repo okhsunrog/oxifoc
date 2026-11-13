@@ -122,6 +122,7 @@ where
     {
         let mut attempt: u32 = 0;
         let mut elapsed_ms: u64 = 0;
+        let mut unconfirmed_sends = 0;
 
         loop {
             let target = self.stack.stack();
@@ -152,6 +153,7 @@ where
                     }
                 };
 
+            count_unconfirmed_send(&mut unconfirmed_sends, outcome);
             match decide(attempt, elapsed_ms, outcome, retry_on_timeout, policy) {
                 Decision::Done => {
                     // `Done` implies `outcome == Ok`, i.e. `result == Some(Ok(_))`.
@@ -161,18 +163,8 @@ where
                     unreachable!("Done implies a successful response");
                 }
                 Decision::GiveUp(GiveUp::Remote) => return Err(DeliveryError::Remote),
-                Decision::GiveUp(GiveUp::NotRetryable) => {
-                    return Err(DeliveryError::TimedOut {
-                        attempts: attempt + 1,
-                    });
-                }
-                Decision::GiveUp(GiveUp::BudgetExhausted) => {
-                    return Err(match outcome {
-                        Outcome::NotSent => DeliveryError::NotSent,
-                        _ => DeliveryError::TimedOut {
-                            attempts: attempt + 1,
-                        },
-                    });
+                Decision::GiveUp(GiveUp::NotRetryable | GiveUp::BudgetExhausted) => {
+                    return Err(unconfirmed_delivery(unconfirmed_sends));
                 }
                 Decision::Retry { after_ms } => {
                     T::after_millis(after_ms).await;
@@ -181,6 +173,20 @@ where
                 }
             }
         }
+    }
+}
+
+fn count_unconfirmed_send(sends: &mut u32, outcome: Outcome) {
+    if outcome == Outcome::TimedOut {
+        *sends = sends.saturating_add(1);
+    }
+}
+
+fn unconfirmed_delivery(attempts: u32) -> DeliveryError {
+    if attempts == 0 {
+        DeliveryError::NotSent
+    } else {
+        DeliveryError::TimedOut { attempts }
     }
 }
 
@@ -193,3 +199,21 @@ pub trait ReliableExt: NetStackHandle + Sized {
 }
 
 impl<NS: NetStackHandle> ReliableExt for NS {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_rejection_after_timeout_keeps_delivery_uncertain() {
+        let mut attempts = 0;
+        count_unconfirmed_send(&mut attempts, Outcome::NotSent);
+        assert_eq!(unconfirmed_delivery(attempts), DeliveryError::NotSent);
+        count_unconfirmed_send(&mut attempts, Outcome::TimedOut);
+        count_unconfirmed_send(&mut attempts, Outcome::NotSent);
+        assert_eq!(
+            unconfirmed_delivery(attempts),
+            DeliveryError::TimedOut { attempts: 1 }
+        );
+    }
+}
