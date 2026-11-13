@@ -8,7 +8,10 @@
 use defmt::info;
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::task;
-use embassy_stm32::flash::{Blocking, Flash as StmFlash, WRITE_SIZE};
+use embassy_stm32::{
+    flash::{Flash as StmFlash, WRITE_SIZE},
+    mode::Blocking,
+};
 use sequential_storage::cache::Cache;
 use sequential_storage::map::{MapConfig, MapStorage};
 use static_cell::ConstStaticCell;

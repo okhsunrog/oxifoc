@@ -23,7 +23,7 @@ esp-hal = { features = ["defmt", "esp32c6", "unstable"], version = "1.2.2" }
 
 esp-rtos = { features = ["defmt", "embassy", "esp-alloc", "esp-radio", "esp32c6"], version = "0.4.0" }
 
-defmt = "1.1.1"
+defmt = "1.2.0"
 esp-bootloader-esp-idf = { features = ["defmt", "esp32c6"], version = "0.6.0" }
 
 bt-hci = "0.11"
@@ -39,7 +39,7 @@ trouble-host = { features = ["gatt"], version = "0.8.0", git = "https://github.c
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "3c502f49814ac2ae25385b21fdbc9b964f86d877", version = "0.12.0", default-features = false, features = ["embassy-time", "disable-cache-padding", "defmt-v1"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a", version = "0.12.0", default-features = false, features = ["embassy-time", "disable-cache-padding", "defmt-v1"] }
 mutex = "1.0.2"
 serde = { version = "1.0.229", default-features = false, features = ["derive"] }
 postcard-schema = "0.2.5"

@@ -21,9 +21,9 @@ use ergot::interface_manager::interface_impls::embassy_usb::EmbassyInterface;
 use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
 use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
 use ergot::interface_manager::transports::eio::RxWorker as EioRxWorker;
-use ergot::interface_manager::transports::eusb_0_6::RxWorker as UsbRxWorker;
+use ergot::interface_manager::transports::eusb_0_6_preview::RxWorker as UsbRxWorker;
 use ergot::interface_manager::utils::{cobs_stream, framed_stream};
-use ergot::toolkits::embassy_usb_v0_6 as usb_kit;
+use ergot::toolkits::embassy_usb_v0_6_preview as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
 #[cfg(feature = "transport-rtt")]
 use ergot::transport::rtt::{RttReader, RttWriter};
@@ -56,7 +56,7 @@ ergot::multi_interface! {
 
 // ========== Type Aliases ==========
 
-pub type Rng = rng::Rng<'static, peripherals::RNG>;
+pub type Rng = oxifoc_core::stm32_rng::ErgotRng;
 pub type McRouter = Router<McInterface, Rng, 3, 0>;
 pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
 
@@ -227,7 +227,7 @@ pub fn init_uart(
     let tx_buf = UART_TX_BUF.init([0u8; UART_BUF_LEN]);
     let rx_buf = UART_RX_BUF.init([0u8; UART_BUF_LEN]);
     let uart = defmt::unwrap!(
-        BufferedUart::new(lpuart1, pa3, pa2, tx_buf, rx_buf, LpuartIrqs, uart_cfg),
+        BufferedUart::new(lpuart1, pa2, pa3, LpuartIrqs, tx_buf, rx_buf, uart_cfg),
         "LPUART1 init failed"
     );
     let (uart_tx, uart_rx) = uart.split();
@@ -287,7 +287,7 @@ pub fn init_usb(
     defmt::info!("Oxifoc G474 - initializing ergot over USB FS");
 
     // Non-OTG USB driver: no ep_out_buf, no Config needed
-    let driver = usb::Driver::new(usb_periph, UsbIrqs, pa12, pa11);
+    let driver = usb::Driver::new(usb_periph, pa12, pa11, UsbIrqs);
 
     let mut usb_dev_cfg = embassy_usb::Config::new(0x16c0, 0x27DD);
     usb_dev_cfg.manufacturer = Some("oxifoc");

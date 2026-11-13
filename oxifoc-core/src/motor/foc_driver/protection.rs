@@ -69,6 +69,7 @@ pub struct PreparedBoardConfig {
 #[cfg_attr(not(any(feature = "storage", feature = "runtime")), allow(dead_code))]
 pub struct PreparedVoltageLimits {
     min_mv: u32,
+    #[cfg(feature = "storage")]
     max_mv: u32,
     max_vbus_v: f32,
     min_vbus_v: f32,
@@ -137,6 +138,7 @@ impl PreparedVoltageLimits {
         let integral_ceiling = trip_vs * 4.0;
         Self {
             min_mv,
+            #[cfg(feature = "storage")]
             max_mv,
             max_vbus_v,
             min_vbus_v,

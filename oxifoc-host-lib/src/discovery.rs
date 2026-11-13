@@ -224,7 +224,7 @@ async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<B
     let adapter = Adapter::default().await?;
     adapter.wait_available().await?;
 
-    let mut devices = Vec::new();
+    let mut devices: Vec<BleDeviceInfo> = Vec::new();
     // On BlueZ a previous CLI invocation can leave the system link active.
     // Connected peripherals do not advertise, so include known NUS peers.
     #[cfg(target_os = "linux")]

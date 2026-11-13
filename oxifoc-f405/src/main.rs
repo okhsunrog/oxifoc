@@ -21,7 +21,9 @@ bind_interrupts!(struct ExtiIrqs {
     EXTI9_5 =>
         #[cfg(feature = "bench-executor-trace")]
         diagnostics::trace::FaultIrqBegin,
-        exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
+        exti::InterruptHandler<embassy_stm32::peripherals::EXTI7>,
+        #[cfg(feature = "transport-spi")]
+        exti::InterruptHandler<embassy_stm32::peripherals::EXTI6>,
         #[cfg(feature = "bench-executor-trace")]
         diagnostics::trace::FaultIrqEnd;
 });
@@ -156,9 +158,10 @@ async fn main(spawner: Spawner) {
     // interface (transport-rtt) can register on it in one rtt_init!.
     let mut rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
     #[cfg(feature = "transport-spi")]
-    let spi_epoch = rng.next_u32();
-    let detection_boot = (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32());
-    let stack = transport::init_stack(rng);
+    let spi_epoch = rng.blocking_next_u32();
+    let detection_boot =
+        (u64::from(rng.blocking_next_u32()) << 32) | u64::from(rng.blocking_next_u32());
+    let stack = transport::init_stack(oxifoc_core::stm32_rng::ErgotRng::new(rng));
 
     // ========== STEP 3: Initialize defmt logging (RTT + network) ==========
     #[cfg(not(feature = "transport-rtt"))]
@@ -257,7 +260,7 @@ async fn main(spawner: Spawner) {
         )));
     }
     // ========== STEP 8: Initialize Persistent Storage ==========
-    let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH);
+    let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH, Default::default());
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
     spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
     let mut runtime_config = storage::CONFIG_LOADED.wait().await;

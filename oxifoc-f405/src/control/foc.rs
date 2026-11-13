@@ -964,7 +964,7 @@ pub async fn isr_stats_task() {
     // A perpetually backlogged stream yields between batches but stays ready.
     // Profiling must run before that stream so windows do not span states.
     #[cfg(all(feature = "isr-timing", feature = "task-priority"))]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(2);
     let mut ticker = Ticker::every(Duration::from_secs(1));

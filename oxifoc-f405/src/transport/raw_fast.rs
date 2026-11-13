@@ -65,7 +65,7 @@ impl RawTelemetrySink for ErgotRawSink {
 #[cfg(feature = "fast-telemetry")]
 #[embassy_executor::task]
 pub async fn ergot_task(stack: &'static super::Stack) {
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(1);
     let mut sink = ErgotRawSink { stack };
@@ -108,7 +108,9 @@ pub(super) fn add_usb_interface(
     let mut function = builder.function(0xFF, 0, 0);
     let mut interface = function.interface();
     let mut alt = interface.alt_setting(0xFF, 0xCA, 0x7E, Some(string));
-    alt.endpoint_bulk_in(Some(EndpointAddress::from_parts(2, Direction::In)), 64)
+    let mut options = embassy_usb::EndpointOptions::default();
+    options.max_packet_size = Some(64);
+    alt.endpoint_bulk_in(Some(EndpointAddress::from_parts(2, Direction::In)), options)
 }
 
 #[cfg(feature = "bench-raw-usb")]
@@ -150,7 +152,7 @@ impl RawTelemetrySink for UsbRawSink {
 #[embassy_executor::task]
 pub async fn usb_task(ep: UsbIn) {
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(1);
     let mut sink = UsbRawSink(ep);
@@ -208,7 +210,7 @@ impl RawTelemetrySink for RttRawSink {
 #[embassy_executor::task]
 pub async fn rtt_task() {
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(1);
     let mut sink = RttRawSink(RTT_CHANNEL.receive().await);

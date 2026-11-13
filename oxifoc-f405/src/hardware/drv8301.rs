@@ -10,6 +10,7 @@ use embassy_stm32::{
     exti::{self, ExtiInput},
     gpio::{Level, Output, Pull, Speed},
     interrupt::{self, typelevel::Binding},
+    peripherals,
 };
 #[cfg(feature = "board-cf2")]
 use embassy_stm32::{
@@ -77,10 +78,7 @@ pub struct Drv8301Spi {
 #[cfg(feature = "board-cf2")]
 pub fn init_bus(
     r: DrvResources,
-    exti_irq: impl Binding<
-        interrupt::typelevel::EXTI9_5,
-        exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
-    >,
+    exti_irq: impl Binding<interrupt::typelevel::EXTI9_5, exti::InterruptHandler<peripherals::EXTI7>>,
 ) -> (Drv8301Config, NfaultInput) {
     // Configure SPI3 - DRV8301: CPOL=0, CPHA=1 (Mode 1), max 10MHz
     let mut spi_config = spi::Config::default();
@@ -109,10 +107,7 @@ pub fn init_bus(
 #[cfg(feature = "board-vesc6-mk5")]
 pub fn init_bus(
     r: DrvResources,
-    exti_irq: impl Binding<
-        interrupt::typelevel::EXTI9_5,
-        exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
-    >,
+    exti_irq: impl Binding<interrupt::typelevel::EXTI9_5, exti::InterruptHandler<peripherals::EXTI7>>,
 ) -> (Drv8301Config, NfaultInput) {
     // Mode 1 idle state: SCK low. MOSI level between frames is don't-care.
     let sck = Output::new(r.pc10, Level::Low, Speed::VeryHigh);
@@ -138,14 +133,11 @@ pub fn init_bus(
 
 /// CS + EN_GATE + nFAULT setup shared by both bus flavors
 fn init_ctrl_pins(
-    pc9: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PC9>,
-    pb5: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PB5>,
-    pb7: embassy_stm32::Peri<'static, embassy_stm32::peripherals::PB7>,
-    exti7: embassy_stm32::Peri<'static, embassy_stm32::peripherals::EXTI7>,
-    exti_irq: impl Binding<
-        interrupt::typelevel::EXTI9_5,
-        exti::InterruptHandler<interrupt::typelevel::EXTI9_5>,
-    >,
+    pc9: embassy_stm32::Peri<'static, peripherals::PC9>,
+    pb5: embassy_stm32::Peri<'static, peripherals::PB5>,
+    pb7: embassy_stm32::Peri<'static, peripherals::PB7>,
+    exti7: embassy_stm32::Peri<'static, peripherals::EXTI7>,
+    exti_irq: impl Binding<interrupt::typelevel::EXTI9_5, exti::InterruptHandler<peripherals::EXTI7>>,
 ) -> (Output<'static>, Output<'static>, NfaultInput) {
     // CS pin (active low)
     let cs = Output::new(pc9, Level::High, Speed::VeryHigh);
@@ -155,7 +147,7 @@ fn init_ctrl_pins(
     let en_gate = Output::new(pb5, Level::High, Speed::Low);
 
     // nFAULT pin with EXTI for interrupt-driven fault detection (active low, pull-up)
-    let nfault = ExtiInput::new(pb7, exti7, Pull::Up, exti_irq);
+    let nfault = ExtiInput::new_async(pb7, exti7, Pull::Up, exti_irq);
 
     (cs, en_gate, nfault)
 }

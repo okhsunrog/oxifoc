@@ -373,48 +373,61 @@ pub mod trace {
         });
     }
 
-    // Task IDs are resolved against this exact ELF's TaskStorage/POOL symbols.
-    // Executor events carry executor IDs; task events carry task IDs.
     #[cfg(feature = "bench-executor-trace")]
-    #[unsafe(no_mangle)]
-    fn _embassy_trace_poll_start(executor: u32) {
-        record(1, executor);
-    }
+    use embassy_executor::{
+        ExecutorId,
+        raw::{TaskRef, trace::Trace},
+    };
+
     #[cfg(feature = "bench-executor-trace")]
-    #[unsafe(no_mangle)]
-    fn _embassy_trace_task_new(_executor: u32, task: u32) {
-        register_task(task);
-        record(2, task);
-    }
+    pub struct ExecutorTrace;
+
     #[cfg(feature = "bench-executor-trace")]
-    #[unsafe(no_mangle)]
-    fn _embassy_trace_task_end(_executor: u32, task: u32) {
-        record(3, task);
+    impl Trace for ExecutorTrace {
+        fn poll_start(executor: ExecutorId) {
+            record(1, executor.get() as u32);
+        }
+
+        fn task_new(_: ExecutorId, task: TaskRef) {
+            let id = task.id().get() as u32;
+            register_task(id);
+            record(2, id);
+        }
+
+        fn task_end(_: ExecutorId, task: TaskRef) {
+            record(3, task.id().get() as u32);
+        }
+
+        fn task_exec_begin(_: ExecutorId, task: TaskRef) {
+            let id = task.id().get() as u32;
+            task_event(id, 4);
+            record(4, id);
+        }
+
+        fn task_exec_end(_: ExecutorId, task: TaskRef) {
+            record(5, task.id().get() as u32);
+        }
+
+        fn task_ready_begin(_: ExecutorId, task: TaskRef) {
+            #[cfg(feature = "bench-scheduler-deadline")]
+            super::deadline::ready(task);
+            let id = task.id().get() as u32;
+            task_event(id, 6);
+            record(6, id);
+        }
+
+        fn executor_idle(executor: ExecutorId) {
+            record(7, executor.get() as u32);
+        }
+
+        fn idle() {}
+        fn task_name_set(_: TaskRef, _: &'static str) {}
+        fn task_priority_set(_: TaskRef, _: u8) {}
+        fn task_deadline_set(_: TaskRef, _: u64) {}
     }
+
     #[cfg(feature = "bench-executor-trace")]
-    #[unsafe(no_mangle)]
-    fn _embassy_trace_task_exec_begin(_executor: u32, task: u32) {
-        task_event(task, 4);
-        record(4, task);
-    }
-    #[cfg(feature = "bench-executor-trace")]
-    #[unsafe(no_mangle)]
-    fn _embassy_trace_task_exec_end(_executor: u32, task: u32) {
-        record(5, task);
-    }
-    #[cfg(feature = "bench-executor-trace")]
-    #[unsafe(no_mangle)]
-    fn _embassy_trace_task_ready_begin(_executor: u32, task: u32) {
-        #[cfg(feature = "bench-scheduler-deadline")]
-        super::deadline::ready(task);
-        task_event(task, 6);
-        record(6, task);
-    }
-    #[cfg(feature = "bench-executor-trace")]
-    #[unsafe(no_mangle)]
-    fn _embassy_trace_executor_idle(executor: u32) {
-        record(7, executor);
-    }
+    embassy_executor::trace_impl!(ExecutorTrace);
 }
 
 /// Experimental release-relative EDF policy. It only affects queue ordering;
@@ -423,48 +436,40 @@ pub mod trace {
 pub mod deadline {
     use core::{
         future::poll_fn,
-        sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+        sync::atomic::{AtomicU32, Ordering},
         task::Poll,
     };
-    use embassy_executor::Metadata;
+    use embassy_executor::{MetadataRef, raw::TaskRef};
 
     struct Slot {
         id: AtomicU32,
-        metadata: AtomicPtr<Metadata>,
         budget: AtomicU32,
     }
     static SLOTS: [Slot; 5] = [const {
         Slot {
             id: AtomicU32::new(0),
-            metadata: AtomicPtr::new(core::ptr::null_mut()),
             budget: AtomicU32::new(0),
         }
     }; 5];
 
     pub async fn register(index: usize, budget_us: u64) {
-        let metadata = Metadata::for_current_task().await;
-        let id = poll_fn(|cx| Poll::Ready(embassy_executor::raw::task_from_waker(cx.waker()).id()))
-            .await;
+        let task =
+            poll_fn(|cx| Poll::Ready(embassy_executor::raw::task_from_waker(cx.waker()))).await;
         let slot = &SLOTS[index];
         slot.budget.store(
             embassy_time::Duration::from_micros(budget_us).as_ticks() as u32,
             Ordering::Relaxed,
         );
-        slot.metadata
-            .store(core::ptr::from_ref(metadata).cast_mut(), Ordering::Relaxed);
-        slot.id.store(id, Ordering::Release);
-        ready(id);
+        slot.id.store(task.id().get() as u32, Ordering::Release);
+        ready(task);
     }
 
-    pub fn ready(task: u32) {
+    pub fn ready(task: TaskRef) {
+        let id = task.id().get() as u32;
         for slot in &SLOTS {
-            if slot.id.load(Ordering::Acquire) == task {
-                // SAFETY: published once by register from Embassy's static
-                // Metadata reference. Tasks in this bench never terminate.
-                // The ready hook runs before enqueue; the task is not already
-                // in the sorted run queue, so its ordering key is stable there.
-                let metadata = unsafe { &*slot.metadata.load(Ordering::Relaxed) };
-                metadata.set_deadline(
+            if slot.id.load(Ordering::Acquire) == id {
+                // The ready hook runs before enqueue, when its ordering key can change.
+                MetadataRef::new(task).set_deadline(
                     embassy_time::Instant::now()
                         .as_ticks()
                         .saturating_add(u64::from(slot.budget.load(Ordering::Relaxed))),

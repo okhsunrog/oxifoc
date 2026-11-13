@@ -26,7 +26,7 @@ use ergot::interface_manager::profiles::router::RouterFrameProcessor;
 use ergot::interface_manager::utils::cobs_stream;
 use ergot::interface_manager::utils::framed_stream;
 #[cfg(feature = "transport-usb")]
-use ergot::toolkits::embassy_usb_v0_6 as usb_kit;
+use ergot::toolkits::embassy_usb_v0_6_preview as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
 #[cfg(feature = "transport-rtt")]
 use ergot::transport::rtt::{RttReader, RttWriter};
@@ -113,7 +113,7 @@ pub type McInterface = SpiInterface;
 
 // ========== Type Aliases ==========
 
-pub type Rng = rng::Rng<'static, peripherals::RNG>;
+pub type Rng = oxifoc_core::stm32_rng::ErgotRng;
 /// Standalone diagnostic router capacity. Production SPI is a single leaf.
 #[cfg(not(feature = "transport-spi"))]
 const INTERFACES: usize =
@@ -135,7 +135,7 @@ pub type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
 // RxWorker types — generic over FrameProcessor
 #[cfg(feature = "transport-usb")]
-pub type UsbRxWorker = ergot::interface_manager::transports::eusb_0_6::RxWorker<
+pub type UsbRxWorker = ergot::interface_manager::transports::eusb_0_6_preview::RxWorker<
     &'static Stack,
     AppDriver,
     RouterFrameProcessor,
@@ -327,7 +327,7 @@ pub fn init_usb(
     let mut usb_cfg = usb::Config::default();
     usb_cfg.vbus_detection = false;
 
-    let driver = usb::Driver::new_fs(usb_otg_fs, UsbIrqs, pa12, pa11, ep_out_buf, usb_cfg);
+    let driver = usb::Driver::new_fs(usb_otg_fs, pa12, pa11, UsbIrqs, ep_out_buf, usb_cfg);
 
     let mut usb_dev_cfg = embassy_usb::Config::new(0x16c0, 0x27DD);
     usb_dev_cfg.manufacturer = Some("oxifoc");

@@ -20,7 +20,7 @@ bench = false
 
 [features]
 default = []
-ble = []
+ble = ["dep:esp-radio"]
 # Fault injection for host discovery/reconnect qualification; never enabled normally.
 bench-delayed-upstream = []
 
@@ -29,7 +29,7 @@ esp-hal = { features = ["defmt", "esp32c5", "unstable"], version = "1.2.2" }
 
 esp-rtos = { features = ["defmt", "embassy", "esp-alloc", "esp-radio", "esp32c5"], version = "0.4.0" }
 
-defmt                  = "1.1.1"
+defmt                  = "1.2.0"
 esp-bootloader-esp-idf = { features = ["defmt", "esp32c5"], version = "0.6.0" }
 
 bt-hci = "0.11"
@@ -38,14 +38,14 @@ embassy-time = { version = "0.5.1", features = ["defmt"] }
 embedded-io = { version = "0.7.1", features = ["defmt"] }
 embedded-io-async = { version = "0.7.0", features = ["defmt"] }
 esp-alloc = { features = ["defmt"], version = "0.11.0" }
-esp-radio = { features = ["ble", "defmt", "esp-alloc", "esp32c5", "unstable"], version = "1.0.0-beta.1" }
+esp-radio = { features = ["ble", "defmt", "esp-alloc", "esp32c5", "unstable"], version = "1.0.0-beta.1", optional = true }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
 trouble-host = { features = ["gatt"], version = "0.8.0", git = "https://github.com/embassy-rs/trouble.git", rev = "042bd1c3bdc5980f66d28e0e698b6e579b15da4e" }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "3c502f49814ac2ae25385b21fdbc9b964f86d877", version = "0.12.0", default-features = false, features = ["embedded-io-async-v0_7", "nostd-seed-router", "embassy-time", "disable-cache-padding", "defmt-v1"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a", version = "0.12.0", default-features = false, features = ["embedded-io-async-v0_7", "nostd-seed-router", "embassy-time", "disable-cache-padding", "defmt-v1"] }
 mutex = "1.0.2"
 serde = { version = "1.0.229", default-features = false, features = ["derive"] }
 postcard-schema = "0.2.5"
@@ -55,7 +55,7 @@ heapless = { version = "0.9", default-features = false }
 oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", features = ["icd", "defmt", "spi-link"] }
 
 [dev-dependencies]
-embedded-test = { version = "0.7.2", features = [
+embedded-test = { version = "0.7.3", features = [
   "defmt",
   "embassy-010",
   "external-executor",

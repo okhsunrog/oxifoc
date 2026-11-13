@@ -65,14 +65,14 @@ fn checksum(crc: &mut Crc<'_>, bytes: &[u8]) -> u32 {
 #[embassy_executor::task]
 async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
     #[cfg(feature = "bench-spi-pump-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(3);
     use embassy_stm32::interrupt::{InterruptExt, Priority};
     embassy_stm32::interrupt::DMA2_STREAM0.set_priority(Priority::P6);
     embassy_stm32::interrupt::DMA2_STREAM3.set_priority(Priority::P6);
     let mut cs = Output::new(r.cs, Level::High, Speed::VeryHigh);
-    let mut ready = ExtiInput::new(r.ready, r.ready_exti, Pull::Down, crate::ExtiIrqs);
+    let mut ready = ExtiInput::new_async(r.ready, r.ready_exti, Pull::Down, crate::ExtiIrqs);
     let mut config = Config::default();
     config.frequency = Hertz(embassy_stm32::rcc::frequency::<SPI1>().0 / 4);
     config.gpio_speed = Speed::VeryHigh;

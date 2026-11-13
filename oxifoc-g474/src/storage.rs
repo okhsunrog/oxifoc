@@ -6,7 +6,10 @@
 
 use defmt::info;
 use embassy_executor::task;
-use embassy_stm32::flash::{Async, Flash as StmFlash, WRITE_SIZE};
+use embassy_stm32::{
+    flash::{Flash as StmFlash, WRITE_SIZE},
+    mode::Async,
+};
 use sequential_storage::cache::Cache;
 use sequential_storage::map::{MapConfig, MapStorage};
 use static_cell::ConstStaticCell;

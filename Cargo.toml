@@ -62,17 +62,17 @@ oxifoc-core = { path = "oxifoc-core" }
 # Git deps are pinned to revs for reproducible builds (CI runs with --locked).
 # To bump: update the rev here AND in the excluded device crates' Cargo.toml
 # (oxifoc-g474/f405/bridge/remote), then refresh all Cargo.lock files.
-# Bench pin: fork branch fix/nusb-receive-headroom, based on upstream main.
+# Bench pin: fork branch fix/embassy-usb-endpoint-options, which includes the receive headroom fix.
 # Keep a fixed commit so capture provenance remains reproducible.
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "3c502f49814ac2ae25385b21fdbc9b964f86d877" }
-tokio = { version = "1.53", features = ["full"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a" }
+tokio = { version = "1.54", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 anyhow = "1.0"
-crossbeam-channel = "0.5.16"
+crossbeam-channel = "0.5.17"
 clap = { version = "4.6", features = ["derive"] }
-toml = "1.1"
+toml = "1.2"
 # Slint upstream calls its default branch `master`; pin its current HEAD for
 # reproducible access to the wgpu 30 integration.
 slint = { version = "=1.18.1", default-features = false, features = ["std", "unstable-wgpu-30", "compat-1-2"] }
@@ -84,4 +84,4 @@ bbqueue = "0.7"
 # Keep ergot's Embassy time dependency on the same main-branch revision as the
 # optional STM32 HAL slice in oxifoc-core.
 [patch.crates-io]
-embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "98d847be57f3ea022ce05fe9b95ab3639a1e0a93" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }

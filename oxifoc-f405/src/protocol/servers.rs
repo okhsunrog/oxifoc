@@ -3,7 +3,8 @@
 use embassy_executor::Spawner;
 #[cfg(feature = "transport-usb")]
 use ergot::{
-    exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
+    exports::bbqueue::prod_cons::framed::FramedConsumer,
+    toolkits::embassy_usb_v0_6_preview as usb_kit,
 };
 use heapless::String;
 
@@ -46,7 +47,7 @@ async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
     #[cfg(feature = "bench-scheduler-deadline")]
     crate::diagnostics::deadline::register(0, 125).await;
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(3);
     usb.run().await;
@@ -59,7 +60,7 @@ async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
     #[cfg(feature = "bench-scheduler-deadline")]
     crate::diagnostics::deadline::register(1, 125).await;
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(3);
     rcvr.run(recv_buf, usb_kit::USB_FS_MAX_PACKET_SIZE).await;
@@ -75,7 +76,7 @@ async fn run_usb_tx(
     #[cfg(feature = "bench-scheduler-deadline")]
     crate::diagnostics::deadline::register(2, 125).await;
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(3);
     #[cfg(feature = "bench-usb-metrics")]
@@ -134,7 +135,7 @@ pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32, boot_epoc
     #[cfg(feature = "bench-scheduler-deadline")]
     crate::diagnostics::deadline::register(3, 500).await;
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(2);
     defmt::info!("Starting protocol servers");
@@ -326,7 +327,7 @@ pub async fn state_monitor(
 )]
 pub async fn detect_server(stack: &'static Stack, boot_epoch: u64) {
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(1);
     oxifoc_core::runtime::detect_server(
@@ -439,7 +440,7 @@ pub async fn defmt_forwarder(
     // until the diagnostic ring has dropped the active-state measurements.
     // This worker waits for new frames; it never polls an empty ring.
     #[cfg(all(feature = "isr-timing", feature = "task-priority"))]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(2);
     // (2026-07-08: defmt-over-USB works end-to-end. It was broken by TWO
@@ -464,7 +465,7 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
     #[cfg(feature = "bench-scheduler-deadline")]
     crate::diagnostics::deadline::register(4, 1000).await;
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(1);
     let hz = crate::config::CONTROL_TIMING.get().await.frequency_hz() as u32;
@@ -481,7 +482,7 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
 #[embassy_executor::task]
 async fn raw_telemetry_server_task(stack: &'static Stack) {
     #[cfg(feature = "task-priority")]
-    embassy_executor::Metadata::for_current_task()
+    embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(2);
     let timing = *crate::config::CONTROL_TIMING.get().await;

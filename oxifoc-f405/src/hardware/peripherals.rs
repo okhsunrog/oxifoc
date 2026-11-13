@@ -1,8 +1,6 @@
 //! Peripheral initialization for STM32F405
 
-use embassy_stm32::adc::{
-    Adc, AdcChannel, Exten, InjectedAdc, InjectedAdcTrigger, SampleTime, VrefInt,
-};
+use embassy_stm32::adc::{Adc, AdcChannel, Exten, InjectedAdc, InjectedAdcTrigger, SampleTime};
 use embassy_stm32::{
     Config as StmConfig, Peri, Peripherals, mode::Blocking, pac, peripherals, time::Hertz,
 };
@@ -147,7 +145,7 @@ pub async fn init_adc(
     vb_pin: Peri<'static, peripherals::PA1>,
     vc_pin: Peri<'static, peripherals::PA2>,
 ) -> AdcHandles {
-    let mut adc1 = Adc::new(adc1_peri);
+    let mut adc1 = Adc::new_blocking(adc1_peri, Default::default());
 
     // Measure VREF+ while ADC1 is still exclusively owned here: no injected
     // trigger, protocol tasks or gate-driver initialization can run yet.
@@ -155,7 +153,8 @@ pub async fn init_adc(
     // SAFETY: aligned, read-only factory calibration halfword in system memory.
     let calibration_counts = unsafe { core::ptr::read_volatile(0x1fff_7a2a as *const u16) };
     let mut vrefint = adc1.enable_vrefint();
-    embassy_time::Timer::after_micros(u64::from(VrefInt::start_time_us())).await;
+    // Allow the internal reference to settle before the first conversion.
+    embassy_time::Timer::after_micros(10).await;
     // 480 cycles at the 21 MHz ADC clock exceeds the required 10 us sample time.
     let _ = adc1.blocking_read(&mut vrefint, SampleTime::Cycles480);
     const SAMPLE_COUNT: u16 = 64;
@@ -184,8 +183,8 @@ pub async fn init_adc(
         reference_mv
     );
 
-    let adc2 = Adc::new(adc2_peri);
-    let adc3 = Adc::new(adc3_peri);
+    let adc2 = Adc::new_blocking(adc2_peri, Default::default());
+    let adc3 = Adc::new_blocking(adc3_peri, Default::default());
 
     // ADC1 injected: phase A current + board temperature
     let injected_adc1 = adc1.setup_injected_conversions(

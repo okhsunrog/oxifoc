@@ -90,8 +90,9 @@ async fn main(spawner: Spawner) {
     // (which log via defmt). Idents of every registered interface are collected
     // for the state monitor.
     let mut rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
-    let boot_epoch = (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32());
-    let stack = transport::init_stack(rng);
+    let boot_epoch =
+        (u64::from(rng.blocking_next_u32()) << 32) | u64::from(rng.blocking_next_u32());
+    let stack = transport::init_stack(oxifoc_core::stm32_rng::ErgotRng::new(rng));
 
     // ========== STEP 3: RTT (defmt sink; ergot interface when transport-rtt) ==
     #[cfg(not(feature = "transport-rtt"))]
@@ -123,7 +124,7 @@ async fn main(spawner: Spawner) {
     let r = split_resources!(p);
 
     // ========== STEP 7: Initialize Persistent Storage ==========
-    let flash = embassy_stm32::flash::Flash::new(r.storage.flash, FlashIrqs);
+    let flash = embassy_stm32::flash::Flash::new(r.storage.flash, FlashIrqs, Default::default());
     spawner.spawn(defmt::unwrap!(storage::storage_worker(flash)));
     let runtime_config = storage::CONFIG_LOADED.wait().await;
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));

@@ -3,7 +3,8 @@
 use embassy_executor::Spawner;
 use embedded_io_async::Write;
 use ergot::{
-    exports::bbqueue::prod_cons::framed::FramedConsumer, toolkits::embassy_usb_v0_6 as usb_kit,
+    exports::bbqueue::prod_cons::framed::FramedConsumer,
+    toolkits::embassy_usb_v0_6_preview as usb_kit,
 };
 use heapless::String;
 use oxifoc_core::runtime::run_all_servers_with_config;

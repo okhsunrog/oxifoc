@@ -197,6 +197,8 @@ pub mod storage;
 
 #[cfg(feature = "storage")]
 pub mod drive_setup;
+#[cfg(feature = "embassy-hal")]
+pub mod stm32_rng;
 
 /// Async runtime with servers (requires `runtime` feature)
 ///
