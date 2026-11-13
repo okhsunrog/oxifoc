@@ -195,7 +195,7 @@ pub async fn fake_telemetry_gen() {
 
 /// All protocol servers running concurrently in a single task
 #[embassy_executor::task]
-pub async fn protocol_servers(stack: &'static Stack) {
+pub async fn protocol_servers(stack: &'static Stack, boot_epoch: u64) {
     defmt::info!("Starting protocol servers");
 
     let mut hw: String<32> = String::new();
@@ -232,7 +232,8 @@ pub async fn protocol_servers(stack: &'static Stack) {
         &RUNTIME_CONFIG,
         PWM_CONFIG.pwm_freq_hz,
         oxifoc_core::types::ControlTiming::from_hz(PWM_CONFIG.pwm_freq_hz),
-        BOARD.max_phase_current_a,
+        &BOARD,
+        boot_epoch,
         true,
         None,
     )
@@ -312,8 +313,13 @@ pub async fn well_known_services_task(stack: &'static Stack) {
     .await;
 }
 
-pub fn spawn_servers(spawner: &Spawner, stack: &'static Stack, idents: &heapless::Vec<u8, 3>) {
-    spawner.spawn(defmt::unwrap!(protocol_servers(stack)));
+pub fn spawn_servers(
+    spawner: &Spawner,
+    stack: &'static Stack,
+    idents: &heapless::Vec<u8, 3>,
+    boot_epoch: u64,
+) {
+    spawner.spawn(defmt::unwrap!(protocol_servers(stack, boot_epoch)));
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(well_known_services_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));

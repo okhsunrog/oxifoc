@@ -200,6 +200,21 @@ impl AngleSensor for HallAngleProxy {
         HALL_ESTIMATOR.lock(|est| est.borrow().sensor.as_ref()?.bench_hall_position(now_ticks))
     }
 
+    #[cfg(feature = "storage")]
+    fn apply_hall_tuning(&mut self, tuning: &crate::storage::HallTuningConfig) -> bool {
+        HALL_ESTIMATOR.lock(|est| {
+            let mut state = est.borrow_mut();
+            let Some(sensor) = state.sensor.as_mut() else {
+                return false;
+            };
+            if !sensor.apply_hall_tuning(tuning) {
+                return false;
+            }
+            state.reference_epoch = state.reference_epoch.wrapping_add(1);
+            true
+        })
+    }
+
     fn apply_prepared_hall_calibration(
         &mut self,
         prepared: &PreparedHallCalibration,

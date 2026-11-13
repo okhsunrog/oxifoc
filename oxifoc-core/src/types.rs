@@ -628,7 +628,7 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 19;
+pub const ICD_PROTO_VERSION: u16 = 20;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -1038,12 +1038,12 @@ mod config_types {
     pub enum ConfigRequest {
         /// Read a live config group with its revision and persistence state.
         Read(ConfigGroupId),
-        /// Apply a value to RAM and the live driver. No flash access.
+        /// Apply a live setting or stage a boot setting in RAM. No flash access.
         Apply(Keyed<ConfigApply>),
         /// Persist the current live value of one group.
         Persist(Keyed<ConfigPersist>),
         /// Reset all config to defaults (erase flash)
-        ResetAll,
+        ResetAll(Keyed<u64>),
         SaveDriveSetup(Keyed<SaveDriveSetup>),
     }
 
@@ -1135,6 +1135,7 @@ mod config_types {
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub struct ConfigApply {
         pub expected_revision: u32,
+        pub boot_epoch: u64,
         pub write: ConfigValue,
     }
 
@@ -1143,6 +1144,7 @@ mod config_types {
     pub struct ConfigPersist {
         pub group: ConfigGroupId,
         pub expected_revision: u32,
+        pub boot_epoch: u64,
     }
 
     /// Typed group value used for configuration reads, applies and saves.
@@ -1171,16 +1173,25 @@ mod config_types {
     pub struct ConfigSnapshot {
         pub group: ConfigGroupId,
         pub revision: u32,
+        pub boot_epoch: u64,
         /// True only when flash contains this exact live revision.
         pub persisted: bool,
         /// False when a stored calibration could not be decoded or validated.
         pub valid: bool,
         pub value: Option<ConfigValue>,
+        /// Resolved values for settings whose effective values depend on the board or motor.
+        pub effective: Option<ConfigValue>,
+        /// Default editable policy, when it differs from the resolved value.
+        pub default: Option<ConfigValue>,
     }
 
     /// Configuration response
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Schema)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    #[expect(
+        clippy::large_enum_variant,
+        reason = "configuration snapshots are sent without an embedded allocator"
+    )]
     pub enum ConfigResponse {
         Snapshot(ConfigSnapshot),
         Applied {
@@ -1212,6 +1223,13 @@ mod config_types {
         SetupRequiresRestart {
             req_id: ReqId,
         },
+        /// Accepted into RAM as a setting for the next boot.
+        Staged {
+            req_id: ReqId,
+            revision: u32,
+        },
+        /// Reset could not complete; reload flash before enabling the drive.
+        ResetRequiresRestart,
     }
 }
 

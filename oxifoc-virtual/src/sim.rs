@@ -15,7 +15,7 @@ use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::{
-    AdcSnapshot, CurrentSensor, HallSensorTrait, HallSnapshot, TempSensorId,
+    AdcSnapshot, AngleSensor, CurrentSensor, HallSensorTrait, HallSnapshot, TempSensorId,
 };
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
@@ -128,6 +128,9 @@ pub async fn foc_loop(
     hall.update(out.hall_state, 0);
     if let Some(calib) = &config.hall_calibration {
         hall.set_calibration_raw(calib.angles);
+    }
+    if let Some(tuning) = config.hall_tuning.as_ref().filter(|value| value.is_sane()) {
+        hall.apply_hall_tuning(tuning);
     }
     let phase = PhaseManager::with_hall(hall);
     let controller = FocController::<SvpwmModulator>::from_runtime_config(&config, vbus);

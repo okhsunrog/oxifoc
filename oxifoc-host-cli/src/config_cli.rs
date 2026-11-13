@@ -133,6 +133,23 @@ fn rust_field_literal(
     value: &Value,
 ) -> Result<String> {
     use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
+    if group == ConfigGroupId::Derating
+        && let Some(obj) = value.as_object()
+    {
+        let type_name = match field {
+            "speed" => "oxifoc_core::motor::derating::SpeedDerating",
+            "modulation" => "oxifoc_core::motor::derating::ModulationDerating",
+            "temperature" => "oxifoc_core::motor::derating::TemperatureDerating",
+            "bus_voltage" => "oxifoc_core::motor::derating::BusVoltageDerating",
+            _ => anyhow::bail!("unexpected nested derating field {field}"),
+        };
+        let fields = obj
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", rust_literal(v)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Ok(format!("{type_name} {{ {fields} }}"));
+    }
     if group == ConfigGroupId::MotorTemperature && field == "sensor" {
         use oxifoc_core::storage::MotorTemperatureSensor;
         let sensor = serde_json::from_value::<MotorTemperatureSensor>(value.clone())?;

@@ -130,7 +130,7 @@ pub async fn usb_io_task(
 
 /// All protocol servers running concurrently in a single task
 #[embassy_executor::task]
-pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32) {
+pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32, boot_epoch: u64) {
     #[cfg(feature = "bench-scheduler-deadline")]
     crate::diagnostics::deadline::register(3, 500).await;
     #[cfg(feature = "task-priority")]
@@ -191,7 +191,8 @@ pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32) {
         &RUNTIME_CONFIG,
         foc_freq_hz,
         *crate::config::CONTROL_TIMING.get().await,
-        BOARD.max_phase_current_a,
+        &BOARD,
+        boot_epoch,
         true,
         PWM_CONFIG_LIMITS,
     )
@@ -522,7 +523,11 @@ pub fn spawn_servers(
     detection_boot: u64,
     foc_freq_hz: u32,
 ) {
-    spawner.spawn(defmt::unwrap!(protocol_servers(stack, foc_freq_hz)));
+    spawner.spawn(defmt::unwrap!(protocol_servers(
+        stack,
+        foc_freq_hz,
+        detection_boot
+    )));
     #[cfg(feature = "bench-raw-codec")]
     spawner.spawn(defmt::unwrap!(
         crate::diagnostics::codec_bench::report_task(stack)

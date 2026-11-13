@@ -30,10 +30,6 @@ use critical_section::Mutex as CriticalSectionMutex;
 use embassy_futures::join::{join, join3};
 use embassy_futures::select::{Either, select};
 
-#[cfg(feature = "storage")]
-use crate::motor::failsafe::FailsafeConfig;
-#[cfg(feature = "storage")]
-use crate::motor::foc_driver::CurrentLimits;
 use crate::state::DriverCommand;
 #[cfg(feature = "storage")]
 use crate::state::DriverOperation;
@@ -286,7 +282,7 @@ fn write_is_acceptable(
         ConfigValue::BoardCalibration(v) => v.is_sane(),
         ConfigValue::CurrentLimits(v) => v.is_coherent(),
         ConfigValue::Derating(v) => v.is_sane(),
-        ConfigValue::Drive(v) => v.is_sane(),
+        ConfigValue::Drive(_) => true,
         ConfigValue::DcOffsets(v) => {
             counts_ok(v.phase_a) && counts_ok(v.phase_b) && counts_ok(v.phase_c)
         }
@@ -307,10 +303,7 @@ fn write_is_live_safe_while_running(w: &crate::types::ConfigValue) -> bool {
     use crate::types::ConfigValue;
     matches!(
         w,
-        ConfigValue::CurrentLimits(_)
-            | ConfigValue::Failsafe(_)
-            | ConfigValue::Velocity(_)
-            | ConfigValue::Derating(_)
+        ConfigValue::CurrentLimits(_) | ConfigValue::Failsafe(_) | ConfigValue::Velocity(_)
     )
 }
 
@@ -339,13 +332,67 @@ fn config_value(
     }
 }
 
+#[cfg(feature = "storage")]
+fn resolved_config(
+    cfg: &RuntimeConfig,
+    group: crate::types::ConfigGroupId,
+    board: &crate::foc::config::BoardConfig,
+) -> Option<crate::types::ConfigValue> {
+    use crate::storage::{CurrentLimitsConfig, PiGainsConfig, VoltageLimitsConfig};
+    use crate::types::{ConfigGroupId, ConfigValue};
+    match group {
+        ConfigGroupId::VoltageLimits => Some(ConfigValue::VoltageLimits(
+            cfg.voltage_limits.clone().unwrap_or(VoltageLimitsConfig {
+                min_vbus_mv: board.min_vbus_mv,
+                max_vbus_mv: board.max_vbus_mv,
+            }),
+        )),
+        ConfigGroupId::CurrentLimits => {
+            let rating = cfg
+                .motor_params
+                .as_ref()
+                .and_then(crate::storage::MotorParamsConfig::rating_current_a)
+                .unwrap_or(0.0);
+            let limits = crate::motor::foc_driver::CurrentLimits::from_stored(
+                cfg.current_limits.as_ref(),
+                board.max_phase_current_a,
+                rating,
+            );
+            Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
+                max_iq_a: limits.max_current_a,
+                max_brake_a: limits.max_brake_a,
+                max_phase_current_a: limits.overcurrent_threshold_a,
+                bus_in_max_a: limits.bus_in_max_a,
+                bus_regen_max_a: limits.bus_regen_max_a,
+                max_dissipation_w: limits.max_dissipation_w,
+            }))
+        }
+        ConfigGroupId::PiGains => {
+            let controller = crate::foc::controller::FocController::<
+                crate::foc::pwm::SvpwmModulator,
+                crate::foc::trig::LibmSinCos,
+            >::from_runtime_config(cfg, 24.0);
+            let (kp, ki) = controller.id_pi.gains();
+            Some(ConfigValue::PiGains(PiGainsConfig {
+                kp,
+                ki,
+                bandwidth_rad_s: cfg.pi_gains.as_ref().filter(|v| v.is_sane()).map_or(
+                    crate::foc::detection::pi_tuning::DEFAULT_BANDWIDTH_RAD_S,
+                    |v| v.bandwidth_rad_s,
+                ),
+            }))
+        }
+        _ => None,
+    }
+}
+
 /// Configuration server - handles config read/write/reset requests
 ///
-/// Reads return the live value, its optimistic-concurrency revision, and
+/// Reads return the configured value, its optimistic-concurrency revision, and
 /// whether flash contains that exact revision. Writes are deliberately split:
 ///
-/// * `Apply` validates and changes RAM/live driver state, then increments the
-///   group revision. Groups whose driver update is known to be live-safe may
+/// * `Apply` validates and installs live settings before acknowledging. PWM
+///   is staged for the next boot. Groups whose driver update is known to be live-safe may
 ///   be applied while running; structural/calibration groups remain stop-only.
 /// * `Persist` writes one explicitly named live revision through
 ///   `FLASH_CHANNEL`. It is always stop-only because internal-flash erase can
@@ -355,22 +402,24 @@ fn config_value(
 ///   Apply remains useful for bench tuning and `config dump --rust` extraction.
 ///
 /// Apply/Persist carry independent request IDs. The small response cache makes
-/// host retries effectively-once without retaining full configuration payloads.
+/// host retries effectively-once within the cache window and rejects reused IDs with different requests.
 ///
-/// `hw_max_current_a` is the board's hardware phase-current ceiling —
-/// current-limit writes are clamped to it and applied to the live driver
-/// via [`DriverCommand::SetCurrentLimits`] on the command channel.
+/// The board profile supplies the physical limits used to resolve effective values.
 #[cfg(feature = "storage")]
+#[allow(clippy::too_many_arguments)]
 pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     endpoints: Endpoints<NS>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-    hw_max_current_a: f32,
+    board: &crate::foc::config::BoardConfig,
+    boot_epoch: u64,
+    drive_pwm_hz: u32,
     persist: bool,
     pwm_limits: Option<crate::storage::PwmConfigLimits>,
 ) where
     NS: NetStackHandle,
 {
+    let hw_max_current_a = board.max_phase_current_a;
     use crate::icd::ConfigGroupId;
     use crate::types::{ConfigSnapshot, ConfigValue, MotorState};
 
@@ -378,18 +427,23 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
     let server = pin!(server);
     let mut h = server.attach();
     let revisions = &CONFIG_COORDINATOR.revisions;
-    let mut initially_persisted = [None; ConfigGroupId::COUNT];
-    if persist {
-        let cfg = critical_section::with(|cs| runtime_config.borrow(cs).borrow().clone());
-        for group in ConfigGroupId::ALL {
-            if config_value(&cfg, group).is_some() {
-                initially_persisted[group.index()] = Some(0);
-            }
-        }
-    }
     let persisted_revisions = &CONFIG_COORDINATOR.persisted;
-    critical_section::with(|cs| *persisted_revisions.borrow(cs).borrow_mut() = initially_persisted);
+    if persist {
+        critical_section::with(|cs| {
+            let cfg = runtime_config.borrow(cs).borrow();
+            let revisions = revisions.borrow(cs).borrow();
+            let mut saved = persisted_revisions.borrow(cs).borrow_mut();
+            for group in ConfigGroupId::ALL {
+                let index = group.index();
+                if revisions[index] == 0 && config_value(&cfg, group).is_some() {
+                    saved[index] = Some(0);
+                }
+            }
+        });
+    }
     let action_cache = &CONFIG_COORDINATOR.actions;
+    let reset_ack = CriticalSectionMutex::new(core::cell::Cell::new(None));
+    let reset_ack = &reset_ack;
 
     #[cfg(all(feature = "detection", feature = "delivery"))]
     let setup_ack = CriticalSectionMutex::new(RefCell::new(
@@ -416,24 +470,48 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 || crate::state::model_apply_pending(),
                         )
                     });
+                    let versioned = match &req {
+                        ConfigRequest::Apply(keyed) => {
+                            Some((keyed.inner.boot_epoch, keyed.inner.write.group()))
+                        }
+                        ConfigRequest::Persist(keyed) => {
+                            Some((keyed.inner.boot_epoch, keyed.inner.group))
+                        }
+                        _ => None,
+                    };
+                    if let Some((epoch, group)) = versioned
+                        && epoch != boot_epoch
+                    {
+                        let current_revision = critical_section::with(|cs| {
+                            revisions.borrow(cs).borrow()[group.index()]
+                        });
+                        return ConfigResponse::Conflict { current_revision };
+                    }
                     let action_id = match &req {
                         ConfigRequest::Apply(keyed) => Some(keyed.id),
                         ConfigRequest::Persist(keyed) => Some(keyed.id),
                         ConfigRequest::Read(_)
-                        | ConfigRequest::ResetAll
+                        | ConfigRequest::ResetAll(_)
                         | ConfigRequest::SaveDriveSetup(_) => None,
                     };
-                    if let Some((id, ack)) = action_id.and_then(|id| {
-                        critical_section::with(|cs| {
-                            action_cache
-                                .borrow(cs)
-                                .borrow()
-                                .get(id)
-                                .map(|ack| (id, ack))
+                    let replay = action_id
+                        .map(|id| {
+                            critical_section::with(|cs| {
+                                action_cache.borrow(cs).borrow_mut().begin(id, &req)
+                            })
+                            .map(|ack| ack.map(|ack| (id, ack)))
                         })
-                    }) {
+                        .transpose();
+                    let Ok(replay) = replay else {
+                        return ConfigResponse::Invalid;
+                    };
+                    if let Some((id, ack)) = replay.flatten() {
                         return match ack {
                             CachedConfigAck::Applied(revision) => ConfigResponse::Applied {
+                                req_id: id,
+                                revision,
+                            },
+                            CachedConfigAck::Staged(revision) => ConfigResponse::Staged {
                                 req_id: id,
                                 revision,
                             },
@@ -444,27 +522,54 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                         };
                     }
                     match req {
-                        ConfigRequest::Read(group) => critical_section::with(|cs| {
-                            let cfg = runtime_config.borrow(cs).borrow();
-                            let revision = revisions.borrow(cs).borrow()[group.index()];
-                            ConfigResponse::Snapshot(ConfigSnapshot {
-                                group,
-                                revision,
-                                valid: match group {
-                                    ConfigGroupId::BoardCalibration => {
-                                        cfg.board_calibration_is_valid()
-                                    }
-                                    ConfigGroupId::HallCalibration => {
-                                        cfg.hall_calibration_is_valid()
-                                    }
-                                    ConfigGroupId::Drive => cfg.drive_is_valid(),
-                                    _ => true,
-                                },
-                                persisted: persisted_revisions.borrow(cs).borrow()[group.index()]
-                                    == Some(revision),
-                                value: config_value(&cfg, group),
-                            })
-                        }),
+                        ConfigRequest::Read(group) => {
+                            let (cfg, mut snapshot) = critical_section::with(|cs| {
+                                let cfg = runtime_config.borrow(cs).borrow();
+                                let revision = revisions.borrow(cs).borrow()[group.index()];
+                                let value = config_value(&cfg, group);
+                                let default =
+                                    if value.is_none() && group == ConfigGroupId::CurrentLimits {
+                                        Some(ConfigValue::CurrentLimits(
+                                            crate::storage::CurrentLimitsConfig::AUTO,
+                                        ))
+                                    } else {
+                                        None
+                                    };
+                                let snapshot = ConfigSnapshot {
+                                    group,
+                                    revision,
+                                    boot_epoch,
+                                    valid: match group {
+                                        ConfigGroupId::BoardCalibration => {
+                                            cfg.board_calibration_is_valid()
+                                        }
+                                        ConfigGroupId::HallCalibration => {
+                                            cfg.hall_calibration_is_valid()
+                                        }
+                                        ConfigGroupId::Drive => cfg.drive_is_valid(),
+                                        _ => true,
+                                    },
+                                    persisted: persisted_revisions.borrow(cs).borrow()
+                                        [group.index()]
+                                        == Some(revision),
+                                    value,
+                                    effective: None,
+                                    default,
+                                };
+                                (cfg.clone(), snapshot)
+                            });
+                            snapshot.effective = if group == ConfigGroupId::PwmConfig {
+                                pwm_limits.map(|limits| {
+                                    ConfigValue::PwmConfig(crate::storage::PwmConfigStored {
+                                        freq_hz: drive_pwm_hz,
+                                        max_duty_percent: limits.max_duty_percent,
+                                    })
+                                })
+                            } else {
+                                resolved_config(&cfg, group, board)
+                            };
+                            ConfigResponse::Snapshot(snapshot)
+                        }
                         // Boundary validation, before any persistence —
                         // the per-group rules live in `write_is_acceptable`
                         // (a sync helper: it keeps the float checks out of
@@ -480,9 +585,6 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             if motor_running
                                 && !write_is_live_safe_while_running(&keyed.inner.write) =>
                         {
-                            ConfigResponse::Busy
-                        }
-                        ConfigRequest::ResetAll if motor_running || maintenance_busy => {
                             ConfigResponse::Busy
                         }
                         ConfigRequest::Apply(keyed) => {
@@ -619,111 +721,39 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 };
                                 return guard.apply::<T>().await;
                             }
-                            // Update the in-memory mirror.
-                            critical_section::with(|cs| {
-                                let mut cfg = runtime_config.borrow(cs).borrow_mut();
-                                match &write {
-                                    ConfigValue::CurrentLimits(v) => {
-                                        cfg.current_limits = Some(v.clone());
-                                    }
-                                    ConfigValue::PwmConfig(v) => cfg.pwm_config = Some(v.clone()),
-                                    ConfigValue::PiGains(v) => cfg.pi_gains = Some(v.clone()),
-                                    ConfigValue::HallTuning(v) => {
-                                        cfg.hall_tuning = Some(v.clone());
-                                    }
-                                    ConfigValue::DcOffsets(v) => {
-                                        cfg.dc_offsets = Some(v.clone());
-                                    }
-                                    ConfigValue::Failsafe(v) => cfg.failsafe = Some(v.clone()),
-                                    ConfigValue::Velocity(v) => cfg.velocity = Some(*v),
-                                    ConfigValue::Derating(v) => cfg.derating = Some(*v),
-                                    ConfigValue::BoardCalibration(_)
-                                    | ConfigValue::MotorTemperature(_)
-                                    | ConfigValue::MotorParams(_)
-                                    | ConfigValue::VoltageFeedforward(_)
-                                    | ConfigValue::VoltageLimits(_)
-                                    | ConfigValue::Drive(_)
-                                    | ConfigValue::HallCalibration(_) => {
-                                        unreachable!("handled by atomic apply above");
-                                    }
+                            use crate::state::model::TuningUpdate;
+                            let tuning = match write {
+                                ConfigValue::CurrentLimits(v) => {
+                                    Some(TuningUpdate::CurrentLimits(v))
                                 }
-                            });
-                            // Make the write take effect on the live driver,
-                            // not only at the next boot. `send().await`, not
-                            // `try_send`: the ISR drains the channel every
-                            // cycle, and a dropped command would leave the
-                            // stored configuration and the driver disagreeing.
-                            match write {
-                                // Limits: clamped to the board ceiling and
-                                // the motor rating.
-                                ConfigValue::CurrentLimits(ref v) => {
-                                    let rating_a = critical_section::with(|cs| {
-                                        runtime_config
-                                            .borrow(cs)
-                                            .borrow()
-                                            .motor_params
-                                            .as_ref()
-                                            .and_then(
-                                                crate::storage::MotorParamsConfig::rating_current_a,
-                                            )
-                                            .unwrap_or(0.0)
+                                ConfigValue::PiGains(v) => Some(TuningUpdate::PiGains(v)),
+                                ConfigValue::DcOffsets(v) => Some(TuningUpdate::DcOffsets(v)),
+                                ConfigValue::Failsafe(v) => Some(TuningUpdate::Failsafe(v)),
+                                ConfigValue::Velocity(v) => Some(TuningUpdate::Velocity(v)),
+                                ConfigValue::Derating(v) => Some(TuningUpdate::Derating(v)),
+                                ConfigValue::HallTuning(v) => Some(TuningUpdate::HallTuning(v)),
+                                ConfigValue::PwmConfig(v) => {
+                                    critical_section::with(|cs| {
+                                        runtime_config.borrow(cs).borrow_mut().pwm_config = Some(v);
                                     });
-                                    CMD_CHANNEL
-                                        .send(DriverCommand::SetCurrentLimits(
-                                            CurrentLimits::from_config_clamped(
-                                                v,
-                                                hw_max_current_a,
-                                                rating_a,
-                                            ),
-                                        ))
-                                        .await;
+                                    None
                                 }
-                                // Explicit PI gains apply verbatim.
-                                ConfigValue::PiGains(v) => {
-                                    CMD_CHANNEL
-                                        .send(DriverCommand::SetPiGains { kp: v.kp, ki: v.ki })
-                                        .await;
-                                }
-                                ConfigValue::BoardCalibration(_)
-                                | ConfigValue::MotorTemperature(_)
-                                | ConfigValue::MotorParams(_)
-                                | ConfigValue::VoltageFeedforward(_)
-                                | ConfigValue::VoltageLimits(_)
-                                | ConfigValue::Drive(_)
-                                | ConfigValue::HallCalibration(_) => {
-                                    unreachable!("handled by atomic apply above");
-                                }
-                                // Cruise velocity-loop tuning applies live.
-                                ConfigValue::Velocity(v) => {
-                                    CMD_CHANNEL.send(DriverCommand::SetVelocityConfig(v)).await;
-                                }
-                                // Derating ramps apply to the live driver.
-                                ConfigValue::Derating(v) => {
-                                    CMD_CHANNEL.send(DriverCommand::SetDerating(v)).await;
-                                }
-                                // Failsafe tuning applies to the live driver.
-                                ConfigValue::Failsafe(v) => {
-                                    CMD_CHANNEL
-                                        .send(DriverCommand::SetFailsafe(FailsafeConfig::from(&v)))
-                                        .await;
-                                }
-                                // Persisted calibration must take effect now,
-                                // not only after the next reboot.
-                                ConfigValue::DcOffsets(v) => {
-                                    CMD_CHANNEL
-                                        .send(DriverCommand::SetCurrentOffsets([
-                                            v.phase_a, v.phase_b, v.phase_c,
-                                        ]))
-                                        .await;
-                                }
-                                // Deliberately no live-apply (exhaustive, no
-                                // catch-all — a new group must be classified
-                                // here or it will not compile):
-                                // - HallTuning is consumed at hall-estimator
-                                //   construction (boot only).
-                                // - PwmConfig is consumed at PWM construction
-                                //   on the next boot.
-                                ConfigValue::HallTuning(_) | ConfigValue::PwmConfig(_) => {}
+                                _ => unreachable!(
+                                    "handled by the model or measurement input transaction"
+                                ),
+                            };
+                            if let Some(tuning) = tuning {
+                                let Some(guard) = ModelApplyGuard::prepare_tuning(
+                                    tuning,
+                                    hw_max_current_a,
+                                    runtime_config,
+                                    &CONFIG_COORDINATOR,
+                                    keyed.id,
+                                    current_revision,
+                                ) else {
+                                    return ConfigResponse::Busy;
+                                };
+                                return guard.apply::<T>().await;
                             }
                             let revision = current_revision.wrapping_add(1);
                             critical_section::with(|cs| {
@@ -731,9 +761,9 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 action_cache
                                     .borrow(cs)
                                     .borrow_mut()
-                                    .insert(keyed.id, CachedConfigAck::Applied(revision));
+                                    .insert(keyed.id, CachedConfigAck::Staged(revision));
                             });
-                            ConfigResponse::Applied {
+                            ConfigResponse::Staged {
                                 req_id: keyed.id,
                                 revision,
                             }
@@ -768,7 +798,10 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             let actuator_busy = critical_section::with(|cs| {
                                 state_mutex.borrow(cs).borrow().actuator_busy()
                             });
-                            if actuator_busy {
+                            if actuator_busy
+                                || crate::state::DETECTION_ACTIVE
+                                    .load(core::sync::atomic::Ordering::Acquire)
+                            {
                                 return ConfigResponse::Busy;
                             }
                             let value = critical_section::with(|cs| {
@@ -850,7 +883,27 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             }
                             reply
                         }
-                        ConfigRequest::ResetAll => {
+                        ConfigRequest::ResetAll(request) => {
+                            if request.inner != boot_epoch {
+                                return ConfigResponse::Conflict {
+                                    current_revision: critical_section::with(|cs| {
+                                        revisions.borrow(cs).borrow()
+                                            [ConfigGroupId::MotorParams.index()]
+                                    }),
+                                };
+                            }
+                            match critical_section::with(|cs| reset_ack.borrow(cs).get()) {
+                                Some((id, true)) if id == request.id => {
+                                    return ConfigResponse::Reset;
+                                }
+                                Some((id, false)) if id == request.id => {
+                                    return ConfigResponse::ResetRequiresRestart;
+                                }
+                                _ => {}
+                            }
+                            if motor_running || maintenance_busy {
+                                return ConfigResponse::Busy;
+                            }
                             let _calibration_pending = FlashPendingGuard::arm();
                             if !critical_section::with(|cs| {
                                 state_mutex
@@ -860,25 +913,6 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             }) {
                                 return ConfigResponse::Busy;
                             }
-                            if persist {
-                                // Same TOCTOU guard as the Write arm above.
-                                let actuator_busy = critical_section::with(|cs| {
-                                    state_mutex.borrow(cs).borrow().actuator_busy()
-                                });
-                                if actuator_busy {
-                                    return ConfigResponse::Busy;
-                                }
-                                FLASH_DONE.reset();
-                                if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
-                                    return ConfigResponse::Error;
-                                }
-                                if !FLASH_DONE.wait().await {
-                                    return ConfigResponse::Error;
-                                }
-                            }
-                            // Flash is finished. Release its interlock before the
-                            // model command's ISR-side gate; the model slot owns
-                            // the stopped bridge from this point through commit.
                             let current_revision = critical_section::with(|cs| {
                                 revisions.borrow(cs).borrow()[ConfigGroupId::MotorParams.index()]
                             });
@@ -901,6 +935,19 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             ) else {
                                 return ConfigResponse::Busy;
                             };
+                            if persist {
+                                FLASH_DONE.reset();
+                                if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
+                                    return ConfigResponse::Error;
+                                }
+                                crate::state::set_drive_setup_recovery(true);
+                                if !FLASH_DONE.wait().await {
+                                    critical_section::with(|cs| {
+                                        reset_ack.borrow(cs).set(Some((request.id, false)));
+                                    });
+                                    return ConfigResponse::ResetRequiresRestart;
+                                }
+                            }
                             drop(_calibration_pending);
                             let reply = guard.apply::<T>().await;
                             #[cfg(all(feature = "detection", feature = "delivery"))]
@@ -910,7 +957,19 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 });
                                 super::detect::invalidate_setup_candidate();
                             }
-                            reply
+                            if matches!(reply, ConfigResponse::Reset) {
+                                critical_section::with(|cs| {
+                                    reset_ack.borrow(cs).set(Some((request.id, true)));
+                                });
+                                reply
+                            } else if persist {
+                                critical_section::with(|cs| {
+                                    reset_ack.borrow(cs).set(Some((request.id, false)));
+                                });
+                                ConfigResponse::ResetRequiresRestart
+                            } else {
+                                reply
+                            }
                         }
                     }
                 }
@@ -1234,7 +1293,8 @@ pub async fn run_all_servers_with_config<NS, F, T>(
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     foc_freq_hz: u32,
     control_timing: crate::types::ControlTiming,
-    hw_max_current_a: f32,
+    board: &crate::foc::config::BoardConfig,
+    boot_epoch: u64,
     persist: bool,
     pwm_limits: Option<crate::storage::PwmConfigLimits>,
 ) where
@@ -1242,6 +1302,7 @@ pub async fn run_all_servers_with_config<NS, F, T>(
     F: PlatformFault,
     T: crate::timer::Timer,
 {
+    let drive_pwm_hz = device_info.foc_freq_hz;
     join(
         join3(
             info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
@@ -1255,7 +1316,9 @@ pub async fn run_all_servers_with_config<NS, F, T>(
                     endpoints.clone(),
                     runtime_config,
                     state_mutex,
-                    hw_max_current_a,
+                    board,
+                    boot_epoch,
+                    drive_pwm_hz,
                     persist,
                     pwm_limits,
                 ),

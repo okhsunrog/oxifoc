@@ -11,7 +11,7 @@ use crate::motor::drive::DriveConfig;
 use crate::{
     motor::foc_driver::PreparedMotorModel,
     storage::{HallCalibrationConfig, MotorParamsConfig, RuntimeConfig, VoltageFeedforwardConfig},
-    types::{ConfigGroupId, ConfigResponse, ReqId},
+    types::{ConfigGroupId, ConfigRequest, ConfigResponse, ReqId},
 };
 use core::{
     cell::{RefCell, UnsafeCell},
@@ -26,11 +26,17 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 pub(crate) enum CachedConfigAck {
     Applied(u32),
     Persisted(u32),
+    Staged(u32),
 }
 
-#[cfg(feature = "storage")]
+struct ConfigAction {
+    id: ReqId,
+    request: Option<ConfigRequest>,
+    ack: Option<CachedConfigAck>,
+}
+
 pub(crate) struct ConfigActionCache {
-    entries: [Option<(ReqId, CachedConfigAck)>; 4],
+    entries: [Option<ConfigAction>; 4],
     next: usize,
 }
 
@@ -38,20 +44,58 @@ pub(crate) struct ConfigActionCache {
 impl ConfigActionCache {
     pub(crate) const fn new() -> Self {
         Self {
-            entries: [None; 4],
+            entries: [const { None }; 4],
             next: 0,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, id: ReqId) -> Option<CachedConfigAck> {
         self.entries
             .iter()
             .flatten()
-            .find_map(|(cached, ack)| (*cached == id).then_some(*ack))
+            .find(|entry| entry.id == id)?
+            .ack
+    }
+
+    pub(crate) fn begin(
+        &mut self,
+        id: ReqId,
+        request: &ConfigRequest,
+    ) -> Result<Option<CachedConfigAck>, ()> {
+        if let Some(entry) = self.entries.iter().flatten().find(|entry| entry.id == id) {
+            if entry.request.as_ref() != Some(request) {
+                return Err(());
+            }
+            return Ok(entry.ack);
+        }
+        self.push(ConfigAction {
+            id,
+            request: Some(request.clone()),
+            ack: None,
+        });
+        Ok(None)
     }
 
     pub(crate) fn insert(&mut self, id: ReqId, ack: CachedConfigAck) {
-        self.entries[self.next] = Some((id, ack));
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.id == id)
+        {
+            entry.ack = Some(ack);
+        } else {
+            self.push(ConfigAction {
+                id,
+                request: None,
+                ack: Some(ack),
+            });
+        }
+    }
+
+    fn push(&mut self, entry: ConfigAction) {
+        self.entries[self.next] = Some(entry);
         self.next = (self.next + 1) % self.entries.len();
     }
 }
@@ -62,6 +106,7 @@ pub(crate) struct ConfigCoordinator {
     pub revisions: Mutex<RefCell<[u32; ConfigGroupId::COUNT]>>,
     pub persisted: Mutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>>,
     pub actions: Mutex<RefCell<ConfigActionCache>>,
+    boot_current_offsets: Mutex<RefCell<Option<crate::storage::DcOffsetsConfig>>>,
 }
 
 impl ConfigCoordinator {
@@ -70,11 +115,33 @@ impl ConfigCoordinator {
             revisions: Mutex::new(RefCell::new([0; ConfigGroupId::COUNT])),
             persisted: Mutex::new(RefCell::new([None; ConfigGroupId::COUNT])),
             actions: Mutex::new(RefCell::new(ConfigActionCache::new())),
+            boot_current_offsets: Mutex::new(RefCell::new(None)),
         }
     }
 }
 
 pub(crate) static CONFIG_COORDINATOR: ConfigCoordinator = ConfigCoordinator::new();
+
+/// Publish boot-measured current offsets after the current sensor adopts them.
+pub fn publish_boot_current_offsets(config: &Mutex<RefCell<RuntimeConfig>>, offsets: [f32; 3]) {
+    let [phase_a, phase_b, phase_c] = offsets;
+    critical_section::with(|cs| {
+        let measured = crate::storage::DcOffsetsConfig {
+            phase_a,
+            phase_b,
+            phase_c,
+        };
+        *CONFIG_COORDINATOR
+            .boot_current_offsets
+            .borrow(cs)
+            .borrow_mut() = Some(measured.clone());
+        config.borrow(cs).borrow_mut().dc_offsets = Some(measured);
+        let index = ConfigGroupId::DcOffsets.index();
+        let mut revisions = CONFIG_COORDINATOR.revisions.borrow(cs).borrow_mut();
+        revisions[index] = revisions[index].wrapping_add(1);
+        CONFIG_COORDINATOR.persisted.borrow(cs).borrow_mut()[index] = None;
+    });
+}
 
 const EMPTY: u32 = 0;
 const PREPARING: u32 = 1;
@@ -92,7 +159,51 @@ pub(crate) enum ModelConfigUpdate {
     HallCalibration(HallCalibrationConfig),
     #[cfg(all(feature = "detection", feature = "delivery"))]
     DriveSetup(crate::drive_setup::ValidatedDriveSetup),
+    Tuning(TuningUpdate),
     Reset,
+}
+
+pub(crate) enum TuningUpdate {
+    CurrentLimits(crate::storage::CurrentLimitsConfig),
+    PiGains(crate::storage::PiGainsConfig),
+    DcOffsets(crate::storage::DcOffsetsConfig),
+    HallTuning(crate::storage::HallTuningConfig),
+    Failsafe(crate::storage::FailsafeConfigStored),
+    Velocity(crate::foc::velocity::VelocityLoopConfig),
+    Derating(crate::motor::derating::DeratingConfig),
+}
+
+impl TuningUpdate {
+    fn group(&self) -> ConfigGroupId {
+        match self {
+            Self::CurrentLimits(_) => ConfigGroupId::CurrentLimits,
+            Self::PiGains(_) => ConfigGroupId::PiGains,
+            Self::DcOffsets(_) => ConfigGroupId::DcOffsets,
+            Self::HallTuning(_) => ConfigGroupId::HallTuning,
+            Self::Failsafe(_) => ConfigGroupId::Failsafe,
+            Self::Velocity(_) => ConfigGroupId::Velocity,
+            Self::Derating(_) => ConfigGroupId::Derating,
+        }
+    }
+
+    fn apply_to_config(&self, config: &mut RuntimeConfig) {
+        match self {
+            Self::CurrentLimits(v) => config.current_limits = Some(v.clone()),
+            Self::PiGains(v) => config.pi_gains = Some(v.clone()),
+            Self::DcOffsets(v) => config.dc_offsets = Some(v.clone()),
+            Self::HallTuning(v) => config.hall_tuning = Some(v.clone()),
+            Self::Failsafe(v) => config.failsafe = Some(v.clone()),
+            Self::Velocity(v) => config.velocity = Some(*v),
+            Self::Derating(v) => config.derating = Some(*v),
+        }
+    }
+
+    fn allows_running(&self) -> bool {
+        matches!(
+            self,
+            Self::CurrentLimits(_) | Self::Velocity(_) | Self::Failsafe(_)
+        )
+    }
 }
 
 impl From<MotorParamsConfig> for ModelConfigUpdate {
@@ -117,6 +228,7 @@ impl ModelConfigUpdate {
             }
             #[cfg(all(feature = "detection", feature = "delivery"))]
             Self::DriveSetup(value) => value.project(config),
+            Self::Tuning(value) => value.apply_to_config(config),
             Self::Reset => *config = RuntimeConfig::default(),
         }
     }
@@ -124,6 +236,7 @@ impl ModelConfigUpdate {
     fn group(&self) -> ConfigGroupId {
         match self {
             Self::Drive(_) => ConfigGroupId::Drive,
+            Self::Tuning(value) => value.group(),
             Self::VoltageLimits(_) => ConfigGroupId::VoltageLimits,
             #[cfg(all(feature = "detection", feature = "delivery"))]
             Self::DriveSetup(_) => ConfigGroupId::MotorParams,
@@ -139,6 +252,7 @@ impl ModelConfigUpdate {
     reason = "one static zero-copy slot owns prepared ISR state; no embedded allocator or extra payload move"
 )]
 enum PreparedUpdate {
+    Tuning { board_trip_a: f32, rating_a: f32 },
     Drive(DriveConfig),
     VoltageLimits(crate::motor::foc_driver::PreparedVoltageLimits),
     Motor(PreparedMotorModel),
@@ -149,7 +263,7 @@ impl PreparedUpdate {
     fn pole_pairs(&self) -> Option<u8> {
         match self {
             Self::Motor(model) => Some(model.pole_pairs),
-            Self::Hall(_) | Self::VoltageLimits(_) | Self::Drive(_) => None,
+            Self::Hall(_) | Self::VoltageLimits(_) | Self::Drive(_) | Self::Tuning { .. } => None,
         }
     }
 }
@@ -301,6 +415,38 @@ pub(crate) struct ModelApplyGuard {
 }
 
 impl ModelApplyGuard {
+    pub fn prepare_tuning(
+        value: TuningUpdate,
+        board_trip_a: f32,
+        config: &'static Mutex<RefCell<RuntimeConfig>>,
+        coordinator: &'static ConfigCoordinator,
+        request: ReqId,
+        expected_revision: u32,
+    ) -> Option<Self> {
+        let rating_a = critical_section::with(|cs| {
+            config
+                .borrow(cs)
+                .borrow()
+                .motor_params
+                .as_ref()
+                .and_then(MotorParamsConfig::rating_current_a)
+                .unwrap_or(0.0)
+        });
+        Self::prepare_inner(
+            PreparedUpdate::Tuning {
+                board_trip_a,
+                rating_a,
+            },
+            ModelConfigUpdate::Tuning(value),
+            None,
+            config,
+            &coordinator.revisions,
+            &coordinator.actions,
+            request,
+            expected_revision,
+        )
+    }
+
     pub fn prepare_drive(
         value: DriveConfig,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
@@ -482,6 +628,7 @@ pub(super) fn apply<P, C, Ph, S>(
     foc: &mut crate::motor::FocDriver<P, C, Ph, S>,
     state: &Mutex<RefCell<super::MotorControlState>>,
     allowed: bool,
+    running_allowed: bool,
 ) where
     P: crate::foc::pwm::PhasePwm,
     C: crate::foc::sensors::CurrentSensor,
@@ -497,12 +644,51 @@ pub(super) fn apply<P, C, Ph, S>(
     let current_revision =
         critical_section::with(|cs| pending.revisions.borrow(cs).borrow()[group.index()]);
     let authorized = !super::DETECTION_ACTIVE.load(Ordering::Acquire);
+    let allowed = allowed
+        || (running_allowed
+            && matches!(&pending.update, ModelConfigUpdate::Tuning(value) if value.allows_running()));
     let response = if current_revision != pending.expected_revision {
         ConfigResponse::Conflict { current_revision }
     } else if !allowed || !authorized {
         ConfigResponse::Busy
     } else {
         let applied = match &mut pending.prepared {
+            PreparedUpdate::Tuning {
+                board_trip_a,
+                rating_a,
+            } => {
+                let ModelConfigUpdate::Tuning(value) = &pending.update else {
+                    unreachable!("prepared tuning requires its config value");
+                };
+                match value {
+                    TuningUpdate::CurrentLimits(v) => {
+                        foc.set_current_limits(
+                            crate::motor::foc_driver::CurrentLimits::from_config_clamped(
+                                v,
+                                *board_trip_a,
+                                *rating_a,
+                            ),
+                        );
+                    }
+                    TuningUpdate::PiGains(v) => foc.set_current_pi_gains(v.kp, v.ki),
+                    TuningUpdate::HallTuning(_) => {}
+                    TuningUpdate::DcOffsets(v) => {
+                        foc.set_current_offsets((v.phase_a, v.phase_b, v.phase_c));
+                    }
+                    TuningUpdate::Failsafe(v) => {
+                        foc.set_failsafe(crate::motor::failsafe::FailsafeConfig::from(v));
+                    }
+                    TuningUpdate::Velocity(v) => foc.set_velocity_config(*v),
+                    TuningUpdate::Derating(v) => foc.set_derating(*v),
+                }
+                if let TuningUpdate::HallTuning(v) = value
+                    && !foc.phase_mut().apply_hall_tuning(v)
+                {
+                    Err(crate::motor::foc_driver::MotorModelError::Unsupported)
+                } else {
+                    Ok(None)
+                }
+            }
             PreparedUpdate::Drive(value) => foc.set_drive_config(*value).map(|()| None),
             PreparedUpdate::VoltageLimits(prepared) => {
                 foc.apply_voltage_limits(*prepared).map(|()| None)
@@ -519,7 +705,25 @@ pub(super) fn apply<P, C, Ph, S>(
                     foc.set_failsafe(Default::default());
                     foc.set_drive_config(DriveConfig::DEFAULT)
                         .expect("stopped reset accepts the default drive configuration");
-                    *pending.config.borrow(cs).borrow_mut() = RuntimeConfig::default();
+                    let _ = foc.phase_mut().apply_hall_tuning(&Default::default());
+                    let mut config = pending.config.borrow(cs).borrow_mut();
+                    let dc_offsets = CONFIG_COORDINATOR
+                        .boot_current_offsets
+                        .borrow(cs)
+                        .borrow()
+                        .clone();
+                    if let Some(offsets) = &dc_offsets {
+                        foc.set_current_offsets((
+                            offsets.phase_a,
+                            offsets.phase_b,
+                            offsets.phase_c,
+                        ));
+                    }
+
+                    *config = RuntimeConfig {
+                        dc_offsets,
+                        ..RuntimeConfig::default()
+                    };
                     for revision in pending.revisions.borrow(cs).borrow_mut().iter_mut() {
                         *revision = revision.wrapping_add(1);
                     }

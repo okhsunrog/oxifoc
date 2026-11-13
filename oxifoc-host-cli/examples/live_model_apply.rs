@@ -82,6 +82,7 @@ fn apply_model(runtime: &HostRuntime, value: &MotorParamsConfig) -> Result<Confi
     let before = config::read_group(&runtime.cmd_tx, ConfigGroupId::MotorParams)?;
     let revision = config::apply_write(
         &runtime.cmd_tx,
+        before.boot_epoch,
         before.revision,
         ConfigValue::MotorParams(value.clone()),
     )?;

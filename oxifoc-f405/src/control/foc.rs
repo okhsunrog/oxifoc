@@ -455,16 +455,10 @@ pub async fn init(
 
     if calibration_started {
         match CURRENT_OFFSET_DONE.wait().await {
-            Ok(report) => {
-                critical_section::with(|cs| {
-                    crate::RUNTIME_CONFIG.borrow(cs).borrow_mut().dc_offsets =
-                        Some(oxifoc_core::storage::DcOffsetsConfig {
-                            phase_a: report.offsets[0],
-                            phase_b: report.offsets[1],
-                            phase_c: report.offsets[2],
-                        });
-                });
-            }
+            Ok(report) => oxifoc_core::state::model::publish_boot_current_offsets(
+                &crate::RUNTIME_CONFIG,
+                report.offsets,
+            ),
             Err(_) => defmt::error!("current-offset calibration failed"),
         }
     }

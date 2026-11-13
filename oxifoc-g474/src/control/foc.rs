@@ -74,6 +74,7 @@ pub async fn init(
 
     // Build current sensor and phase manager
     let current_sensor = G474CurrentSensor::from_board(&BOARD, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+    crate::sensors::hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     // The g474 FOC ISR is not armed yet (ADC1_2 is never unmasked — the
     // motor path on this board is dormant, see docs/TODO.md), so there is
@@ -125,31 +126,18 @@ pub async fn init(
     // Allow ADC injected conversions to start firing before zero-current calibration.
     Timer::after(Duration::from_millis(10)).await;
     foc_driver.current_sensor_mut().calibrate().await;
-    oxifoc_core::state::BOOT_CURRENT_OFFSET_PENDING.store(false, Ordering::Release);
 
-    // Publish the measured zero-current offsets into the DcOffsets config
-    // group (mirrors g431/f405): the host's telemetry
-    // enrichment falls back to mid-scale ADC counts for a missing group, and
-    // on this board's +1.71 V-biased amps that fallback shifts reconstructed
-    // phase currents by ~1.2 A. The boot measurement is the ground truth for
-    // this power-up.
-    {
-        let (oa, ob, oc) = foc_driver.current_sensor().converter().get_offsets();
-        critical_section::with(|cs| {
-            crate::RUNTIME_CONFIG.borrow(cs).borrow_mut().dc_offsets =
-                Some(oxifoc_core::storage::DcOffsetsConfig {
-                    phase_a: oa,
-                    phase_b: ob,
-                    phase_c: oc,
-                });
-        });
-    }
+    let (oa, ob, oc) = foc_driver.current_sensor().converter().get_offsets();
+    oxifoc_core::state::model::publish_boot_current_offsets(
+        &crate::RUNTIME_CONFIG, [oa, ob, oc],
+    );
 
     // Install FOC driver for ISR-only access.
     FOC_DRIVER.lock(|cell| {
         cell.replace(Some(foc_driver));
     });
 
+    oxifoc_core::state::BOOT_CURRENT_OFFSET_PENDING.store(false, Ordering::Release);
     defmt::info!("FOC driver initialized and calibrated");
 }
 

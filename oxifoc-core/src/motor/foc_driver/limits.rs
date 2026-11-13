@@ -235,18 +235,7 @@ impl CurrentLimits {
             // ON the board's kill line (and the dq trip 1.3× above it) on
             // every fresh board — the exact state the headroom fix above
             // was meant to end.
-            None => Self::from_config_clamped(
-                &CurrentLimitsConfig {
-                    max_iq_a: 0.0,
-                    max_brake_a: 0.0,
-                    max_phase_current_a: 0.0,
-                    bus_in_max_a: -1.0,
-                    bus_regen_max_a: -1.0,
-                    max_dissipation_w: 0.0,
-                },
-                hw_max_a,
-                rating_a,
-            ),
+            None => Self::from_config_clamped(&CurrentLimitsConfig::AUTO, hw_max_a, rating_a),
         }
     }
 

@@ -85,9 +85,9 @@ def main():
         if args.brake_power_w is not None:
             probe.run(["just", "cli-bridge", "config", "set", "current-limits", f"max_dissipation_w={args.brake_power_w}", "--volatile"])
         if args.speed_ceiling is not None:
-            probe.run(["just", "cli-bridge", "config", "set", "drive",
-                       f"max_forward_erad_s={args.speed_ceiling}",
-                       f"max_reverse_erad_s={args.speed_ceiling}", "speed_start_frac=0.9", "--volatile"])
+            probe.run(["just", "cli-bridge", "config", "set", "derating",
+                       f"speed.max_forward_erad_s={args.speed_ceiling}",
+                       f"speed.max_reverse_erad_s={args.speed_ceiling}", "speed.speed_start_frac=0.9", "--volatile"])
         gains = [f"{key}={value}" for key, value in [("kp", args.velocity_kp), ("ki", args.velocity_ki)] if value is not None]
         if gains:
             probe.run(["just", "cli-bridge", "config", "set", "velocity", *gains, "--volatile"])

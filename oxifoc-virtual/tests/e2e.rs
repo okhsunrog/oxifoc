@@ -179,6 +179,9 @@ fn run_e2e(transport: TransportType) {
     // the requested 4 A under load instead of the configured 1 A.
     oxifoc_host_lib::ops::config::apply_write(
         &rt.cmd_tx,
+        oxifoc_host_lib::ops::config::read_group(&rt.cmd_tx, ConfigGroupId::CurrentLimits)
+            .unwrap()
+            .boot_epoch,
         0,
         ConfigValue::CurrentLimits(CurrentLimitsConfig {
             max_iq_a: 1.0,
@@ -317,9 +320,16 @@ fn run_e2e(transport: TransportType) {
         .blocking_recv()
         .expect("initial config response channel")
         .expect("initial config read");
+    let ConfigResponse::Snapshot(snapshot) = &initial else {
+        panic!("expected config snapshot");
+    };
+    let boot_epoch = snapshot.boot_epoch;
     assert_eq!(
         initial,
         ConfigResponse::Snapshot(oxifoc_core::types::ConfigSnapshot {
+            effective: None,
+            default: None,
+            boot_epoch,
             valid: true,
             group: ConfigGroupId::Failsafe,
             revision: 0,
@@ -331,6 +341,7 @@ fn run_e2e(transport: TransportType) {
     let apply = Keyed::new(
         ReqId(0xA11E_0001),
         ConfigApply {
+            boot_epoch,
             expected_revision: 0,
             write: ConfigValue::Failsafe(FailsafeConfigStored::default()),
         },
@@ -352,12 +363,49 @@ fn run_e2e(transport: TransportType) {
         );
     }
 
+    for (request, expected) in [
+        (
+            Keyed::new(
+                apply.id,
+                ConfigApply {
+                    boot_epoch,
+                    expected_revision: 0,
+                    write: ConfigValue::Failsafe(FailsafeConfigStored {
+                        staleness_timeout_ms: 200,
+                        ..Default::default()
+                    }),
+                },
+            ),
+            ConfigResponse::Invalid,
+        ),
+        (
+            Keyed::new(
+                ReqId(0xA11E_0010),
+                ConfigApply {
+                    boot_epoch: boot_epoch ^ 1,
+                    expected_revision: 1,
+                    write: apply.inner.write.clone(),
+                },
+            ),
+            ConfigResponse::Conflict {
+                current_revision: 1,
+            },
+        ),
+    ] {
+        let (tx, rx) = config_channel();
+        rt.cmd_tx
+            .send(HostCommand::ConfigApply(request, tx))
+            .unwrap();
+        assert_eq!(rx.blocking_recv().unwrap().unwrap(), expected);
+    }
+
     let (tx, rx) = config_channel();
     rt.cmd_tx
         .send(HostCommand::ConfigApply(
             Keyed::new(
                 ReqId(0xA11E_0002),
                 ConfigApply {
+                    boot_epoch,
                     expected_revision: 0,
                     write: ConfigValue::Failsafe(FailsafeConfigStored::default()),
                 },
@@ -377,6 +425,7 @@ fn run_e2e(transport: TransportType) {
     let persist = Keyed::new(
         ReqId(0xA11E_0003),
         ConfigPersist {
+            boot_epoch,
             group: ConfigGroupId::Failsafe,
             expected_revision: 1,
         },
@@ -593,13 +642,21 @@ fn drive_config_applies_to_the_throttle_command() {
     assert!(rt.wait_for_connection(Duration::from_secs(15)));
     let drive = DriveConfig {
         invert_direction: true,
-        max_forward_erad_s: 350.0,
-        max_reverse_erad_s: 120.0,
-        duty_start_frac: DriveConfig::E_SKATE_DUTY_START,
-        ..DriveConfig::DEFAULT
     };
+    let derating = oxifoc_core::motor::derating::DeratingConfig {
+        speed: oxifoc_core::motor::derating::SpeedDerating {
+            max_forward_erad_s: 350.0,
+            max_reverse_erad_s: 120.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let boot_epoch = read_group(&rt.cmd_tx, ConfigGroupId::Drive)
+        .unwrap()
+        .boot_epoch;
+    apply_write(&rt.cmd_tx, boot_epoch, 0, ConfigValue::Derating(derating)).unwrap();
     let group = ConfigGroupId::Drive;
-    let revision = apply_write(&rt.cmd_tx, 0, ConfigValue::Drive(drive)).unwrap();
+    let revision = apply_write(&rt.cmd_tx, boot_epoch, 0, ConfigValue::Drive(drive)).unwrap();
     let snapshot = read_group(&rt.cmd_tx, group).unwrap();
     assert_eq!(snapshot.revision, revision);
     assert_eq!(snapshot.value, Some(ConfigValue::Drive(drive)));
@@ -619,6 +676,7 @@ fn drive_config_applies_to_the_throttle_command() {
     assert!(
         apply_write(
             &rt.cmd_tx,
+            boot_epoch,
             revision,
             ConfigValue::Drive(DriveConfig::DEFAULT),
         )
@@ -628,6 +686,72 @@ fn drive_config_applies_to_the_throttle_command() {
         send(ControlMode::Stopped).outcome,
         MotorCommandOutcome::Applied
     );
+    rt.shutdown();
+}
+
+#[test]
+fn partial_config_updates_use_device_defaults() {
+    use oxifoc_core::storage::{CurrentLimitsConfig, HallTuningConfig, VoltageLimitsConfig};
+    use oxifoc_host_lib::ops::config::{apply_fields, apply_write, read_group};
+
+    let port = free_tcp_port();
+    let _device = spawn_device("tcp", port);
+    let rt = start_host(HostConfig {
+        transport: Some(TransportType::Tcp),
+        tcp_host: Some("127.0.0.1".into()),
+        tcp_port: Some(port),
+        stream_defmt: Some(false),
+        ..Default::default()
+    });
+    assert!(rt.wait_for_connection(Duration::from_secs(15)));
+    let group = ConfigGroupId::VoltageLimits;
+    let before = read_group(&rt.cmd_tx, group).unwrap();
+    let Some(ConfigValue::VoltageLimits(active)) = before.effective else {
+        panic!("device must report its voltage limits");
+    };
+    assert!(before.value.is_none());
+    let (_, revision) = apply_fields(
+        &rt.cmd_tx,
+        group,
+        &[format!("max_vbus_mv={}", active.max_vbus_mv - 1000)],
+    )
+    .unwrap();
+    let after = read_group(&rt.cmd_tx, group).unwrap();
+    assert_eq!(after.revision, revision);
+    assert_eq!(
+        after.value,
+        Some(ConfigValue::VoltageLimits(VoltageLimitsConfig {
+            max_vbus_mv: active.max_vbus_mv - 1000,
+            ..active
+        }))
+    );
+
+    let group = ConfigGroupId::CurrentLimits;
+    apply_fields(&rt.cmd_tx, group, &["bus_in_max_a=5".into()]).unwrap();
+    assert_eq!(
+        read_group(&rt.cmd_tx, group).unwrap().value,
+        Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
+            bus_in_max_a: 5.0,
+            ..CurrentLimitsConfig::AUTO
+        }))
+    );
+
+    let group = ConfigGroupId::HallTuning;
+    let tuning = HallTuningConfig {
+        interp_min_erpm: 600.0,
+        ..Default::default()
+    };
+    let before = read_group(&rt.cmd_tx, group).unwrap();
+    let revision = apply_write(
+        &rt.cmd_tx,
+        before.boot_epoch,
+        before.revision,
+        ConfigValue::HallTuning(tuning.clone()),
+    )
+    .unwrap();
+    let after = read_group(&rt.cmd_tx, group).unwrap();
+    assert_eq!(after.revision, revision);
+    assert_eq!(after.value, Some(ConfigValue::HallTuning(tuning)));
     rt.shutdown();
 }
 
@@ -662,7 +786,7 @@ fn invalid_loop_config_does_not_advance_the_revision() {
     ] {
         let group = write.group();
         let before = read_group(&rt.cmd_tx, group).unwrap();
-        let error = apply_write(&rt.cmd_tx, before.revision, write).unwrap_err();
+        let error = apply_write(&rt.cmd_tx, before.boot_epoch, before.revision, write).unwrap_err();
         assert!(error.to_string().contains("fails validation"));
         assert_eq!(read_group(&rt.cmd_tx, group).unwrap(), before);
     }
@@ -769,6 +893,7 @@ fn board_calibration_e2e_tcp() {
                 Keyed::new(
                     ReqId(id),
                     ConfigApply {
+                        boot_epoch: initial.boot_epoch,
                         expected_revision: revision,
                         write: ConfigValue::BoardCalibration(BoardCalibrationConfig {
                             vbus_gain: gain,
@@ -854,7 +979,7 @@ fn board_calibration_e2e_tcp() {
         .send(HostCommand::MotorAck(ControlMode::Stopped, tx))
         .unwrap();
     assert!(rx.blocking_recv().unwrap().is_ok());
-    assert!(persist_group(&rt.cmd_tx, group, 2).unwrap());
+    assert!(persist_group(&rt.cmd_tx, group, initial.boot_epoch, 2).unwrap());
     let ConfigSnapshot {
         value,
         persisted,

@@ -247,15 +247,20 @@ impl ProtectionMonitor {
     }
 
     fn speed_ceiling(&self, physical_direction: f32) -> f32 {
-        self.drive.speed_ceiling(physical_direction)
+        self.config
+            .speed
+            .speed_ceiling(self.drive.rider_sign(physical_direction))
     }
 
     fn drive_cut(&self, omega: f32) -> f32 {
-        self.drive.speed_cut(omega).min(self.duty_cut())
+        self.config
+            .speed
+            .speed_cut(self.drive.rider_sign(omega))
+            .min(self.duty_cut())
     }
 
     fn duty_cut(&self) -> f32 {
-        let start = self.drive.duty_start_frac;
+        let start = self.config.modulation.duty_start_frac;
         if start >= 1.0 || self.duty_utilization <= start {
             1.0
         } else {
@@ -376,15 +381,15 @@ where
 {
     /// Apply derating configuration (boot / live config write).
     pub fn set_derating(&mut self, cfg: DeratingConfig) {
+        if self.protection.config.modulation != cfg.modulation {
+            self.reset_duty_utilization();
+        }
         self.protection.configure(cfg);
         self.velocity_schedule.clear_request();
     }
 
     /// Install the rider-facing configuration at boot or at the stopped apply boundary.
     pub fn set_drive_config(&mut self, cfg: DriveConfig) -> Result<(), super::MotorModelError> {
-        if !cfg.is_sane() {
-            return Err(super::MotorModelError::Invalid);
-        }
         if self.mode() != crate::types::ControlMode::Stopped || self.current_offset_active() {
             return Err(super::MotorModelError::Busy);
         }
@@ -430,7 +435,7 @@ where
     }
 
     pub(super) fn update_duty_utilization(&mut self, vd: f32, vq: f32, dt: f32) {
-        if self.protection.drive.duty_start_frac < 1.0 {
+        if self.protection.config.modulation.duty_start_frac < 1.0 {
             let voltage_limit = self.controller.voltage_limit();
             if voltage_limit > 0.0 {
                 let utilization = (sqrtf(vd * vd + vq * vq) / voltage_limit).min(1.0);
@@ -537,7 +542,7 @@ where
     ///   (heat, sag, speed). The speed cut is re-evaluated FRESH each cycle
     ///   on top of the decimated scales — a 78 Hz-stale cut bang-bangs the
     ///   torque around the ceiling on a fast free rotor (see
-    ///   [`DriveConfig::speed_cut`]).
+    ///   [`crate::motor::derating::SpeedDerating::speed_cut`]).
     /// - Opposing is braking: `max_brake_a` × the brake derate (heat only,
     ///   never speed). The regen the supply refuses (the regen-OV derate,
     ///   `bus_regen_max_a`) is burned in the windings when dissipation is

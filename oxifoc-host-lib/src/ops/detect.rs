@@ -235,8 +235,8 @@ pub fn apply_current_offsets(cmd: &CommandSender, report: &CurrentOffsetReport) 
     obj.insert("phase_c".into(), json!(report.offsets[2]));
     let write = config::write_from_value(ConfigGroupId::DcOffsets, value)
         .context("patched dc-offsets no longer deserializes")?;
-    let revision = config::apply_write(cmd, state.revision, write)?;
-    config::persist_group(cmd, ConfigGroupId::DcOffsets, revision)?;
+    let revision = config::apply_write(cmd, state.boot_epoch, state.revision, write)?;
+    config::persist_group(cmd, ConfigGroupId::DcOffsets, state.boot_epoch, revision)?;
     Ok(())
 }
 
@@ -444,8 +444,13 @@ pub fn apply_step(cmd: &CommandSender, resp: &DetectResponse) -> Result<serde_js
             let hall = serde_json::to_value(calibration)?;
             let write = config::write_from_value(ConfigGroupId::HallCalibration, hall.clone())
                 .context("Hall candidate no longer deserializes")?;
-            let revision = config::apply_write(cmd, state.revision, write)?;
-            config::persist_group(cmd, ConfigGroupId::HallCalibration, revision)?;
+            let revision = config::apply_write(cmd, state.boot_epoch, state.revision, write)?;
+            config::persist_group(
+                cmd,
+                ConfigGroupId::HallCalibration,
+                state.boot_epoch,
+                revision,
+            )?;
             Ok(hall)
         }
         DetectResponse::Error(e) => bail!("cannot apply a failed detection: {e:?}"),
@@ -484,8 +489,8 @@ pub fn apply_step(cmd: &CommandSender, resp: &DetectResponse) -> Result<serde_js
             }
             let write = config::write_from_value(ConfigGroupId::MotorParams, value.clone())
                 .context("patched motor-params no longer deserializes")?;
-            let revision = config::apply_write(cmd, state.revision, write)?;
-            config::persist_group(cmd, ConfigGroupId::MotorParams, revision)?;
+            let revision = config::apply_write(cmd, state.boot_epoch, state.revision, write)?;
+            config::persist_group(cmd, ConfigGroupId::MotorParams, state.boot_epoch, revision)?;
             Ok(value)
         }
     }

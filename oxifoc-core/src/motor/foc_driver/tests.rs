@@ -4536,8 +4536,11 @@ mod severity_gate {
         let _serial = cmd_channel_lock();
         let mut h = running_harness();
         h.driver.set_derating(DeratingConfig {
-            vbus_cut_start_v: 22.0,
-            vbus_cut_end_v: 18.0,
+            bus_voltage: crate::motor::derating::BusVoltageDerating {
+                vbus_cut_start_v: 22.0,
+                vbus_cut_end_v: 18.0,
+                ..Default::default()
+            },
             ..Default::default()
         });
 

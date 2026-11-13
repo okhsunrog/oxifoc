@@ -87,7 +87,8 @@ async fn main(spawner: Spawner) {
     // Stack first (no defmt), then the RTT/defmt sink, then the other transports
     // (which log via defmt). Idents of every registered interface are collected
     // for the state monitor.
-    let rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
+    let mut rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
+    let boot_epoch = (u64::from(rng.next_u32()) << 32) | u64::from(rng.next_u32());
     let stack = transport::init_stack(rng);
 
     // ========== STEP 3: RTT (defmt sink; ergot interface when transport-rtt) ==
@@ -178,7 +179,7 @@ async fn main(spawner: Spawner) {
     }
 
     // Spawn protocol servers (state monitor watches every registered interface)
-    protocol::servers::spawn_servers(&spawner, stack, &idents);
+    protocol::servers::spawn_servers(&spawner, stack, &idents, boot_epoch);
 
     // Transition to "waiting for link" once tasks are up
     set_device_state(DeviceState::WaitingLink);

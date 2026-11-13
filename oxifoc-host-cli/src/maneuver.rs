@@ -497,6 +497,9 @@ mod tests {
             raw_telemetry: None,
             raw_session: None,
             board_calibration: ConfigSnapshot {
+                effective: None,
+                default: None,
+                boot_epoch: 0,
                 group: ConfigGroupId::BoardCalibration,
                 revision: 0,
                 persisted: false,

@@ -912,17 +912,20 @@ where
             },
             #[cfg(feature = "storage")]
             DriverCommand::ApplyMotorModel(generation) => {
-                let allowed = critical_section::with(|cs| {
+                let (allowed, running_allowed) = critical_section::with(|cs| {
                     let state = state_mutex.borrow(cs).borrow();
-                    state.motor_state == MotorState::Stopped
-                        && state.control_mode == ControlMode::Stopped
-                        && state.driver_operation == DriverOperation::Idle
+                    let idle = state.driver_operation == DriverOperation::Idle
                         && !boot_current_offset_pending()
                         && !current_offset_request_pending()
                         && !FLASH_OP_PENDING.load(Ordering::Acquire)
-                        && !fault_registry.any_stopping()
+                        && !fault_registry.any_stopping();
+                    (
+                        idle && state.motor_state == MotorState::Stopped
+                            && state.control_mode == ControlMode::Stopped,
+                        idle && state.motor_state == MotorState::Running,
+                    )
                 });
-                model::apply(generation, foc, state_mutex, allowed);
+                model::apply(generation, foc, state_mutex, allowed, running_allowed);
                 continue;
             }
             DriverCommand::SetCurrentLimits(limits) => {

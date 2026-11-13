@@ -130,7 +130,8 @@ pub async fn run(
                 runtime_config,
                 foc_freq_hz,
                 oxifoc_core::types::ControlTiming::from_hz(foc_freq_hz),
-                max_current_a,
+                &crate::sim::board(max_current_a),
+                rand::random::<u64>(),
                 true,
                 None,
             ))

@@ -1,6 +1,7 @@
 use super::*;
 use crate::foc::phase::{PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::foc::velocity::VelocityLoopConfig;
+use crate::motor::derating::{DeratingConfig, ModulationDerating, SpeedDerating};
 use crate::motor::drive::DriveConfig;
 
 struct SplitPhase {
@@ -49,11 +50,16 @@ fn inverted_directional_limits_follow_rider_and_preserve_braking() {
     driver
         .set_drive_config(DriveConfig {
             invert_direction: true,
+        })
+        .unwrap();
+    driver.set_derating(DeratingConfig {
+        speed: SpeedDerating {
             max_forward_erad_s: 100.0,
             max_reverse_erad_s: 50.0,
             ..Default::default()
-        })
-        .unwrap();
+        },
+        ..Default::default()
+    });
     assert_eq!(driver.speed_ceiling(-90.0), 100.0);
     assert_eq!(driver.speed_ceiling(90.0), 50.0);
     assert_eq!(driver.grant_torque(0.0, -3.0, -90.0).1, -1.5);
@@ -77,12 +83,12 @@ fn inverted_directional_limits_follow_rider_and_preserve_braking() {
 #[test]
 fn duty_taper_scales_throttle_and_clamps_only_larger_amp_requests() {
     let mut driver = split_driver(100.0, Some(100.0));
-    driver
-        .set_drive_config(DriveConfig {
-            duty_start_frac: DriveConfig::E_SKATE_DUTY_START,
-            ..Default::default()
-        })
-        .unwrap();
+    driver.set_derating(DeratingConfig {
+        modulation: ModulationDerating {
+            duty_start_frac: ModulationDerating::E_SKATE_DUTY_START,
+        },
+        ..Default::default()
+    });
     let voltage_limit = driver.controller.voltage_limit();
     driver.update_duty_utilization(0.0, 0.925 * voltage_limit, 0.002);
     assert!((driver.throttle_current(0.5) - 0.75).abs() < 1e-5);
@@ -132,11 +138,14 @@ fn velocity_feedback_ignores_frame_corrections_and_reenters_bumplessly() {
 #[test]
 fn velocity_authority_and_final_current_grant_share_physical_speed() {
     let mut driver = split_driver(1000.0, Some(20.0));
-    let drive = DriveConfig {
-        max_forward_erad_s: 100.0,
+    let derating = DeratingConfig {
+        speed: SpeedDerating {
+            max_forward_erad_s: 100.0,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    driver.set_drive_config(drive).unwrap();
+    driver.set_derating(derating);
     driver.set_velocity_config(VelocityLoopConfig {
         kp: 1.0,
         ki: 0.0,
@@ -152,7 +161,7 @@ fn velocity_authority_and_final_current_grant_share_physical_speed() {
     );
 
     let mut overspeed = split_driver(0.0, Some(200.0));
-    overspeed.set_drive_config(drive).unwrap();
+    overspeed.set_derating(derating);
     overspeed.set_mode(ControlMode::CurrentControl {
         iq_target: 3.0,
         id_target: 0.0,

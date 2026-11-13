@@ -69,9 +69,11 @@ pub enum ConfigKey {
     MotorTemperature = 16,
     /// Reserved key tag. Keep it recognizable during flash compaction.
     Reserved17 = 17,
-    Drive = 18,
-    /// Temperature and bus voltage ramps.
-    Derating = 19,
+    /// Reserved for the v19 drive and derating layouts.
+    Reserved18 = 18,
+    Reserved19 = 19,
+    Drive = 20,
+    Derating = 21,
 }
 
 impl Key for ConfigKey {
@@ -105,8 +107,10 @@ impl Key for ConfigKey {
             15 => Self::InstalledDrive,
             16 => Self::MotorTemperature,
             17 => Self::Reserved17,
-            18 => Self::Drive,
-            19 => Self::Derating,
+            18 => Self::Reserved18,
+            19 => Self::Reserved19,
+            20 => Self::Drive,
+            21 => Self::Derating,
             _ => return Err(SerializationError::InvalidFormat),
         };
         Ok((key, 1))
@@ -499,6 +503,18 @@ impl CurrentLimitsConfig {
     }
 }
 
+impl CurrentLimitsConfig {
+    /// All configurable limits inherit the board or motor budget.
+    pub const AUTO: Self = Self {
+        max_iq_a: 0.0,
+        max_brake_a: 0.0,
+        max_phase_current_a: 0.0,
+        bus_in_max_a: -1.0,
+        bus_regen_max_a: -1.0,
+        max_dissipation_w: 0.0,
+    };
+}
+
 impl Default for CurrentLimitsConfig {
     fn default() -> Self {
         Self {
@@ -777,7 +793,7 @@ impl RuntimeConfig {
     }
 
     pub fn drive_is_valid(&self) -> bool {
-        !self.drive_invalid && self.drive.is_none_or(DriveConfig::is_sane)
+        !self.drive_invalid
     }
 
     pub fn board_calibration_is_valid(&self) -> bool {
@@ -1127,7 +1143,7 @@ where
         .fetch_item::<DriveConfig>(buf, &ConfigKey::Drive)
         .await
     {
-        Ok(Some(value)) if value.is_sane() => cfg.drive = Some(value),
+        Ok(Some(value)) => cfg.drive = Some(value),
         Ok(None) => {}
         _ => cfg.drive_invalid = true,
     }
@@ -1559,6 +1575,12 @@ mod tests {
         let old_drive = (true, Some(200.0f32), None::<f32>, 0.85f32);
         let bytes: &[u8] = postcard::to_slice(&old_drive, &mut old_buf).unwrap();
         ready(storage.store_item(&mut buf, &ConfigKey::Reserved17, &bytes)).unwrap();
+        let old_drive = (true, 300.0f32, 150.0f32, 0.8f32, 0.85f32);
+        let bytes: &[u8] = postcard::to_slice(&old_drive, &mut old_buf).unwrap();
+        ready(storage.store_item(&mut buf, &ConfigKey::Reserved18, &bytes)).unwrap();
+        let old_derating = [77.0f32, 95.0, 0.0, 0.0, 0.15, 0.0, 0.0, 0.0, 0.0];
+        let bytes: &[u8] = postcard::to_slice(&old_derating, &mut old_buf).unwrap();
+        ready(storage.store_item(&mut buf, &ConfigKey::Reserved19, &bytes)).unwrap();
         let voltage = VoltageLimitsConfig::default();
         ready(storage.store_item(&mut buf, &ConfigKey::VoltageLimits, &voltage)).unwrap();
         let loaded = ready(load_all(&mut storage, &mut buf));
@@ -1570,12 +1592,12 @@ mod tests {
 
         let drive = DriveConfig {
             invert_direction: true,
-            max_forward_erad_s: 300.0,
-            max_reverse_erad_s: 150.0,
-            ..DriveConfig::DEFAULT
         };
         let derating = DeratingConfig {
-            temp_fet_start_c: 80.0,
+            temperature: crate::motor::derating::TemperatureDerating {
+                temp_fet_start_c: 80.0,
+                ..Default::default()
+            },
             ..DeratingConfig::default()
         };
         ready(storage.store_item(&mut buf, &ConfigKey::Drive, &drive)).unwrap();

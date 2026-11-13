@@ -982,11 +982,15 @@ fn main() -> Result<()> {
                     "persisted": state.persisted,
                     "revision": state.revision,
                     "value": value,
+                    "effective": state.effective,
                 });
                 let mut message = format!(
                     "{group} (revision {}, {persistence}): {value:#}",
                     state.revision
                 );
+                if let Some(effective) = state.effective.as_ref().filter(|v| **v != value) {
+                    message.push_str(&format!("\nEffective: {effective:#}"));
+                }
                 if g == ConfigGroupId::PwmConfig {
                     let active_hz = record::latest_hw_info(&runtime)
                         .context("no hardware info received")?
@@ -1071,20 +1075,20 @@ fn main() -> Result<()> {
                 );
             }
             ConfigAction::DriveProfile { profile, volatile } => {
-                use oxifoc_core::storage::DriveConfig;
+                use oxifoc_core::motor::derating::ModulationDerating;
                 use oxifoc_host_lib::ops::config;
                 let start = match profile {
-                    DriveProfile::Generic => DriveConfig::DEFAULT.duty_start_frac,
-                    DriveProfile::ESkate => DriveConfig::E_SKATE_DUTY_START,
+                    DriveProfile::Generic => ModulationDerating::default().duty_start_frac,
+                    DriveProfile::ESkate => ModulationDerating::E_SKATE_DUTY_START,
                 };
-                let fields = [format!("duty_start_frac={start}")];
+                let fields = [format!("modulation.duty_start_frac={start}")];
                 let (value, revision, persisted) = if volatile {
                     let (value, revision) =
-                        config::apply_fields(&runtime.cmd_tx, ConfigGroupId::Drive, &fields)?;
+                        config::apply_fields(&runtime.cmd_tx, ConfigGroupId::Derating, &fields)?;
                     (value, revision, false)
                 } else {
                     let (value, commit) =
-                        config_cli::set_fields(&runtime.cmd_tx, ConfigGroupId::Drive, &fields)?;
+                        config_cli::set_fields(&runtime.cmd_tx, ConfigGroupId::Derating, &fields)?;
                     (value, commit.revision, commit.persisted)
                 };
                 emit(

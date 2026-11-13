@@ -958,6 +958,9 @@ mod tests {
         let gain = BoardCalibrationConfig { vbus_gain: 1.01 };
         let capture = Capture {
             board_calibration: ConfigSnapshot {
+                effective: None,
+                default: None,
+                boot_epoch: 0,
                 group: ConfigGroupId::BoardCalibration,
                 revision: 7,
                 persisted: true,

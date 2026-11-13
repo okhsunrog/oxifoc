@@ -170,6 +170,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     #[cfg(feature = "storage")]
+    fn apply_hall_tuning(&mut self, tuning: &crate::storage::HallTuningConfig) -> bool {
+        if !self.hall.apply_hall_tuning(tuning) {
+            return false;
+        }
+        self.motion_reference_epoch.advance();
+        self.rotor_velocity = None;
+        self.hall_control_motion.reset();
+        self.hall_motion_witness.reset();
+        true
+    }
+
+    #[cfg(feature = "storage")]
     fn apply_motor_model(&mut self, model: &mut super::PreparedPhaseModel) -> Option<PhaseSource> {
         if model
             .setup_source

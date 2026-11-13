@@ -166,6 +166,11 @@ pub trait PhaseProvider {
         false
     }
 
+    #[cfg(feature = "storage")]
+    fn apply_hall_tuning(&mut self, _tuning: &crate::storage::HallTuningConfig) -> bool {
+        false
+    }
+
     /// Install a prepared motor model. Providers without model support reject
     /// explicitly, so configuration cannot acknowledge a partial application.
     #[cfg(feature = "storage")]

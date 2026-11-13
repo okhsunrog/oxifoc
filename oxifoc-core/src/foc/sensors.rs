@@ -116,6 +116,11 @@ pub trait AngleSensor {
         None
     }
 
+    #[cfg(feature = "storage")]
+    fn apply_hall_tuning(&mut self, _tuning: &crate::storage::HallTuningConfig) -> bool {
+        false
+    }
+
     /// Snapshot at the caller's notion of time (ticks are platform-defined).
     ///
     /// Returning `None` signals "no valid sample right now" so callers can

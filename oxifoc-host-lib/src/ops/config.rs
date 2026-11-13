@@ -77,12 +77,14 @@ pub(super) fn next_config_id() -> ReqId {
     ReqId(ctr.fetch_add(1, Ordering::Relaxed))
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ConfigState {
     pub valid: bool,
     pub revision: u32,
+    pub boot_epoch: u64,
     pub persisted: bool,
     pub present: bool,
+    pub effective: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -183,20 +185,48 @@ pub fn current_value(cmd: &CommandSender, group: ConfigGroupId) -> Result<(Value
     let present = snapshot.value.is_some();
     let value = match snapshot.value.as_ref() {
         Some(value) => group_value(value).context("config value is not JSON-serializable")?,
-        None => group_default_value(group),
+        None => snapshot
+            .default
+            .as_ref()
+            .or(snapshot.effective.as_ref())
+            .and_then(group_value)
+            .unwrap_or_else(|| group_default_value(group)),
     };
     Ok((
         value,
         ConfigState {
             valid: snapshot.valid,
             revision: snapshot.revision,
+            boot_epoch: snapshot.boot_epoch,
             persisted: snapshot.persisted,
             present,
+            effective: snapshot.effective.as_ref().and_then(group_value),
         },
     ))
 }
 
-pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigValue) -> Result<u32> {
+pub fn apply_write(
+    cmd: &CommandSender,
+    boot_epoch: u64,
+    expected_revision: u32,
+    write: ConfigValue,
+) -> Result<u32> {
+    write_revision(cmd, boot_epoch, expected_revision, write, false)
+}
+
+fn write_revision(
+    cmd: &CommandSender,
+    boot_epoch: u64,
+    expected_revision: u32,
+    write: ConfigValue,
+    allow_stage: bool,
+) -> Result<u32> {
+    if !allow_stage && matches!(write.group(), ConfigGroupId::PwmConfig) {
+        bail!(
+            "{} takes effect after restart and must be saved",
+            group_name(write.group())
+        );
+    }
     let (tx, rx) = config_channel();
     let id = next_config_id();
     let group = write.group();
@@ -204,6 +234,7 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigVal
         Keyed::new(
             id,
             ConfigApply {
+                boot_epoch,
                 expected_revision,
                 write,
             },
@@ -217,15 +248,16 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigVal
         .context("config apply failed")?;
     match resp {
         ConfigResponse::Applied { req_id, revision } if req_id == id => Ok(revision),
+        ConfigResponse::Staged { req_id, revision } if allow_stage && req_id == id => Ok(revision),
         ConfigResponse::Busy => {
-            bail!("device refused volatile apply: this group is not live-safe while running")
+            bail!("device refused apply: stop the motor and wait for active maintenance to finish")
         }
         ConfigResponse::Invalid if group == ConfigGroupId::PwmConfig => bail!(
             "device rejected PWM configuration. Supported on MK5: freq_hz=15000 or 20000, \
              max_duty_percent=95"
         ),
-        ConfigResponse::Invalid if group == ConfigGroupId::Drive => bail!(
-            "device rejected drive configuration. Speed ceilings must be finite and non-negative, \
+        ConfigResponse::Invalid if group == ConfigGroupId::Derating => bail!(
+            "device rejected derating configuration. Speed ceilings must be finite and non-negative, \
              speed_start_frac strictly between 0 and 1, and duty_start_frac in 0..=1"
         ),
         ConfigResponse::Invalid => bail!(
@@ -238,7 +270,7 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigVal
              0 < min_vbus_mv < max_vbus_mv, within board limits"
         ),
         ConfigResponse::Conflict { current_revision } => bail!(
-            "config changed concurrently (expected revision {expected_revision}, current {current_revision}); re-read and retry"
+            "config changed or controller restarted (expected revision {expected_revision}, current {current_revision}); re-read and retry"
         ),
         other => bail!("config apply rejected: {other:?}"),
     }
@@ -247,6 +279,7 @@ pub fn apply_write(cmd: &CommandSender, expected_revision: u32, write: ConfigVal
 pub fn persist_group(
     cmd: &CommandSender,
     group: ConfigGroupId,
+    boot_epoch: u64,
     expected_revision: u32,
 ) -> Result<bool> {
     let (tx, rx) = config_channel();
@@ -256,6 +289,7 @@ pub fn persist_group(
             id,
             ConfigPersist {
                 group,
+                boot_epoch,
                 expected_revision,
             },
         ),
@@ -287,8 +321,20 @@ pub fn persist_group(
 pub fn send_write(cmd: &CommandSender, write: ConfigValue) -> Result<ConfigCommit> {
     let group = write.group();
     let snapshot = read_group(cmd, group)?;
-    let revision = apply_write(cmd, snapshot.revision, write)?;
-    let persisted = persist_group(cmd, group, revision)?;
+    write_at_revision(cmd, snapshot.boot_epoch, snapshot.revision, write)
+}
+
+/// Apply against the snapshot the caller edited, then persist that revision.
+pub fn write_at_revision(
+    cmd: &CommandSender,
+    boot_epoch: u64,
+    expected_revision: u32,
+    write: ConfigValue,
+) -> Result<ConfigCommit> {
+    let group = write.group();
+    let revision = write_revision(cmd, boot_epoch, expected_revision, write, true)?;
+    let persisted = persist_group(cmd, group, boot_epoch, revision)
+        .with_context(|| format!("revision {revision} accepted in RAM; flash save failed"))?;
     Ok(ConfigCommit {
         revision,
         persisted,
@@ -303,25 +349,19 @@ pub fn patch_fields(
     mut value: Value,
     kvs: &[String],
 ) -> Result<(Value, ConfigValue)> {
-    let obj = value
-        .as_object_mut()
-        .context("config group is not a JSON object")?;
-
     for kv in kvs {
         let (key, raw) = kv
             .split_once('=')
             .with_context(|| format!("expected field=value, got '{kv}'"))?;
-        if !obj.contains_key(key) {
-            let fields: Vec<&str> = obj.keys().map(String::as_str).collect();
-            bail!(
-                "group {} has no field '{key}'; fields: {}",
-                group_name(group),
-                fields.join(", ")
-            );
+        let mut field = &mut value;
+        for segment in key.split('.') {
+            field = field
+                .get_mut(segment)
+                .with_context(|| format!("group {} has no field '{key}'", group_name(group)))?;
         }
         let parsed =
             serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
-        obj.insert(key.to_string(), parsed);
+        *field = parsed;
     }
 
     let write = write_from_value(group, value.clone())
@@ -341,7 +381,7 @@ pub fn apply_fields(
 ) -> Result<(Value, u32)> {
     let (value, state) = current_value(cmd, group)?;
     let (value, write) = patch_fields(group, value, kvs)?;
-    let revision = apply_write(cmd, state.revision, write)?;
+    let revision = apply_write(cmd, state.boot_epoch, state.revision, write)?;
     Ok((value, revision))
 }
 
@@ -351,15 +391,10 @@ pub fn set_fields(
     group: ConfigGroupId,
     kvs: &[String],
 ) -> Result<(Value, ConfigCommit)> {
-    let (value, revision) = apply_fields(cmd, group, kvs)?;
-    let persisted = persist_group(cmd, group, revision)?;
-    Ok((
-        value,
-        ConfigCommit {
-            revision,
-            persisted,
-        },
-    ))
+    let (value, state) = current_value(cmd, group)?;
+    let (value, write) = patch_fields(group, value, kvs)?;
+    let commit = write_at_revision(cmd, state.boot_epoch, state.revision, write)?;
+    Ok((value, commit))
 }
 
 /// Snapshot of every config group as one JSON object (stored groups only).
@@ -380,14 +415,21 @@ pub fn config_snapshot(cmd: &CommandSender) -> Value {
 /// Factory reset: erase every stored config group.
 pub fn reset_all(cmd: &CommandSender) -> Result<()> {
     let (tx, rx) = config_channel();
-    cmd.send(HostCommand::ConfigResetAll(tx))
-        .context("send config reset")?;
+    let boot_epoch = read_group(cmd, ConfigGroupId::Drive)?.boot_epoch;
+    cmd.send(HostCommand::ConfigResetAll(
+        Keyed::new(next_config_id(), boot_epoch),
+        tx,
+    ))
+    .context("send config reset")?;
     let resp = rx
         .blocking_recv()
         .context("backend dropped the config reset")?
         .context("config reset failed")?;
     match resp {
         ConfigResponse::Reset => Ok(()),
+        ConfigResponse::ResetRequiresRestart => {
+            bail!("reset did not complete; restart the controller and read back its configuration")
+        }
         other => bail!("config reset rejected: {other:?}"),
     }
 }
@@ -472,6 +514,9 @@ mod tests {
             assert_eq!(group, ConfigGroupId::VoltageFeedforward);
             reply
                 .send(Ok(ConfigResponse::Snapshot(ConfigSnapshot {
+                    effective: None,
+                    default: None,
+                    boot_epoch: 12,
                     group,
                     revision: 7,
                     persisted: false,
@@ -483,6 +528,7 @@ mod tests {
                 panic!("expected volatile config apply");
             };
             assert_eq!(request.inner.expected_revision, 7);
+            assert_eq!(request.inner.boot_epoch, 12);
             assert_eq!(
                 request.inner.write,
                 ConfigValue::VoltageFeedforward(VoltageFeedforwardConfig {

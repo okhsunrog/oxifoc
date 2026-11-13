@@ -146,22 +146,27 @@ for a RAM-only change; modes are `Disabled`, `CrossCoupling`, `BackEmf`, and
 `Both`. `config get voltage-feedforward` reads the current policy. The generic
 `config set` behavior is unchanged: omitting `--volatile` requests persistence.
 
-With the motor stopped, the `drive` config sets what counts as forward and
-sets speed ceilings in electrical rad/s for forward and reverse.
+With the motor stopped, use `drive` to set what counts as forward and
+`derating` to configure the speed, modulation, temperature and voltage curves.
 
 ```sh
-just cli-bridge config set drive invert_direction=true max_forward_erad_s=650 max_reverse_erad_s=150 --volatile
+just cli-bridge config set drive invert_direction=true --volatile
+just cli-bridge config set derating speed.max_forward_erad_s=650 speed.max_reverse_erad_s=150 --volatile
 just cli-bridge config drive-profile e-skate --volatile
 ```
 
-Use `0` to disable the ceiling for that direction. `speed_start_frac` sets
+Use `0` to disable the ceiling for that direction. `speed.speed_start_frac` sets
 where motoring torque starts tapering, by default at 80% of the ceiling.
 The E-Skate preset starts
 the duty taper at 85% of the effective modulation limit. You can set
-`duty_start_frac` directly, with `1` disabling this taper. The signed
+`modulation.duty_start_frac` directly, with `1` disabling this taper. The signed
 `throttle` command uses a fraction in `[-1, 1]` of the live current budget.
 `start --iq` continues to request amps. Fast telemetry uses the motor's
 electrical coordinates.
+
+Hall tuning applies on the stopped controller. PWM is staged, saved to
+flash, and loaded after restart. `config get pwm-config` reports the
+active frequency alongside the staged configuration.
 
 **Virtual device** (`oxifoc-virtual`) — Simulated motor controller over TCP/UDP. Host tools connect exactly as to real hardware.
 

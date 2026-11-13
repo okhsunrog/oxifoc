@@ -1352,6 +1352,13 @@ impl AngleSensor for HallSensor {
         Some(wrap_angle(self.angle + self.decayed_velocity(age) * age))
     }
 
+    #[cfg(feature = "storage")]
+    fn apply_hall_tuning(&mut self, tuning: &crate::storage::HallTuningConfig) -> bool {
+        self.set_interp_min_erpm(tuning.interp_min_erpm);
+        self.set_rate_limit_factor(tuning.rate_limit_factor);
+        true
+    }
+
     fn apply_prepared_hall_calibration(
         &mut self,
         prepared: &PreparedHallCalibration,

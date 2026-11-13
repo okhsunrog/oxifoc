@@ -282,7 +282,7 @@ pub enum HostCommand {
         ConfigResponseSender,
     ),
     /// Erase every stored config group (factory reset).
-    ConfigResetAll(ConfigResponseSender),
+    ConfigResetAll(Keyed<u64>, ConfigResponseSender),
     /// Identity belongs to the logical operation, not to a transport attempt.
     Detect(
         oxifoc_core::types::measurement::Measurement,
@@ -1130,7 +1130,7 @@ fn reject_unverified_command(cmd: HostCommand) {
         | HostCommand::ConfigApply(_, reply)
         | HostCommand::ConfigPersist(_, reply)
         | HostCommand::SaveDriveSetup(_, reply)
-        | HostCommand::ConfigResetAll(reply) => {
+        | HostCommand::ConfigResetAll(_, reply) => {
             let _ = reply.send(Err(error()));
         }
         HostCommand::Measurement(_, reply) => {
@@ -1511,13 +1511,13 @@ async fn handle_command<NS>(
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
-        HostCommand::ConfigResetAll(reply_tx) => {
+        HostCommand::ConfigResetAll(request, reply_tx) => {
             use oxifoc_core::types::ConfigRequest;
             tracing::info!("Resetting all config to defaults");
             let res = client
                 .at_least_once::<ConfigEndpoint>(
                     device_addr,
-                    &ConfigRequest::ResetAll,
+                    &ConfigRequest::ResetAll(request),
                     Some("config"),
                     &SETPOINT_POLICY,
                 )

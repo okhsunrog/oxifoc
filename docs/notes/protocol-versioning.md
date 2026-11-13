@@ -45,6 +45,14 @@ groups use new flash keys and start with defaults until explicitly written.
 Re-enter any custom settings for these groups after upgrading. The
 bootstrap requires a matching host and device version.
 
+ICD v20 gives `Drive` the direction setting and puts speed and modulation
+curves in `Derating` alongside temperature and voltage. Both groups use new
+flash keys. Re-enter custom settings for those groups after updating.
+Snapshots carry the boot epoch for revisioned apply/persist and can report
+resolved values. PWM configuration is staged for the next boot. Hall tuning
+is applied on a stopped controller.
+
+
 The host validates, in order:
 
 1. bootstrap magic;
