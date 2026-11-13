@@ -88,12 +88,7 @@ impl DriveSetup {
         } else {
             board_trip_a.min(configured_trip_a)
         };
-        let thermal = crate::foc::fast_math::sqrtf(
-            self.motor.max_power_loss_w / self.motor.resistance_ohm / 1.5,
-        );
-        if !thermal.is_finite() || thermal <= 0.0 {
-            return Err(SetupError::Motor);
-        }
+        let thermal = self.motor.thermal_current_a().ok_or(SetupError::Motor)?;
         let ceiling = thermal.min(trip / OVERCURRENT_HEADROOM);
         let current = match self.current {
             DriveCurrent::Auto => ceiling,
@@ -126,6 +121,24 @@ impl ValidatedDriveSetup {
     pub fn limits(&self) -> &CurrentLimitsConfig {
         &self.limits
     }
+
+    pub(crate) fn current_policy(&self) -> CurrentLimitsConfig {
+        match self.setup.current {
+            DriveCurrent::Auto => CurrentLimitsConfig {
+                max_iq_a: 0.0,
+                max_brake_a: 0.0,
+                ..self.limits.clone()
+            },
+            DriveCurrent::Override(_) => self.limits.clone(),
+        }
+    }
+
+    pub(crate) fn motor_policy(&self) -> MotorParamsConfig {
+        MotorParamsConfig {
+            max_current_a: 0.0,
+            ..self.setup.motor.clone()
+        }
+    }
     pub fn hall(&self) -> Option<HallCalibrationConfig> {
         match self.setup.feedback {
             Feedback::Hall(hall) => Some(hall),
@@ -135,10 +148,10 @@ impl ValidatedDriveSetup {
 
     #[cfg(all(feature = "runtime", feature = "detection", feature = "delivery"))]
     pub(crate) fn project(&self, config: &mut crate::storage::RuntimeConfig) {
-        config.motor_params = Some(self.setup.motor.clone());
+        config.motor_params = Some(self.motor_policy());
         config.hall_calibration = self.hall();
         config.hall_calibration_invalid = false;
-        config.current_limits = Some(self.limits.clone());
+        config.current_limits = Some(self.current_policy());
     }
 
     pub fn thermal_current_a(&self) -> f32 {

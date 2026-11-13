@@ -341,6 +341,10 @@ fn resolved_config(
     use crate::storage::{CurrentLimitsConfig, PiGainsConfig, VoltageLimitsConfig};
     use crate::types::{ConfigGroupId, ConfigValue};
     match group {
+        ConfigGroupId::MotorParams => cfg.motor_params.clone().map(|mut motor| {
+            motor.max_current_a = motor.rating_current_a().unwrap_or(0.0);
+            ConfigValue::MotorParams(motor)
+        }),
         ConfigGroupId::VoltageLimits => Some(ConfigValue::VoltageLimits(
             cfg.voltage_limits.clone().unwrap_or(VoltageLimitsConfig {
                 min_vbus_mv: board.min_vbus_mv,

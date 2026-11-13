@@ -198,12 +198,8 @@ pub struct MotorParamsConfig {
     pub flux_linkage_wb: f32,
     /// Number of pole pairs
     pub pole_pairs: u8,
-    /// Continuous current RATING (A) — the motor's thermal ceiling from
-    /// the detection solve `√(max_power_loss / R / 1.5)` (VESC's i_max),
-    /// uncapped by session limits. Owned by the motor, not the setup:
-    /// effective operational limits are clamped to it at apply time
-    /// (`CurrentLimits::from_config_clamped`). 0 = unknown (pre-rating
-    /// config blob) — no rating clamp applied.
+    /// Optional manual continuous-current ceiling (A). Zero derives the
+    /// rating from resistance and the motor's copper-loss budget, if known.
     pub max_current_a: f32,
     /// Power-dissipation class (W) the rating was solved for — the
     /// "motor size" chosen at detection (VESC wizard equivalent),
@@ -256,17 +252,27 @@ impl MotorParamsConfig {
         }
     }
 
-    /// The motor's continuous current rating, when known.
-    ///
-    /// NaN/zero/negative (including blobs written before the rating
-    /// fields existed) read as "no rating" — callers then skip the
-    /// rating clamp rather than clamping to garbage.
-    pub fn rating_current_a(&self) -> Option<f32> {
-        if self.max_current_a.is_finite() && self.max_current_a > 0.0 {
-            Some(self.max_current_a)
+    /// The continuous-current estimate from the configured copper-loss budget.
+    pub fn thermal_current_a(&self) -> Option<f32> {
+        if self.resistance_ohm.is_finite()
+            && self.resistance_ohm > 0.0
+            && self.max_power_loss_w.is_finite()
+            && self.max_power_loss_w > 0.0
+        {
+            let current = libm::sqrtf(self.max_power_loss_w / self.resistance_ohm / 1.5);
+            (current.is_finite() && current > 0.0).then_some(current)
         } else {
             None
         }
+    }
+
+    /// Continuous current allowed by both the estimate and a manual ceiling.
+    pub fn rating_current_a(&self) -> Option<f32> {
+        let thermal = self.thermal_current_a();
+        if self.max_current_a.is_finite() && self.max_current_a > 0.0 {
+            return Some(thermal.map_or(self.max_current_a, |a| a.min(self.max_current_a)));
+        }
+        thermal
     }
 }
 
@@ -815,6 +821,7 @@ impl RuntimeConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum InstalledDrive {
     V1(InstalledDriveV1),
+    V2(InstalledDriveV2),
 }
 
 #[cfg(any(feature = "runtime", test))]
@@ -828,61 +835,139 @@ pub struct InstalledDriveV1 {
     hall_override: Option<HallCalibrationRecord>,
 }
 
+/// Canonical installed values. Each edit replaces the field it owns.
+#[cfg(any(feature = "runtime", test))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InstalledDriveV2 {
+    motor: MotorParamsConfig,
+    hall: Option<HallCalibrationRecord>,
+    source: InstalledSourceLimits,
+    phase: InstalledPhaseLimits,
+    trip_a: f32,
+}
+
+#[cfg(any(feature = "runtime", test))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct InstalledSourceLimits {
+    input_a: f32,
+    regen_a: f32,
+}
+
+#[cfg(any(feature = "runtime", test))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct InstalledPhaseLimits {
+    drive_a: f32,
+    brake_a: f32,
+    dissipation_w: f32,
+}
+
+#[cfg(any(feature = "runtime", test))]
+impl InstalledDriveV2 {
+    fn new(
+        motor: MotorParamsConfig,
+        hall: Option<HallCalibrationRecord>,
+        limits: &CurrentLimitsConfig,
+    ) -> Self {
+        Self {
+            motor,
+            hall,
+            source: InstalledSourceLimits {
+                input_a: limits.bus_in_max_a,
+                regen_a: limits.bus_regen_max_a,
+            },
+            phase: InstalledPhaseLimits {
+                drive_a: limits.max_iq_a,
+                brake_a: limits.max_brake_a,
+                dissipation_w: limits.max_dissipation_w,
+            },
+            trip_a: limits.max_phase_current_a,
+        }
+    }
+
+    fn limits(&self) -> CurrentLimitsConfig {
+        CurrentLimitsConfig {
+            max_iq_a: self.phase.drive_a,
+            max_brake_a: self.phase.brake_a,
+            max_phase_current_a: self.trip_a,
+            bus_in_max_a: self.source.input_a,
+            bus_regen_max_a: self.source.regen_a,
+            max_dissipation_w: self.phase.dissipation_w,
+        }
+    }
+}
+
 #[cfg(any(feature = "runtime", test))]
 impl PostcardValue<'_> for InstalledDrive {}
 
 #[cfg(any(feature = "runtime", test))]
 impl InstalledDrive {
     pub fn new(setup: &crate::drive_setup::ValidatedDriveSetup) -> Self {
-        Self::V1(InstalledDriveV1 {
-            setup: setup.into(),
-            configured_trip_a: setup.limits().max_phase_current_a,
-            motor_override: None,
-            limits_override: None,
-            hall_override: None,
-        })
+        Self::V2(InstalledDriveV2::new(
+            setup.motor_policy(),
+            setup.hall().map(Into::into),
+            &setup.current_policy(),
+        ))
     }
 
-    pub(crate) fn project(&self, config: &mut RuntimeConfig, board_trip_a: f32) -> bool {
-        let Self::V1(record) = self;
-        let Ok(setup) = record
+    fn canonical(&self, board_trip_a: f32) -> Option<InstalledDriveV2> {
+        let record = match self {
+            Self::V1(record) => record,
+            Self::V2(record) => return Some(record.clone()),
+        };
+        let setup = record
             .setup
             .clone()
             .validate(board_trip_a, record.configured_trip_a)
-        else {
+            .ok()?;
+        Some(InstalledDriveV2::new(
+            record
+                .motor_override
+                .clone()
+                .unwrap_or_else(|| setup.motor_policy()),
+            record
+                .hall_override
+                .clone()
+                .or_else(|| setup.hall().map(Into::into)),
+            &record
+                .limits_override
+                .clone()
+                .unwrap_or_else(|| setup.current_policy()),
+        ))
+    }
+
+    pub(crate) fn project(&self, config: &mut RuntimeConfig, board_trip_a: f32) -> bool {
+        let Some(record) = self.canonical(board_trip_a) else {
             return false;
         };
-        let motor = record
-            .motor_override
-            .as_ref()
-            .unwrap_or(&setup.setup().motor);
-        let limits = record.limits_override.as_ref().unwrap_or(setup.limits());
-        let hall = match &record.hall_override {
-            Some(record) => match record.clone().validated() {
+        let limits = record.limits();
+        let hall = match record.hall {
+            Some(record) => match record.validated() {
                 Some(hall) => Some(hall),
                 None => return false,
             },
-            None => setup.hall(),
+            None => None,
         };
-        if !motor.is_valid() || !limits.is_coherent() {
+        if !record.motor.is_valid() || !limits.is_coherent() {
             return false;
         }
-        config.motor_params = Some(motor.clone());
-        config.current_limits = Some(limits.clone());
+        config.motor_params = Some(record.motor);
+        config.current_limits = Some(limits);
         config.hall_calibration = hall;
         config.hall_calibration_invalid = false;
         true
     }
 
-    fn with_edit(&self, payload: &ConfigValue) -> Option<Self> {
-        let Self::V1(mut next) = self.clone();
+    fn with_edit(&self, payload: &ConfigValue, board_trip_a: f32) -> Option<Self> {
+        let mut next = self.canonical(board_trip_a)?;
         match payload {
-            ConfigValue::MotorParams(value) => next.motor_override = Some(value.clone()),
-            ConfigValue::CurrentLimits(value) => next.limits_override = Some(value.clone()),
-            ConfigValue::HallCalibration(value) => next.hall_override = Some((*value).into()),
+            ConfigValue::MotorParams(value) => next.motor = value.clone(),
+            ConfigValue::CurrentLimits(value) => {
+                next = InstalledDriveV2::new(next.motor, next.hall, value);
+            }
+            ConfigValue::HallCalibration(value) => next.hall = Some((*value).into()),
             _ => return None,
         }
-        Some(Self::V1(next))
+        Some(Self::V2(next))
     }
 }
 
@@ -984,7 +1069,7 @@ where
             FlashOperation::Save(value) => {
                 if value.group().is_setup_component() && !matches!(&installed, Ok(None)) {
                     let success = if let Ok(Some(current)) = &installed
-                        && let Some(next) = current.with_edit(&value)
+                        && let Some(next) = current.with_edit(&value, board_trip_a)
                     {
                         if storage
                             .store_item(buf, &ConfigKey::InstalledDrive, &next)
@@ -1227,28 +1312,61 @@ mod tests {
         }
         .validate(70.0, 30.0)
         .unwrap();
-        let installed = InstalledDrive::new(&setup);
+        let installed = InstalledDrive::V1(InstalledDriveV1 {
+            setup: (&setup).into(),
+            configured_trip_a: 30.0,
+            motor_override: None,
+            limits_override: None,
+            hall_override: None,
+        });
         assert!(load_installed_drive(
             &mut legacy,
             &Ok::<_, ()>(Some(installed.clone())),
             70.0
         ));
-        assert_eq!(legacy.motor_params.as_ref(), Some(&setup.setup().motor));
-        assert_eq!(legacy.current_limits.as_ref(), Some(setup.limits()));
+        assert_eq!(legacy.motor_params.as_ref(), Some(&setup.motor_policy()));
+        assert_eq!(
+            legacy.current_limits.as_ref(),
+            Some(&setup.current_policy())
+        );
         assert!(legacy.hall_calibration.is_none());
-        let mut limits = setup.limits().clone();
+        let mut limits = setup.current_policy();
         limits.bus_in_max_a = 8.0;
         let edited = installed
-            .with_edit(&ConfigValue::CurrentLimits(limits.clone()))
+            .with_edit(&ConfigValue::CurrentLimits(limits.clone()), 70.0)
             .unwrap();
+        assert!(matches!(edited, InstalledDrive::V2(_)));
         assert!(load_installed_drive(
             &mut legacy,
-            &Ok::<_, ()>(Some(edited)),
+            &Ok::<_, ()>(Some(edited.clone())),
             70.0
         ));
         assert_eq!(legacy.current_limits.as_ref(), Some(&limits));
-        assert_eq!(legacy.motor_params.as_ref(), Some(&setup.setup().motor));
+        assert_eq!(legacy.motor_params.as_ref(), Some(&setup.motor_policy()));
         assert!(legacy.hall_calibration.is_none());
+        let mut motor = setup.motor_policy();
+        motor.resistance_ohm *= 2.5;
+        let edited = edited
+            .with_edit(&ConfigValue::MotorParams(motor.clone()), 70.0)
+            .unwrap();
+        assert!(edited.project(&mut legacy, 70.0));
+        assert_eq!(legacy.current_limits.as_ref(), Some(&limits));
+        let rating = legacy
+            .motor_params
+            .as_ref()
+            .unwrap()
+            .rating_current_a()
+            .unwrap();
+        assert!((rating - setup.thermal_current_a() / libm::sqrtf(2.5)).abs() < 1e-5);
+        #[cfg(feature = "algorithms")]
+        {
+            let effective =
+                crate::motor::foc_driver::CurrentLimits::from_config_clamped(&limits, 70.0, rating);
+            assert_eq!(effective.max_current_a, rating);
+            assert_eq!(effective.bus_in_max_a, 8.0);
+            assert_eq!(effective.bus_regen_max_a, 0.0);
+            assert_eq!(effective.overcurrent_threshold_a, 30.0);
+        }
         assert!(!load_installed_drive(&mut legacy, &Err(()), 70.0));
         assert!(legacy.motor_params.is_none() && legacy.current_limits.is_none());
         assert_eq!(legacy.board_calibration.unwrap().vbus_gain, 1.01);

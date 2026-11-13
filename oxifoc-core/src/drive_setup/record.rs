@@ -218,8 +218,8 @@ mod tests {
                 let mut config = RuntimeConfig::default();
                 assert!(loaded.project(&mut config, 70.0));
                 let matches = |setup: &ValidatedDriveSetup| {
-                    config.motor_params.as_ref() == Some(&setup.setup().motor)
-                        && config.current_limits.as_ref() == Some(setup.limits())
+                    config.motor_params.as_ref() == Some(&setup.motor_policy())
+                        && config.current_limits.as_ref() == Some(&setup.current_policy())
                         && config.hall_calibration == setup.hall()
                 };
                 assert!(matches(&old) || matches(&next), "mixed setup at cut {cut}");

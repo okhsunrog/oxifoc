@@ -1513,9 +1513,8 @@ fn cross_field_headroom_enforced() {
 
 /// Motor RATING is a ceiling above the operational config (layered
 /// semantics): the session can only lower limits below it, an unset
-/// config defaults to the rating itself, and the overcurrent trip
-/// ceiling is 1.5× the rating (VESC `l_abs_current_max`) — all still
-/// capped by the board hardware.
+/// config defaults to the rating itself. An explicit trip belongs to
+/// the board, while an automatic trip defaults to 1.5× the rating.
 #[cfg(feature = "storage")]
 #[test]
 fn rating_caps_operational_limits() {
@@ -1533,7 +1532,7 @@ fn rating_caps_operational_limits() {
     // Operational asks for more than the motor tolerates: rating wins.
     let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), hw_max, rating);
     assert_eq!(l.max_current_a, rating);
-    assert_eq!(l.overcurrent_threshold_a, 1.5 * rating);
+    assert_eq!(l.overcurrent_threshold_a, 28.0);
 
     // Operational below the rating: passes through untouched.
     let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0), hw_max, rating);

@@ -179,19 +179,16 @@ impl CurrentLimits {
         } else {
             iq_ceiling_board
         };
-        let trip_ceiling = if rating_ok {
-            hw_max_a.min(1.5 * rating_a)
-        } else {
-            hw_max_a
-        };
         // Bus limits have no board ceiling (they protect the supply, not
         // the board); NaN → unlimited (the boundary sanity check rejects
         // NaN commands, this is boot-path defense).
         let bus = |v: f32| if v.is_finite() { v } else { -1.0 };
         let trip = if cfg.max_phase_current_a > 0.0 {
-            cfg.max_phase_current_a.min(trip_ceiling)
+            cfg.max_phase_current_a.min(hw_max_a)
+        } else if rating_ok {
+            hw_max_a.min(1.5 * rating_a)
         } else {
-            trip_ceiling
+            hw_max_a
         };
         let iq = if cfg.max_iq_a > 0.0 {
             cfg.max_iq_a.min(iq_ceiling)
