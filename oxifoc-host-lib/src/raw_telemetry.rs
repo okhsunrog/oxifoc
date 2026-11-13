@@ -494,7 +494,7 @@ impl RawTelemetryState {
             Ok(())
         })();
         if let Err(error) = &result {
-            capture.report.error = Some(error.to_string());
+            capture.report.error.get_or_insert_with(|| error.to_string());
         }
         self.changed.notify_all();
         result.map(|()| true)

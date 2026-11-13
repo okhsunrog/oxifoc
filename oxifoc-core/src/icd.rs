@@ -201,7 +201,7 @@ endpoint!(ConfigEndpoint, ConfigRequest, ConfigResponse, "cmd/config");
 #[cfg(feature = "delivery")]
 mod delivery_classes {
     use super::*;
-    use crate::delivery::{Command, Deduplicated, Idempotent};
+    use crate::delivery::{AtMostOnce, Command, Deduplicated, Idempotent};
 
     impl Command for HardwareInfoEndpoint {
         type Delivery = Idempotent;
@@ -214,7 +214,8 @@ mod delivery_classes {
         type Delivery = Idempotent;
     }
     impl Command for MotorEndpoint {
-        type Delivery = Idempotent;
+        // Retrying an unconfirmed setpoint could acquire ownership later.
+        type Delivery = AtMostOnce;
     }
     impl Command for TelemetryConfigEndpoint {
         type Delivery = Idempotent;

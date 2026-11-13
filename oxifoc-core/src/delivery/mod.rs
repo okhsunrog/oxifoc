@@ -78,7 +78,7 @@ impl DeliveryClass for AtMostOnce {}
 ///
 /// Declare it next to the `endpoint!` definition, e.g.
 /// ```ignore
-/// impl Command for MotorEndpoint { type Delivery = Idempotent; }
+/// impl Command for MotorEndpoint { type Delivery = AtMostOnce; }
 /// ```
 pub trait Command: Endpoint {
     /// This command's place on the ladder.
