@@ -79,7 +79,6 @@
 // on the hot entry points strips the minsize hint per-function wherever
 // they are instantiated. The STM32 firmware enables this feature on its
 // pinned nightly toolchain.
-#![cfg_attr(feature = "isr-speed", feature(optimize_attribute))]
 // Firmware panic policy: this crate runs inside the FOC ISR of a vehicle.
 // Composes ON TOP of the shared [workspace.lints] table; the deliberate
 // fail-fast sites carry #[expect(..., reason = "...")]. Test code is

@@ -36,11 +36,14 @@ fn u64_to_f32_wide(value: u64) -> f32 {
 
 /// Square root.
 ///
-/// On ARM with VFP (all our Cortex-M4F boards set `+vfp2`) this is the
-/// hardware `vsqrt.f32` instruction — IEEE correctly rounded, so results
-/// are bit-identical to `libm::sqrtf` (verified on target). Negative
+/// Rust exposes the single-precision ARM FPU as `vfp2sp` on newer toolchains.
+/// Both VFP paths use `vsqrt.f32`, which rounds according to IEEE 754.
+/// The result matches `libm::sqrtf` bit for bit (verified on target). Negative
 /// inputs return NaN, same as libm.
-#[cfg(all(target_arch = "arm", target_feature = "vfp2"))]
+#[cfg(all(
+    target_arch = "arm",
+    any(target_feature = "vfp2", target_feature = "vfp2sp")
+))]
 #[inline(always)]
 pub fn sqrtf(x: f32) -> f32 {
     let r: f32;
@@ -56,7 +59,10 @@ pub fn sqrtf(x: f32) -> f32 {
 }
 
 /// Square root (portable fallback — bit-identical to the hardware path).
-#[cfg(not(all(target_arch = "arm", target_feature = "vfp2")))]
+#[cfg(not(all(
+    target_arch = "arm",
+    any(target_feature = "vfp2", target_feature = "vfp2sp")
+)))]
 #[inline(always)]
 pub fn sqrtf(x: f32) -> f32 {
     libm::sqrtf(x)

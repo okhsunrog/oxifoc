@@ -2,6 +2,10 @@
 
 ## Resume here
 
+2026-11-13 update. The firmware nightly comparison below found an ARM
+target-feature naming change that disabled hardware square root. With that
+corrected, the MK5 at 15 kHz recovered its ADC ISR timing and used less flash.
+
 2026-11-12 update. MK5 now supports 15/20 kHz drive PWM at boot and separate
 20 kHz timing for each motor-detection stage. The Flipsky H5055 unloaded A/B
 found about 15 µs more PWM-write margin at 15 kHz and similar speed tracking.
@@ -951,3 +955,52 @@ and thresholds pending those measurements.
 Plots, native captures, register readback, and the injection patch are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-policy.tbY1Ec/`.
 The production SPI image was restored and reported Stopped with zero faults.
+
+### Firmware nightly comparison (2026-11-13)
+
+Compared `nightly-2026-03-22` with `nightly-2026-11-13`
+(`rustc 1.102.0-nightly 8eb778d04`) at `5d0354f`, using matched locked
+release builds. The newer compiler exposes the single-precision ARM FPU as
+`vfp2sp`. The old conditional selected `libm::sqrtf` under the new compiler.
+The final migration recognizes both feature names. The linked MK5 image
+contains 56 `vsqrt.f32` instructions, versus zero in the unmodified rebuild.
+
+| Release image | Flash, old → new (bytes) | Static SRAM, old → new (bytes) |
+|---|---:|---:|
+| MK5 SPI | 457940 → 450372 | 68468 → 68428 |
+| CF2 USB | 549252 → 541212 | 51632 → 51592 |
+| G474 | 254096 → 256812 | 40552 → 40520 |
+| ESP32-C5 bridge | 151424 → 145744 | 182472 → 182220 |
+| ESP32-C6 remote | 437360 → 430096 | 118908 → 118020 |
+| MK5 SPI with `ram-foc` | 458612 → 451052 | 114608 → 113768 |
+
+Flash is file-backed STM32 load segments or the ESP application binary.
+Static SRAM includes initialized data and code copied to RAM, excluding
+the stack. Both MK5 builds use another 49172 bytes of CCM. In `ram-foc`,
+the added SRAM footprint relative to normal MK5 is 46140 → 45340 bytes.
+The `ram-foc` result covers layout only.
+
+On unloaded H5055 at 24 V, two four-second velocity runs per point at +120
+and +450 electrical rad/s used Hall-to-observer and native Packed28 over
+the C5. TIM1/ADC register checks matched at 15001.4 Hz, with a 20.979 MHz
+ADC clock and 15-cycle acquisition per injected rank. DWT measured the
+whole ADC ISR body. TIM5 measured the CCR commit margin in separate runs.
+
+| Target (electrical rad/s) | Mean ISR, old / unmodified / final (µs) | p99 upper bin, old / unmodified / final (µs) |
+|---:|---:|---:|
+| +120 | 46.73–46.74 / 48.31–48.33 / 46.67–46.71 | 52.62 / 54.15 / 52.62 |
+| +450 | 46.11–46.13 / 47.66–47.67 / 45.98–46.01 | 51.86 / 53.39 / 51.86 |
+
+The unmodified nightly recorded one 94.06 µs ISR outlier. Its cause was
+unconfirmed. The two final-image repeats per speed had no ISR over budget,
+with a maximum of 57.04 µs. The PWM period was 66.66 µs.
+
+Minimum observed PWM commit margin at +120 was 46.55 / 44.35 / 47.62 µs
+for old, unmodified and final respectively. At +450 it was
+54.79 / 52.74 / 55.63 µs. Across 240020 final-image writes there were
+zero late, ambiguous or masked updates. All eight final captures were
+lossless and all commands acknowledged. Timing was qualified only on
+this unloaded MK5 at 15 kHz.
+
+Raw captures, register dumps, ELF reports and reproducible scripts are
+under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-nightly-ab.C6IY3o/`.

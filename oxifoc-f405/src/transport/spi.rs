@@ -56,8 +56,8 @@ pub fn init(spawner: embassy_executor::Spawner, stack: &'static Stack, r: Resour
 
 fn checksum(crc: &mut Crc<'_>, bytes: &[u8]) -> u32 {
     crc.reset();
-    for word in bytes.chunks_exact(4) {
-        crc.feed_word(u32::from_be_bytes([word[0], word[1], word[2], word[3]]));
+    for &word in bytes.as_chunks::<4>().0 {
+        crc.feed_word(u32::from_be_bytes(word));
     }
     crc.read()
 }
