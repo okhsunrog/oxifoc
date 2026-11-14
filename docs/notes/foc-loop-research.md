@@ -2,6 +2,12 @@
 
 ## Resume here
 
+2026-11-14 update. The Embassy refresh exposed a clock-calculation mismatch
+and a change in HAL PWM rounding. The MK5 boots after the fixes and keeps
+the previous TIM1/ADC setup. At 15 kHz, the ADC ISR body takes about
+0.7–0.8 µs longer at +120/+450 electrical rad/s. See the Embassy comparison
+at the end of this note.
+
 2026-11-13 update. The firmware nightly comparison below found an ARM
 target-feature naming change that disabled hardware square root. With that
 corrected, the MK5 at 15 kHz recovered its ADC ISR timing and used less flash.
@@ -1036,3 +1042,59 @@ ISR timing, and C reduced PWM margin while growing the image. The
 bench was restored to its previous image, stopped with zero faults.
 Evidence is under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-arm-flags.uLpWZf/`.
+
+### Embassy update on MK5 (2026-11-14)
+
+Compared the pre-update STM32 build with Embassy `72f7aff` using the same
+`nightly-2026-11-13`, target flags, unloaded H5055 at about 24 V, and native
+Packed28 via C5. GDB caught the updated diagnostic image panicking in
+`init_clock` before TIM1 or ADC initialization. Embassy now preserves the
+fractional PLL ratio until the output division. The old application calculation
+truncated at the PLL input and disagreed by 22 Hz at TIM1. The new HAL also
+rounds the complementary PWM period up. Commit `3b867e0` aligns the clock
+calculation with the HAL and uses the same center-aligned ARR calculation for
+boot and detection.
+
+Readback on both sides gave TIM1 PSC=0, ARR=5594, RCR=1, CCR4=5483,
+15,001.4 Hz PWM, 20.979 MHz ADC and 357.49 ns dead time. The three injected
+ranks on each ADC retained 15-cycle acquisition and the TIM1_CC4 rising trigger.
+
+Two qualified warn-only runs per mode. DWT measures the ADC ISR body.
+
+| Mode | Mean before (µs) | Mean after (µs) | p99 upper bin before → after (µs) |
+|---|---:|---:|---:|
+| Id hold 0.6 A | 39.55 | 39.99–40.11 | 40.04 → 40.80 |
+| Iq ramp to 0.9 A | 42.65–43.04 | 43.84–43.85 | 44.62 → 45.38–45.76 |
+| Velocity +40 | 43.99–44.68 | 44.68–45.18 | 49.95–52.62 → 50.72–53.00 |
+| Velocity +120 | 46.68–46.72 | 47.43–47.47 | 52.62 → 53.39–53.77 |
+| Velocity +450 | 45.98–46.00 | 46.72–46.73 | 51.86 → 52.62 |
+
+The new warn-only runs had zero ISR bodies over the 66.66 µs period. The
+maximum body was 56.23 µs and the longest gap between entries was 71.37 µs.
+One old +40 run had an 88.83 µs body. Several attempts on both builds were
+discarded when the DWT epoch changed. The initial info-logging image also
+produced late host commands during Id hold and occasional long ADC entry
+gaps. The warn-only repeats completed. Low-speed velocity and unloaded Iq
+ramps traversed different speed trajectories, so their means are less
+controlled comparisons than +120/+450.
+
+Minimum measured PWM write margin at +120 was 23.83–23.90 µs before and
+21.75–22.75 µs after. At +450 it was 26.38–28.24 µs before and
+26.94–27.23 µs after. The 240,098 updated warn-only writes had no late,
+ambiguous or still-masked writes. Schema 3 expresses margin in TIM1 ticks.
+The temporary decoders for the preceding nightly/ARM-flags comparison
+divided by the TIM5 clock and doubled the printed margins. Use the raw
+values and TIM1 frequency when comparing these sections.
+
+The updated production MK5 image passed stopped streaming, Id hold, Iq ramp
+and +40/+120/+450. In a separate +450 → +120 → +40 run, the median electrical
+speed was 447, 114 and 34 rad/s. The median absolute difference between the
+control and Hall angles was 0.053, 0.000 and 0.003 rad. Packed28 carries the
+angles, so this shows the return to Hall agreement. A separate observer-state
+trace would establish the exact crossover cycle. The eight production captures
+delivered 639,616 samples with zero gaps and all 51 commands acknowledged.
+The starting image was restored and the controller verified Stopped with zero
+faults. This comparison covers 15 kHz on the unloaded MK5.
+
+Captures, register dumps, GDB evidence, build logs and plots are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-embassy-ab.ox3qLp/`.
