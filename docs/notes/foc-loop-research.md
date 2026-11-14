@@ -1172,3 +1172,30 @@ shared-state access inside the ADC ISR while retaining the required ordering.
 
 ELFs, harnesses, raw histograms, captures and the distribution plot are under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-isr-cause.9mxWCf/`.
+
+### ADC handles owned by the interrupt (2026-11-14)
+
+Boot transfers the three injected ADC handles to ADC ISR local storage on
+its first invocation. The hot path reads the handles directly. The linked
+ADC handler has six `MSR PRIMASK` / `ISB` sites, down from nine.
+
+Matched A/B/A builds used the same nightly and dependencies, incremental
+disabled, 48 KiB CCM telemetry queue and warn-only logs. On the unloaded
+MK5/H5055 at PWM and native Packed28 telemetry of 15 kHz, mean ADC ISR
+body time fell from 46.76–46.83 to 46.23–46.28 µs at +120 electrical rad/s
+and from 46.11–46.16 to 45.58–45.65 µs at +450. The TIM1/ADC setup and ART
+settings matched. Relinking also moved `run_foc_cycle`, so the wall-time
+result measures the full change.
+
+The deadline runs without a failsafe showed no late, ambiguous or masked PWM commits.
+The minimum observed margin was 22.89 µs at +120 and 27.54 µs at +450
+after the change. Each image also had one +120 run with a late commit in
+a window containing host affirmation delays and a `CommTimeout` failsafe.
+The captures retain both cases, plus an ambiguous entry in the updated
+failsafe run. The normal release also booted and completed +120/+450. Across
+the 34 completed captures, 2,516,116 records arrived without gaps and all
+68 scheduled motion commands were acknowledged. The firmware build check
+also passed for CF2 with USB.
+
+ELFs, hardware readbacks, raw histograms and captures are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-adc-ownership.h0xmdu/`.

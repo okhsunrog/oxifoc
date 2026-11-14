@@ -14,7 +14,6 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicI16, AtomicU16, AtomicU32, Ordering};
 
-use embassy_stm32::adc::InjectedAdc;
 use embassy_stm32::interrupt;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
@@ -148,24 +147,9 @@ static DWT_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 // ========== ADC Handles ==========
 
-/// ADC1 injected handle: phase A current + board temperature
-pub static ADC1_INJECTED: CriticalSectionMutex<
-    RefCell<
-        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
-    >,
-> = CriticalSectionMutex::new(RefCell::new(None));
-/// ADC2 injected handle: phase B current + motor temperature
-pub static ADC2_INJECTED: CriticalSectionMutex<
-    RefCell<
-        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
-    >,
-> = CriticalSectionMutex::new(RefCell::new(None));
-/// ADC3 injected handle: phase C current + VBUS
-pub static ADC3_INJECTED: CriticalSectionMutex<
-    RefCell<
-        Option<InjectedAdc<'static, embassy_stm32::pac::adc::Adc, embassy_stm32::mode::Blocking>>,
-    >,
-> = CriticalSectionMutex::new(RefCell::new(None));
+/// One-time transfer from boot into the ADC interrupt's local state.
+static ADC_HANDOFF: CriticalSectionMutex<RefCell<Option<AdcHandles>>> =
+    CriticalSectionMutex::new(RefCell::new(None));
 
 // ========== FOC Control ==========
 
@@ -302,10 +286,8 @@ pub async fn init(
         (u64::from(CPU_HZ) * u64::from(timing.period_ticks) / u64::from(timing.clock_hz)) as u32;
     ISR_BUDGET_CYCLES.store(budget, Ordering::Relaxed);
 
-    // Store ADC handles for ISR access (before enabling PWM triggers)
-    ADC1_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc1)));
-    ADC2_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc2)));
-    ADC3_INJECTED.lock(|cell| cell.replace(Some(adc_handles.adc3)));
+    // Publish the initialized handles before enabling the ADC interrupt.
+    ADC_HANDOFF.lock(|cell| cell.replace(Some(adc_handles)));
 
     // Enable the ADC interrupt and its internal PWM trigger. Phase channels
     // stay high-Z until the calibration state machine selects one.
@@ -482,6 +464,7 @@ fn isr_timing_now() -> u32 {
 #[interrupt]
 #[cfg_attr(feature = "ram-foc", unsafe(link_section = ".data.ram_foc"))]
 fn ADC() {
+    static mut ADCS: Option<AdcHandles> = None;
     static mut SEQ: u32 = 0;
     #[cfg(all(
         feature = "bench-foc-distribution",
@@ -555,20 +538,21 @@ fn ADC() {
     let protection_board = prepared_board();
     let board = protection_board.board();
 
+    let adcs = ADCS.get_or_insert_with(|| {
+        defmt::unwrap!(
+            ADC_HANDOFF.lock(|cell| cell.take()),
+            "ADC interrupt enabled before handles were installed"
+        )
+    });
+
     // Preserve the 128-cycle thermal sampling cadence. Exact flash lookups
     // replace the two Beta-model logarithms that previously spiked this cycle.
     let convert_temp = *SEQ & 127 == 0;
 
     // Read ADC1 injected data (phase A current + board temp)
-    let (ia_raw, board_temp_raw, va_raw) = ADC1_INJECTED.lock(|cell| {
-        if let Some(injected) = cell.borrow_mut().as_mut() {
-            let mut samples = [0; 3];
-            injected.read_latest(&mut samples);
-            (samples[0], samples[1], samples[2])
-        } else {
-            (0, 0, 0)
-        }
-    });
+    let mut phase_a = [0; 3];
+    adcs.adc1.read_latest(&mut phase_a);
+    let [ia_raw, board_temp_raw, va_raw] = phase_a;
     IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
     // Convert board temperature raw ADC to 0.1°C units
@@ -581,15 +565,9 @@ fn ADC() {
     };
 
     // Read ADC2 injected data (phase B current + motor temp)
-    let (ib_raw, motor_temp_raw, vb_raw) = ADC2_INJECTED.lock(|cell| {
-        if let Some(injected) = cell.borrow_mut().as_mut() {
-            let mut samples = [0; 3];
-            injected.read_latest(&mut samples);
-            (samples[0], samples[1], samples[2])
-        } else {
-            (0, 0, 0)
-        }
-    });
+    let mut phase_b = [0; 3];
+    adcs.adc2.read_latest(&mut phase_b);
+    let [ib_raw, motor_temp_raw, vb_raw] = phase_b;
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
@@ -604,15 +582,9 @@ fn ADC() {
     });
 
     // Read ADC3 injected data (phase C current + VBUS)
-    let (ic_raw, vbus_raw, vc_raw) = ADC3_INJECTED.lock(|cell| {
-        if let Some(injected) = cell.borrow_mut().as_mut() {
-            let mut samples = [0; 3];
-            injected.read_latest(&mut samples);
-            (samples[0], samples[1], samples[2])
-        } else {
-            (0, 0, 0)
-        }
-    });
+    let mut phase_c = [0; 3];
+    adcs.adc3.read_latest(&mut phase_c);
+    let [ic_raw, vbus_raw, vc_raw] = phase_c;
     IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
 
     // Convert VBUS raw ADC to millivolts
