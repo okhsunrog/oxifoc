@@ -53,13 +53,16 @@ pub static IA_SAMPLE: AtomicU16 = AtomicU16::new(0);
 pub static IB_SAMPLE: AtomicU16 = AtomicU16::new(0);
 pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
 
-/// Latest measured DC bus voltage in millivolts (updated in ADC interrupt).
-pub static VBUS_MV: AtomicU32 = AtomicU32::new(0);
-/// Set by the FOC ISR once `VBUS_MV` holds a real conversion — `init` waits
-/// on this so the observers/controller are configured from a MEASURED bus
-/// voltage, never a compile-time assumption (a measured 0 V is still the
-/// truth; `FocController` floors vbus at `MIN_VBUS` internally).
-static VBUS_MEASURED: AtomicBool = AtomicBool::new(false);
+// The bounded ADC conversion cannot produce this sentinel.
+const NO_VBUS_SAMPLE: u32 = u32::MAX;
+static VBUS_MV: AtomicU32 = AtomicU32::new(NO_VBUS_SAMPLE);
+
+/// Latest calibrated bus voltage in millivolts, once the ADC has sampled it.
+pub(crate) fn measured_vbus_mv() -> Option<u32> {
+    let mv = VBUS_MV.load(Ordering::Relaxed);
+    (mv != NO_VBUS_SAMPLE).then_some(mv)
+}
+
 /// Latest board temperature in 0.1°C units (updated in ADC interrupt).
 pub static BOARD_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 /// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
@@ -268,21 +271,27 @@ mod detection_timing {
         }
     }
 
-    #[inline]
-    pub(super) fn after_sample(driver: &mut FocDriverType) {
+    #[inline(always)]
+    pub(super) fn after_sample(driver: &mut Option<&'static mut FocDriverType>) {
         // The word contains the complete request. There is no separate
         // payload to synchronize, and the task cannot run during this ISR.
         let state = REQUEST.load(Ordering::Relaxed);
+        if state != IDLE {
+            service(driver, state);
+        }
+    }
+
+    #[inline(never)]
+    fn service(driver: &mut Option<&'static mut FocDriverType>, state: u32) {
         if state == AWAITING_SAMPLE {
             REQUEST.store(APPLIED, Ordering::Release);
         } else if let Ok(arr) = u16::try_from(state)
-            && arr != 0
+            && let Some(driver) = driver.as_deref_mut()
         {
             apply(driver, arr);
         }
     }
 
-    #[inline(never)]
     fn apply(driver: &mut FocDriverType, arr: u16) {
         let Some(drive) = crate::config::CONTROL_TIMING.try_get() else {
             REQUEST.store(REJECTED, Ordering::Release);
@@ -512,8 +521,8 @@ pub fn duty_to_iq(duty: u8) -> f32 {
 /// floors vbus at MIN_VBUS and the board stays alive for host debugging).
 async fn first_vbus_v() -> f32 {
     for _ in 0..1000 {
-        if VBUS_MEASURED.load(Ordering::Acquire) {
-            return VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0;
+        if let Some(mv) = measured_vbus_mv() {
+            return mv as f32 / 1000.0;
         }
         Timer::after(Duration::from_micros(100)).await;
     }
@@ -669,7 +678,6 @@ fn ADC() {
     // Convert VBUS raw ADC to millivolts
     let vbus_mv = oxifoc_core::state::calibrated_vbus_mv(&STATE, board.vbus_mv_from_adc(vbus_raw));
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
-    VBUS_MEASURED.store(true, Ordering::Release);
 
     let prof_t1 = oxifoc_core::isr_prof::now();
 
@@ -852,9 +860,7 @@ fn ADC() {
         crate::diagnostics::trace::record(9, 0);
     }
     #[cfg(feature = "board-vesc6-mk5")]
-    if let Some(driver) = DRIVER.as_deref_mut() {
-        detection_timing::after_sample(driver);
-    }
+    detection_timing::after_sample(DRIVER);
     #[cfg(feature = "bench-raw-codec")]
     CODEC_BENCH.on_adc(
         codec_bench_stopped,

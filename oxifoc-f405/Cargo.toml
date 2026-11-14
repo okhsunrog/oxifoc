@@ -192,7 +192,8 @@ debug = 2
 lto = "fat"
 codegen-units = 1
 opt-level = 3
-incremental = true
+# Nonincremental codegen has lower measured ADC ISR latency on the MK5.
+incremental = false
 
 # Verbatim copy of the root [workspace.lints] tables (this crate is excluded
 # from the workspace for its target/toolchain) — keep in sync with ../Cargo.toml.

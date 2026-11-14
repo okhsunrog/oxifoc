@@ -1238,3 +1238,50 @@ captures arrived without loss and all 32 motion commands were acknowledged.
 
 Captures, ELFs, register readbacks and scripts are under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-ownership.E7QTle/`.
+
+### Isolate and recover the FOC ownership timing regression
+
+On the MK5, the ownership commit cost about 0.18 µs at +120 and 0.09 µs at
++450 electrical rad/s in the matched nonincremental builds. A diagnostic
+ELF replaced the entry to the timing-request poll with one branch to its
+exit, preserving all other code addresses. In an original → bypass →
+original series, this saved 0.10 µs at +120 and 0.08 µs at +450. The
+remaining difference includes changes in final code generation. Keeping
+the same ownership commit with the poll bypassed yielded 46.34 / 45.62 µs.
+
+The source fix keeps a single load and idle test on the regular path and
+moves request processing out of line. It also publishes calibrated VBUS
+and initial availability in the same atomic word, eliminating the
+per-sample release barrier on the previous separate boot flag. A measured
+0 mV stays distinct from the initial sentinel. Polling less often was
+slower in the tested linked images.
+
+| Diagnostic image, incremental disabled | +120 mean (µs) | +450 mean (µs) |
+|---|---:|---:|
+| Before FOC ownership | 46.256 | 45.592 |
+| Ownership, original ELF | 46.442 | 45.708 |
+| Ownership, same ELF skipping poll | 46.338 | 45.624 |
+| Ownership, shorter poll only | 46.354 | 45.678 |
+| Ownership, shorter poll and one-word VBUS | 46.266 | 45.524 |
+
+With incremental enabled on both sides, the old ownership baseline was
+47.032 / 46.375 µs and the fixed sources were 47.138 / 46.564 µs. The F405
+release profile now disables incremental compilation. Relative to the
+old incremental baseline, the new default diagnostic image saves
+0.77 / 0.85 µs. Comparing both sources with incremental disabled isolates
+the release-profile effect from the source change. The default
+`just build-mk5-spi` image ran +120/+450 and delivered 147,860 native samples
+without loss. The CF2/USB release configuration built successfully. The
+pre-test image was restored and verified on the stopped controller.
+
+The final image had no late, ambiguous or masked updates across 240,090
+driven PWM writes at 15 kHz. Its minimum margins at +120/+450 were
+23.58/25.99 µs, compared with 22.89/27.56 µs in the qualifying baseline
+runs. The margin varies between repeats and is measured in a separate
+image. The full detection reproduced 15 → 20 → 15 kHz for R, L, flux and
+Hall with 650,305 records and no loss. The L cancellation test recorded
+17,394 samples without loss and verified restoration before the terminal
+reply in 32.81 ms. Saved configuration matched before and after.
+
+The bench scripts, ELF pair, register dumps and Parquet captures are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-regression.Ydk196/`.

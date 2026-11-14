@@ -12,7 +12,6 @@ use crate::transport::Stack;
 #[cfg(feature = "transport-usb")]
 use crate::transport::{AppDriver, UsbQueue, UsbRxWorker};
 use crate::{FAULT_REGISTRY, STATE};
-use core::sync::atomic::Ordering;
 use oxifoc_core::types::HardwareInfo;
 
 use oxifoc_core::foc::detection::DetectionError;
@@ -36,7 +35,7 @@ use crate::calibration::{
 use crate::config::{BOARD, PWM_CONFIG_LIMITS, measured_board};
 #[cfg(feature = "transport-usb")]
 use crate::config::{MAX_PACKET_SIZE, USB_OUT_QUEUE_SIZE};
-use crate::control::foc::VBUS_MV;
+use crate::control::foc::measured_vbus_mv;
 
 // ========== Worker Tasks ==========
 
@@ -349,7 +348,7 @@ impl DetectionBackend for F405Backend {
     type Timer = EmbassyTimer;
 
     fn vbus(&self) -> f32 {
-        VBUS_MV.load(Ordering::Relaxed) as f32 / 1000.0
+        measured_vbus_mv().unwrap_or(0) as f32 / 1000.0
     }
 
     #[cfg(feature = "board-vesc6-mk5")]
