@@ -1199,3 +1199,42 @@ also passed for CF2 with USB.
 
 ELFs, hardware readbacks, raw histograms and captures are under
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-adc-ownership.h0xmdu/`.
+
+### FOC driver owned by the interrupt (2026-11-14)
+
+The F405 ADC interrupt takes the initialized driver from boot once and runs
+FOC without the outer driver critical section. Existing synchronization for
+shared state and the motor-command channel still applies. On MK5, the
+detection server requests ARR through a single atomic word. The ISR publishes
+the last sample at the old rate, re-primes TIM1 with the bridge off, and
+acknowledges after publishing the first sample at the new rate. The detection
+lease covers restoring drive timing even on cancellation.
+
+On MK5, complete Medium Outrunner detection with 5 A input and 0 A regen
+recorded 648,964 samples without gaps. All driven samples used ARR=4195.
+Each R, L, flux and Hall capture had the expected ARR sequence
+5594 → 4195 → 5594 (15 → 20 → 15 kHz). The firmware returned all six valid
+Hall states and the config dump matched before and after. The existing
+hardware test cancelled the L stage at 20 kHz and received the terminal
+cancellation in 42.02 ms, after 15 kHz was restored. The subsequent Stop
+ACK confirmed Stopped with zero faults. It recorded 17,509 samples without
+loss and checked replay and retired-operation semantics. The 503 core unit
+tests and CF2/USB and virtual platform build checks passed.
+
+The 15 kHz velocity deadline witness recorded about 240,000 driven PWM
+writes per image with zero late, ambiguous or masked writes in the matched
+runs. Minimum margin increased from 22.94 to 23.73 µs at +120 electrical
+rad/s and from 27.40 to 28.09 µs at +450. One separate baseline run hit a
+host affirmation timeout and a late write, then completed on retry.
+
+Mean ADC ISR body time moved from 46.26 to 46.44 µs at +120 and from
+45.62 to 45.71 µs at +450. The upper p99 bin stayed at 52.24 µs at +120
+and fell from 51.48–51.86 to 51.48 µs at +450. No measured body exceeded
+the 66.66 µs period. The asynchronous handoff and retiming path move code
+in the linked image, so the mean measures the whole change. Using a relaxed
+ISR load for the self-contained request eliminated one DMB and improved
+the mean over the initial acquire-load variant. All 16 matched drive
+captures arrived without loss and all 32 motion commands were acknowledged.
+
+Captures, ELFs, register readbacks and scripts are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-ownership.E7QTle/`.

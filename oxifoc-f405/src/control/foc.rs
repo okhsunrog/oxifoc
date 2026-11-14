@@ -30,6 +30,8 @@ use oxifoc_core::state::{
     BOOT_CURRENT_OFFSET_PENDING, CURRENT_OFFSET_DONE, DriverOperation, run_foc_cycle,
 };
 use oxifoc_core::storage::RuntimeConfig;
+#[cfg(feature = "board-vesc6-mk5")]
+use oxifoc_core::types::ControlTiming;
 
 use crate::hardware::peripherals::AdcHandles;
 use crate::safety::feed_watchdog;
@@ -212,16 +214,121 @@ fn publish_velocity_debug(
     }
     velocity_debug::push(frame);
 }
-#[cfg_attr(feature = "ccm", unsafe(link_section = ".ccm.data"))]
-static FOC_DRIVER: CriticalSectionMutex<RefCell<Option<FocDriverType>>> =
+#[cfg_attr(feature = "ccm", unsafe(link_section = ".ccm.bss"))]
+static FOC_DRIVER: static_cell::StaticCell<FocDriverType> = static_cell::StaticCell::new();
+static FOC_HANDOFF: CriticalSectionMutex<RefCell<Option<&'static mut FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
+static FOC_READY: AtomicBool = AtomicBool::new(false);
 
-/// Re-prime TIM1 from the same stopped state as boot, then start a fresh ADC
-/// sequence. The commissioning lease excludes drive commands until restore.
 #[cfg(feature = "board-vesc6-mk5")]
-pub(crate) fn retime_for_detection(timing: oxifoc_core::types::ControlTiming) -> bool {
-    use embassy_stm32::interrupt::typelevel::Interrupt;
-    use embassy_stm32::pac;
+mod detection_timing {
+    use super::{AtomicU32, CPU_HZ, ControlTiming, Duration, FocDriverType, ISR_BUDGET_CYCLES};
+    use super::{ISR_LAST_START, MotorPwm, Ordering, Timer, interrupt};
+    use embassy_stm32::{interrupt::typelevel::Interrupt, pac};
+
+    const IDLE: u32 = 0;
+    const AWAITING_SAMPLE: u32 = 0x1_0000;
+    const APPLIED: u32 = AWAITING_SAMPLE + 1;
+    const REJECTED: u32 = APPLIED + 1;
+    // 1..=65535 carries the requested ARR. The detection task owns the
+    // request through acknowledgement or cancellation. Only the ADC ISR
+    // changes it to an outcome. The task cannot run during either ISR step.
+    static REQUEST: AtomicU32 = AtomicU32::new(IDLE);
+
+    pub(super) struct Request;
+
+    impl Request {
+        pub(super) fn submit(arr: u16) -> Option<Self> {
+            REQUEST
+                .compare_exchange(IDLE, u32::from(arr), Ordering::Release, Ordering::Relaxed)
+                .ok()
+                .map(|_| Self)
+        }
+
+        pub(super) async fn wait(self) -> bool {
+            embassy_time::with_timeout(Duration::from_millis(500), async {
+                loop {
+                    match REQUEST.load(Ordering::Acquire) {
+                        APPLIED => return true,
+                        REJECTED => return false,
+                        _ => Timer::after_millis(1).await,
+                    }
+                }
+            })
+            .await
+            .unwrap_or(false)
+        }
+    }
+
+    impl Drop for Request {
+        fn drop(&mut self) {
+            // An outer detection timeout may drop the waiter. Restoration
+            // can then submit its own request while still holding the lease.
+            REQUEST.store(IDLE, Ordering::Release);
+        }
+    }
+
+    #[inline]
+    pub(super) fn after_sample(driver: &mut FocDriverType) {
+        // The word contains the complete request. There is no separate
+        // payload to synchronize, and the task cannot run during this ISR.
+        let state = REQUEST.load(Ordering::Relaxed);
+        if state == AWAITING_SAMPLE {
+            REQUEST.store(APPLIED, Ordering::Release);
+        } else if let Ok(arr) = u16::try_from(state)
+            && arr != 0
+        {
+            apply(driver, arr);
+        }
+    }
+
+    #[inline(never)]
+    fn apply(driver: &mut FocDriverType, arr: u16) {
+        let Some(drive) = crate::config::CONTROL_TIMING.try_get() else {
+            REQUEST.store(REJECTED, Ordering::Release);
+            return;
+        };
+        if !oxifoc_core::state::DETECTION_ACTIVE.load(Ordering::Acquire)
+            || oxifoc_core::state::FLASH_OP_PENDING.load(Ordering::Acquire)
+        {
+            REQUEST.store(REJECTED, Ordering::Release);
+            return;
+        }
+        let tim = pac::TIM1;
+        if tim.arr().read().arr() == arr {
+            REQUEST.store(APPLIED, Ordering::Release);
+            return;
+        }
+        let timing = ControlTiming {
+            clock_hz: drive.clock_hz,
+            period_ticks: 2 * u32::from(arr),
+        };
+        if !driver.retime_stopped(timing, crate::config::DEAD_TIME_COMP_NS, |pwm| {
+            pwm.install_stopped_period(arr);
+        }) {
+            REQUEST.store(REJECTED, Ordering::Release);
+            return;
+        }
+        // The old sample has already been published. TIM1 is stopped, so
+        // drain any in-flight conversion before restarting the trigger.
+        cortex_m::asm::delay(CPU_HZ / 100_000);
+        for adc in [pac::ADC1, pac::ADC2, pac::ADC3] {
+            adc.sr().write(|_| {});
+        }
+        interrupt::typelevel::ADC::unpend();
+        let budget = (u64::from(CPU_HZ) * u64::from(timing.period_ticks)
+            / u64::from(timing.clock_hz)) as u32;
+        ISR_BUDGET_CYCLES.store(budget, Ordering::Relaxed);
+        ISR_LAST_START.store(0, Ordering::Relaxed);
+        REQUEST.store(AWAITING_SAMPLE, Ordering::Release);
+        MotorPwm::resume_control_timer();
+    }
+}
+
+/// Request the stopped ISR to change TIM1 and acknowledge the first fresh
+/// sample. The commissioning lease excludes drive commands until restore.
+#[cfg(feature = "board-vesc6-mk5")]
+pub(crate) async fn retime_for_detection(timing: ControlTiming) -> bool {
     let Some(drive) = crate::config::CONTROL_TIMING.try_get() else {
         return false;
     };
@@ -234,39 +341,10 @@ pub(crate) fn retime_for_detection(timing: oxifoc_core::types::ControlTiming) ->
     let Ok(arr) = u16::try_from(timing.period_ticks / 2) else {
         return false;
     };
-    critical_section::with(|cs| {
-        if !oxifoc_core::state::DETECTION_ACTIVE.load(Ordering::Acquire)
-            || oxifoc_core::state::FLASH_OP_PENDING.load(Ordering::Acquire)
-        {
-            return false;
-        }
-        let tim = pac::TIM1;
-        if tim.arr().read().arr() == arr {
-            return true;
-        }
-        let mut driver = FOC_DRIVER.borrow(cs).borrow_mut();
-        let Some(driver) = driver.as_mut() else {
-            return false;
-        };
-        if !driver.retime_stopped(timing, crate::config::DEAD_TIME_COMP_NS, |pwm| {
-            pwm.install_stopped_period(arr);
-        }) {
-            return false;
-        }
-        // TIM1 is stopped. Allow a previously triggered three-rank injected
-        // conversion (~3.9 us on MK5) to finish, then discard that old sample.
-        cortex_m::asm::delay(CPU_HZ / 100_000);
-        for adc in [pac::ADC1, pac::ADC2, pac::ADC3] {
-            adc.sr().write(|_| {});
-        }
-        interrupt::typelevel::ADC::unpend();
-        let budget = (u64::from(CPU_HZ) * u64::from(timing.period_ticks)
-            / u64::from(timing.clock_hz)) as u32;
-        ISR_BUDGET_CYCLES.store(budget, Ordering::Relaxed);
-        ISR_LAST_START.store(0, Ordering::Relaxed);
-        MotorPwm::resume_control_timer();
-        true
-    })
+    let Some(request) = detection_timing::Request::submit(arr) else {
+        return false;
+    };
+    request.wait().await
 }
 
 // ========== Initialization ==========
@@ -297,7 +375,7 @@ pub async fn init(
     // jitter it (mirrors the G431 setup; main.rs demotes every other
     // vector below the control ISRs for exactly this reason).
     //
-    // DELIBERATE: the ISR free-runs with FOC_DRIVER == None until the
+    // DELIBERATE: the ISR free-runs without a FOC driver until the
     // driver is installed below — first_vbus_v() and the boot current-
     // offset calibration are fed by the ISR's atomics, so it MUST start
     // first. The window is benign by construction: run_foc_cycle is
@@ -403,9 +481,9 @@ pub async fn init(
     }
 
     // Install FOC driver for ISR-only access; it now advances calibration.
-    FOC_DRIVER.lock(|cell| {
-        cell.replace(Some(foc_driver));
-    });
+    let driver = FOC_DRIVER.init(foc_driver);
+    FOC_HANDOFF.lock(|cell| cell.replace(Some(driver)));
+    FOC_READY.store(true, Ordering::Release);
 
     if calibration_started {
         match CURRENT_OFFSET_DONE.wait().await {
@@ -465,6 +543,7 @@ fn isr_timing_now() -> u32 {
 #[cfg_attr(feature = "ram-foc", unsafe(link_section = ".data.ram_foc"))]
 fn ADC() {
     static mut ADCS: Option<AdcHandles> = None;
+    static mut DRIVER: Option<&'static mut FocDriverType> = None;
     static mut SEQ: u32 = 0;
     #[cfg(all(
         feature = "bench-foc-distribution",
@@ -645,102 +724,103 @@ fn ADC() {
     let mut outlier_velocity = 0.0_f32;
     #[cfg(feature = "bench-raw-codec")]
     let mut codec_bench_stopped = false;
-    let foc_telem = FOC_DRIVER.lock(|cell| {
-        cell.borrow_mut().as_mut().and_then(|driver| {
-            #[cfg(feature = "fast-telemetry")]
-            let velocity_debug = oxifoc_core::runtime::velocity_debug::enabled();
-            #[cfg(feature = "fast-telemetry")]
-            {
-                driver.record_velocity_updates(velocity_debug);
-                // Sample the current grant once per 16 native cycles (~938 Hz at 15 kHz).
-                driver.arm_current_debug(velocity_debug && *SEQ & 15 == 0);
-            }
-            let output = run_foc_cycle(
-                &STATE,
-                &FAULT_REGISTRY,
-                driver,
-                vbus_mv as f32 / 1000.0,
-                now_ticks,
-                protection_board,
-            );
-            #[cfg(feature = "fast-telemetry")]
-            if velocity_debug {
-                publish_velocity_debug(driver, *SEQ, now_ticks, hall_snapshot);
-            }
-            #[cfg(feature = "bench-hall-phase")]
-            HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
-            #[cfg(feature = "bench-hall-phase")]
-            HALL_PHASE.observe_velocity(*SEQ, || driver.velocity_control_snapshot());
-            #[cfg(feature = "bench-hall-crossover")]
-            if matches!(
+    // The release flag avoids touching the boot handoff while the task
+    // waits for its first VBUS reading. Once taken, DRIVER stays ISR-local.
+    if DRIVER.is_none() && FOC_READY.load(Ordering::Acquire) {
+        *DRIVER = FOC_HANDOFF.lock(|cell| cell.take());
+    }
+    let foc_telem = DRIVER.as_deref_mut().and_then(|driver| {
+        #[cfg(feature = "fast-telemetry")]
+        let velocity_debug = oxifoc_core::runtime::velocity_debug::enabled();
+        #[cfg(feature = "fast-telemetry")]
+        {
+            driver.record_velocity_updates(velocity_debug);
+            // Sample the current grant once per 16 native cycles (~938 Hz at 15 kHz).
+            driver.arm_current_debug(velocity_debug && *SEQ & 15 == 0);
+        }
+        let output = run_foc_cycle(
+            &STATE,
+            &FAULT_REGISTRY,
+            driver,
+            vbus_mv as f32 / 1000.0,
+            now_ticks,
+            protection_board,
+        );
+        #[cfg(feature = "fast-telemetry")]
+        if velocity_debug {
+            publish_velocity_debug(driver, *SEQ, now_ticks, hall_snapshot);
+        }
+        #[cfg(feature = "bench-hall-phase")]
+        HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
+        #[cfg(feature = "bench-hall-phase")]
+        HALL_PHASE.observe_velocity(*SEQ, || driver.velocity_control_snapshot());
+        #[cfg(feature = "bench-hall-crossover")]
+        if matches!(
+            driver.mode(),
+            oxifoc_core::types::ControlMode::VelocityControl { .. }
+        ) {
+            HALL_PHASE.observe_crossover(*SEQ, driver.phase());
+        }
+        #[cfg(feature = "bench-hall-phase")]
+        HALL_PHASE.observe_faults(*SEQ, || {
+            use oxifoc_core::foc::phase::PhaseProvider;
+            driver
+                .phase()
+                .rotor_velocity()
+                .map_or(f32::NAN, |v| v.electrical_rad_s())
+        });
+        #[cfg(feature = "bench-raw-codec")]
+        {
+            codec_bench_stopped = matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
+        }
+        #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
+        {
+            outlier_active = matches!(
                 driver.mode(),
-                oxifoc_core::types::ControlMode::VelocityControl { .. }
-            ) {
-                HALL_PHASE.observe_crossover(*SEQ, driver.phase());
-            }
-            #[cfg(feature = "bench-hall-phase")]
-            HALL_PHASE.observe_faults(*SEQ, || {
-                use oxifoc_core::foc::phase::PhaseProvider;
-                driver
-                    .phase()
-                    .rotor_velocity()
-                    .map_or(f32::NAN, |v| v.electrical_rad_s())
-            });
-            #[cfg(feature = "bench-raw-codec")]
+                oxifoc_core::types::ControlMode::CurrentControl { .. }
+                    | oxifoc_core::types::ControlMode::VelocityControl { .. }
+            );
+            #[cfg(feature = "bench-cycle-outliers")]
             {
-                codec_bench_stopped =
-                    matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
+                outlier_velocity = output.map_or(0.0, |sample| sample.velocity_rad_s);
             }
-            #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
-            {
-                outlier_active = matches!(
-                    driver.mode(),
-                    oxifoc_core::types::ControlMode::CurrentControl { .. }
-                        | oxifoc_core::types::ControlMode::VelocityControl { .. }
-                );
-                #[cfg(feature = "bench-cycle-outliers")]
-                {
-                    outlier_velocity = output.map_or(0.0, |sample| sample.velocity_rad_s);
-                }
-            }
-            #[cfg(feature = "isr-timing")]
-            {
-                use oxifoc_core::types::ControlMode;
-                time_control_motion = matches!(
-                    driver.mode(),
-                    ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
-                ) && output
-                    .is_some_and(|sample| sample.velocity_rad_s != 0.0);
-            }
-            #[cfg(any(
-                feature = "bench-executor-trace",
-                feature = "bench-pwm-commit",
-                feature = "bench-netstack-trace"
-            ))]
-            let trace_active = if !cfg!(feature = "bench-netstack-trace")
-                && cfg!(any(
-                    feature = "bench-trace-excitation",
-                    feature = "bench-pwm-commit"
-                )) {
-                matches!(
-                    driver.mode(),
-                    oxifoc_core::types::ControlMode::DirectVoltage { .. }
-                )
-            } else {
-                !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped)
-            };
-            #[cfg(any(
-                feature = "bench-executor-trace",
-                feature = "bench-pwm-commit",
-                feature = "bench-netstack-trace"
-            ))]
-            if trace_active {
-                crate::diagnostics::trace::trigger_active();
-            } else {
-                crate::diagnostics::trace::trigger_stopped();
-            }
-            output
-        })
+        }
+        #[cfg(feature = "isr-timing")]
+        {
+            use oxifoc_core::types::ControlMode;
+            time_control_motion = matches!(
+                driver.mode(),
+                ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
+            ) && output.is_some_and(|sample| sample.velocity_rad_s != 0.0);
+        }
+        #[cfg(any(
+            feature = "bench-executor-trace",
+            feature = "bench-pwm-commit",
+            feature = "bench-netstack-trace"
+        ))]
+        let trace_active = if !cfg!(feature = "bench-netstack-trace")
+            && cfg!(any(
+                feature = "bench-trace-excitation",
+                feature = "bench-pwm-commit"
+            )) {
+            matches!(
+                driver.mode(),
+                oxifoc_core::types::ControlMode::DirectVoltage { .. }
+            )
+        } else {
+            !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped)
+        };
+        #[cfg(any(
+            feature = "bench-executor-trace",
+            feature = "bench-pwm-commit",
+            feature = "bench-netstack-trace"
+        ))]
+        if trace_active {
+            crate::diagnostics::trace::trigger_active();
+        } else {
+            crate::diagnostics::trace::trigger_stopped();
+        }
+        output
     });
 
     let prof_t3 = oxifoc_core::isr_prof::now();
@@ -770,6 +850,10 @@ fn ADC() {
     ))]
     if trace_adc {
         crate::diagnostics::trace::record(9, 0);
+    }
+    #[cfg(feature = "board-vesc6-mk5")]
+    if let Some(driver) = DRIVER.as_deref_mut() {
+        detection_timing::after_sample(driver);
     }
     #[cfg(feature = "bench-raw-codec")]
     CODEC_BENCH.on_adc(

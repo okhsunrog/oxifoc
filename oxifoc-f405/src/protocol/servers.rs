@@ -353,7 +353,7 @@ impl DetectionBackend for F405Backend {
     }
 
     #[cfg(feature = "board-vesc6-mk5")]
-    fn prepare_timing(
+    async fn prepare_timing(
         &mut self,
         request: &oxifoc_core::types::DetectRequest,
         drive_foc_hz: f32,
@@ -378,17 +378,18 @@ impl DetectionBackend for F405Backend {
                 requested_hz,
             )),
         };
-        if !crate::control::foc::retime_for_detection(timing) {
+        if !crate::control::foc::retime_for_detection(timing).await {
             return Err(DetectError::Busy);
         }
         Ok(timing.frequency_hz())
     }
 
     #[cfg(feature = "board-vesc6-mk5")]
-    fn restore_timing(&mut self) -> bool {
-        crate::config::CONTROL_TIMING
-            .try_get()
-            .is_some_and(|timing| crate::control::foc::retime_for_detection(*timing))
+    async fn restore_timing(&mut self) -> bool {
+        let Some(timing) = crate::config::CONTROL_TIMING.try_get() else {
+            return false;
+        };
+        crate::control::foc::retime_for_detection(*timing).await
     }
     // Pure pass-throughs return the inner future directly (`fn -> impl
     // Future` instead of `async fn`) — an `async` body here would wrap the

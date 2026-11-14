@@ -222,7 +222,7 @@ where
     }
 
     /// Reconfigure the carrier and its dependent control state with the
-    /// bridge off. The platform must exclude the control IRQ during the change.
+    /// bridge off. The platform must serialize this with the control loop.
     pub fn retime_stopped(
         &mut self,
         timing: crate::types::ControlTiming,

@@ -72,7 +72,7 @@ pub trait DetectionBackend {
 
     /// Select the stage timebase while the commissioning lease owns the
     /// stopped actuator. Platforms with fixed timing use the boot rate.
-    fn prepare_timing(
+    async fn prepare_timing(
         &mut self,
         _request: &DetectRequest,
         drive_foc_hz: f32,
@@ -81,7 +81,7 @@ pub trait DetectionBackend {
     }
 
     /// Restore the drive timebase after the ISR has disarmed commissioning.
-    fn restore_timing(&mut self) -> bool {
+    async fn restore_timing(&mut self) -> bool {
         true
     }
 
@@ -188,7 +188,7 @@ pub async fn detect_server<NS, B>(
             }
             // Hold the lease through restoration, including after timeout or
             // cancellation. Never advertise completion with the stage rate.
-            while !backend.restore_timing() {
+            while !backend.restore_timing().await {
                 guard.cancel();
                 <B::Timer as crate::timer::Timer>::after_millis(1).await;
             }
@@ -288,7 +288,7 @@ async fn run_step<B: DetectionBackend>(
         Ok(prepared) => prepared,
         Err(error) => return DetectResponse::Error(error),
     };
-    let foc_freq_hz = match backend.prepare_timing(&req, foc_freq_hz) {
+    let foc_freq_hz = match backend.prepare_timing(&req, foc_freq_hz).await {
         Ok(hz) => hz,
         Err(error) => return DetectResponse::Error(error),
     };

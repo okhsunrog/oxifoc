@@ -1288,7 +1288,7 @@ where
 
 /// One FOC cycle of driver work, shared by every platform ISR.
 ///
-/// Call inside the platform's FOC_DRIVER lock after reading the ADC:
+/// Call with exclusive access to the FOC driver after reading the ADC:
 /// applies pending [`DriverCommand`]s, gates on faults, runs the FOC step
 /// and checks the measured currents. Returns the cycle telemetry, or None
 /// when the step was skipped (faulted) or failed.
