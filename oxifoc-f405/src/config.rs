@@ -169,18 +169,21 @@ pub struct ClockProfile {
 }
 
 impl ClockProfile {
-    const fn vco_hz(&self) -> u32 {
-        // F405 M/N register values equal their factors. Match HAL integer order.
-        (self.hse_hz / self.pll.prediv.to_bits() as u32) * self.pll.mul.to_bits() as u32
+    const fn pll_output_hz(&self, divider: u32) -> u32 {
+        // The PLL keeps the fractional input ratio. Round the output once,
+        // as Embassy does when publishing the resulting RCC frequencies.
+        let numerator = self.hse_hz as u64 * self.pll.mul.to_bits() as u64;
+        let denominator = self.pll.prediv.to_bits() as u64 * divider as u64;
+        (numerator / denominator) as u32
     }
 
     const fn sys_hz(&self) -> u32 {
         // F405 PLLP encodes Div2/4/6/8 as 0/1/2/3.
-        self.vco_hz() / (2 * (self.pll.divp.expect("system PLLP required").to_bits() as u32 + 1))
+        self.pll_output_hz(2 * (self.pll.divp.expect("system PLLP required").to_bits() as u32 + 1))
     }
 
     const fn clk48_hz(&self) -> u32 {
-        self.vco_hz() / self.pll.divq.expect("PLLQ required").to_bits() as u32
+        self.pll_output_hz(self.pll.divq.expect("PLLQ required").to_bits() as u32)
     }
 
     const fn apb_hz(&self, pre: APBPrescaler) -> u32 {
@@ -239,7 +242,7 @@ pub const CLOCK_PROFILE: ClockProfile = ClockProfile {
             #[cfg(feature = "bench-overclock")]
             {
                 PllQDiv::from_bits(
-                    ((7_944_893 / 4 * BENCH_PLL_N as u32).div_ceil(48_000_000)) as u8,
+                    ((7_944_893 * BENCH_PLL_N as u32).div_ceil(4 * 48_000_000)) as u8,
                 )
             }
             #[cfg(not(feature = "bench-overclock"))]

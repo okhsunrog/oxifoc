@@ -373,7 +373,10 @@ impl DetectionBackend for F405Backend {
             .ok_or(DetectError::Busy)?;
         let timing = ControlTiming {
             clock_hz: drive.clock_hz,
-            period_ticks: 2 * (drive.clock_hz / (2 * requested_hz)),
+            period_ticks: 2 * u32::from(crate::motor::MotorPwm::center_aligned_arr(
+                drive.clock_hz,
+                requested_hz,
+            )),
         };
         if !crate::control::foc::retime_for_detection(timing) {
             return Err(DetectError::Busy);

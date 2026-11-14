@@ -23,27 +23,27 @@ class ClockReadbackTests(unittest.TestCase):
 
     def test_normal_profile(self):
         x = self.decode(self.registers(overclock=False))
-        self.assertEqual(x["cpu_hz"], 167835843)
-        self.assertEqual(x["tim1_hz"], 167835842)
-        self.assertEqual(x["adc_hz"], 20979480)
+        self.assertEqual(x["cpu_hz"], 167835864)
+        self.assertEqual(x["tim1_hz"], 167835864)
+        self.assertEqual(x["adc_hz"], 20979483)
 
     def test_reduced_bus_dividers(self):
         x = self.decode(self.registers())
-        self.assertEqual(x["tim1_hz"], 83917920)
-        self.assertEqual(x["adc_hz"], 20979480)
+        self.assertEqual(x["tim1_hz"], 83917932)
+        self.assertEqual(x["adc_hz"], 20979483)
 
     def test_upper_step(self):
         regs = self.registers(n=241)
         regs[0x40010028] = [0, 2991]
         x = self.decode(regs)
-        self.assertEqual(x["cpu_hz"], 239339871)
+        self.assertEqual(x["cpu_hz"], 239339901)
         self.assertEqual(x["flash_ws"], 7)
 
     def test_maximum_experimental_step(self):
         regs = self.registers(n=261)
         regs[0x40010028] = [0, 3239]
         x = self.decode(regs)
-        self.assertEqual(x["cpu_hz"], 259202101)
+        self.assertEqual(x["cpu_hz"], 259202134)
         self.assertEqual(x["flash_ws"], 7)
         self.assertGreater(x["flash_access_hz"], 30_000_000)
 

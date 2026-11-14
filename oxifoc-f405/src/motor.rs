@@ -94,7 +94,15 @@ impl<'d> MotorPwm<'d> {
             CountingMode::CenterAlignedBothInterrupts,
         );
 
-        let max_duty = pwm.get_max_duty();
+        let tim = embassy_stm32::pac::TIM1;
+        let tim1_clock_hz = embassy_stm32::rcc::frequency::<peripherals::TIM1>().0;
+        // Use the same half-period rounding at boot and during detection.
+        // Leave the HAL in charge of configuring the complementary outputs.
+        let arr = Self::center_aligned_arr(tim1_clock_hz, config.pwm_freq_hz);
+        tim.cr1().modify(|w| w.set_cen(false));
+        tim.psc().write_value(0);
+        tim.arr().write(|w| w.set_arr(arr));
+        let max_duty = u32::from(arr);
         #[cfg(any(feature = "bench-executor-trace", feature = "bench-pwm-commit"))]
         assert!(
             max_duty < 0x8000,
@@ -102,7 +110,6 @@ impl<'d> MotorPwm<'d> {
         );
 
         // Calculate dead time from actual timer clock frequency
-        let tim1_clock_hz = embassy_stm32::rcc::frequency::<peripherals::TIM1>().0;
         let dead_time = pwm::dead_time_ticks(config.dead_time_ns, tim1_clock_hz);
         pwm.set_dead_time(dead_time);
 
@@ -143,6 +150,12 @@ impl<'d> MotorPwm<'d> {
             max_duty,
             duty_limit,
         }
+    }
+
+    pub(crate) fn center_aligned_arr(clock_hz: u32, pwm_hz: u32) -> u16 {
+        let arr = defmt::unwrap!(u16::try_from(clock_hz / (2 * pwm_hz)).ok());
+        defmt::assert!(arr != 0);
+        arr
     }
 
     /// One-time stopped setup: transfer CCR preloads only at the PWM peak.
