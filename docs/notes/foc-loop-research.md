@@ -2,11 +2,11 @@
 
 ## Resume here
 
-2026-11-14 update. The Embassy refresh exposed a clock-calculation mismatch
-and a change in HAL PWM rounding. The MK5 boots after the fixes and keeps
-the previous TIM1/ADC setup. At 15 kHz, the ADC ISR body takes about
-0.7–0.8 µs longer at +120/+450 electrical rad/s. See the Embassy comparison
-at the end of this note.
+2026-11-14 update. After the dependency refresh, the MK5 keeps the previous
+TIM1/ADC setup. The ADC ISR regression on the unloaded 15 kHz bench depends
+on release code generation. Disabling incremental compilation shrinks the
+measured increase from about 0.8 µs to 0.15–0.18 µs. The new `PRIMASK` barrier
+accounts for 0.15–0.20 µs in an address-preserving A/B. See the final section.
 
 2026-11-13 update. The firmware nightly comparison below found an ARM
 target-feature naming change that disabled hardware square root. With that
@@ -1098,3 +1098,77 @@ faults. This comparison covers 15 kHz on the unloaded MK5.
 
 Captures, register dumps, GDB evidence, build logs and plots are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-embassy-ab.ox3qLp/`.
+
+### ADC ISR regression isolation on MK5 (2026-11-14)
+
+Compared `0332362` and `ea90eb3` with the same Rust nightly, target flags,
+warn-only logs, unloaded H5055, +120/+450 electrical rad/s and native
+15 kHz Packed28 over C5. Verified 167.836 MHz CPU, 5 flash wait states,
+TIM1 ARR=5594, CCR4=5483 and 20.979 MHz ADC with three 15-cycle ranks on
+each ADC. Clean builds on both sides used the same MK5 features. The
+original old ELF additionally placed its telemetry queue in CCM.
+
+| Diagnostic image | Mean body, +120 (µs) | Mean body, +450 (µs) |
+|---|---:|---:|
+| Original before refresh | 46.65 | 45.98 |
+| Original after refresh | 47.39 | 46.73 |
+| Original after, replace hot-path ISB with NOP.W | 47.24 | 46.58 |
+| Clean before, incremental enabled | 46.58 | 45.94 |
+| Clean after, incremental enabled | 47.39 | 46.73 |
+| Clean before, incremental disabled | 46.67 | 46.04 |
+| Clean after, incremental disabled, first block | 46.86 | 46.18 |
+| Same clean after ELF, address-preserving control | 46.84 | 46.18 |
+| Same clean after ELF, replace hot-path ISB with NOP.W | 46.65 | 45.99 |
+| Clean after, rebuild without ISB after PRIMASK only | 46.61 | 45.92 |
+| Clean before, change only the cortex-m lock to 0.7.10 | 47.16 | 46.57 |
+| Clean after, change only the cortex-m dependency to 0.7.9 | 46.98 | 46.37 |
+| Clean after, retain ISB and restore the old compiler memory declaration | 46.81 | 46.14 |
+
+The original +0.75 µs reproduces on the original ELFs. Matching features
+with freshly generated incremental ELFs also reproduces it. With incremental
+disabled on both sides, the increase is about 0.18/0.14 µs, and disabling it
+on the updated image saves about 0.54/0.55 µs. The hot functions have different
+instruction sequences and addresses between the two Cargo profiles. For
+example, the updated `run_foc_cycle` moves from `0x080011c0` to `0x08004f0c`,
+and grows from 26,292 to 27,364 bytes. Code shape and placement both change.
+The experiment does not attribute the profile effect exclusively to flash
+cache misses or to instruction count.
+
+Embassy raises the minimum `cortex-m` version to 0.7.9. The refresh selected
+0.7.10, where [a8e5a2e](https://github.com/rust-embedded/cortex-m/commit/a8e5a2ee57)
+adds an instruction synchronization barrier after writing PRIMASK. The
+critical-section backend restores PRIMASK on exit. In the final linked
+image the writes under `ADC` and `run_foc_cycle` retain the same static count
+between versions with matched Cargo profiles. The updated code has 85 or 86
+ISB sites across those two symbols, most on mutually exclusive paths. The
+same-size NOP experiment preserves their addresses, compiler ordering
+constraints and the PRIMASK writes. It measures 0.15–0.20 µs per cycle
+attributable to executing those barriers. Swapping the crate version and
+relinking also changes addresses and can move timing in either direction.
+The version split is consistent with moving from 0.7.8 to 0.7.10 causing
+a substantial change through the build, with 0.7.9 also sensitive to layout.
+Restoring the old `nomem` declaration on the mask writes moved timing by
+only 0.03–0.05 µs in its relinked build. Keep the upstream barrier and the
+[compiler-ordering fix](https://github.com/rust-embedded/cortex-m/commit/7338915eb8).
+
+Separate section probes at decimated 7.5 kHz telemetry put +52–77 ticks in
+`run_foc_cycle` (observer +34–35 ticks), +27 in the snapshot and +13 in
+publication. The ADC read section used about five fewer ticks. The section
+probes change the linked code, so those deltas describe the instrumented
+images. The hardware square-root instructions remained present in both
+minimal hot paths.
+
+The 66 accepted runs delivered 4,584,802 records and acknowledged all 132
+motion commands. No timed ISR body exceeded the 66.66 µs period. Eight
+attempts crossed a DWT epoch, one recorder did not freeze, and one host
+capture failed. These attempts were repeated. The pre-test image was
+restored and the controller returned to Stopped with zero faults.
+
+Preserve `cortex-m` 0.7.10. For future performance comparisons build both
+sides clean with incremental disabled and record the exact ELF and features.
+Recheck the nonincremental release with the PWM-write deadline witness before
+changing the default release profile. Further hot-path work can consolidate
+shared-state access inside the ADC ISR while retaining the required ordering.
+
+ELFs, harnesses, raw histograms, captures and the distribution plot are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-isr-cause.9mxWCf/`.
