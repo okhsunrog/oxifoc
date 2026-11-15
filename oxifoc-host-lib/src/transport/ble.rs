@@ -85,10 +85,17 @@ impl Session {
         }
         if let Some(address) = self.address.take()
             && let Ok(handler) = handler().await
-            && handler.is_device_connected(&address)
             && let Err(error) = handler.disconnect_device(&address).await
         {
-            warn!("BLE disconnect: {error}");
+            // Also cancel a pending connect: it has a link entry but has not
+            // become is_device_connected() yet. No entry is normal when a
+            // cancelled connect was still discovering the address.
+            if !matches!(
+                error,
+                blec::Error::DeviceNotConnected(_) | blec::Error::NoDeviceConnected
+            ) {
+                warn!("BLE disconnect: {error}");
+            }
         }
     }
 
@@ -312,6 +319,27 @@ mod lifecycle_tests {
             assert!(error.to_string().contains("too small"));
             assert!(!small.is_connected());
             assert!(is_down(&stack));
+            let pending = world.add_device(spec(3, 517));
+            pending.set_connect_behaviour(blec::mock::ConnectBehaviour::Hang);
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(200),
+                    session.register(&stack, &queue, &pending.address_string(), notify.clone())
+                )
+                .await
+                .is_err()
+            );
+            assert!(pending.count_ops(&blec::mock::Op::Connect) > 0);
+            session.close().await;
+            assert!(pending.count_ops(&blec::mock::Op::Disconnect) > 0);
+            pending.complete_connect();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while pending.is_connected() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
             good.set_subscribe_behaviour(OpBehaviour::Fail(FailKind::NotSupported));
             assert!(
                 session
