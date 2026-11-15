@@ -5,7 +5,7 @@
 The user-supplied `oxifoc-icon.svg` is retained as a vector asset in `assets/`.
 Only its radial glow is clipped to the rounded tile; the source in Downloads
 is unchanged. `Brand` embeds the asset as an SVG data URL so Native and WebView
-need no asset server. Launcher/OS icons are not configured in this step.
+need no asset server. Launcher and window icons use generated assets from this SVG.
 
 | Role | Dark | Light |
 | --- | --- | --- |

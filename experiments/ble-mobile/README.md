@@ -29,7 +29,7 @@ export DX_ROOT="$HOME/tmp_zfs/codex_tmp/oxifoc-blec/dx"
 nix develop -c cargo install dioxus-cli \
   --git https://github.com/DioxusLabs/dioxus \
   --rev 97adf7915e1adfef4e2da436c9bd0b6add0dfa39 --locked --root "$DX_ROOT"
-nix develop -c bash -c 'cd experiments/ble-mobile; "$DX_ROOT/bin/dx" build --android --target aarch64-linux-android'
+nix develop -c bash -c 'DX="$DX_ROOT/bin/dx" experiments/ble-mobile/build-android.sh'
 adb install -r experiments/ble-mobile/target/dx/oxifoc-ble-mobile/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -W -n com.oxifoc.blelab/dev.dioxus.main.MainActivity
 ```

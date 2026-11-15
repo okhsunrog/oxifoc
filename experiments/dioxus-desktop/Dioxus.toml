@@ -1,0 +1,5 @@
+[application]
+name = "OxiFOC Drive Studio"
+[bundle]
+identifier = "com.oxifoc.studio.webview"
+icon = ["../../oxifoc-ui/assets/oxifoc-icon.png"]

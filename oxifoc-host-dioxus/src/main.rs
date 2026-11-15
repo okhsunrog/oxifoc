@@ -18,12 +18,28 @@ fn main() {
         model::verify_virtual().unwrap();
         return;
     }
+    let mut window = WindowAttributes::default().with_window_icon(Some(
+        dioxus_native::winit::icon::RgbaIcon::new(
+            include_bytes!("../../oxifoc-ui/assets/oxifoc-icon-64.rgba").to_vec(),
+            64,
+            64,
+        )
+        .expect("embedded icon dimensions")
+        .into(),
+    ));
+    #[cfg(target_os = "linux")]
+    {
+        use dioxus_native::winit::platform::wayland::WindowAttributesWayland;
+        window = window.with_platform_attributes(Box::new(
+            WindowAttributesWayland::default().with_name("com.oxifoc.studio.native", "oxifoc"),
+        ));
+    }
     dioxus_native::launch_cfg(
         App,
         vec![],
         vec![
             Box::new(
-                WindowAttributes::default()
+                window
                     .with_title("OxiFOC • Drive studio")
                     .with_surface_size(if std::env::args().any(|s| s == "--compact") {
                         LogicalSize::new(420, 900)
