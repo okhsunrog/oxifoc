@@ -36,7 +36,7 @@ board-cf2 = []
 # (SCK PC10 / MOSI PB4 / MISO PB3), in-line phase shunts, amp gain 20 V/V,
 # shutdown latch PC5, current/phase filter enables PD2/PC13.
 # See docs/hw/vesc6-mk5.md.
-board-vesc6-mk5 = ["dep:bitbang-hal-ng"]
+board-vesc6-mk5 = ["dep:bitbang-hal-ng", "oxifoc-core/compact-foc", "oxifoc-core/atan2-fma"]
 # Standalone connector continuity probe: no FOC, gate disabled.
 bench-bridge-pins = []
 bench-bridge-pins-rx = ["bench-bridge-pins"]

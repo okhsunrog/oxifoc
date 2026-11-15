@@ -65,6 +65,11 @@ path = "src/lib.rs"
 [features]
 default = ["algorithms", "detection", "offset-diagnostics"]
 
+# Explicit function sections used by the F405 compact FOC linker layout.
+compact-foc = []
+# Fused atan2 polynomial. no_std builds with this policy require nightly.
+atan2-fma = []
+
 # Runtime current-offset comparison (undriven / per-phase / all-phases).
 # Boot calibration remains unconditional; flash-tight devices can omit this
 # host-triggered path and enable it only in a bench build.

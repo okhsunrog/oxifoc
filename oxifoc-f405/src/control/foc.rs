@@ -783,11 +783,7 @@ fn ADC() {
         }
         #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
         {
-            outlier_active = matches!(
-                driver.mode(),
-                oxifoc_core::types::ControlMode::CurrentControl { .. }
-                    | oxifoc_core::types::ControlMode::VelocityControl { .. }
-            );
+            outlier_active = !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
             #[cfg(feature = "bench-cycle-outliers")]
             {
                 outlier_velocity = output.map_or(0.0, |sample| sample.velocity_rad_s);

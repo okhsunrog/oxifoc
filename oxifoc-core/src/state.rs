@@ -1301,6 +1301,15 @@ where
     all(feature = "ram-foc", target_arch = "arm", target_os = "none"),
     unsafe(link_section = ".data.ram_foc")
 )]
+#[cfg_attr(
+    all(
+        feature = "compact-foc",
+        target_arch = "arm",
+        target_os = "none",
+        not(feature = "ram-foc")
+    ),
+    unsafe(link_section = ".text.foc_cycle")
+)]
 pub fn run_foc_cycle<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &FaultRegistry<F>,

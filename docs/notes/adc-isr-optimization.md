@@ -1,6 +1,6 @@
 # STM32F405 ADC ISR optimization
 
-Updated 2026-11-15. This is the single record of accepted optimizations,
+Updated 2026-11-16. This is the single record of accepted optimizations,
 measured alternatives and rejected experiments. Motor tuning, Hall behavior
 and transport qualification remain in the [bench journal](foc-loop-research.md).
 Timings belong to specific MK5 images; gains from different series are not additive.
@@ -270,6 +270,8 @@ work by cadence, not decimating every protection check.
 | Question | Tool |
 |---|---|
 | Isolated counters, modulo/masks and time-reading cost | `tests/stm32f405`, embedded-test + DWT, gate off; `just bench-embedded-f405 OUTPUT RECOVERY` |
+| Arithmetic kernels and controlled ART/cache behavior | The same embedded-test runner, filters `z_bench_arithmetic` and `z_bench_layout`; exact images and repeat manifests |
+| Short-window fetch/LSU stall costs | Filter `z_bench_art_counters`; SRAM observer, raw 8-bit DWT residues, overflow calibration and ambiguity counts |
 | Full ISR-body and entry-gap distributions | `bench-foc-distribution`, `scripts/bench_foc_profile.py`; `just bench-mk5-foc OUTPUT RECOVERY minimal 3 velocity120 quiet` |
 | Margin before PWM preload | Separate `bench-foc-deadline`; use `deadline` instead of `minimal` above |
 | Actual TIM1/ADC frequency and phase | `scripts/f405_timing.py`, register readback while Stopped |
@@ -313,6 +315,12 @@ Local artifact root:
 | `oxifoc-cadence-2026-11-15/` | First cadence matrix, embedded-test, plans, raw and rejected attempts |
 | `oxifoc-cadence-2026-11-15/services/` | `service-capture-rollup.json`, `pw-native-summary.csv`, PC manifests in `pc-all/` and `pc-pw/`, analysis/disassembly/build provenance |
 | `oxifoc-cadence-2026-11-15/adoption-final/` | Stock 15-kHz integration images, captures and restoration evidence |
+| `oxifoc-arithmetic-2026-11-15/` | Arithmetic matrix, MCU numerical traces, identical-object placement sweeps, ART fixtures, native timing and PC profiles |
+| `oxifoc-art-counters-2026-11-15/` | DWT CPI/LSU calibration, four identical-object placements, cache-state matrix and native torque windows |
+| `oxifoc-adc-callgraph-2026-11-15/` | Linked ADC callees, call sites, tail branches, resolved wakers, callback candidates and placement coverage |
+| `oxifoc-callee-layout-2026-11-15/` | Extended 14-candidate placement sweeps, fixed-address compiler-object controls and native captures |
+| `oxifoc-compact-arithmetic-2026-11-15/` | Compact-layout arithmetic follow-up, 492-function address controls, opcode controls, fresh embedded-test results and native validation |
+| `oxifoc-final-compact-atan-2026-11-16/` | Main-derived compact-layout/atan2-FMA integration, release and diagnostic ELFs, 15/20-kHz transition and PWM-margin qualification |
 
 Reference 20-kHz research ELF: `services/pw-current-cold20/firmware.elf`, SHA256
 `1f66ad2379f65da87cdb054025ecd36eeea7fe86ba2ddab33f27db3220053827`.
@@ -320,6 +328,707 @@ It contains a temporary carrier override and is not the normal image.
 
 Evidence covers unloaded MK5/H5055 with HallToObserver. Remaining qualification:
 loaded control, sensorless/HFI startup, other modes and rare fault/config paths,
-and complete worst-case stack use. Sample PGO, new SRAM-transfer boundaries,
-explicit hot-section grouping and other MIR/LLVM thresholds remain untested.
-Each needs a separate measured A/B rather than applying a batch of compiler flags.
+and complete worst-case stack use. Instrumented PGO, new SRAM-transfer boundaries
+and other MIR/LLVM thresholds remain open. Arithmetic and explicit placement
+results follow below.
+
+The next investigation targets the reproducible 52–55-us bodies in Observer
+startup and velocity-PI dissipative-authority probes. Record per-stage cycles,
+identify overlapping work, and compare outlining, scheduling and solver changes
+against the existing unmoved ELF. Measure effects on startup, live torque limits
+and fault response, and quantify any proposed numerical compromise.
+
+## Arithmetic experiments, Nov 15
+
+Source baseline `6a52d74`; instrumented 20-kHz baseline `49f337d`.
+Pinned nightly/FPU flags, opt3/fat LTO/CGU1 and incremental=false match across
+the matrix. Each of 24 images has native +120/+450 holds and a separate +450
+PCSR profile. Numerical regressions remain in the evidence alongside the motor
+measurements. Arithmetic policy selection awaits review.
+
+Full ISR mean at +450 electrical rad/s, in us. Each row changes only the named
+kernel; the common ordinary-arithmetic baseline is 38.195.
+
+| Changed kernel | `mul_add_relaxed` | Required FMA | `algebraic_*` |
+|---|---:|---:|---:|
+| Sine polynomial | 38.426 | 38.426 | 38.190 |
+| Park / inverse Park | 38.190 | 38.191 | 38.193 |
+| PI integration/output | 38.186 | 38.188 | 38.175 |
+| Observer / filters / PLL | 38.079 | 38.079 | 37.952 |
+| atan2 polynomial | 37.954 | 37.953 | 38.141 |
+| All five groups | 38.380 | 38.380 | 38.195 |
+
+Other images measured 38.096 us for core sqrt, 39.971 for guarded Q15 Park,
+38.944 for the ordinary baseline with `target-cpu=cortex-m4`, 39.066 for
+all-FMA/M4 and 38.951 for all-algebraic/M4. Q15 includes f32 conversion,
+packing, saturation and a general-input fallback, using a 128-unit scale for
+both current and voltage coordinates. These timings include its integration cost.
+
+Exact baseline repeats span 38.186–38.195 us. Individual gains do not add
+when combined.
+
+| Combination | Mean +450, us |
+|---|---:|
+| Observer algebraic + atan2 FMA | 38.292 |
+| Observer algebraic + core sqrt | 38.320 |
+| Observer algebraic + atan2 FMA + core sqrt | 38.198 |
+
+### Instructions and placement
+
+Relaxed/FMA pairs have byte-identical allocated sections for sine, Park, PI,
+observer, atan2 and the combined image. Their x86 host tests can differ because
+relaxed rounding permits a different instruction choice on that target.
+The M4 CPU flag removes ordinary VMLA selection, expands `.text` by 7088 bytes
+in the baseline and slows the full ISR. Core sqrt exposes VSQRT to LLVM;
+the former assembly wrapper already used the same hardware instruction.
+
+VMLA and VFMA both have a nominal three-cycle cost on M4. Instruction
+dependencies and Flash placement still affect execution. The linked sine-FMA
+image moves `run_foc_cycle` by four bytes. An address-preserving control replaces
+111 sine VMLA/VMLS instructions with VFMA/VFMS and measures 38.187–38.194 us,
+overlapping the baseline. This control retains every other executable byte.
+[Arm Cortex-M4 TRM, section 7.2.3](https://web.eece.maine.edu/~hummels/classes/ece486/docs/arm_cortexm4_processor_trm_100166_0001_04_en.pdf#page=67)
+
+The ordinary `grant_torque` body is the same 736 bytes in the baseline and
+the individual atan2/observer images. Its address changes from offset 12 to
+offset 4 within a 16-byte line. PCSR occupancy falls by about 0.2 us per
+50-us period. The combined observer+atan2 image puts it back at offset 12.
+A separate identical-object relink experiment isolates this placement effect.
+
+The gate-disabled MCU benchmark covers 55 cases with three exact-image repeats,
+48 rounds and 64 calls per round. Selected gross cycles per call follow.
+
+| Kernel | Ordinary | Alternative | Result |
+|---|---:|---:|---|
+| Sine polynomial | 38.014 | 38.128 FMA | Essentially equal |
+| Complete bounded sin/cos | 96.697 | 96.778 FMA | Essentially equal |
+| Park | 38.212 | 38.212 FMA / 67.254 Q15 | Conversion makes this Q15 path slower |
+| atan2 | 72.187 | 73.119 FMA / 74.169 algebraic | No isolated speed gain |
+| PI with coefficients opaque at each call | 61.848 | 57.800 algebraic | About four cycles saved |
+| Sqrt | 32.883 assembly | 32.818 core | Same hardware operation |
+| Packed signed dot | 27.018 Rust | 26.127 DSP | Two multiply instructions become one SMLAD |
+
+Loop/input/black-box overhead is included. The PI comparison prevents coefficient
+hoisting out of the batch. Its disassembly still shows useful reassociation and
+different register/stack scheduling, while the full PI image saves only about
+0.02 us. Rust and intrinsic qadd/ssat/smulwb already select the same instructions;
+their roughly one-cycle timing differences expose placement/scheduling sensitivity.
+
+### Numerical contracts
+
+- On MCU sweeps of 65,537 inputs, the sine polynomial's maximum absolute
+  error is 7.01e-7 for ordinary arithmetic and 6.81e-7 with FMA. The maximum
+  change is one f32 ULP, 1.19e-7. Complete sin/cos stays within 9.07e-7 over
+  the sampled −2π…4π range.
+- With coordinates up to 100 A, Park arithmetic alone has maximum error
+  12.59 uA for ordinary arithmetic and 10.96 uA with FMA. Including sin/cos,
+  the measured maximum is 0.130 mA. Q15 reaches 10.51 mA; a 1-A zero-angle
+  round trip becomes 0.996063 A. Its Hall-glitch simulation reaches 13.03 A
+  true |Id| against the existing 12-A bound.
+- A 100,000-step prescribed current-PI trajectory has approximately
+  1.1–1.3 uV maximum error against the f64 reference. The velocity-filter
+  trajectory reaches 0.000281 electrical rad/s error.
+- The observer cached-versus-recomputed regression compares the torque
+  filter with an older unfused oracle. Required FMA changes it by at most
+  0.119 uA in the trajectory. Updating that diagnostic oracle to FMA restores
+  bitwise agreement. This comparison exercises coefficient caching with the
+  current observer algorithm on both sides.
+- Separate optimized MCU observer trajectories execute 56,000 identical input
+  updates, including variable dt, reversal, reset and configuration changes.
+  FMA/algebraic maximum phase changes are 1.19e-6 / 3.34e-6 electrical rad,
+  and velocity changes are 0.000244 / 0.000305 electrical rad/s. Numerical
+  maxima cover every fourth state plus readiness transitions. Readiness agrees
+  at every update. Host-debug algebraic agreement does not predict MCU rounding.
+- Assembly/core sqrt agree bitwise on non-NaN results from a 500,011-input-pattern
+  MCU sweep, with matching NaN classifications. atan2's existing approximation
+  error reaches 0.01015 rad, while the maximum FMA change is 2.38e-7 rad over
+  65,537 angles at four input scales.
+- PI-FMA's bus-clamp simulation exceeds the existing requested-minus-measured
+  2-A bound for nine 50-us steps. At the 3.366-A maximum, request/grant is
+  1.116 A and measured Iq is −2.250 A. Maximum requested-minus-granted current
+  is only 0.478 mA; peak integral is 1.517 A in both baseline and PI-FMA.
+  Speed settling/overshoot stay within that scenario's bounds. The current
+  transient and the original anti-windup intent require separate decisions.
+
+`algebraic_*` permits reassociation and broader changes to zero/nonfinite
+behavior. The finite-input measurements above bound the sampled workloads;
+the API also permits other results. Required FMA fixes one rounding, while
+relaxed multiply-add permits one or two.
+[Rust floating-point contracts](https://doc.rust-lang.org/nightly/core/primitive.f32.html#algebraic-operators)
+
+Artifacts are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-arithmetic-2026-11-15/`.
+`timing-summary.csv`, `pc-summary.json`, per-image `build.json` and raw captures
+identify source revisions, ELF hashes, flags and rejected attempts. MCU kernels
+live in `tests/stm32f405/tests/support/arithmetic.rs`; prescribed observer traces
+use `observer_trajectory.rs`. Gross kernel cycles include loop/input overhead.
+Per-invocation opaque PI coefficients distinguish an ISR step from loop hoisting.
+
+## Function placement experiments, Nov 15
+
+Each address sweep compiles once and relinks the captured final LLD inputs.
+The instructions, register choices, constants and function sizes stay fixed.
+Emitted relocations account for every changed executable/data byte. Other
+allocated section addresses stay fixed within each single-function sweep.
+Call sites and external tail branches receive their required relocations.
+
+The table shows mean full-ISR body time at +450, in us, for one base address.
+Each family uses ordinary arithmetic with the selected function extracted into
+its own section. Extraction can move the remaining `.text` contents relative to
+the original baseline. Comparisons between offsets within one family isolate
+placement using identical objects. Offsets are the entry address modulo 16.
+
+| Moved function | Bytes | Offset 0 | Offset 4 | Offset 8 | Offset 12 |
+|---|---:|---:|---:|---:|---:|
+| `grant_torque`, base `0x0807E000` | 736 | 38.035 | 37.989 | 38.074 | 38.187 |
+| `run_foc_cycle`, base `0x08070000` | 30072 | 37.975 | 37.822 | 38.188 | 37.956 |
+| `update_phase_with_applied_voltage`, base `0x08074000` | 13200 | 38.193 | 38.315 | 38.094 | 38.085 |
+| ADC ISR, base `0x0807B000` | 3680 | 38.393 | 38.264 | 38.288 | 38.188 |
+
+The second bases are respectively `0x0807D000`, `0x08078000` and `0x0807A000`.
+Matching offsets agree within 0.009 us across these bases. The grant differences
+agree within 0.001 us. Best/worst exact images also have repeat holds, +120
+holds and separate PCSR profiles. Entry alignment changes the position of every
+internal block and literal pool. The best entries here are at offsets 4, 4, 12
+and 12 respectively. ADC uses one base and directly selects its existing
+`.text.ADC` input from the baseline objects. The original baseline ADC entry
+already has offset 12.
+Further grant moves by 16/64/256/1024 bytes preserve the ranking. Offset 4
+measures 37.980–37.989 us and offset 12 measures 38.186–38.191 us across
+those four bases.
+
+F405 Flash reads 128-bit lines. ART retains 64 instruction lines and eight data
+lines for literal loads, with LRU replacement. Branch misses and literal fetches
+can stall execution. The observed 16-byte sensitivity is consistent with that
+fetch structure. The DWT study below measures the associated stall costs.
+Cache-index mapping and individual miss counts remain unmeasured.
+[ST RM0090, section 3.5.2](https://www.st.com/resource/en/reference_manual/DM00031020.pdf)
+
+### Controlled ART/cache fixture
+
+Twelve embedded-test ELFs relink one object set at bases `0x08050000`,
+`0x08050010` and `0x08050400`, each with offsets 0/4/8/12. Three repeats cover
+all eight combinations of prefetch/I-cache/D-cache, three current requests
+and warm/cold/pressure conditions. GPIO readback confirms the gate driver and
+phase outputs remain disabled. Five Flash wait states are retained.
+
+The real torque-limiter kernel is instantiated with inert IO and a manual phase
+source. Normal current steps first prepare active bus limiting. This instance
+has 732 bytes versus the native driver's 736 bytes. Warm windows contain 64
+calls. Cold windows reset caches before one timed call. Pressure windows execute
+96 branch lines and 64 volatile Flash-data reads before one timed call. Cache
+maintenance and pressure generation are outside the measured window.
+
+For the +0.4-A request, gross CPU-cycle ranges across the twelve placements are
+
+| Condition | Prefetch + I-cache + D-cache | All three disabled |
+|---|---:|---:|
+| Warm | 181.13–183.13 | 341.17–369.17 |
+| Cold | 241–253 | 347–375 |
+| After pressure | 253–261 | 364–378 |
+
+With I-cache/D-cache enabled and prefetch disabled, warm timing is 181.14 cycles
+at every placement. Cold timing becomes 342–363 cycles. A warm isolated loop
+therefore hides much of the placement sensitivity seen in the full ISR.
+Bitwise outputs agree across every placement, cache mode and repeat for all
+three requests. The 864 case summaries and 36 run manifests are in
+`art-summary.csv` and `art-b*/manifest.json` under the arithmetic artifact root.
+
+### Short-window DWT event profiling
+
+The tested F405 exposes the optional DWT profiling counters (`DWT_CTRL`
+initially `0x40000001`). CPICNT records extra instruction/fetch cycles, LSUCNT
+records extra load/store cycles, and EXCCNT records exception overhead. Each
+event counter is eight bits. The observer executes from ordinary SRAM and
+encloses every event-counter read inside a CYCCNT pair. Disassembly verifies
+the SRAM addresses, measured call and read order. The empty fixture costs
+75 cycles, including CPI 7 and LSU 35. Reported values retain this overhead.
+[Arm Cortex-M4 TRM, chapter 9](https://documentation-service.arm.com/static/5fce431be167456a35b36ade)
+
+CPI and LSU count mutually exclusive extra cycles. For observed residues
+`cpi` and `lsu` inside `cycles`, `cpi + lsu + 256 > cycles` proves that neither
+counter wrapped within its read interval. Other windows carry an explicit
+ambiguity flag. SRAM calibration uses 0/1/8/32/64/128 repeated UDIV or LDM
+instructions. Longer cases deliberately wrap and are flagged. For example,
+32 divides produce 468 cycles and CPI residue 105, representing 361 CPI
+cycles. Shorter cases verify the expected progression before wrap.
+[Armv7-M architecture, section C1.8](https://www.pjrc.com/teensy/DDI0403Ee_arm_v7m_ref_manual.pdf)
+
+Four ELFs place the same 732-byte fixture at `0x08050000 + {0,4,8,12}`.
+Three repeats cover eight cache modes, four callbacks and warm/cold/pressure
+conditions, totaling 36,864 single-call windows plus 4,608 calibration windows.
+Every fixture window has zero exception count and a proven unwrapped CPI/LSU
+pair. Outputs agree bitwise across placements, modes and repeats.
+
+Mean gross cycles for the +0.4-A fixture, shown as CYCCNT / CPI / LSU
+
+| ART condition | Entry offset 0 | Entry offset 8 |
+|---|---:|---:|
+| All enabled, warm | 217 / 38 / 36 | 215 / 36 / 36 |
+| All enabled, cold | 277 / 88 / 46 | 266 / 84 / 39 |
+| All enabled, after pressure | 277 / 88 / 46 | 271 / 84 / 44 |
+| All disabled, warm | 375.96 / 185.96 / 47 | 348 / 163 / 42 |
+
+The cold 11-cycle difference decomposes into four CPI and seven LSU cycles.
+The disabled-cache difference decomposes into about 23 CPI and five LSU cycles.
+CPI includes multicycle instruction costs, so translating these totals into
+an ART miss count requires additional information about individual fetches.
+The full matrix and exact ELF hashes are in `fixture-counters.csv` and
+`offset-*/manifest.json` under the DWT artifact root. `source-hashes-fixture.json`
+identifies the modified source inputs used for those images.
+
+The native `bench-torque-counters` feature records 4096 torque-grant windows
+after 30,000 driven warm-up calls. Raw CYCCNT and packed CPI/LSU/EXC/FOLD
+residues are read over SWD after terminal Stop. Four native ELFs relink one
+object set at `0x0807E000 + {0,4,8,12}`, retaining all other allocated addresses.
+Differences are verified relocations and the decoded destination of LLD's
+SRAM-to-Flash veneer. The native kernel has 736 bytes and matches the earlier
+grant-placement kernel except for its relocated braking-helper call.
+
+Native 15-kHz holds at +120/+450 produce the following +450 means
+
+| Entry offset | Window cycles | CPI | LSU | FOLD | Full ISR mean, us |
+|---|---:|---:|---:|---:|---:|
+| 0 | 264.66 | 90.01 | 34.55 | 1 | 38.793 |
+| 4 | 256.58 | 84.59 | 30.91 | 0 | 38.735 |
+| 8 | 270.33 | 89.83 | 39.33 | 0 | 38.825 |
+| 12 | 288.87 | 103.37 | 45.33 | 1 | 38.934 |
+
+The +120 means are within 0.11 window cycles of the corresponding +450 values.
+Offset 4 beats offset 12 by 32.29 cycles (about 0.192 us), consistent with the
+full-ISR difference of 0.199 us. Their CPI/LSU difference totals 33.21 cycles,
+while offset 12 folds one more instruction. The earlier clean 20-kHz grant
+sweep measures a 0.198-us difference between these offsets at the same base.
+All 32,768 main-matrix windows
+prove unwrapped CPI/LSU counts and record zero exception overhead. A separate
+offset-0 +450 repeat agrees within 0.021 cycles. The largest observed full ISR
+body in this matrix is 48.482 us, with body-over-budget count zero. These are
+instrumented 15-kHz images. The earlier clean 20-kHz placement results retain
+their own measurement provenance. Raw windows, capture acceptance and hashes
+are under `native-runs/`; `native-counters.csv` summarizes them.
+
+Two further +450 holds set `ACTLR.DISFOLD`, retaining the same ELFs, followed
+by reset/default-control repeats. FOLD becomes zero for both offsets 4/12.
+The offset-4 window stays near 256.52–256.59 cycles. Offset 12 changes from
+288.87–288.96 to 288.33 cycles, with CPI falling to 102.03 and LSU to 45.16.
+Whole-ISR means increase by 0.09–0.10 us at offset 4 and 0.08–0.09 us at offset
+12. Global folding control changes the surrounding pipeline/cache timing as
+well as the folded instruction count. The default-control repeats preserve
+the placement ranking. All 53,248 native windows across 13 holds have proven
+unwrapped CPI/LSU counts and zero exception overhead. The largest observed
+body is 48.750 us, with no body-budget exceedances.
+
+The rebuilt current native source matches every allocated byte/address of
+the measured offset-0 image, including the SRAM recorder. Source hashes and
+comparison evidence are in `current-source-equivalence.json`. A recovery image
+at 15 kHz is restored after every hardware batch. Final live readback in
+`final-hardware.json` confirms Stopped, zero active faults, phase PWM enables
+off, all ART options enabled and default ACTLR controls.
+
+### Grouping and linker ordering
+
+Seven ordering policies relink the baseline object set. The control matches
+every allocated byte/address of the original baseline. A separate object set
+groups the three selected functions before `.rodata`. Its 45056-byte reservation
+holds 44008 bytes of function code and 1048 bytes of padding. All other allocated
+section addresses stay fixed across its three policies. Function bodies match
+the baseline except for their relocation fields.
+
+| Policy | Mean +120, us | Mean +450, us |
+|---|---:|---:|
+| Baseline order control | 38.617 | 38.193 |
+| ADC → cycle → phase → current → grant → velocity | 38.684 | 38.300 |
+| ADC → grant → current → velocity → phase → cycle | 38.751 | 38.370 |
+| Descending PC occupancy | 38.826 | 38.440 |
+| Shuffle seed 1 | 38.571 | 38.138 |
+| Shuffle seed 2 | 38.446 | 38.068 |
+| Shuffle seed 3 | 38.859 | 38.418 |
+| Compact cycle/phase/grant, all entry offsets 0 | 38.479 | 38.131 |
+| Same group, offsets 4/12/4 | 38.158 | 37.819 |
+| Reversed group, same per-function offsets | 38.151 | 37.820 |
+
+The controlled group improves by about 0.31 us when its entry offsets change.
+Reversing its order preserves essentially the same timing. The best measured group
+saves about 0.37 us at +450 versus the baseline order control. Whole-program
+sorting can also slow execution, including sorting directly by PC occupancy.
+Placement choices need measurement against the final ELF and operating modes.
+Placement policy adoption awaits review.
+
+The best group's exact repeat measures 37.813 us at +450. Its largest observed
+body across holds, repeat and reversal is 47.368 us. All three groups complete
++120 → +450 → −120 → −450 → Stop with the capture contract satisfied.
+A separate PWM witness records 280114/280149 writes at +120/+450, minimum
+margins 14.836/15.730 us and late/ambiguous/still-masked counts 0/0/0. That
+witness has its own code generation and ELF: its cycle function is 32292 bytes,
+compared with 30072 in the clean DWT image.
+
+The arithmetic/placement study totals 175 accepted native timing windows and
+48,861,077 driven ISR observations, with body over-budget count 0. Separate
+PCSR captures cover 49 images and 3,859,136 driven samples. All seven ordering
+and three grouping policies have profiles. Single-function sweeps profile
+their measured extremes, with all four original grant offsets also profiled.
+ADC offsets 0/12 show approximately 9.26/9.01 us of statistical ADC occupancy
+per 50-us period, consistent with their clean DWT difference of about 0.20 us.
+The general PCSR limitations in the tools section apply.
+
+Final ordering/group/ADC captures use six Tokio workers with RTKit SCHED_RR
+priority 5, a 200-ms continuous-RT-CPU limit, CPU weight 1000, 512-MiB MemoryLow
+and MemorySwapMax=0. Setup/ELF parsing uses SCHED_OTHER with nice −10. Earlier
+host-load attempts with late affirmations/raw loss are excluded by the capture
+contract. MCU DWT measurement and the 150-ms deadman use the existing paths.
+
+The qualified normal image is restored at 15 kHz, Stopped, zero active faults
+and phase PWM enables off. Its SHA256 is
+`46b75754b889bfe787740e9af9889e7439882a4942333940c8e8b98941e3729f`.
+Final live readback is `final-hardware.json` in the arithmetic artifact root.
+
+### Linked ADC callees and remaining placement candidates
+
+The qualified `stock15/normal15/firmware.elf` identified above has 99 reachable
+machine-function bodies including ADC, hence 98 callees. Of those, 60 belong to
+OxiFOC. The 20-kHz baseline (`88043be3…d7287fe`) has the same named set plus
+the recorder's `__aeabi_memclr8`. Both inventories use the existing exact ELFs.
+
+The analysis follows BL/BLX calls, their conditional IT forms and cross-function
+tail branches. All 31 TBB/TBH dispatch tables in each graph remain within their
+owning function.
+DWARF identifies 29 indirect call sites as Waker clone/wake operations. Their
+targets match the single Embassy RawWaker vtable in the ELF. Panic formatting
+has a separate conservative set of 14 callback/helper candidates. The vtable's
+unused `waker::drop` member is listed separately. Symbol aliases share one body.
+
+Complete lists are `stock15/linked-functions.csv` and `stock15/inventory.txt`
+under the callgraph artifact root. Each entry gives address, bytes, entry modulo
+16, callers, an ADC path, DWARF source, prior placement coverage and matching
+20-kHz PC occupancy. `callback-candidates.csv` preserves dynamic-formatting
+uncertainty. The `baseline20/` directory has the corresponding research image.
+
+The earlier dedicated entry-offset sweeps cover ADC, `run_foc_cycle`,
+`update_phase_with_applied_voltage` and `grant_torque`. The expanded series below
+adds the following 14 bodies. Addresses and sizes refer to stock15, and prior
+coverage describes the experiments preceding this series.
+
+| Function | Address | Bytes | Relevant execution | Prior targeted placement |
+|---|---:|---:|---|---|
+| `FocController::step_with_injection` | `0x0804A0F0` | 1704 | Native current FOC | Six-function ordering |
+| `FocDriver::step_scheduled_velocity` | `0x08034438` | 2348 | Every ISR in velocity/position mode, including inlined current-step work | Six-function ordering |
+| `PhaseManager::blend_with_observer` | `0x08039788` | 712 | Sensor-to-observer source selection | Global ordering |
+| `space_vector_pwm` | `0x08060998` | 600 | Native voltage-to-duty conversion | Global ordering |
+| `PhaseManager::injection` | `0x08051938` | 444 | Current-step HFI selection, also called with HFI inactive | Global ordering |
+| `FocDriver::update_velocity_request` | `0x08034D64` | 2404 | Due outer update, approximately 1 kHz | Global ordering |
+| `angle_difference_general` | `0x08059580` | 528 | General angle-difference path | Global ordering |
+| `wrap_angle_general` | `0x08059790` | 116 | General angle-wrap path | Global ordering |
+| `FocDriver::grant_torque_constrained` | `0x0804BB38` | 260 | Two authority probes per due outer update | Global ordering |
+| `PhaseManager::tracker_output_inner` | `0x08039B04` | 744 | Observer commutation-tracker modes | Global ordering |
+| `FocDriver::grant_dissipative_brake` | `0x0804AE5C` | 3292 | Dissipative braking | Global ordering |
+| `FocDriver::step_direct_voltage` | `0x080336B4` | 1768 | Direct-voltage mode | Global ordering |
+| `compiler_builtins::mem::memcpy` | `0x08061D1E` | 660 | Shared copy helper | Global ordering |
+| `embassy_executor::raw::waker::wake` | `0x08053E94` | 256 | ISR notifications and foreground wakeups | Global ordering |
+
+The first four rows have substantial occupancy in the existing +450 profile.
+`step_scheduled_velocity` and `step_with_injection` account for about 4.63 and
+4.28 us of sampled occupancy per 50-us period, respectively. Blending and SVPWM
+account for 0.97 and 0.65 us. These are exclusive linked-body PC samples from
+80,000 driven whole-MCU observations. Shared helpers can include foreground
+execution. The tracker and dissipative-braking bodies have zero samples in
+that hold and require their own operating scenarios.
+
+The inlined current-control helper, current PI, bounded sin/cos, Park transforms
+and observer arithmetic already occupy their callers' sections. Their separate
+placement would first require new outlining and another code-generation study.
+A source method can have both inline instances and an out-of-line body; the
+inventory covers the linked calls that survive in these two ELFs.
+The stock `memcpy` entry has residue 14, so two-byte entry increments are also
+relevant for helpers whose input section permits that alignment.
+
+### Expanded individual sweeps
+
+The selected scope is the 14 candidates in the table above. Their existing
+compiler objects produce 64 placement ELFs at `0x08070000 + offset`. Twelve
+functions admit offsets 0/4/8/12. The `memcpy` and Waker input sections admit
+all eight even offsets from 0 through 14.
+
+The linker input clones the selected function section into its own output and
+retains a zero-filled hole of the original size at the old address. Every other
+allocated section keeps its baseline address and size. An audit of all 64 ELFs
+confirms that byte differences consist of the old hole and relocations involving
+the selected function. Moved-body changes are checked against those relocations.
+This uses the existing baseline object set and requires no source recompile.
+
+The original recorder enables windows only in current/velocity mode. Four
+derived direct-voltage images extend its predicate with a one-byte immediate
+change at `0x080005CE`, from `cmp r1, #2` to `cmp r1, #5`. DWARF confirms the
+relevant discriminants and the preceding subtraction. Stopped remains excluded.
+The separate motion-timing predicate and all control instructions retain their
+original bytes. Parent images, hashes and the exact byte audit are preserved.
+
+Native +120/+450 holds cover the common path. Separate scenarios exercise the
+observer tracker, dissipative-braking authority and direct-voltage control.
+Four PCSR captures cover the three special scenarios and a measured combined
+layout. They qualify execution of the 14 selected bodies separately
+from clean DWT measurements. All 64 offsets retain native timing coverage.
+Exact images, section audit and raw attempts are under the callee-layout
+artifact root.
+
+The results below give whole-ISR mean ranges at +450, in us. Each row compares
+offsets in its own operating scenario. The direct-voltage row uses the paired
+14-s confirmation; the other rows use the initial screening. Tracker measurements
+use Observer startup and hold for 14 s. Dissipative braking uses the velocity
+PI's negative authority probe with RAM-only `max_dissipation_w=0.05` and
+`bus_regen_max_a=0`. Direct voltage applies `vq=0.03 V`, `vd=0`, angle zero for
+3 s. The remaining rows use normal HallToObserver velocity holds for 14 s.
+
+| Moved body | Best entry modulo 16 | Mean range, us | Spread, us |
+|---|---:|---:|---:|
+| `step_with_injection` | 4 | 38.189–38.298 | 0.109 |
+| `step_scheduled_velocity` | 0 | 38.188–38.251 | 0.064 |
+| `blend_with_observer` | 0 | 38.189–38.260 | 0.070 |
+| `space_vector_pwm` | 12 | 38.152–38.187 | 0.035 |
+| `injection` | 0 | 38.189–38.236 | 0.046 |
+| `update_velocity_request` | 12 | 38.192–38.203 | 0.011 |
+| `angle_difference_general` | 0 | 38.185–38.208 | 0.023 |
+| `wrap_angle_general` | 12 | 38.178–38.188 | 0.011 |
+| `grant_torque_constrained` | 8 | 38.184–38.190 | 0.005 |
+| `tracker_output_inner` | 8 | 34.979–35.043 | 0.064 |
+| `grant_dissipative_brake` | 12 | 38.441–38.449 | 0.008 |
+| `step_direct_voltage`, confirmed 0/8 pair | 8 | 30.054–30.228 | 0.174 |
+| `memcpy` | 2 | 38.186–38.194 | 0.008 |
+| `wake` | 12 | 38.188–38.191 | 0.003 |
+
+The common-path matrix contains 104 windows and 29,132,704 driven observations,
+with body over-budget count zero and maximum 48.363 us. The special scenarios
+show three single-cycle Observer startup exceedances and 933 exceedances in
+the dissipative-authority scenario. Matching unmoved baseline captures show
+one Observer exceedance, maximum 54.667 us, and 216 dissipative-authority
+exceedances, maximum 52.629 us. These captures retain zero fault-generation
+changes. Placement gives little improvement to the dissipative solver's cost.
+
+Direct-voltage paired repeats give 29.8293/29.6549 us at offsets 0/8 over 3 s,
+and 30.2281/30.0542 us over 14 s. Both pairs support a placement difference of
+about 0.174 us. The shared execution-time level varies by about 0.40 us between
+captures; its cause remains unisolated. The initial 0.572-us screening spread
+therefore overstates the reproducible placement effect.
+
+Three simultaneous 14-body groups reserve 16160 Flash bytes while preserving
+all original addresses and holes. The chosen offsets minimize the average of
+the available +120/+450 means, with one scenario for each special-mode body.
+The reverse group uses the same offsets in reverse function order.
+
+| Whole-image candidate | +450 mean, us | +450 max body, us |
+|---|---:|---:|
+| Unmoved baseline, two controls | 38.189–38.195 | 47.558 |
+| 14-body group, original residues | 38.184 | 46.992 |
+| 14-body group, selected residues | 38.136 | 46.677 |
+| Selected residues, reverse order | 38.137 | 47.493 |
+| Selected group, independent repeat | 38.135 | 47.040 |
+| Earlier compact cycle/phase/grant, fresh repeat | 37.822 | 47.725 |
+
+The selected group also records 38.572 us at +120 and completes
++120 → +450 → −120 → −450 → Stop, with largest body 47.654 us. These common
+controls and repeats have zero body over-budget samples. The two fresh baseline
+means differ by 0.00554 us, putting the smallest individual spreads near the
+observed run-to-run variation.
+
+The earlier compact three-body candidate retains the strongest measured
+velocity result. Among the added common-path candidates, SVPWM offset 12
+improves both +120 and +450 by about 0.033–0.035 us against offset 0 at the same
+base. The current-step and velocity-wrapper baseline residues already match
+their best measured +450 residues. The four PCSR captures confirm all 14
+selected bodies with 317312 driven whole-MCU samples. Shared-helper counts
+include foreground execution. PC sampling and clean timing use separate runs.
+
+The expanded primary matrix totals 116 timing windows and 31,613,763 driven
+observations. Raw attempts, four direct-voltage repeats, eleven control windows,
+ELF SHA256 values and the per-body PC coverage remain in the artifact root.
+Final live readback in `final-hardware.json` confirms the qualified image at
+15 kHz, Stopped, zero faults, phase PWM enables off and restored current limits.
+
+### Compact-layout arithmetic follow-up, November 16
+
+The new ordinary-arithmetic build has byte-identical allocated sections and
+addresses to the earlier `compact-best` image. Four source policies and the
+observer/atan pair use that compact cycle/phase/grant layout at residues 4/12/4.
+Required FMA means `core::f32::math::mul_add` in the selected expressions.
+
+A second linker layout assigns common slots to 454 main-object function
+sections and 913 constant sections, keeping the three hot functions compact.
+The linked-symbol audit confirms identical addresses for all 492 functions
+across the baseline, four single policies and combined policy. Slot capacities
+cover the largest body in the single-policy builds. Each ELF has a disassembly,
+source hashes and SHA256 manifest. The fixed-slot baseline reproduces the
+ordinary compact timing within the observed run-to-run variation.
+
+Short screening uses six-second +450 holds. Values below are whole-ISR means
+in us, compared within each column.
+
+| Arithmetic policy | Original compact layout | Fixed function addresses |
+|---|---:|---:|
+| Ordinary baseline | 37.776 | 37.776 |
+| PI integration/output FMA | 37.780 | 37.772 |
+| Observer algebraic | 37.906 | 37.903 |
+| atan2 polynomial FMA | **37.641** | **37.644** |
+| Core sqrt intrinsic | 37.948 | 37.914 |
+| Observer algebraic + atan2 FMA | 37.856 | 37.849 |
+
+Independent 14-second holds confirm the atan2 candidate.
+
+| Layout and policy | +120 mean, us | +450 mean, us | Reversal max body, us |
+|---|---:|---:|---:|
+| Original compact, ordinary | 38.154 | 37.816 | 47.892 |
+| Original compact, atan2 FMA | **38.023** | **37.682** | 49.078 |
+| Fixed slots, ordinary | 38.156 | 37.818 | 48.118 |
+| Fixed slots, atan2 FMA | **38.020** | **37.683** | 47.475 |
+
+All four validation images complete +120 → +450 → −120 → −450 → Stop.
+The gain is about 0.13–0.14 us, approximately 22 CPU cycles per ISR. The
+32 accepted native timing windows contain 5,602,630 driven observations and
+zero body over-budget samples. One earlier reference attempt with a late host
+affirmation warning and changed fault generation is retained as rejected and
+was repeated. Valid captures retain unchanged fault generation.
+
+Two opcode controls distinguish the instruction semantics from local code
+generation. Replacing three PI or six atan VMLA/VMLS sites with same-size
+VFMA/VFMS instructions in the ordinary compact image gives 37.776/37.786 us.
+Conversely, replacing all eight atan VFMA/VFMS sites in the faster image with
+VMLA/VMLS, preserving every other byte, gives 37.649 us in the original layout
+and 37.641 us with fixed slots. The gain survives restoration of two-rounding
+MAC instructions. This points to the new local code generation and instruction
+placement as the source of the improvement.
+
+The phase-update body grows 13200 → 13260 bytes. Its static stack-operation
+count stays at 91, while 32-bit instructions crossing a 16-byte line decrease
+333 → 303. These counts cover the whole body, including conditional paths.
+Exact fetch-stall attribution remains open. Two separate PCSR captures contain
+155904 driven whole-MCU samples and show phase-body occupancy of about
+10.435/10.266 us per 50-us period for ordinary/atan-FMA fixed-slot images.
+The core-sqrt phase body retains four VSQRT instructions and adds two static
+FP stack stores and one FP stack load.
+
+Fresh execution of the existing `tests/stm32f405` arithmetic benchmark image
+checks kernel cycles and numerical error with phase PWM and gate enables off.
+The isolated atan fixture measures 72.187/73.119 cycles for ordinary/FMA.
+Across 65537 angular samples, FMA changes atan output by at most
+2.3841858e-7 rad, approximately 0.0000137 degrees. Maximum error against the
+reference is 0.010149727/0.010149709 rad. The sqrt comparison finds identical
+non-NaN bits and NaN classifications across 500011 inputs. The PI trajectory
+fixture measures about 1.319/1.080 microvolts of maximum error against its
+wide reference for ordinary/FMA over 100000 steps.
+
+PI FMA also changes the virtual-motor cruise bus-clamp result. With a 0.5-A
+bus limit, peak requested-minus-delivered current reaches 3.366 A against the
+existing 2-A acceptance bound. The speed and overshoot bounds still pass.
+The PI images remain in the hardware evidence despite this numerical-contract
+failure. Their timing difference is within the reference-repeat variation.
+
+The recommended F405 candidate is the compact layout with atan2 FMA.
+The candidate ELF SHA256 is
+`c6ff6062644f424f0000bc6641dc198a1145ba113b818e8a96abfc72addae12a`.
+The qualified 15-kHz image is restored after the series, Stopped, zero active
+faults and phase PWM enables off. `final-hardware.json` records the live
+readback and restored current limits.
+
+### Final compact-layout/atan2-FMA qualification, November 16
+
+The candidate is integrated on top of main `6a52d74`. MK5 selects core features
+`compact-foc` and `atan2-fma`. Named function sections and `foc-hot.x` group
+cycle → phase update → torque grant with entry residues 4/12/4 modulo 16.
+The linker uses the actual body sizes without fixed-slot reservations.
+RAM-FOC builds retain their existing section policy. The atan2 policy uses
+required FMA through the nightly core API on the MCU and `f32::mul_add` on
+the host. The final disassemblies contain eight VFMA sites.
+
+Three exact ELFs cover normal release, DWT body timing and the PWM deadline
+witness. Each runs at both frequencies through the existing saved PWM setting
+and restart. There is no compiled 20-kHz override. TIM1/ADC readback confirms
+the carrier, sampling position, injected ranks and deadtime at each rate.
+TIM5 readback confirms a running unprescaled counter at 83,917,932 Hz,
+half the TIM1 rate used to decode deadline margins.
+
+Sixteen windows cover a 14-second +450 hold, current-control start, +120 →
++450 → −120 → −450, Coast → +120 restart, Stop, and a deliberate 0.4-second
+host pause. The diagnostic active-window predicate now includes Coast, so
+the same frozen window contains the subsequent restart. Normal release
+omits this diagnostic predicate.
+
+| Nominal PWM | +450 mean body, us | Largest body across scenarios, us | Minimum PWM-write margin, us |
+|---|---:|---:|---:|
+| 15 kHz | 37.709 | 47.719 | 31.984 |
+| 20 kHz | 37.612 | 47.386 | 15.170 |
+
+The body recorder covers 959,471 observations with zero over-budget bodies.
+The witness covers 941,944 phase-enabled PWM writes with zero late writes,
+ambiguous entry phases or writes still masked by UDIS. Ordinary captures
+contain 2,224,935 rows with complete raw sequences and END totals, all command
+ACKs, terminal Stop and unchanged fault generation. Each intentional host
+pause raises fault generation, reaches Stopped and retains successful command
+ACKs and terminal Stop in Parquet metadata. Expected transport loss from these
+six injected pauses is recorded separately.
+
+Body and PWM measurements use separate diagnostic ELFs. The ordinary release
+is checked functionally. All three retain the measured hot-entry residues,
+while their absolute addresses differ and PWM instrumentation enlarges the
+cycle body from 30,072 to 32,292 bytes. PWM margins measure time remaining
+after the commit hook until the next preload deadline. Body duration excludes
+the final diagnostic bookkeeping and exception return.
+
+The normal-release candidate SHA256 is
+`c9e867ea88e63a6fbcf0813e12f8f44a98b71cbff24957073b885e70b4d8c56d`.
+`summary.json` and per-image `build.json` files retain all three hashes,
+source hashes, exact addresses, features and disassemblies. The initial
+20-kHz configuration attempt was rejected because PWM settings require
+persistence and restart. It is retained outside accepted measurements.
+
+These results support the compact layout plus atan2 FMA for the measured
+HallToObserver scenarios. The earlier 52–55-us Observer-startup and
+dissipative-authority peaks remain the next investigation. After the series,
+the qualified pre-experiment image is restored at saved and active 15 kHz,
+Stopped, zero active faults and phase enables off. Current limits and live
+readback are recorded in `final-hardware.json`.
+
+### Further reading on instruction placement
+
+Thomas Pornin's ARM Assembly Tricks memory notes describe measured contention
+between instruction fetching and explicit memory accesses on Cortex-M4.
+They discuss word alignment of 32-bit instructions and `.n`/`.w` encodings.
+[ARM Assembly Tricks, Memory Access Notes](https://github.com/pornin/arm-asm-notes/blob/main/memory.md#arm-cortex-m4)
+
+Schwabe and Stoffelen discuss Flash, alignment, pipelined loads, cache/prefetch
+and data placement in section 2.3, pages 4–5. Their STM32F407 experiments are
+directly relevant to the F405 memory architecture.
+[All the AES You Need on Cortex-M3 and M4](https://cryptojedi.org/papers/aesarm-20161019.pdf#page=4)
+
+Pornin's 2025 Falcon report also discusses instruction-fetch contention and
+the interconnection matrix/cache behavior of STM32F407VGT6.
+[Falcon on ARM Cortex-M4, an Update](https://eprint.iacr.org/2025/123.pdf)
+
+LLVM review D51780 explains its Cortex-M3/M4 loop-alignment policy using the
+pipeline-reload penalty for a branch to an unaligned 32-bit instruction. It
+also distinguishes padding before a function from padding executed inside
+an enclosing loop.
+[LLVM Cortex-M loop alignment review](https://reviews.llvm.org/D51780)
+
+Four-byte entry steps preserve word alignment while changing position within
+16-byte Flash lines. Two-byte entry steps additionally change word alignment
+of 32-bit instructions.
+Changing individual instruction widths is a separate code-generation experiment.
+
+### Available placement controls
+
+| Mechanism | Control and evidence |
+|---|---|
+| Named function sections and a linker script | Stable `#[unsafe(link_section = ".hot_grant")]` selects the input section. `ALIGN`, `KEEP` and explicit order set entry offsets and grouping. The address sweeps use this mechanism. |
+| Existing function input sections | A selector parsed before `link.x` can claim `*(.text.ADC)` directly. Four ADC images use the baseline compiler objects with no source recompile. `INSERT` controls output position, while parsing order controls input selection. |
+| LLD symbol ordering | `--symbol-ordering-file=FILE` orders existing function sections using their actual linked symbol names. Explicit hot-chain and leaf-first images are built from identical objects. |
+| LLD deterministic shuffling | `--shuffle-sections=.text.*=SEED` creates repeatable layout controls from identical objects. Useful for measuring layout sensitivity across many functions. |
+| Per-function alignment | On `nightly-2026-11-13`, `#![feature(fn_align)]` with `#[rustc_align(N)]` works. Object probes confirm 16/32/64-byte alignment. `#[align(N)]` fails on this compiler. A function with a literal pool still requires four-byte input alignment. |
+| Global alignment | `-Zmin-function-alignment=16` uses bytes. LLVM `-align-all-functions=4` uses log2. Object probes confirm both. Earlier full-firmware runs gave no convincing gain and the former encountered the Reset linker assertion. |
+| Inlining and rare-path hints | `inline`, `inline(never)`, `cold` and `cold_path()` influence function boundaries and block order. The object probe puts an outlined cold function in `.text.unlikely.*`. Final placement depends on LTO and the linker. |
+| Source order / profile-guided order | `-Zcodegen-source-order=yes` changes object section order in the probe. Final LTO/ELF order still needs inspection. PC occupancy can guide a linker ordering file. Instrumented PGO and call-graph ordering require separate evaluation. |
+| Internal block alignment / SRAM execution | LLVM exposes block-alignment and block-placement options. Existing global block-alignment and broad SRAM-transfer experiments are recorded above. Smaller selected boundaries remain open. |
+
+To select entry offset 4, an explicit linker placement can use
+`. = ALIGN(16) + 4; KEEP(*(.hot_grant))`. A minimum alignment of four bytes
+allows offsets 0, 4, 8 and 12. Padding before an entry is outside the function's
+executed path. Output section patterns must be arranged so the ordinary
+`.text.*` wildcard does not consume the selected input section first.
+[LLD linker scripts](https://lld.llvm.org/ELF/linker_script.html)

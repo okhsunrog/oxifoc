@@ -88,13 +88,36 @@ pub fn atan2f(y: f32, x: f32) -> f32 {
     let angle = if x >= 0.0 {
         let r = (x - abs_y) / (x + abs_y);
         let rsq = r * r;
-        (0.1963 * rsq - 0.9817) * r + FRAC_PI_4
+        #[cfg(feature = "atan2-fma")]
+        {
+            atan_mul_add(atan_mul_add(0.1963, rsq, -0.9817), r, FRAC_PI_4)
+        }
+        #[cfg(not(feature = "atan2-fma"))]
+        {
+            (0.1963 * rsq - 0.9817) * r + FRAC_PI_4
+        }
     } else {
         let r = (x + abs_y) / (abs_y - x);
         let rsq = r * r;
-        (0.1963 * rsq - 0.9817) * r + 3.0 * FRAC_PI_4
+        #[cfg(feature = "atan2-fma")]
+        {
+            atan_mul_add(atan_mul_add(0.1963, rsq, -0.9817), r, 3.0 * FRAC_PI_4)
+        }
+        #[cfg(not(feature = "atan2-fma"))]
+        {
+            (0.1963 * rsq - 0.9817) * r + 3.0 * FRAC_PI_4
+        }
     };
     if y < 0.0 { -angle } else { angle }
+}
+
+#[cfg(all(feature = "atan2-fma", not(any(test, feature = "std"))))]
+use core::f32::math::mul_add as atan_mul_add;
+
+#[cfg(all(feature = "atan2-fma", any(test, feature = "std")))]
+#[inline(always)]
+fn atan_mul_add(a: f32, b: f32, c: f32) -> f32 {
+    a.mul_add(b, c)
 }
 
 #[cfg(test)]

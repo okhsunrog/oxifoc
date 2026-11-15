@@ -35,6 +35,17 @@ fn main() {
     std::fs::copy("memory.x", std::path::Path::new(&out_dir).join("memory.x")).unwrap();
 
     println!("cargo:rustc-link-arg-bins=--nmagic");
+    println!("cargo:rerun-if-changed=foc-hot.x");
+    if std::env::var_os("CARGO_FEATURE_BOARD_VESC6_MK5").is_some()
+        && std::env::var_os("CARGO_FEATURE_RAM_FOC").is_none()
+    {
+        std::fs::copy(
+            "foc-hot.x",
+            std::path::Path::new(&out_dir).join("foc-hot.x"),
+        )
+        .unwrap();
+        println!("cargo:rustc-link-arg-bin=oxifoc-f405=-Tfoc-hot.x");
+    }
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     if std::env::var_os("CARGO_FEATURE_CCM").is_some()
         || std::env::var_os("CARGO_FEATURE_CCM_TELEMETRY").is_some()

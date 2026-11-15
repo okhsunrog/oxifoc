@@ -580,6 +580,15 @@ where
     ///   regen derate scales the torque instead.
     /// - The bus-current clamp last — except for a brake the dissipation
     ///   already shaped: its bus estimate ignores the d current.
+    #[cfg_attr(
+        all(
+            feature = "compact-foc",
+            target_arch = "arm",
+            target_os = "none",
+            not(feature = "ram-foc")
+        ),
+        unsafe(link_section = ".text.foc_grant")
+    )]
     pub(super) fn grant_torque(&self, id_target: f32, iq_target: f32, omega: f32) -> (f32, f32) {
         let limits = &self.current_limits;
         if !limits.is_enabled() {

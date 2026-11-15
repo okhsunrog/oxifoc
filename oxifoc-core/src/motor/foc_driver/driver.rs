@@ -177,6 +177,15 @@ where
         all(feature = "ram-foc", target_arch = "arm", target_os = "none"),
         unsafe(link_section = ".data.ram_foc")
     )]
+    #[cfg_attr(
+        all(
+            feature = "compact-foc",
+            target_arch = "arm",
+            target_os = "none",
+            not(feature = "ram-foc")
+        ),
+        unsafe(link_section = ".text.foc_phase")
+    )]
     pub(super) fn update_phase_with_applied_voltage(
         &mut self,
         v_alpha_new: f32,
