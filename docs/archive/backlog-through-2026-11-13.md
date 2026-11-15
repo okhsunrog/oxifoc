@@ -1364,7 +1364,7 @@ and the item above). Remaining:
 
 ## Size / performance
 
-Current MK5 work: [35-task performance audit](../notes/performance-audit-2026-11-09.md)
+Current MK5 work: [ADC ISR optimization history](../notes/adc-isr-optimization.md)
 with source anchors, numerical/safety constraints, validation and parallel
 ownership. Its 2026-11-09 baseline supersedes older board-specific timings
 below for the current Hall/20-kHz capture investigation.

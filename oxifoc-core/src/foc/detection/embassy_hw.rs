@@ -84,7 +84,10 @@ impl DetectionHardware for EmbassyDetectionHardware {
         true
     }
     fn check_health(&self) -> Result<(), DetectionError> {
-        if !self.authority.is_some_and(|token| token.is_current()) {
+        if !self
+            .authority
+            .is_some_and(state::DetectionCommandToken::is_current)
+        {
             return Err(DetectionError::HardwareFault);
         }
         critical_section::with(|cs| {
@@ -121,7 +124,10 @@ impl DetectionHardware for EmbassyDetectionHardware {
             }
         }
         critical_section::with(|cs| {
-            if !self.authority.is_some_and(|token| token.is_current()) {
+            if !self
+                .authority
+                .is_some_and(state::DetectionCommandToken::is_current)
+            {
                 return Err(DetectionError::HardwareFault);
             }
             let mut state = self.state_mutex.borrow(cs).borrow_mut();

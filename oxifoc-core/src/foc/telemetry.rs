@@ -41,17 +41,28 @@ impl HallAngle {
 #[derive(Clone, Copy, Debug)]
 pub struct Scale {
     lsb: f32,
+    inv_lsb: f32,
 }
 
 impl Scale {
     /// Codec with `lsb` physical units per integer quantum.
     pub const fn new(lsb: f32) -> Self {
-        Self { lsb }
+        Self {
+            lsb,
+            inv_lsb: 1.0 / lsb,
+        }
     }
-    /// Physical value → integer quantum (truncates toward zero, ≤1 LSB bias).
+    /// Physical value → integer quantum (truncates toward zero).
+    /// Reciprocal rounding can move a boundary by one quantum.
     #[inline]
     pub fn enc(self, v: f32) -> i32 {
-        (v / self.lsb) as i32
+        if self.inv_lsb.is_normal() {
+            (v * self.inv_lsb) as i32
+        } else {
+            // Preserve division for arbitrary public scales whose reciprocal
+            // underflows or overflows. Built-in wire scales fold this away.
+            (v / self.lsb) as i32
+        }
     }
     /// Physical value → saturated unsigned 16-bit quantum.
     #[inline]
@@ -99,7 +110,7 @@ impl FastTelemetry {
     /// `rem_euclid` is std-only, so wrap via a truncating cast of the turn count.
     #[inline]
     pub fn pack_angle(rad: f32) -> u16 {
-        let turns = rad / TAU;
+        let turns = rad * (1.0 / TAU);
         let frac = turns - (turns as i32 as f32);
         let frac = if frac < 0.0 { frac + 1.0 } else { frac };
         (frac * 65536.0) as u16
@@ -337,6 +348,68 @@ mod tests {
     }
 
     // ---- scalar codec ----
+
+    #[test]
+    fn reciprocal_angle_error_is_bounded_at_wire_boundaries() {
+        // The controller publishes wrapped angles. Include four extra turns
+        // in both directions, every wire boundary and adjacent f32 values.
+        for code in -4 * 65536..=4 * 65536 {
+            let boundary = code as f32 * ANGLE_PER_LSB;
+            for value in [boundary.next_down(), boundary, boundary.next_up()] {
+                let packed = FastTelemetry::pack_angle(value);
+                let exact_turns = f64::from(value) / f64::from(TAU);
+                let exact_code = (exact_turns.rem_euclid(1.0) * 65536.0) as u16;
+                // Compare modulo one turn: 65535 and 0 are neighbors.
+                let difference = i32::from(packed.wrapping_sub(exact_code) as i16).abs();
+                assert!(
+                    difference <= 1,
+                    "angle={value}, encoded={packed}, reference={exact_code}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reciprocal_wire_scales_keep_saturation_and_one_quantum_error() {
+        for scale in [VOLT, RPM] {
+            for quantum in i32::from(i16::MIN)..=i32::from(u16::MAX) {
+                let boundary = scale.dec(quantum);
+                for value in [boundary.next_down(), boundary, boundary.next_up()] {
+                    let reference = (value / scale.lsb) as i32;
+                    assert!((scale.enc(value) - reference).abs() <= 1);
+                    let restored = scale.dec(scale.enc(value));
+                    assert!((restored - value).abs() <= scale.lsb * 1.01);
+                    assert!(
+                        i32::from(scale.enc_i16(value))
+                            .abs_diff(reference.clamp(i32::from(i16::MIN), i32::from(i16::MAX)))
+                            <= 1
+                    );
+                    assert!(
+                        i32::from(scale.enc_u16(value))
+                            .abs_diff(reference.clamp(0, i32::from(u16::MAX)))
+                            <= 1
+                    );
+                }
+            }
+            for value in [
+                f32::NAN,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::MIN,
+                f32::MAX,
+                -0.0,
+                0.0,
+            ] {
+                assert_eq!(scale.enc(value), (value / scale.lsb) as i32);
+            }
+        }
+        for lsb in [0.0, f32::from_bits(1), f32::MAX, f32::INFINITY, f32::NAN] {
+            let scale = Scale::new(lsb);
+            for value in [lsb, 1.0, -1.0, 0.0, f32::INFINITY] {
+                assert_eq!(scale.enc(value), (value / lsb) as i32);
+            }
+        }
+    }
 
     #[test]
     fn measured_phase_voltage_uses_declared_scale_and_rejects_missing_samples() {

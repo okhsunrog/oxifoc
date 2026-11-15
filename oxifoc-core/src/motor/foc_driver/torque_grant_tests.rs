@@ -1,4 +1,5 @@
-//! Frozen pre-outline torque grant oracle, including the optional brake solve.
+//! Frozen torque grant oracle, including the optional brake solve.
+//! Reciprocal arithmetic may differ by two f32 ULPs; constraint reuse is exact.
 
 use super::*;
 use crate::foc::clamp_f32;
@@ -138,14 +139,18 @@ fn check(driver: &GrantDriver, id: f32, iq: f32, omega: f32) -> (f32, f32) {
     let constraints = driver.torque_constraints(omega);
     let constrained = driver.grant_torque_constrained(id, iq, &constraints);
     let expected = legacy_grant(driver, id, iq, omega);
-    for (actual, expected) in [
-        (actual.0, expected.0),
-        (actual.1, expected.1),
-        (constrained.0, expected.0),
-        (constrained.1, expected.1),
-    ] {
+    assert_eq!(actual.0.to_bits(), constrained.0.to_bits());
+    assert_eq!(actual.1.to_bits(), constrained.1.to_bits());
+    for (actual, expected) in [(actual.0, expected.0), (actual.1, expected.1)] {
+        let rounded = actual.is_finite()
+            && expected.is_finite()
+            && expected != 0.0
+            && actual.is_sign_negative() == expected.is_sign_negative()
+            && actual.to_bits().abs_diff(expected.to_bits()) <= 2;
         assert!(
-            (actual.is_nan() && expected.is_nan()) || actual.to_bits() == expected.to_bits(),
+            rounded
+                || (actual.is_nan() && expected.is_nan())
+                || actual.to_bits() == expected.to_bits(),
             "id={id:?}, iq={iq:?}, omega={omega:?}: {actual:?} != {expected:?}"
         );
     }
@@ -186,11 +191,39 @@ fn local_constraints_keep_ieee_identity_and_refresh_each_cycle() {
         let constraints = driver.torque_constraints(speed);
         for iq in [-10.0, 10.0, 3.0] {
             let actual = driver.grant_torque_constrained(0.0, iq, &constraints);
-            let expected = legacy_grant(&driver, 0.0, iq, speed);
+            let expected = check(&driver, 0.0, iq, speed);
             assert_eq!(
                 (actual.0.to_bits(), actual.1.to_bits()),
                 (expected.0.to_bits(), expected.1.to_bits())
             );
+        }
+    }
+}
+
+#[test]
+fn reciprocal_bus_bounds_hold_in_physical_units_in_both_directions() {
+    for bus_limit in [0.0, 0.1, 1.0, 5.0, 100.0] {
+        let mut driver = grant_driver(
+            CurrentLimits {
+                bus_in_max_a: bus_limit,
+                bus_regen_max_a: bus_limit,
+                ..CurrentLimits::from_max_current(0.0)
+            },
+            DeratingScales::IDENTITY,
+        );
+        for magnitude in [0.001, 0.001_f32.next_up(), 0.01, 0.2, 0.5, 1.0] {
+            for sign in [-1.0, 1.0] {
+                driver.bus_mod_q_filt = magnitude * sign;
+                for request in [-1e6, -10.0, -0.0, 0.0, 10.0, 1e6] {
+                    let (_, iq) = check(&driver, 0.0, request, 0.0);
+                    let bus = f64::from(iq) * f64::from(driver.bus_mod_q_filt);
+                    let tolerance = f64::from(4.0 * f32::EPSILON * bus_limit.max(1.0));
+                    assert!(bus.abs() <= f64::from(bus_limit) + tolerance);
+                    if bus_limit == 0.0 {
+                        assert_eq!(iq.abs(), 0.0);
+                    }
+                }
+            }
         }
     }
 }

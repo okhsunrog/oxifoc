@@ -344,8 +344,8 @@ impl ProtectionMonitor {
         }
 
         // --- Temperatures (board thresholds; <= 0 = sensor not wired) ---
-        let fet_c = sample.fet_temp_c_x10.map(|t| f32::from(t) / 10.0);
-        let motor_c = sample.motor_temp_c_x10.map(|t| f32::from(t) / 10.0);
+        let fet_c = sample.fet_temp_c_x10.map(temperature_c);
+        let motor_c = sample.motor_temp_c_x10.map(temperature_c);
         let fet_over =
             fet_c.is_some_and(|t| board.max_fet_temp_c > 0.0 && t > board.max_fet_temp_c);
         let motor_over =
@@ -400,6 +400,15 @@ where
     Phase: PhaseProvider,
     S: SinCos,
 {
+    /// Poll command expiry every 16 native protection updates: about 938 Hz
+    /// at 15 kHz or 1250 Hz at 20 kHz. This adds at most one such interval
+    /// while the ISR runs. Link loss, command stamps and Stop stay native.
+    #[cfg(feature = "runtime")]
+    #[inline]
+    pub fn deadman_check_due(&self) -> bool {
+        self.protection.protection_tick & 15 == 0
+    }
+
     /// Apply derating configuration (boot / live config write).
     pub fn set_derating(&mut self, cfg: DeratingConfig) {
         if self.protection.config.modulation != cfg.modulation {
@@ -549,7 +558,7 @@ where
     /// per-cycle voltage ripple, fast enough to track real speed changes.
     pub(super) fn update_bus_mod_q(&mut self, mod_q: QAxisModulation, dt: f32) {
         const TAU_S: f32 = 0.002;
-        let alpha = (dt / TAU_S).min(1.0);
+        let alpha = (dt * (1.0 / TAU_S)).min(1.0);
         self.bus_mod_q_filt += alpha * (mod_q.coefficient() - self.bus_mod_q_filt);
     }
 
@@ -831,10 +840,11 @@ where
         } else {
             f32::NEG_INFINITY
         };
+        let inv_mod_q = 1.0 / mod_q;
         let (lo_iq, hi_iq) = if mod_q > 0.0 {
-            (lo_bus / mod_q, hi_bus / mod_q)
+            (lo_bus * inv_mod_q, hi_bus * inv_mod_q)
         } else {
-            (hi_bus / mod_q, lo_bus / mod_q)
+            (hi_bus * inv_mod_q, lo_bus * inv_mod_q)
         };
         Some(BusIqBounds {
             lo: lo_iq,
@@ -843,11 +853,39 @@ where
     }
 }
 
+#[cfg(feature = "runtime")]
+#[inline]
+fn temperature_c(tenths: i16) -> f32 {
+    f32::from(tenths) * 0.1
+}
+
 #[cfg(all(test, feature = "runtime"))]
 mod tests {
     use super::*;
     use crate::foc::config::NtcConfig;
     use crate::foc::fault::StandardFault;
+
+    #[test]
+    fn temperature_multiply_error_is_below_sensor_quantization() {
+        for raw in i16::MIN..=i16::MAX {
+            let actual = temperature_c(raw);
+            let exact = f64::from(raw) / 10.0;
+            // Full i16 domain, including temperatures far outside the board
+            // range: <0.00025 C versus the input's 0.1 C quantum.
+            assert!((f64::from(actual) - exact).abs() < 0.00025);
+        }
+        for threshold in [0.1, 85.0, 85.1, 100.0, 100.1, 120.0, 120.3] {
+            let old_trip = (0..=i16::MAX)
+                .find(|t| f32::from(*t) / 10.0 > threshold)
+                .unwrap();
+            let new_trip = (0..=i16::MAX)
+                .find(|t| temperature_c(*t) > threshold)
+                .unwrap();
+            // At an exact threshold, rounding can trip one input quantum
+            // earlier. It must never postpone the original protection.
+            assert!((0..=1).contains(&(old_trip - new_trip)));
+        }
+    }
 
     fn board(max_vbus_mv: u32, min_vbus_mv: u32) -> BoardConfig {
         BoardConfig {

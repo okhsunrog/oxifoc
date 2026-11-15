@@ -155,6 +155,30 @@ where
         self.step_scheduled_velocity(Some(target_vel), dt, now_ticks)
     }
 
+    #[cold]
+    #[inline(never)]
+    fn velocity_unavailable(&mut self, dt: f32, now_ticks: u64) -> Result<FocOutput, StepError> {
+        self.invalidate_velocity();
+        self.step_current_control(0.0, 0.0, dt, now_ticks)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn velocity_starting(
+        &mut self,
+        target: Option<f32>,
+        dt: f32,
+        now_ticks: u64,
+    ) -> Result<FocOutput, StepError> {
+        self.invalidate_velocity();
+        let direction = if self.velocity_target(target) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        self.step_current_control(direction * STARTUP_MIN_DRIVE_A, 0.0, dt, now_ticks)
+    }
+
     fn velocity_target(&self, target: Option<f32>) -> f32 {
         target.unwrap_or_else(|| {
             let error = self.position_target.minus(self.position.position());
@@ -172,21 +196,13 @@ where
         // These gates remain native-rate. A held cruise request must never
         // outlive a usable physical speed or the commutation owner's trust.
         if !self.phase.angle_trustworthy() {
-            self.invalidate_velocity();
-            return self.step_current_control(0.0, 0.0, dt, now_ticks);
+            return self.velocity_unavailable(dt, now_ticks);
         }
         if self.phase.is_starting() {
-            self.invalidate_velocity();
-            let direction = if self.velocity_target(target) < 0.0 {
-                -1.0
-            } else {
-                1.0
-            };
-            return self.step_current_control(direction * STARTUP_MIN_DRIVE_A, 0.0, dt, now_ticks);
+            return self.velocity_starting(target, dt, now_ticks);
         }
         let Some(velocity) = self.phase.rotor_velocity() else {
-            self.invalidate_velocity();
-            return self.step_current_control(0.0, 0.0, dt, now_ticks);
+            return self.velocity_unavailable(dt, now_ticks);
         };
         let omega = velocity.electrical_rad_s();
         let epoch = self.phase.motion_reference_epoch();
@@ -385,6 +401,7 @@ where
         )
     }
 
+    #[inline(always)]
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn step_current_control_with_feedback(
         &mut self,

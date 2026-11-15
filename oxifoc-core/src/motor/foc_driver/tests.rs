@@ -3694,6 +3694,10 @@ mod severity_gate {
     /// Driver running CurrentControl (entered via the command channel at
     /// t=0, which also stamps the deadman), link active, Manual angle.
     fn running_harness() -> Harness {
+        running_harness_at(20_000)
+    }
+
+    fn running_harness_at(hz: u64) -> Harness {
         let state: CriticalSectionMutex<RefCell<MotorControlState>> =
             CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
         let registry: FaultRegistry<SevFault> = FaultRegistry::new();
@@ -3705,7 +3709,7 @@ mod severity_gate {
                 currents: (0.0, 0.0, 0.0),
             },
             PhaseManager::sensorless(),
-            1.0 / 20_000.0,
+            1.0 / hz as f32,
         );
         critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
         let mut h = Harness {
@@ -4553,6 +4557,13 @@ mod severity_gate {
 
         // Past the grace window with the link still quiet → trip.
         h.cycle(STARTUP_STALENESS_TIMEOUT_US + 200_000);
+        // The /16 detector may wait one slow period after the first resumed ISR.
+        for tick in 1..=21 {
+            if h.registry.has_category(FaultCategory::CommTimeout) {
+                break;
+            }
+            h.cycle(STARTUP_STALENESS_TIMEOUT_US + 200_000 + tick * 50);
+        }
         assert!(
             h.registry.has_category(FaultCategory::CommTimeout),
             "stale command link must raise CommTimeout"
@@ -4572,6 +4583,52 @@ mod severity_gate {
             "a drained SetMode proves liveness and clears CommTimeout"
         );
         assert!(matches!(h.driver.mode(), ControlMode::Stopped));
+    }
+
+    #[test]
+    fn decimated_deadman_is_bounded_in_every_phase_and_stop_is_native() {
+        let _serial = cmd_channel_lock();
+        for hz in [15_000_u64, 20_000] {
+            for phase in 0..20 {
+                let mut h = running_harness_at(hz);
+                let start = STARTUP_STALENESS_TIMEOUT_US + 10_000;
+                h.driver.note_command_tick(start);
+                h.cycle(start);
+                // Counter schedules need actual additional native iterations.
+                for tick in 1..=phase {
+                    h.cycle(start + tick * 1_000_000 / hz);
+                }
+                let stamp = start + phase * 1_000_000 / hz;
+                h.driver.note_command_tick(stamp);
+                let timeout = h.driver.failsafe_config().staleness_timeout_us;
+                let expires = stamp + timeout;
+                // Nominal 1 kHz, or /16 (1067 us at 15 kHz), plus one sample.
+                let allowed =
+                    1_000_u64.max(16_000_000_u64.div_ceil(hz)) + 1_000_000_u64.div_ceil(hz);
+                let mut raised = None;
+                for tick in 1..=(timeout + allowed) * hz / 1_000_000 + 2 {
+                    let now = stamp + tick * 1_000_000 / hz;
+                    h.cycle(now);
+                    if h.registry.has_category(FaultCategory::CommTimeout) {
+                        raised = Some(now);
+                        break;
+                    }
+                }
+                let raised = raised.expect("stale command must eventually trigger");
+                assert!(raised > expires, "deadman must not fire early");
+                assert!(
+                    raised <= expires + allowed,
+                    "deadman exceeded one slow period"
+                );
+                assert!(h.driver.failsafe_active());
+                CMD_CHANNEL
+                    .try_send(DriverCommand::SetMode(ControlMode::Stopped))
+                    .unwrap();
+                h.cycle(raised + 1_000_000_u64.div_ceil(hz));
+                assert!(!h.registry.has_category(FaultCategory::CommTimeout));
+                assert!(matches!(h.driver.mode(), ControlMode::Stopped));
+            }
+        }
     }
 
     /// Voltage faults trip on INTEGRATED excursion, not single samples

@@ -1,366 +1,30 @@
-# FOC execution-time research
+# Motor and telemetry bench journal
 
-## Resume here
+This journal retains the MK5 motor tuning, transport and recording evidence
+from 10–13 November 2026. ADC ISR implementation, all timing optimization
+results, rejected candidates and the current measurement procedure are
+consolidated in [ADC ISR optimization](adc-isr-optimization.md).
 
-2026-11-14 update. After the dependency refresh, the MK5 keeps the previous
-TIM1/ADC setup. The ADC ISR regression on the unloaded 15 kHz bench depends
-on release code generation. Disabling incremental compilation shrinks the
-measured increase from about 0.8 µs to 0.15–0.18 µs. The new `PRIMASK` barrier
-accounts for 0.15–0.20 µs in an address-preserving A/B. See the final section.
+Hardware: unloaded H5055, Mini V6 MK5, about 24 V. Historical settings,
+restoration images and next-action statements below describe their own
+sessions; use the current firmware and commissioning guide for new runs.
 
-2026-11-13 update. The firmware nightly comparison below found an ARM
-target-feature naming change that disabled hardware square root. With that
-corrected, the MK5 at 15 kHz recovered its ADC ISR timing and used less flash.
+Artifacts:
 
-2026-11-12 update. MK5 now supports 15/20 kHz drive PWM at boot and separate
-20 kHz timing for each motor-detection stage. The Flipsky H5055 unloaded A/B
-found about 15 µs more PWM-write margin at 15 kHz and similar speed tracking.
-Low-speed ripple remains at both rates. See the latest measurements at the end
-of this note. The next drive decision needs a matched comparison under load.
+- `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-low-speed-2026-11-11/`
+- `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-current-2026-11-09/`
 
-Updated: 2026-11-11. Baseline commit: `3ee9089`.
-Goal: shorten the real F405 FOC/ADC path at 20 kHz, including worst observed
-cycles and PWM-update timing, while preserving protections and native telemetry.
-Current stage: PWM +120 closure passed before and after the rearm fix.
-Accepted fix: discard stale current PI voltage when re-enabling a bridge that
-was off; ordinary running retargets preserve state. Hardware restart peaks
-4.79/5.27 A → 0.77/0.91 A. All six post-fix velocity captures lossless; steady
-Hall/speed ripple remains, especially a 120→40 transition. Small-power dissipative-braking pilot was rejected: it worsened rocking.
-Latest speed sweep: ±20 can rock/stall; +80/+160 and ±320 settle much more
-smoothly. Lower Ki improves 40 and 120→40 but substantially slows startup;
-interpolation threshold=0 does not cure 20. Optional native 1-kHz PI diagnostics
-now run alongside Packed28 on normal firmware. Use those traces for the next
-low-speed control change; the diagnostic deadline-bench combination still
-needs investigation because its command ACKs sometimes miss their deadline.
-Clock/current/outer-loop rates stay
-168 profile / 20 kHz / 1 kHz. All earlier experimental tuning remains volatile.
+## Transport qualification, 10 November
 
-Artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-research-2026-11-11/`.
+The ST-Link V3 read-throughput investigation separated raw SWD reads from
+async delivery wait. Dedicated raw telemetry and Ergot paths were compared
+with complete capture/sequence/drop accounting. A larger queue absorbs
+bursts but cannot fix sustained producer/consumer imbalance. The existing
+native-rate recording qualification below supersedes the early lossy USB
+screening runs. Exact earlier images, measurements and failed attempts are
+retained in Git history and the artifact roots indexed by the ISR report.
 
-Latest artifacts: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-low-speed-2026-11-11/`.
-Recovery for future tests: `normal-velocity-debug.elf` in the latest root
-includes bridge rearm fix `44a9790` and optional velocity diagnostics.
-Use this one living note for progress; add conclusions/evidence and next actions,
-not transcripts of questions. Do not repeat completed A/Bs without a reason.
-
-## Established facts and constraints
-
-- Production: STM32 DirectEdge, SPI master → C5 router → USB Serial JTAG;
-  telemetry is Packed28 through Ergot/SPI, native nominal 20 kHz.
-- Motor secured/unloaded; user authorizes motor excitation and flashing.
-  Last confirmed PSU: 24 V / 5.5 A. Preserve persisted model, Hall geometry,
-  calibration and current limits. No NVM writes planned.
-- Normal image currently restored, Stopped, fault_count=0, Vbus about 24 V.
-- Previous clock/memory experiment: see
-  [clock/memory report](f405-clock-memory-bench-2026-11-10.md), commit `3ee9089`.
-  Its current loop had phase outputs inhibited, so it is not a rotating baseline.
-  Flash/SRAM data at 168 MHz: 36.76 µs representative body; SRAM code/CCM data:
-  40.68 µs, with overruns. At 240 MHz, combined placement: 29.72 µs versus
-  flash 31.65 µs. Defaults unchanged. Do not repeat this whole matrix now.
-- Earlier implemented optimizations and failed candidates are indexed in
-  [previous audit](performance-audit-2026-11-09.md), especially “Further ADC
-  optimization”. Read targeted sections, not that entire historical log.
-- Existing detailed profiling covers ADC, snapshot, commands, protections,
-  control/PI/trig, estimators/observer/startup/phase tracking, PWM and publication.
-  Buckets are nested; do not add parent and child times.
-- Existing one-second means are not per-cycle percentiles. Body timing excludes
-  the final bookkeeping/exception return. Entry gaps alone do not prove a lost
-  ADC conversion. Detailed profiling changes the workload; final acceptance
-  requires a minimally instrumented build.
-
-## Work queue
-
-1. Add bounded RAM histograms for active ISR-body and entry-gap distributions;
-   read/export only while Stopped. Keep detailed and minimal builds separate.
-2. Repeat the same Hall current/velocity maneuvers with 20-kHz capture and
-   unchanged configuration. Retain failures and telemetry/ACK loss separately.
-3. Attribute the largest costs, inspect linked assembly, choose at most two
-   local optimizations. Compare correctness and identical hardware workloads.
-4. Verify PWM update timing, then refine clocks near promising candidates.
-5. Finish with minimally instrumented current/velocity runs, long enough to
-   expose command/thermal transitions. Restore normal firmware and commit each
-   validated logical step.
-
-## Results
-
-### 2026-11-11: baseline, rotating motor, SPI/Packed28
-
-Three repeats each, unchanged persisted configuration, zero faults, all captures
-lossless. Exact quantile bins/entry maxima/sequence spans and raw data are in
-`baseline-minimal/manifest.json` under the artifact root. This image includes
-bounded distribution bookkeeping, so final acceptance must also remove it.
-
-| Workload | Mean body µs across repeats | Observed body max µs | Body overruns across repeats |
-|---|---:|---:|---:|
-| Id hold 0.6 A | 37.323–37.325 | 46.53 | 0 |
-| Current pulse to 0.9 A | 37.883–38.678 | 47.17 | 0 |
-| Hall velocity +40 el rad/s | 41.294–41.312 | 53.90 | 16 |
-| Hall velocity +120 el rad/s | 42.692–42.719 | 54.95 | 27 |
-
-The current pulses have differing rotor trajectories; those mean differences
-are not a repeatable CPU optimization signal. Entry intervals have a ~50-µs
-median, with isolated 78–86-µs maxima: investigate interrupt masking as well
-as body time. All recording success claims are separate from deadline/control
-quality. No speedup claimed.
-
-### Timing-contract audit prompted by the user
-
-Readback saved in `peripherals-verified.json`: TIM1 center-aligned mode 3,
-PSC=0, ARR=4195, RCR=1, CCR4=4112; calculated PWM=20004.272 Hz. ADC1/2/3
-independent, 12-bit scan, TIM1_CC4 rising trigger, 3 injected ranks each:
-[10,3,0], [11,14,1], [12,13,2]. All use 15-cycle acquisition; only ADC3 owns
-JEOC IRQ. ADC clock=20.979480 MHz, acquisition=0.715 µs, ideal three-rank
-conversion=3.861 µs (excluding trigger synchronization). Hardware deadtime
-reads back as 357.49 ns. Histogram ISR-entry median agrees with one 50-µs cycle.
-The new harness asserts this full contract before excitation.
-
-Previous overclock readbacks kept PWM around 20004–20007 Hz, but ADC clocks
-changed: 168→20.98, 204→25.45, 216→26.94, 240→29.92, 260→32.40 MHz.
-With unchanged 15-cycle sampling, acquisition shrinks to 0.463 µs at the last
-step. Those were motor-inhibited CPU experiments, not analog-accuracy
-qualification. They also changed SPI/APB clocks, so do not attribute the whole
-gain solely to CPU. Future clock comparisons must export the complete ADC,
-trigger, timer and deadtime contract; qualify acquisition/settling and sampling
-phase before energized overclock measurements. These frequency estimates use
-the earlier measured HSE, not a fresh independent scope measurement.
-
-
-### Detailed profiling and failed attempts
-
-Detailed hold: 39.506–39.509 µs versus minimal 37.323–37.325 µs, about 2.18 µs
-instrumentation/layout overhead. Fresh diagnostic means: current pulse
-39.975–39.998 µs, velocity40 43.322–43.333 µs; velocity40 had 58–62 body
-overruns per run and producer losses. The captures remain diagnostic failures,
-with complete events/error metadata embedded in their Parquet files.
-
-- `baseline-sections`: three hold repeats pass; current-0 loses 26 samples,
-  CLI correctly exits nonzero. Harness aborted/restored before histogram export.
-- `sections-remaining`: current-0 loses one sample; a harness error looked for
-  the CLI error in outer stderr instead of the capture log. Aborted/restored.
-- `sections-complete`: three current repeats pass; three velocity40 repeats
-  export histograms despite explicitly marked recording loss. Velocity120-0
-  misses a command/terminal ACK and loses 882 producer samples: harness aborts,
-  emergency Stop succeeds, normal image restored. Do not repeat +120 with full
-  instrumentation. Minimal +120 already passed all three captures.
-
-Stable detailed +40 window, nested cycle counts: ADC ~350, snapshot ~428,
-whole shared FOC ~5675, publication ~762. Inside shared FOC: command ~464,
-protection ~246, step ~4544, tail ~202. Inside step: gate ~427, controller ~883,
-PWM/post ~315, estimator ~1983. Inside estimator: observer ~620, startup ~31,
-output ~113. About 1200 estimator cycles are outside those child buckets;
-measure sensor sampling and voltage preparation before choosing an optimization.
-These are diagnostic attributions, not minimally instrumented runtime costs.
-
-
-### Quiet-build control: reporting itself delays ADC entry
-
-Three repeats each, warning-only logs like production, same RAM histogram,
-clock, ADC setup, limits and 20-kHz Packed28 capture:
-
-| Workload | Mean body µs | Maximum entry gap µs across repeats |
-|---|---:|---:|
-| Id hold | 37.241–37.243 | 52.81 |
-| Velocity40 | 41.272–41.295 | 56.01 |
-| Velocity120 | 42.668–42.698 | 56.76 |
-
-All nine quiet captures are lossless, zero faults. Removing periodic reports
-reduces entry maxima from 83–86 µs to 53–57 µs while preserving body means.
-This is strong evidence that reporting critical sections caused the longest
-entry delays. It is a compile-time A/B, so code layout is not independently
-held constant. Do not optimize production around jitter introduced by info logs.
-Rare body overruns remain (quiet velocity120 maximum 55.00 µs); neither an
-entry histogram nor body maximum proves a missed TIM1 preload-transfer deadline.
-
-`results.json` verifies 30 captures / 3,067,910 samples / 672 ACKs, including
-explicitly failed detailed velocity40 captures. The 21 minimal/quiet runs all
-have complete, lossless sessions; diagnostic losses remain separately marked.
-`distributions.png` was visually inspected; it plots body and entry-gap CCDFs,
-with 64-cycle bins (~0.381 µs). This is useful here; FFT is not relevant.
-PCSR-only sampling also ran during native-rate velocity40 on the normal image
-(`pc-velocity40/`); mixed active/Stopped windows and rounded per-site percentages
-make that exploratory evidence, not precise CPU accounting.
-
-Config before/after matches for every group except automatic boot DC offsets.
-No motor/Hall model, limits or board-calibration writes occurred.
-
-## Exact next actions
-
-- Add counters for the phase-manager sensor front-end and voltage preparation;
-  print the already collected `VELOCITY_REQUEST` bucket. Use a short +40
-  diagnostic run; avoid the rejected full-profiling +120 workload.
-- Inspect linked code at the largest bucket before changing algorithms. Preserve
-  fallback/health checks and native protection cadence. Test any local candidate
-  against `baseline-quiet`, three repeats at +40/+120 with 20-kHz Packed28.
-- Use the existing finite PWM-commit trace with a current/velocity trigger to
-  verify the time of CCR writes and the actual preload-transfer deadline.
-- Recheck candidate without histogram/section instrumentation before accepting.
-
-Recipes centralize flags: `just bench-mk5-foc OUTPUT RECOVERY minimal 3
-hold,velocity40,velocity120 quiet`; detailed mode is `sections` with `timing`.
-Recovery image used here: the known normal ELF in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-overclock-2026-11-10/current-light-repeat/recovery.elf`.
-`just flash-mk5-spi` rebuilds/restores the current normal image. Do not overwrite
-artifact directories or promote a detailed/gapped run into baseline acceptance.
-
-
-### Selective profiling without reporting I/O
-
-`fine-sections` and `sections-ram` retain the failed full-instrumentation +40
-attempts: command ACKs and the stream overloaded even after removing log I/O.
-Emergency Stop and restore succeeded. These are measurement-load failures,
-not accepted performance runs. Do not keep rerunning the full-mark image live.
-
-Added a selected phase group instead: 2 front-end markers per cycle and the
-existing due-only velocity-request marker. A one-shot RAM window is published
-only after >1.1 active seconds; this excludes the mixed entry/Stopped window.
-The host rearms/export while Stopped. No per-window text I/O. `phase-selective`
-passed hold/+40/+120, all native captures lossless, zero faults.
-
-| Case | Sensor/front-end cycles | Voltage preparation cycles | Velocity-request cycles averaged per native cycle |
-|---|---:|---:|---:|
-| Hold | 801 | 48 | 0 |
-| +40 | 983 | 48 | 37 |
-| +120 | 1159 | 48 | 37 |
-
-The outer velocity request is about 740 cycles per scheduled evaluation if
-using the nominal 20:1 ratio, not 37 cycles per evaluation. More granularity
-is now affordable without enabling every nested marker. Full core tests:
-696 unit tests passed (2 ignored), plus 11 doctests after the counter additions.
-
-
-
-### Independent IRQ-cadence cross-check
-
-Applied-command ACK timestamps bracket the first active and final Stop/Coast
-transitions in host monotonic time. The histogram's active ISR count divided
-by these duration bounds does not use HSE, DWT scaling or firmware `t_s`.
-Every successful baseline agrees with the TIM1-derived ~20.004 kHz. For the
-4.8-s holds, typical host-only bounds are ~19.97–20.05 kHz (transport latency
-limits precision); they exclude a doubled or CPU-scaled cadence. Future
-profile runs check this automatically, alongside register readback. Previous
-overclock figures remain RCC/HSE-derived; no new scope measurement is claimed.
-
-
-### Rejected local candidates
-
-`phase-baseline-repeat` uses the exact same ELF SHA as `phase-selective`
-(`c0ec8558...`). Two further repeats: hold 37.395–37.397 µs, +40
-41.272–41.274 µs, +120 42.543–42.552 µs. All captures lossless. Slight
-trajectory/state variation exists even with an identical ELF; keep that scale
-in mind when judging sub-microsecond results.
-
-| Candidate | Hold mean µs | +40 mean µs | +120 mean µs | Decision |
-|---|---:|---:|---:|---|
-| Edge age returned with sample, 3 repeats | 37.089–37.091 | 41.171–41.250 | 42.620–42.656 | Reject: high-speed regression |
-| Same with private helper forced inline, screening | 37.205 | 41.211 | 42.627 | Reject: high-speed regression |
-| Runtime cruise-context proof, 3 repeats | 37.536–37.537 | 41.086–41.127 | 42.446–42.453 | Not accepted: direct-current regression |
-
-All these captures were native-rate and lossless, no faults. Edge-age sources,
-patches and tests are preserved in `hall-age-candidate/`, `hall-age-inline/`
-and `hall-age-tests.log`; original Hall source is restored. Do not repeat the
-same return-value fusion without a new explanation of the ABI/code-generation
-cost. The runtime context is preserved in `modes-enum-context.rs` and
-`cruise-context/`; standard core tests passed.
-
-
-
-Static cruise-context screening (`cruise-static`): hold 38.496 µs, +40
-40.805 µs, +120 42.039 µs. Faster velocity at the cost of a ~1.10-µs
-regression in direct current; reject the whole family for this iteration.
-All screening captures lossless, no faults. Source retained in
-`modes-static-context.rs`; standard unit/doctests passed before hardware.
-Original `modes.rs` is restored. Do not keep these refactors solely because
-the types look cleaner: their measured whole-workload tradeoff did not meet
-acceptance. No pure-software speedup is claimed from these candidates.
-
-The next useful qualification is actuation timing: PWM is written before the
-estimator/publication tail. Measure end-of-CCR writes against the next actual
-TIM1 peak, plus the UDIS interval. This distinguishes a long ISR body from a
-missed PWM update and provides a concrete deadline/headroom target.
-
-
-### Actual PWM commit deadline (2026-11-11)
-
-Default-off `bench-foc-deadline` uses a free-running TIM5 (PSC=0), TIM1
-counter/direction at ADC entry, and a timestamp after CCR writes and observed
-UDIS restoration. RCC checks the TIM1:TIM5 2:1 ratio. Timestamping before the
-entry-phase reads makes the computed next-peak margin a conservative estimate.
-Counters freeze on Stop; no per-cycle logs or SWD reads during excitation.
-This measures driven commits, including the final Stop write, separately from
-the whole ISR body. It does not change the control algorithm or normal image.
-
-`pwm-deadline-v2`, three repeats per completed mode, native Packed28/20 kHz:
-
-| Workload | Minimum margin across repeats, µs | Largest whole body, µs | Late commits |
-|---|---:|---:|---:|
-| Hold Id=0.6 A | 13.918–15.217 | 47.326 | 0 |
-| Velocity target +40 electrical rad/s | 9.843–10.558 | 54.720 | 0 |
-
-576,340 driven writes qualified, 688,086 captured records, zero ambiguous
-phase samples, masked commits or out-of-ADC writes. All six captures complete,
-lossless and all commands acknowledged; independent host-time cadence bounds
-agree with the ~20.004-kHz TIM1/ADC rate. Worst observed margin is not a WCET
-proof or a qualification of every speed/load. Whole-body >50 µs can occur
-*after* the PWM commit; those overruns alone do not demonstrate late actuation.
-The diagnostic itself adds cost (hold body ~37.859 µs versus ~37.24–37.40 baseline).
-
-The first +120 diagnostic run failed at a command ACK deadline (200 ms) and
-lost 7 producer records; host drops=0. Finite test stopped, recovery image
-restored, fault_count=0. Retain the incomplete Parquet and error metadata;
-no frozen deadline result was exported, so high-speed timing remains unknown.
-`deadline-control`: three +120 minimal-instrumentation controls, all lossless,
-body means 42.861–42.885 µs, maxima 54.613–55.048 µs. This is consistent with measurement
-load contributing to the failed diagnostic workload; host scheduling delays
-remain another possible contributor. It does not prove exact causality or
-qualify velocity tracking. Native current/angle plots were inspected.
-
-Evidence: `pwm-deadline-v2/manifest.json`, `deadline-control/manifest.json`,
-`pwm-deadline.png`, `pwm-deadline-failed120.png` under the artifact root.
-The new source module is retained alongside the exact ELF because the initial
-source.patch was captured before the new file was added to the index.
-
-
-`pwm-deadline-current-repeat`: direct Iq steps 0.3/0.6/0.9 A, one complete
-lossless capture, 20,023 driven writes, minimum margin 15.539 µs, no late,
-ambiguous, masked or out-of-ADC commits. Body mean 39.116 µs, maximum
-47.701 µs. Actual TIM5 readback: running, PSC=0, ARR=0xffffffff;
-83.917920 MHz from RCC, versus TIM1 167.835843 MHz (integer rounding).
-The preceding `pwm-deadline-current` attempt aborted before its second step:
-host affirm gaps 93/151 ms and a late-command refusal. That partial stream
-itself was complete and lossless; preserve it as a failed maneuver, not a
-successful current test. The repeat changed no parameters or deadlines.
-Final recovery: Stopped, fault_count=0, bus 24.053 V, FET 29.5 °C,
-motor 28.7 °C. Six histogram/decoder tests and four peripheral-contract tests
-pass. Production transport, model/calibration, limits and PWM target unchanged.
-
-
-### PWM +120 closure (2026-11-11)
-
-New artifact root: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-pwm-motion-2026-11-11/`.
-`deadline-qualified`: three independent +120 runs, same 24-V setup and persisted
-configuration, native Packed28 capture. Minima 8.866 / 10.915 / 10.594 µs;
-288,321 driven writes, no late commits, ambiguous driven phases or masked
-updates. Every capture complete/lossless, all ACKs successful, no faults.
-TIM1/ADC contract and TIM5 PSC/ARR/clock ratio checked before excitation.
-This qualifies these bounded workloads, not worst-case timing at all loads.
-
-Schema 3 retains only driven-write count/minimum margin/late count; histograms
-are disabled in deadline images. It timestamps before entry-phase reads and
-after observing UDIS clear, with downward timer rounding. Unknown entry phases
-are counted only if a driven commit occurs. No sampled/extrapolated cycles.
-Detailed timing fields and outside-ADC accounting are explicitly unavailable.
-The arm consumer resets counters before publishing Armed: a host request can
-arrive after the entry hook. Host additionally verifies zero count on every arm.
-
-Rejected attempts retained: ADC-owned local aggregation overloaded +120;
-minimal witness plus full histograms lost 4 records despite positive deadlines.
-`deadline-only-repeat` exposed a late-arm reset race (third count accumulated);
-`deadline-final` corrected that race but included an inactive ambiguous entry.
-Final `deadline-qualified` corrects driven-only ambiguity attribution.
-Harness now exports frozen diagnostics even after failed runs, then aborts and
-restores. Seven host decoder tests and two standalone recorder/session tests
-pass. No control/model/limit or normal runtime changes in this step.
-
+## Motor and recording experiments, 11–13 November
 
 ### Low-speed SPI baseline and calibration (2026-11-11)
 
@@ -500,9 +164,6 @@ host ACK sequence snapshots are not used as physical application timestamps.
 `rearm-before-after.png/json` contains the visually checked transient evidence.
 The fix is in the common bridge lifecycle, not a special velocity-mode patch.
 
-Full core/Embassy suite: 697 passed, 2 ignored, 11 doctests passed. Strict
-core/Embassy Clippy passes after an equivalent infallible Hall-angle conversion
-cleanup; its three focused codec tests also pass. Device release/hardware pass.
 `motion-rearm-fixed`: 6 complete/lossless captures, no faults; both ±40 repeats
 have zero reverse transitions, net speeds +40.03/+41.33 and -40.11/-40.57.
 One 120→40 repeat still has five reverse crossings; this is not a complete
@@ -962,326 +623,197 @@ Plots, native captures, register readback, and the injection patch are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-policy.tbY1Ec/`.
 The production SPI image was restored and reported Stopped with zero faults.
 
-### Firmware nightly comparison (2026-11-13)
+## Earlier Hall and velocity experiments, 10 November
 
-Compared `nightly-2026-03-22` with `nightly-2026-11-13`
-(`rustc 1.102.0-nightly 8eb778d04`) at `5d0354f`, using matched locked
-release builds. The newer compiler exposes the single-precision ARM FPU as
-`vfp2sp`. The old conditional selected `libm::sqrtf` under the new compiler.
-The final migration recognizes both feature names. The linked MK5 image
-contains 56 `vsqrt.f32` instructions, versus zero in the unmodified rebuild.
+### Hall handoff diagnostic follow-up (2026-11-10)
 
-| Release image | Flash, old → new (bytes) | Static SRAM, old → new (bytes) |
-|---|---:|---:|
-| MK5 SPI | 457940 → 450372 | 68468 → 68428 |
-| CF2 USB | 549252 → 541212 | 51632 → 51592 |
-| G474 | 254096 → 256812 | 40552 → 40520 |
-| ESP32-C5 bridge | 151424 → 145744 | 182472 → 182220 |
-| ESP32-C6 remote | 437360 → 430096 | 118908 → 118020 |
-| MK5 SPI with `ram-foc` | 458612 → 451052 | 114608 → 113768 |
+Finite RAM events now capture Hall-health changes, commutation/observer angles,
+edge age and observer validity. Opt in with `just build-mk5-raw ergot hall-phase`;
+normal builds exclude its 3.5 KiB buffer and ADC work. Export only after Stop:
+`just dump-hall-mk5 output.json exact.elf [prebuilt-cli]`. Probe attach can halt
+briefly; this is not a live, nonintrusive export. Both feature modes build, and
+the decoder was exercised against device captures and its doctests.
 
-Flash is file-backed STM32 load segments or the ESP application binary.
-Static SRAM includes initialized data and code copied to RAM, excluding
-the stack. Both MK5 builds use another 49172 bytes of CCM. In `ram-foc`,
-the added SRAM footprint relative to normal MK5 is 46140 → 45340 bytes.
-The `ram-foc` result covers layout only.
+The proposed measured-sector/observer-angle stale guard was **not accepted**:
+`guarded-soft` still reported a Hall warning and lost three producer samples.
+Observer phase was already about 0.85 rad ahead of Hall re-entry, so it cannot
+yet serve as an independent position witness in this regime. The candidate
+was removed from the working tree; its patch and all failed evidence remain
+under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-speed-2026-11-10/`.
 
-On unloaded H5055 at 24 V, two four-second velocity runs per point at +120
-and +450 electrical rad/s used Hall-to-observer and native Packed28 over
-the C5. TIM1/ADC register checks matched at 15001.4 Hz, with a 20.979 MHz
-ADC clock and 15-cycle acquisition per injected rank. DWT measured the
-whole ADC ISR body. TIM5 measured the CCR commit margin in separate runs.
+### Hall repeatability and sweep current (2026-11-10)
 
-| Target (electrical rad/s) | Mean ISR, old / unmodified / final (µs) | p99 upper bin, old / unmodified / final (µs) |
-|---:|---:|---:|
-| +120 | 46.73–46.74 / 48.31–48.33 / 46.67–46.71 | 52.62 / 54.15 / 52.62 |
-| +450 | 46.11–46.13 / 47.66–47.67 / 45.98–46.01 | 51.86 / 53.39 / 51.86 |
+Nine runs captured 4,246,674 native-rate Packed26 records through Ergot with
+zero producer/host loss, sequence gaps or Hall overcaptures. At 3 A and
+1 degree/5 ms, all three native calibrations failed LowConfidence: one boundary
+varied by 17 degrees across turns. At 10 A it varied by at most 4 degrees;
+three native 17-A calibrations passed with worst ranges of 2–3 degrees and
+averaged boundaries repeatable within 0.67 degrees between runs. These are
+electrical-angle repeatability figures, not absolute accuracy. Slower 10-ms
+diagnostic sweeps also passed offline checks; the 17-A case covered all seven
+electrical turns per mechanical revolution in each direction.
 
-The unmodified nightly recorded one 94.06 µs ISR outlier. Its cause was
-unconfirmed. The two final-image repeats per speed had no ISR over budget,
-with a maximum of 57.04 µs. The PWM period was 66.66 µs.
+The high-current runs used a temporary 30-A dq trip, with observed peak
+17.477 A. The historical 6-A bench trip is not a board/motor rating. Local
+VESC 7.00 wizard source selects Hall current as detected motor limit / 3,
+about 17 A for the user's 50.93-A result; its PI gains are 0.0005/1 versus
+0.01/10 in these sweeps. Sixfold Iq disturbances near phase-current zero
+crossings repeat at 1.666/3.289 Hz in slow/fast sweeps. PWM-command deadtime
+compensation and PI tuning are candidates for the reported pulsating sound;
+no synchronized audio or causal A/B has established its source yet.
 
-Minimum observed PWM commit margin at +120 was 46.55 / 44.35 / 47.62 µs
-for old, unmodified and final respectively. At +450 it was
-54.79 / 52.74 / 55.63 µs. Across 240020 final-image writes there were
-zero late, ambiguous or masked updates. All eight final captures were
-lossless and all commands acknowledged. Timing was qualified only on
-this unloaded MK5 at 15 kHz.
+Original Hall table, model, limits and board calibration were restored and
+read back; Stopped, zero faults, no NVM writes. Velocity stability remains
+unqualified. Detailed results, source comparison and plots:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-repeat-2026-11-10/report.md`.
 
-Raw captures, register dumps, ELF reports and reproducible scripts are
-under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-nightly-ab.C6IY3o/`.
+### Command deadtime correction A/B (2026-11-10)
 
-### ARM flags on the new nightly
+`just build-mk5-raw ergot normal on|off` selects command correction independently
+of the unchanged 360-ns gate deadtime. Four matched 17-A Hall sweeps, repeated
+in reverse order, confirmed the sharp sixfold current disturbance comes from
+command correction in this regime. Forward Iq RMS was 0.230–0.231 A with
+normal PI/correction, 0.099 A without correction, 1.024 A with soft VESC-wizard
+PI/correction, and 0.165 A with soft PI/no correction. Both repeats closely
+agree. Normal PI/no correction also passed native Hall calibration at 17 A.
 
-On `a48e90a` with `nightly-2026-11-13`, compared the existing
-`+vfp2,-fp64` (A), no additional flags (B), and `target-cpu=cortex-m4`
-alone (C), all with the same `thumbv7em-none-eabihf` target. The full
-load images differ. A and B even have different LLVM target-feature
-attributes despite exposing the same Rust `cfg` and producing the same
-instructions in the small FPU test. All linked MK5 and CF2 variants
-retain 56 `vsqrt.f32` sites and no double-precision arithmetic instructions.
+This is not acceptance of globally disabling correction. At +40 electrical
+rad/s, new Hall geometry barely improved velocity RMSE (11.70 to 11.49 rad/s);
+disabling correction increased it to 21.77 rad/s and reported a Hall-staleness
+warning. The batch stopped before its planned repeat. No guard was weakened.
+All twelve captures (3,375,368 records) were lossless, including the failed
+velocity run. Every plotted Hall edge was retained in the short velocity tests.
+The centroid/interpolation transition around 500 eRPM and Hall/observer health
+remain diagnostic targets; stable velocity control is not established.
 
-| Release image | Flash bytes A / B / C | Static SRAM bytes |
-|---|---:|---:|
-| MK5 SPI | 449620 / 450236 / 456652 | 68428 |
-| CF2 USB | 540636 / 541260 / 559604 | 51592 |
-| G474 | 256476 / 257092 / bank overflow by 896 bytes | 40520 for A and B |
+Both firmware variants build. Restored compensation-on firmware and original
+runtime configuration, Stopped; no NVM writes. Report and inspected plots:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-ab-2026-11-10/report.md`.
 
-MK5 CCM stays at 49172 bytes. Each variant ran twice per speed and per
-diagnostic on unloaded H5055, at +120 and +450 electrical rad/s. The
-TIM1 PWM, ADC clock and sample time matched the preceding comparison.
-ISR p99 upper bins stayed at 52.62 and 51.86 µs for all three variants.
-The largest ISR body at either speed was 57.04 / 57.18 / 56.76 µs for
-A / B / C. Minimum PWM-write margin at +120 was 47.71 / 47.55 / 45.23 µs
-and at +450 it was 55.01 / 54.27 / 53.62 µs. Across 24 valid runs,
-1,774,043 telemetry samples had no loss and 720,205 PWM writes had no
-late, ambiguous or masked updates. One discarded DWT window was repeated.
+### Velocity PI with unavailable braking (2026-11-10)
 
-Keep `nightly-2026-11-13` and variant A. B used more flash with comparable
-ISR timing, and C reduced PWM margin while growing the image. The
-bench was restored to its previous image, stopped with zero faults.
-Evidence is under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-arm-flags.uLpWZf/`.
+Finite RAM snapshots exposed positive current requests during overspeed:
+full back-calculation at a zero braking limit manufactured integral to cancel
+the negative P term. With Kp=0.05/Ki=0.05 and a 40-erad/s target, the old code
+reached 1942 erad/s feedback and a 25.4-A measured d-current peak. Its 128-edge
+diagnostic prefix overflowed; full-run speed statistics from that prefix are invalid.
+`ClampedPI` now uses conditional integration and bounds stored authority;
+the current-loop PI remains unchanged. A regression reproduces the old failure
+and passes with the corrected integration.
+The same gains after the fix gave 5.74-erad/s full-revolution speed RMSE,
+4.05-A dq peak and no faults, but reverse edges and ripple remain. A new
+200-erad/s safety ceiling starts derating at 180; sampled feedback stayed below
+101 in that run. This is not qualification of smooth velocity control.
+Captures, exact ELFs and Hall replay: `oxifoc-hall-motion-2026-11-10` under
+`/home/okhsunrog/tmp_zfs/codex_tmp/`. All captures so far have complete USB records.
 
-### Embassy update on MK5 (2026-11-14)
+Voltage limits now install through the stopped ISR transaction, with the same
+prepared thresholds used by fault integration, UV recovery and failsafe braking.
+Boot uses that validation path; writes cannot exceed the board range. Hardware
+checks with PWM stopped produced OV/UV faults at deliberately crossed thresholds,
+rejected 58 V, and verified persistence/reboot of the 8–26 V bench range.
+668 core tests and 11 doctests pass. Evidence and exact ELF:
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-voltage-brake-2026-11-10/`.
 
-Compared the pre-update STM32 build with Embassy `72f7aff` using the same
-`nightly-2026-11-13`, target flags, unloaded H5055 at about 24 V, and native
-Packed28 via C5. GDB caught the updated diagnostic image panicking in
-`init_clock` before TIM1 or ADC initialization. Embassy now preserves the
-fractional PLL ratio until the output division. The old application calculation
-truncated at the PLL input and disagreed by 22 Hz at TIM1. The new HAL also
-rounds the complementary PWM period up. Commit `3b867e0` aligns the clock
-calculation with the HAL and uses the same center-aligned ARR calculation for
-boot and detection.
+Hall timeout now additionally requires independent observer angular travel
+since the captured edge, cancelling a constant observer phase offset. Inferred
+crossings after a glitch retain the conservative timeout until a real edge
+arrives. Simulation regressions cover cable dropout and glitch recovery.
+Physical cable removal was not tested.
+Final `witness-fast-off.elf` runs at +40/-40 electrical rad/s retained
+82,230/82,173 native 20-kHz samples with no losses or Hall warnings. They still
+had 7/5 reverse Hall transitions: smooth velocity control is not qualified.
+An earlier reverse run lost 25 producer samples; a later clean run does not
+establish that intermittent loss is fixed. Command deadtime correction was
+disabled in these comparisons; hardware gate deadtime remained 360 ns.
 
-Readback on both sides gave TIM1 PSC=0, ARR=5594, RCR=1, CCR4=5483,
-15,001.4 Hz PWM, 20.979 MHz ADC and 357.49 ns dead time. The three injected
-ranks on each ADC retained 15-cycle acquisition and the TIM1_CC4 rising trigger.
+The matched 3-W dissipative-braking experiment is rejected: 18.60-A dq peak,
+7,817 producer losses and repeated Hall warnings, with 42–43-us mean FOC and
+peaks around 60 us. Its finite Hall buffer overflowed, so its full-run speed
+statistics are invalid. The algebraic solver fast path preserves power/current
+bounds in tests but is not a demonstrated cure for the runtime problem.
+Next isolate the large negative Id request and Hall-frame error during braking.
 
-Two qualified warn-only runs per mode. DWT measures the ADC ISR body.
+The follow-up isolated Id polarity with zero requested Iq: the +2 A staircase
+produced no Hall transitions, while the otherwise identical negative staircase
+produced 14, including reversals. Both 20 kHz captures were complete. The heat
+allocator now defaults to aligning positive Id and preserves an explicitly
+requested d-axis direction; the magnitude/power solve is separate. A physical
+Hall-plant regression reproduces restoring versus destabilizing behaviour.
 
-| Mode | Mean before (µs) | Mean after (µs) | p99 upper bin before → after (µs) |
-|---|---:|---:|---:|
-| Id hold 0.6 A | 39.55 | 39.99–40.11 | 40.04 → 40.80 |
-| Iq ramp to 0.9 A | 42.65–43.04 | 43.84–43.85 | 44.62 → 45.38–45.76 |
-| Velocity +40 | 43.99–44.68 | 44.68–45.18 | 49.95–52.62 → 50.72–53.00 |
-| Velocity +120 | 46.68–46.72 | 47.43–47.47 | 52.62 → 53.39–53.77 |
-| Velocity +450 | 45.98–46.00 | 46.72–46.73 | 51.86 → 52.62 |
+With the same 40 rad/s profile, 3 W heat budget and PI 0.05/0.05, the old sign
+gave a 17.91 A dq peak and 6507 producer drops. The final implementation's
+forward/reverse peaks were 4.09/4.63 A, with no Hall warning generations, but
+43/36 producer drops and remaining speed pulsation. This fixes a contributor,
+not smooth-speed or lossless-stream qualification. Evidence remains in the
+same artifact directory (`id-sign-results.json`, `results.json`, exact ELFs,
+20 kHz Parquet, stopped Hall exports and plots). NVM dissipation stays off.
 
-The new warn-only runs had zero ISR bodies over the 66.66 µs period. The
-maximum body was 56.23 µs and the longest gap between entries was 71.37 µs.
-One old +40 run had an 88.83 µs body. Several attempts on both builds were
-discarded when the DWT epoch changed. The initial info-logging image also
-produced late host commands during Id hold and occasional long ADC entry
-gaps. The warn-only repeats completed. Low-speed velocity and unloaded Iq
-ramps traversed different speed trajectories, so their means are less
-controlled comparisons than +120/+450.
+The 0.01/0.2 PI and a 100-eRPM interpolation floor did not resolve the 40-rad/s
+pulsation. At -120 rad/s, the full Hall trace had no reversals and a -125.62
+rad/s median revolution speed, but 49 producer samples were lost. The 120→40
+step reintroduced slow-speed pulsation (2.09 A peak, 323 lost samples, no Hall
+warnings). The bench edge buffer is now 512 entries to retain these runs;
+the exporter also accepts the older 128-entry and seven-word velocity layouts.
+Offline replay (`hall-speed-audit.json`) shows that the current edge-speed
+estimate does not integrate to observed net boundary travel during rocking;
+do not equate a low-pass of that signal with independent rotor-speed evidence.
+Raw captures, configurations, exact images, plots and failed runs remain in the
+same artifact directory; `results.json` distinguishes incomplete recordings.
+Final flash configuration, verified after reset: drive 10 A, dq trip 30 A,
+bus draw 5 A, regen 0 A, brake ceiling 5 A, dissipation 0 W, VBUS 8–26 V.
+Controller left Stopped with no faults; motor model and Hall NVM were unchanged.
 
-Minimum measured PWM write margin at +120 was 23.83–23.90 µs before and
-21.75–22.75 µs after. At +450 it was 26.38–28.24 µs before and
-26.94–27.23 µs after. The 240,098 updated warn-only writes had no late,
-ambiguous or still-masked writes. Schema 3 expresses margin in TIM1 ticks.
-The temporary decoders for the preceding nightly/ARM-flags comparison
-divided by the TIM5 clock and doubled the printed margins. Use the raw
-values and TIM1 frequency when comparing these sections.
+### Hall travel-consistent speed (2026-11-10)
 
-The updated production MK5 image passed stopped streaming, Id hold, Iq ramp
-and +40/+120/+450. In a separate +450 → +120 → +40 run, the median electrical
-speed was 447, 114 and 34 rad/s. The median absolute difference between the
-control and Hall angles was 0.053, 0.000 and 0.003 rad. Packed28 carries the
-angles, so this shows the return to Hall agreement. A separate observer-state
-trace would establish the exact crossover cycle. The eight production captures
-delivered 639,616 samples with zero gaps and all 51 commands acknowledged.
-The starting image was restored and the controller verified Stopped with zero
-faults. This comparison covers 15 kHz on the unloaded MK5.
+Control samples now differentiate bounded physical boundary travel with a
+20-ms filter; raw edge speed and the commutation-angle limiter remain separate.
+Captured displacement is accumulated before sampling, including zero net travel
+at a same-boundary reversal. This removes the unbounded integral of the previous
+`sector_width / edge_age` stop estimate. Six trajectory/regression tests cover
+stops, asymmetric rocking, unequal sectors, both directions and missed sample
+cadence.
 
-Captures, register dumps, GDB evidence, build logs and plots are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-embassy-ab.ox3qLp/`.
+Replaying four complete earlier captures changes the mean-speed disagreement
+against net boundary travel from +6.51/-6.95/+1.98/+6.64 rad/s to
++0.14/+0.52/+0.10/-0.67. Finite-window filter lag remains. First hardware runs at
+40 rad/s with PI 0.05/0.05 and 0.01/0.2 still oscillate (13/5 reverse edges,
+4.18/2.44-A dq peaks), without faults; producer losses are 404/392 samples.
+These runs establish neither smooth regulation nor streaming acceptance.
+Artifacts: `motion-*` in the existing `oxifoc-voltage-brake-2026-11-10` directory.
 
-### ADC ISR regression isolation on MK5 (2026-11-14)
+`just build-mk5-raw ergot hall-outliers off` now retains Hall evidence alongside
+section costs, including the due-only velocity update. In `motion-profile-1`,
+the eight longest instrumented ADC bodies were 55.6–58.9 µs: velocity work
+4.35–7.86 µs, estimator work 11.34–12.84 µs, current controller 4.67–4.78 µs.
+All eight coincide with the outer velocity update; six also have expensive
+command processing. Detailed profiling adds overhead and lost 26,393
+producer samples; it is not representative streaming acceptance.
 
-Compared `0332362` and `ea90eb3` with the same Rust nightly, target flags,
-warn-only logs, unloaded H5055, +120/+450 electrical rad/s and native
-15 kHz Packed28 over C5. Verified 167.836 MHz CPU, 5 flash wait states,
-TIM1 ARR=5594, CCR4=5483 and 20.979 MHz ADC with three 15-cycle ranks on
-each ADC. Clean builds on both sides used the same MK5 features. The
-original old ELF additionally placed its telemetry queue in CCM.
+Bench Hall images also retain 16 fault-generation/category/speed snapshots,
+exported by `dump-hall-mk5`. A stopped-only temporary thermal-derating test
+verified both Warning/Derating and its subsequent clear, with exact config
+restoration. This closes the evidence gap where the host saw a changed registry
+generation but no remaining active fault. The older `motion-forward120-2` run
+had that gap (generation 2, startup feedback 190 rad/s versus a 180-rad/s
+rolloff); speed derating is inferred there, not a captured fault-category fact.
 
-| Diagnostic image | Mean body, +120 (µs) | Mean body, +450 (µs) |
-|---|---:|---:|
-| Original before refresh | 46.65 | 45.98 |
-| Original after refresh | 47.39 | 46.73 |
-| Original after, replace hot-path ISB with NOP.W | 47.24 | 46.58 |
-| Clean before, incremental enabled | 46.58 | 45.94 |
-| Clean after, incremental enabled | 47.39 | 46.73 |
-| Clean before, incremental disabled | 46.67 | 46.04 |
-| Clean after, incremental disabled, first block | 46.86 | 46.18 |
-| Same clean after ELF, address-preserving control | 46.84 | 46.18 |
-| Same clean after ELF, replace hot-path ISB with NOP.W | 46.65 | 45.99 |
-| Clean after, rebuild without ISB after PRIMASK only | 46.61 | 45.92 |
-| Clean before, change only the cortex-m lock to 0.7.10 | 47.16 | 46.57 |
-| Clean after, change only the cortex-m dependency to 0.7.9 | 46.98 | 46.37 |
-| Clean after, retain ISB and restore the old compiler memory declaration | 46.81 | 46.14 |
+The completed matrix repeats +40, -40, +120, -120 and 120→40 electrical rad/s
+three times each. Net Hall-boundary speeds over the settled windows are
+23.84–24.97, -26.37–-25.98, 119.64–120.12 and -120.06–-119.63 rad/s;
+the step's low-speed segment averages 37.82–40.71 but still oscillates.
+Every ±40 run has 11–13 reverse transitions. Removing dissipative Id in two
+matched ±40 checks still gives 11/8 reversals and 4.00/3.85-A dq peaks:
+braking Id alone does not explain the remaining low-speed problem.
 
-The original +0.75 µs reproduces on the original ELFs. Matching features
-with freshly generated incremental ELFs also reproduces it. With incremental
-disabled on both sides, the increase is about 0.18/0.14 µs, and disabling it
-on the updated image saves about 0.54/0.55 µs. The hot functions have different
-instruction sequences and addresses between the two Cargo profiles. For
-example, the updated `run_foc_cycle` moves from `0x080011c0` to `0x08004f0c`,
-and grows from 26,292 to 27,364 bytes. Code shape and placement both change.
-The experiment does not attribute the profile effect exclusively to flash
-cache misses or to instruction count.
-
-Embassy raises the minimum `cortex-m` version to 0.7.9. The refresh selected
-0.7.10, where [a8e5a2e](https://github.com/rust-embedded/cortex-m/commit/a8e5a2ee57)
-adds an instruction synchronization barrier after writing PRIMASK. The
-critical-section backend restores PRIMASK on exit. In the final linked
-image the writes under `ADC` and `run_foc_cycle` retain the same static count
-between versions with matched Cargo profiles. The updated code has 85 or 86
-ISB sites across those two symbols, most on mutually exclusive paths. The
-same-size NOP experiment preserves their addresses, compiler ordering
-constraints and the PRIMASK writes. It measures 0.15–0.20 µs per cycle
-attributable to executing those barriers. Swapping the crate version and
-relinking also changes addresses and can move timing in either direction.
-The version split is consistent with moving from 0.7.8 to 0.7.10 causing
-a substantial change through the build, with 0.7.9 also sensitive to layout.
-Restoring the old `nomem` declaration on the mask writes moved timing by
-only 0.03–0.05 µs in its relinked build. Keep the upstream barrier and the
-[compiler-ordering fix](https://github.com/rust-embedded/cortex-m/commit/7338915eb8).
-
-Separate section probes at decimated 7.5 kHz telemetry put +52–77 ticks in
-`run_foc_cycle` (observer +34–35 ticks), +27 in the snapshot and +13 in
-publication. The ADC read section used about five fewer ticks. The section
-probes change the linked code, so those deltas describe the instrumented
-images. The hardware square-root instructions remained present in both
-minimal hot paths.
-
-The 66 accepted runs delivered 4,584,802 records and acknowledged all 132
-motion commands. No timed ISR body exceeded the 66.66 µs period. Eight
-attempts crossed a DWT epoch, one recorder did not freeze, and one host
-capture failed. These attempts were repeated. The pre-test image was
-restored and the controller returned to Stopped with zero faults.
-
-Preserve `cortex-m` 0.7.10. For future performance comparisons build both
-sides clean with incremental disabled and record the exact ELF and features.
-Recheck the nonincremental release with the PWM-write deadline witness before
-changing the default release profile. Further hot-path work can consolidate
-shared-state access inside the ADC ISR while retaining the required ordering.
-
-ELFs, harnesses, raw histograms, captures and the distribution plot are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-isr-cause.9mxWCf/`.
-
-### ADC handles owned by the interrupt (2026-11-14)
-
-Boot transfers the three injected ADC handles to ADC ISR local storage on
-its first invocation. The hot path reads the handles directly. The linked
-ADC handler has six `MSR PRIMASK` / `ISB` sites, down from nine.
-
-Matched A/B/A builds used the same nightly and dependencies, incremental
-disabled, 48 KiB CCM telemetry queue and warn-only logs. On the unloaded
-MK5/H5055 at PWM and native Packed28 telemetry of 15 kHz, mean ADC ISR
-body time fell from 46.76–46.83 to 46.23–46.28 µs at +120 electrical rad/s
-and from 46.11–46.16 to 45.58–45.65 µs at +450. The TIM1/ADC setup and ART
-settings matched. Relinking also moved `run_foc_cycle`, so the wall-time
-result measures the full change.
-
-The deadline runs without a failsafe showed no late, ambiguous or masked PWM commits.
-The minimum observed margin was 22.89 µs at +120 and 27.54 µs at +450
-after the change. Each image also had one +120 run with a late commit in
-a window containing host affirmation delays and a `CommTimeout` failsafe.
-The captures retain both cases, plus an ambiguous entry in the updated
-failsafe run. The normal release also booted and completed +120/+450. Across
-the 34 completed captures, 2,516,116 records arrived without gaps and all
-68 scheduled motion commands were acknowledged. The firmware build check
-also passed for CF2 with USB.
-
-ELFs, hardware readbacks, raw histograms and captures are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-adc-ownership.h0xmdu/`.
-
-### FOC driver owned by the interrupt (2026-11-14)
-
-The F405 ADC interrupt takes the initialized driver from boot once and runs
-FOC without the outer driver critical section. Existing synchronization for
-shared state and the motor-command channel still applies. On MK5, the
-detection server requests ARR through a single atomic word. The ISR publishes
-the last sample at the old rate, re-primes TIM1 with the bridge off, and
-acknowledges after publishing the first sample at the new rate. The detection
-lease covers restoring drive timing even on cancellation.
-
-On MK5, complete Medium Outrunner detection with 5 A input and 0 A regen
-recorded 648,964 samples without gaps. All driven samples used ARR=4195.
-Each R, L, flux and Hall capture had the expected ARR sequence
-5594 → 4195 → 5594 (15 → 20 → 15 kHz). The firmware returned all six valid
-Hall states and the config dump matched before and after. The existing
-hardware test cancelled the L stage at 20 kHz and received the terminal
-cancellation in 42.02 ms, after 15 kHz was restored. The subsequent Stop
-ACK confirmed Stopped with zero faults. It recorded 17,509 samples without
-loss and checked replay and retired-operation semantics. The 503 core unit
-tests and CF2/USB and virtual platform build checks passed.
-
-The 15 kHz velocity deadline witness recorded about 240,000 driven PWM
-writes per image with zero late, ambiguous or masked writes in the matched
-runs. Minimum margin increased from 22.94 to 23.73 µs at +120 electrical
-rad/s and from 27.40 to 28.09 µs at +450. One separate baseline run hit a
-host affirmation timeout and a late write, then completed on retry.
-
-Mean ADC ISR body time moved from 46.26 to 46.44 µs at +120 and from
-45.62 to 45.71 µs at +450. The upper p99 bin stayed at 52.24 µs at +120
-and fell from 51.48–51.86 to 51.48 µs at +450. No measured body exceeded
-the 66.66 µs period. The asynchronous handoff and retiming path move code
-in the linked image, so the mean measures the whole change. Using a relaxed
-ISR load for the self-contained request eliminated one DMB and improved
-the mean over the initial acquire-load variant. All 16 matched drive
-captures arrived without loss and all 32 motion commands were acknowledged.
-
-Captures, ELFs, register readbacks and scripts are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-ownership.E7QTle/`.
-
-### Isolate and recover the FOC ownership timing regression
-
-On the MK5, the ownership commit cost about 0.18 µs at +120 and 0.09 µs at
-+450 electrical rad/s in the matched nonincremental builds. A diagnostic
-ELF replaced the entry to the timing-request poll with one branch to its
-exit, preserving all other code addresses. In an original → bypass →
-original series, this saved 0.10 µs at +120 and 0.08 µs at +450. The
-remaining difference includes changes in final code generation. Keeping
-the same ownership commit with the poll bypassed yielded 46.34 / 45.62 µs.
-
-The source fix keeps a single load and idle test on the regular path and
-moves request processing out of line. It also publishes calibrated VBUS
-and initial availability in the same atomic word, eliminating the
-per-sample release barrier on the previous separate boot flag. A measured
-0 mV stays distinct from the initial sentinel. Polling less often was
-slower in the tested linked images.
-
-| Diagnostic image, incremental disabled | +120 mean (µs) | +450 mean (µs) |
-|---|---:|---:|
-| Before FOC ownership | 46.256 | 45.592 |
-| Ownership, original ELF | 46.442 | 45.708 |
-| Ownership, same ELF skipping poll | 46.338 | 45.624 |
-| Ownership, shorter poll only | 46.354 | 45.678 |
-| Ownership, shorter poll and one-word VBUS | 46.266 | 45.524 |
-
-With incremental enabled on both sides, the old ownership baseline was
-47.032 / 46.375 µs and the fixed sources were 47.138 / 46.564 µs. The F405
-release profile now disables incremental compilation. Relative to the
-old incremental baseline, the new default diagnostic image saves
-0.77 / 0.85 µs. Comparing both sources with incremental disabled isolates
-the release-profile effect from the source change. The default
-`just build-mk5-spi` image ran +120/+450 and delivered 147,860 native samples
-without loss. The CF2/USB release configuration built successfully. The
-pre-test image was restored and verified on the stopped controller.
-
-The final image had no late, ambiguous or masked updates across 240,090
-driven PWM writes at 15 kHz. Its minimum margins at +120/+450 were
-23.58/25.99 µs, compared with 22.89/27.56 µs in the qualifying baseline
-runs. The margin varies between repeats and is measured in a separate
-image. The full detection reproduced 15 → 20 → 15 kHz for R, L, flux and
-Hall with 650,305 records and no loss. The L cancellation test recorded
-17,394 samples without loss and verified restoration before the terminal
-reply in 32.81 ms. Saved configuration matched before and after.
-
-The bench scripts, ELF pair, register dumps and Parquet captures are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-foc-regression.Ydk196/`.
+The matrix received 1,169,105 native samples but lost 39,675 at the producer
+(320–7,090 per run), with zero reported host drops and 234/234 commands
+acknowledged. Minimal timing reports 41.4–43.0-µs moving means and
+53.2–58.4-µs maxima; the 50-µs deadline remains unqualified. The first eight
+runs use `motion-off.elf`; the remaining seven add the fault recorder in
+`motion-events.elf`. On reverse120 #3 it directly captures speed Derating
+at -185.04 rad/s and clearing at -175.55. Forward120 #2 remains the older
+unclassified transient, not a clean run. Full Hall traces, exact images,
+loss metadata and visually inspected matrix/coast/profile plots are retained
+in `motion-suite-results.json`, `motion-suite.png`, `motion-coast-*.png` and
+`motion-profile.png` under the same artifact directory. No NVM writes.

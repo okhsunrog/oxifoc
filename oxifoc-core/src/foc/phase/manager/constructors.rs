@@ -2,6 +2,7 @@
 
 use super::{
     HallControlMotion, HallHealth, HallMotionWitness, OpenLoopOverride, PhaseManager, PhaseTracker,
+    SourceUsage,
 };
 #[cfg(feature = "hfi")]
 use crate::foc::phase::observer::HfiObserver;
@@ -32,6 +33,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: PhaseSource::Manual,
+            source_usage: SourceUsage::new(PhaseSource::Manual),
             output: PhaseOutput::default(),
             rotor_velocity: None,
             #[cfg(feature = "bench-phase-observation")]
@@ -74,6 +76,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: PhaseSource::Hall,
+            source_usage: SourceUsage::new(PhaseSource::Hall),
             output: PhaseOutput::default(),
             rotor_velocity: None,
             #[cfg(feature = "bench-phase-observation")]
@@ -114,6 +117,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: self.source,
+            source_usage: self.source_usage,
             output: self.output,
             rotor_velocity: self.rotor_velocity,
             #[cfg(feature = "bench-phase-observation")]
@@ -157,6 +161,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: self.source,
+            source_usage: self.source_usage,
             output: self.output,
             rotor_velocity: self.rotor_velocity,
             #[cfg(feature = "bench-phase-observation")]
@@ -199,6 +204,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             #[cfg(not(feature = "hfi"))]
             _sincos: core::marker::PhantomData,
             source: PhaseSource::Encoder,
+            source_usage: SourceUsage::new(PhaseSource::Encoder),
             output: PhaseOutput::default(),
             rotor_velocity: None,
             #[cfg(feature = "bench-phase-observation")]

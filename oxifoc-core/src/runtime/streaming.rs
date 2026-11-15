@@ -314,7 +314,7 @@ pub fn build_fast_telemetry(
         ia: adc.ia,
         ib: adc.ib,
         ic: adc.ic,
-        vbus: FastTelemetry::pack_vbus(adc.vbus_mv as f32 / 1000.0),
+        vbus: FastTelemetry::pack_vbus(adc.vbus_mv as f32 * 0.001),
         angle: FastTelemetry::pack_angle(foc.angle_rad),
         hall_angle: crate::types::HallAngle::from_radians(hall.map(|h| h.angle_rad)),
         vd: FastTelemetry::pack_volt(foc.vd),

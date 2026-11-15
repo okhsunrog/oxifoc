@@ -24,6 +24,7 @@ struct OuterClock {
     previous: Option<u64>,
     updated: Option<u64>,
     deadline: u64,
+    postponed: bool,
 }
 
 impl OuterClock {
@@ -31,8 +32,19 @@ impl OuterClock {
         self.updated = None;
     }
 
+    #[cfg(test)]
     fn advance(&mut self, now_us: u64) -> (u32, VelocityTick) {
+        self.advance_with_defer(now_us, false)
+    }
+
+    fn advance_with_defer(&mut self, now_us: u64, defer: bool) -> (u32, VelocityTick) {
         let Some(previous) = self.previous.replace(now_us) else {
+            if defer {
+                self.updated = None;
+                self.deadline = now_us;
+                self.postponed = true;
+                return (0, VelocityTick::Hold);
+            }
             self.updated = Some(now_us);
             self.deadline = now_us.wrapping_add(PERIOD_US);
             return (0, VelocityTick::Update { dt: 0.0 });
@@ -42,6 +54,7 @@ impl OuterClock {
             return (0, VelocityTick::Hold);
         }
         if elapsed > MAX_GAP_US {
+            self.postponed = false;
             self.updated = None;
             self.deadline = now_us.wrapping_add(PERIOD_US);
             return (0, VelocityTick::Reanchor);
@@ -54,10 +67,18 @@ impl OuterClock {
             .updated
             .is_some_and(|last| now_us.wrapping_sub(last) > MAX_GAP_US)
         {
+            self.postponed = false;
             self.updated = None;
             self.deadline = now_us.wrapping_add(PERIOD_US);
             return (0, VelocityTick::Reanchor);
         }
+        // Allow at most one native-cycle postponement. Do not consume
+        // the deadline or last actual update; feedback still advances below.
+        if defer && !self.postponed {
+            self.postponed = true;
+            return (elapsed as u32, VelocityTick::Hold);
+        }
+        self.postponed = false;
         // Retain the periodic grid, skip missed deadlines and never replay a
         // backlog of PI steps against one physical speed observation. A late
         // update may be followed by a shorter interval to the next grid point;
@@ -120,6 +141,7 @@ pub(super) struct VelocitySchedule {
     feedback: ActuatorFeedback,
     epoch: Option<MotionReferenceEpoch>,
     requested_iq: f32,
+    defer_requested: bool,
 }
 
 impl VelocitySchedule {
@@ -142,7 +164,7 @@ impl VelocitySchedule {
     }
 
     pub fn begin_cycle(&mut self, now_us: u64) -> VelocityTick {
-        let (elapsed, tick) = self.clock.advance(now_us);
+        let (elapsed, tick) = self.clock.advance_with_defer(now_us, self.defer_requested);
         if matches!(tick, VelocityTick::Reanchor) {
             self.invalidate();
         } else {
@@ -153,6 +175,10 @@ impl VelocitySchedule {
 
     pub fn clear_request(&mut self) {
         self.requested_iq = 0.0;
+    }
+
+    pub fn defer_for_cycle(&mut self, requested: bool) {
+        self.defer_requested = requested;
     }
 
     pub fn set_request(&mut self, iq: f32) -> bool {

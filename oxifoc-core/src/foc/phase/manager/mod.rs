@@ -213,6 +213,35 @@ pub enum PhaseFault {
     ObserverNotReady,
 }
 
+/// Source-dependent decisions change only with an accepted source replacement.
+/// Dynamic trust (observer readiness, startup and fallback) is still live.
+#[derive(Clone, Copy)]
+struct SourceUsage {
+    hall: bool,
+    encoder: bool,
+    #[cfg(feature = "hfi")]
+    hfi: bool,
+    sensored_trust: bool,
+}
+
+impl SourceUsage {
+    fn new(source: PhaseSource) -> Self {
+        Self {
+            hall: source.requires_hall(),
+            encoder: source.requires_encoder(),
+            #[cfg(feature = "hfi")]
+            hfi: source.requires_hfi(),
+            sensored_trust: matches!(
+                source,
+                PhaseSource::Hall
+                    | PhaseSource::Encoder
+                    | PhaseSource::HallToObserver { .. }
+                    | PhaseSource::EncoderToObserver { .. }
+            ),
+        }
+    }
+}
+
 /// Phase manager for FOC control
 ///
 /// Manages multiple angle sources and provides a unified interface.
@@ -264,6 +293,7 @@ where
 
     // Configuration
     source: PhaseSource,
+    source_usage: SourceUsage,
 
     // State
     output: PhaseOutput,

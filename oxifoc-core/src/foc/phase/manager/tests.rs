@@ -2,7 +2,6 @@ use super::select::{blend_angles, compute_blend};
 use super::*;
 use crate::foc::angle_difference;
 use crate::foc::hall_sensor::Direction;
-#[cfg(feature = "virtual-motor")]
 use crate::foc::hall_sensor::HallSensor;
 use crate::foc::phase::provider::{PhaseInput, PhaseProvider};
 use crate::foc::phase::source::PhaseSourceError;
@@ -11,6 +10,27 @@ use crate::foc::wrap_angle;
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::VirtualMotorOutput;
 use core::f32::consts::TAU;
+
+#[test]
+fn source_usage_changes_only_on_acceptance_and_keeps_dynamic_trust_live() {
+    let hall = HallSensor::new(1_000_000);
+    let mut manager = PhaseManager::with_hall(hall);
+    assert!(manager.requires_hall_reference());
+    assert!(manager.angle_trustworthy());
+    manager.open_loop_override.active = true;
+    assert!(!manager.angle_trustworthy());
+    assert!(manager.set_source(PhaseSource::Encoder).is_err());
+    assert!(manager.requires_hall_reference());
+    assert!(!manager.angle_trustworthy());
+    manager.set_source(PhaseSource::Manual).unwrap();
+    assert!(!manager.requires_hall_reference());
+    assert!(manager.angle_trustworthy());
+    manager.set_source(PhaseSource::Hall).unwrap();
+    assert!(manager.requires_hall_reference());
+    assert!(manager.angle_trustworthy());
+    manager.open_loop_override.active = true;
+    assert!(!manager.angle_trustworthy());
+}
 
 #[cfg(feature = "storage")]
 #[test]
@@ -37,6 +57,7 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
         hall.update(1, 0);
         let mut manager = PhaseManager::with_hall(hall);
         manager.source = source; // Exercise cached output independently of readiness admission.
+        manager.source_usage = SourceUsage::new(source);
         let old = PhaseOutput {
             angle: 2.0,
             velocity: 3.0,
@@ -84,6 +105,7 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
             blend_low: 100.0,
             blend_high: 200.0,
         };
+        manager.source_usage = SourceUsage::new(manager.source);
         let old = PhaseOutput {
             angle: 2.5,
             velocity: speed,

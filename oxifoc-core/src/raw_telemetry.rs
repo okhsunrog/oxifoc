@@ -506,7 +506,7 @@ impl RawBlockEncoder {
 
     #[cfg(feature = "fast-telemetry")]
     pub(crate) fn empty_scratch(&mut self) -> &mut [u8] {
-        debug_assert!(self.len() == 0);
+        debug_assert!(self.is_empty());
         &mut self.bytes
     }
     pub fn end(

@@ -437,10 +437,14 @@ impl<'d> PhasePwm for MotorPwm<'d> {
         let duty_b = u32::from(duties[1]).min(self.duty_limit);
         let duty_c = u32::from(duties[2]).min(self.duty_limit);
 
-        self.write_pwm_preloads(|this| {
-            this.pwm.set_duty(Channel::Ch1, duty_a);
-            this.pwm.set_duty(Channel::Ch2, duty_b);
-            this.pwm.set_duty(Channel::Ch3, duty_c);
+        self.write_pwm_preloads(|_| {
+            // This driver owns TIM1; duty_limit is refreshed with ARR during
+            // stopped retiming and never exceeds it. Keep the same UDIS batch,
+            // but avoid three repeated HAL ARR reads and range assertions.
+            let tim = embassy_stm32::pac::TIM1;
+            tim.ccr(0).write(|w| w.set_ccr(duty_a as u16));
+            tim.ccr(1).write(|w| w.set_ccr(duty_b as u16));
+            tim.ccr(2).write(|w| w.set_ccr(duty_c as u16));
         });
     }
 
