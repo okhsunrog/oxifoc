@@ -1,0 +1,46 @@
+[
+  {
+    "origin": "dioxus://index.html",
+    "secure": true,
+    "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15",
+    "webgl": {
+      "pixel": [
+        64,
+        128,
+        191,
+        255
+      ],
+      "renderer": "Apple GPU",
+      "version": "WebGL 1.0"
+    },
+    "webgl2": {
+      "pixel": [
+        64,
+        128,
+        191,
+        255
+      ],
+      "renderer": "Apple GPU",
+      "version": "WebGL 2.0"
+    },
+    "webgpu": false
+  },
+  {
+    "error": 0,
+    "kind": "render-check",
+    "pixel": [
+      19,
+      175,
+      150,
+      255
+    ],
+    "timerQuery": false
+  },
+  {
+    "body": "14px",
+    "dpr": 1,
+    "kind": "layout",
+    "padding": "0px",
+    "width": 802
+  }
+]
