@@ -4891,6 +4891,7 @@ version = "0.1.0"
 dependencies = [
  "blec",
  "crossbeam-channel",
+ "jni 0.22.4",
  "lucide-slint",
  "oxifoc-core",
  "oxifoc-host-lib",
@@ -6165,6 +6166,7 @@ dependencies = [
  "i-slint-backend-android-activity",
  "i-slint-backend-linuxkms",
  "i-slint-backend-selector",
+ "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",

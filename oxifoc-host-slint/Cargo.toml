@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = ["desktop"]
-desktop = ["slint/backend-winit", "slint/renderer-skia", "oxifoc-host-lib/desktop"]
+desktop = ["slint/backend-winit", "slint/renderer-skia", "slint/unstable-winit-030", "oxifoc-host-lib/desktop"]
 android = ["slint/backend-android-activity-06"]
 
 [dependencies]
@@ -33,11 +33,20 @@ slint-kit-build = "=0.8.0"
 
 [package.metadata.android]
 package = "com.oxifoc.host"
+apk_name = "oxifoc-slint"
+resources = "../experiments/ble-mobile/android-res"
 build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.application]
+label = "OxiFOC Drive Studio (Slint)"
+icon = "@mipmap/ic_launcher"
 
 [package.metadata.android.sdk]
 min_sdk_version = 26
 target_sdk_version = 33
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
 
 [[package.metadata.android.uses_feature]]
 name = "android.hardware.bluetooth_le"
@@ -45,14 +54,14 @@ required = true
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.BLUETOOTH_SCAN"
-min_sdk_version = 31
+uses_permission_flags = "neverForLocation"
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.BLUETOOTH_CONNECT"
-min_sdk_version = 31
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.ACCESS_FINE_LOCATION"
+max_sdk_version = 30
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.BLUETOOTH"
@@ -67,3 +76,4 @@ workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 blec = { git = "https://github.com/okhsunrog/tauri-plugin-blec", rev = "6c5f1b5b5e55ff79312e9564efb9a560cdc788ba", version = "0.20.0", features = ["embedded-dex"] }
+jni = "0.22"

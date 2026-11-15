@@ -23,6 +23,15 @@ type SharedRuntime = Arc<std::sync::Mutex<Option<HostRuntime>>>;
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
+    // Slint stores an Application context in ndk-context. BLE permission
+    // prompts need the current NativeActivity instead.
+    // SAFETY: AndroidApp owns these JNI references for this activity's lifetime;
+    // attach_current_thread supplies an environment for the calling thread.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
+    vm.attach_current_thread(|env| unsafe {
+        blec::android::init_with(env.get_raw(), app.activity_as_ptr().cast())
+    })
+    .expect("initialize Android BLE bridge with NativeActivity");
     slint::android::init(app).unwrap();
     main();
 }
@@ -51,6 +60,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 const CAPACITY: usize = 32768;
 const MAX_LOG_LINES: usize = 2000;
+#[cfg(feature = "desktop")]
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
 fn cursor_readout(
@@ -135,13 +145,20 @@ pub fn main() {
     // Configure the WGPU backend (required for GPU chart rendering).
     // The current chart overlays five signals on the same ampere axis.
     let wgpu_settings = required_wgpu_settings(CAPACITY, 5);
-    slint::BackendSelector::new()
-        .require_wgpu_30(WGPUConfiguration::Automatic(wgpu_settings))
-        .select()
-        .expect("Failed to initialise WGPU backend");
+    let backend =
+        slint::BackendSelector::new().require_wgpu_30(WGPUConfiguration::Automatic(wgpu_settings));
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    let backend = backend.with_winit_window_attributes_hook(|attributes| {
+        use slint::winit_030::winit::platform::wayland::WindowAttributesExtWayland;
+        attributes.with_name("com.oxifoc.studio.slint", "oxifoc")
+    });
+    backend.select().expect("Failed to initialise WGPU backend");
 
     let app = App::new().unwrap();
     slint_kit::install(&app);
+    app.set_desktop_transports(!cfg!(target_os = "android"));
+    #[cfg(target_os = "android")]
+    app.set_transport_mode(5);
     {
         use slint::ComponentHandle;
         let mut theme = app.global::<KitThemes>().get_dark();
@@ -731,10 +748,22 @@ pub fn main() {
             }
             thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let (devices, error) =
-                    match rt.block_on(try_scan_ble_devices(Duration::from_secs(4))) {
+                let result = rt.block_on(async {
+                    #[cfg(target_os = "android")]
+                    {
+                        oxifoc_host_lib::initialize_ble().await?;
+                        if !blec::check_permissions(false).await? {
+                            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Bluetooth permission denied. Allow Nearby devices in Android settings and scan again.").into());
+                        }
+                    }
+                    try_scan_ble_devices(Duration::from_secs(4)).await
+                });
+                let (devices, error) = match result {
                         Ok(devices) => (devices, String::new()),
-                        Err(error) => (Vec::new(), format!("BLE scan: {error:#}")),
+                        Err(error) => {
+                            tracing::warn!("BLE scan failed: {error:#}");
+                            (Vec::new(), format!("BLE scan: {error:#}"))
+                        },
                     };
                 let items: Vec<StandardListViewItem> = devices
                     .iter()
@@ -857,6 +886,7 @@ pub fn main() {
                         ..Default::default()
                     }
                 }
+                #[cfg(feature = "desktop")]
                 4 => {
                     // USB
                     HostConfig {

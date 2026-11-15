@@ -45,6 +45,9 @@ export component App inherits Window {
     // ── Page state ──
     in-out property <string> page: "connect";
 
+    in property <bool> desktop-transports: true;
+    icon: @image-url("../../oxifoc-ui/assets/oxifoc-icon.png");
+
     // ── Connection properties ──
     // transport-mode: 0=Serial, 1=RTT, 2=TCP, 3=UDP, 4=USB
     in-out property <int> transport-mode: 0;
@@ -376,12 +379,12 @@ export component App inherits Window {
                 spacing: 8px;
                 alignment: center;
 
-                OxiButton {
+                if root.desktop-transports: OxiButton {
                     text: "Serial";
                     primary: root.transport-mode == 0;
                     clicked => { root.transport-mode = 0; }
                 }
-                OxiButton {
+                if root.desktop-transports: OxiButton {
                     text: "RTT";
                     primary: root.transport-mode == 1;
                     clicked => { root.transport-mode = 1; }
@@ -396,7 +399,7 @@ export component App inherits Window {
                     primary: root.transport-mode == 3;
                     clicked => { root.transport-mode = 3; }
                 }
-                OxiButton {
+                if root.desktop-transports: OxiButton {
                     text: "USB";
                     primary: root.transport-mode == 4;
                     clicked => { root.transport-mode = 4; }
@@ -411,6 +414,7 @@ export component App inherits Window {
             if root.error-text != "" : Text {
                 text: root.error-text;
                 color: #ef4444;
+                wrap: word-wrap;
                 horizontal-alignment: center;
             }
 

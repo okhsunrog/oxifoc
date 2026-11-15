@@ -3,11 +3,15 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 mkdir -p "$data/applications" "$data/icons/hicolor/scalable/apps" "$data/oxifoc"
-for variant in native webview; do
+for variant in native webview slint; do
   if [[ $variant == native ]]; then
     crate=oxifoc-host-dioxus
     bin=oxifoc-host-dioxus
     suffix=Native
+  elif [[ $variant == slint ]]; then
+    crate=.
+    bin=oxifoc-host-slint
+    suffix=Slint
   else
     crate=experiments/dioxus-desktop
     bin=drive-studio

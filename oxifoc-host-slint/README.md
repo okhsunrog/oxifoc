@@ -52,10 +52,42 @@ invalid resistance text was rejected by the existing write handler. Scientific
 notation `5e-1` was applied to the virtual controller as the existing 0.5-ohm
 resistance; the controller acknowledged revision 1. No motor command was sent.
 
-Android runtime behavior, IME/safe areas, responsive mobile layout and assistive
-technology have not been qualified for this integration. This trial does not
+IME/safe areas, responsive mobile layout and assistive technology have not been
+qualified for this integration. The monitor still has desktop minimum widths
+and clips on a portrait phone; it needs a mobile layout. This trial does not
 claim a performance or binary-size improvement. Slint Kit is GPL-3.0-or-later;
 Lucide Slint is MIT/Apache-2.0 with ISC icon data; see the dependencies' notices.
+
+## Android and BLE
+
+Linux and Android use the same blec transport in `oxifoc-host-lib`. Android
+passes its NativeActivity explicitly to the embedded Kotlin bridge so Scan can
+request Nearby devices. The Android connection page starts with BLE and offers
+only BLE, TCP and UDP. Serial, RTT and USB remain desktop-only.
+
+Install the packaging fix for `usesPermissionFlags`, then build from the root
+with Android SDK/NDK and Java available:
+
+```sh
+cargo install --git https://github.com/okhsunrog/cargo-rapk --rev 884cf3e2cdd406b862d0feebf8af0995b9b40774 --locked cargo-rapk
+nix develop -c oxifoc-host-slint/build-android.sh
+adb install --no-incremental -r target/debug/apk/oxifoc-slint.apk
+```
+
+The shared Android icon resources supply the launcher icon; Linux uses the
+shared window icon and `com.oxifoc.studio.slint` desktop entry. Run
+`packaging/linux/install-launchers.sh` after building the desktop binary.
+
+On 2026-11-15, Linux Slint and Dioxus Native were exercised as BLE centrals
+against `experiments/ble-android-peripheral`, backed by `oxifoc-virtual`.
+Slint received approximately 100 samples/s with zero channel drops. On a Pixel
+8 Pro, Slint's actual permission dialog, BLE scan, MTU 517, controller identity
+and approximately 100 samples/s were observed against the Linux virtual bridge.
+The Android handshake needed reconnect/retries before telemetry started; this
+is not yet a clean first-connect acceptance. Dioxus Android also completed the
+handshake after retries and negotiated 79 Hz in that run (not a throughput
+benchmark). No motor command was sent. The diagnostic advertising app was then
+stopped and removed; neither product frontend advertises.
 
 ![Connection page](docs/kit-connection.png)
 
