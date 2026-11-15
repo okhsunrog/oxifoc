@@ -556,6 +556,10 @@ detect-l-usb capture resistance rate="20000" logs="warn,device=info,fast_rx=debu
 gui:
     cargo run -p oxifoc-host-slint
 
+# Run the experimental Dioxus Native frontend (TCP localhost by default)
+gui-native:
+    cargo run --manifest-path oxifoc-host-dioxus/Cargo.toml --release --locked
+
 # Run the virtual device as a TCP Router on :2025 (extra args after `virtual`)
 virtual *ARGS:
     cargo run -p oxifoc-virtual -- --transport tcp --port 2025 {{ ARGS }}
