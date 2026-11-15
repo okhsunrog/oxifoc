@@ -102,4 +102,13 @@ Android currently show only the read-only connected overview.
 
 ![Native connection page](docs/connection-native.png)
 
+Android validation screenshot below predates the rotor-brand palette change.
+
 ![Android connection page](docs/connection-android.png)
+
+## Visual direction
+
+The user-supplied rotor icon and navy/turquoise palette now identify the shared
+connection UI and the Native plot workspace. See [design notes](docs/design.md)
+for color roles and the VESC-inspired [instrument study](docs/telemetry-concept.svg).
+The study is a proposal; the instruments are not wired into the application yet.

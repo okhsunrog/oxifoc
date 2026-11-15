@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<defs>
+  <clipPath id="tile"><rect width="512" height="512" rx="112"/></clipPath>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#25344A"/><stop offset=".48" stop-color="#141E2E"/><stop offset="1" stop-color="#0B1321"/></linearGradient>
+  <radialGradient id="glow"><stop stop-color="#246E91" stop-opacity=".28"/><stop offset="1" stop-color="#246E91" stop-opacity="0"/></radialGradient>
+  <linearGradient id="a" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#6FF5E6"/><stop offset="1" stop-color="#12B9B0"/></linearGradient>
+  <linearGradient id="b" x1="1" y1="0" x2="0" y2="1"><stop stop-color="#7DC3FF"/><stop offset="1" stop-color="#337DE3"/></linearGradient>
+  <linearGradient id="c" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#FFD49A"/><stop offset="1" stop-color="#F69D5A"/></linearGradient>
+  <linearGradient id="hub" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#EAF9FF"/><stop offset="1" stop-color="#9DC3DA"/></linearGradient>
+</defs>
+<rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)" />
+<circle cx="168" cy="142" r="280" fill="url(#glow)" clip-path="url(#tile)" />
+<rect x="2" y="2" width="508" height="508" rx="110" fill="none" stroke="#87BBE0" stroke-opacity=".12" stroke-width="3"/>
+<circle cx="256" cy="256" r="173" fill="none" stroke="#7491A4" stroke-opacity=".24" stroke-width="3"/>
+<path d="M 247.63,96.22 A 160 160 0 0 1 415.12,239.28 Q 417.78,264.48 394.90,283.00 Q 366.58,265.67 368.38,244.19 A 113 113 0 0 0 271.73,144.10 Q 244.10,120.02 247.63,96.22 Z" fill="url(#a)" />
+<path d="M 398.56,328.64 A 160 160 0 0 1 190.92,402.17 Q 167.77,391.86 163.17,362.79 Q 192.33,346.93 210.04,359.23 A 113 113 0 0 0 345.05,325.57 Q 379.71,313.69 398.56,328.64 Z" fill="url(#b)" />
+<path d="M 121.81,343.14 A 160 160 0 0 1 161.95,126.56 Q 182.45,111.66 209.93,122.21 Q 209.09,155.40 189.58,164.58 A 113 113 0 0 0 151.23,298.33 Q 144.19,334.29 121.81,343.14 Z" fill="url(#c)" />
+<circle cx="256" cy="256" r="93" fill="#111E30" stroke="#46647B" stroke-width="3" />
+<circle cx="256" cy="256" r="78" fill="#182B3F" stroke="#30485E" stroke-width="2" />
+<g fill="none" stroke="#96B0C3" stroke-opacity=".38" stroke-width="7" stroke-linecap="round">
+  <path d="M256 183 v13 M319 219 l-11 6 M319 293 l-11 -6 M256 329 v-13 M193 293 l11 -6 M193 219 l11 6" />
+</g>
+<circle cx="256" cy="256" r="51" fill="none" stroke="url(#hub)" stroke-width="16"/>
+<circle cx="256" cy="256" r="19" fill="#17283C" stroke="#64849B" stroke-opacity=".65" stroke-width="3"/>
+</svg>

@@ -49,16 +49,10 @@ impl Widget for Plot {
                 y_min: if self.index == 0 { -5. } else { 0. },
                 y_max: if self.index == 0 { 5. } else { 30. },
                 auto_range: true,
-                channel_colors: vec![
-                    [0.15, 0.36, 0.85, 1.],
-                    [0.02, 0.53, 0.48, 1.],
-                    [0.85, 0.36, 0.16, 1.],
-                    [0.52, 0.32, 0.72, 1.],
-                    [0.71, 0.31, 0.48, 1.],
-                ]
-                .into_iter()
-                .take(if self.index == 0 { 5 } else { 1 })
-                .collect(),
+                channel_colors: oxifoc_ui::PLOT_COLORS
+                    .into_iter()
+                    .take(if self.index == 0 { 5 } else { 1 })
+                    .collect(),
             },
         ));
     }

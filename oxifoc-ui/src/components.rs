@@ -154,7 +154,16 @@ pub fn ThemeButton(mut light: Signal<bool>) -> Element {
 
 #[component]
 pub fn Brand() -> Element {
-    rsx! { div { class: "brand", div { class: "brand-symbol", "O" } span { "OxiFOC" } } }
+    // Embedded SVG keeps both renderers independent of asset servers and paths.
+    let icon = use_hook(|| {
+        use std::fmt::Write;
+        let mut uri = String::from("data:image/svg+xml,");
+        for byte in include_bytes!("../assets/oxifoc-icon.svg") {
+            write!(&mut uri, "%{byte:02X}").unwrap();
+        }
+        uri
+    });
+    rsx! { div { class: "brand", img { class: "brand-symbol", src: icon, alt: "", width: "36", height: "36" } span { "OxiFOC" } } }
 }
 
 /// Inline disclosure has identical keyboard semantics in both renderers.

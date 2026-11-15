@@ -7,27 +7,33 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
-body { background: #16191d; }
+body { background: #0b1321; }
 button, input { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
+:root, .ox-app {
+  --canvas: #0b1321; --panel: #141e2e; --surface: #111e30; --hover: #25344a;
+  --border: #30485e; --text: #eaf9ff; --muted: #9dc3da; --accent: #6ff5e6;
+  --accent-ink: #0b1321; --good: #6ff5e6; --bad: #ff9b9b; --warn: #ffd49a;
+  --series-a: #6ff5e6; --series-b: #7dc3ff; --series-c: #ffd49a;
+  --series-d: #c2a5ef; --series-e: #f19bc0;
+}
 .ox-app {
-  --canvas: #16191d; --panel: #22272e; --surface: #1b2026; --hover: #2b333e;
-  --border: #39424e; --text: #e7ecf2; --muted: #a4b0c0; --accent: #8bb4ff;
-  --accent-ink: #13294b; --good: #81cfad; --bad: #ffa39b; --warn: #e9c079;
   background: var(--canvas); color: var(--text); height: 100vh; overflow-y: scroll;
   font-family: "Inter", "Roboto", "DejaVu Sans", sans-serif; font-size: 14px; line-height: 1.5;
 }
 .ox-app.light {
-  --canvas: #f3f5f8; --panel: #ffffff; --surface: #f6f8fb; --hover: #e8eef7;
-  --border: #c9d2df; --text: #202630; --muted: #566479; --accent: #245cc5;
-  --accent-ink: #ffffff; --good: #19734f; --bad: #b63831; --warn: #916000;
+  --canvas: #eef5f8; --panel: #ffffff; --surface: #e6f0f5; --hover: #d7e9ef;
+  --border: #b5cbd7; --text: #141e2e; --muted: #42647b; --accent: #087f79;
+  --accent-ink: #ffffff; --good: #087f79; --bad: #b5363e; --warn: #95520d;
+  --series-a: #087f79; --series-b: #2765b6; --series-c: #a95a13;
+  --series-d: #7651a9; --series-e: #a83c6a;
 }
 .ox-app h1, .ox-app h2, .ox-app h3, .ox-app h4, .ox-app p { margin: 0; }
 .ox-app p { color: var(--muted); }
 .app-header { display: flex; align-items: center; justify-content: space-between; padding: 26px 5%; border-bottom: 1px solid var(--border); }
 .brand { display: flex; align-items: center; gap: 11px; font-size: 20px; font-weight: 650; letter-spacing: -.7px; }
-.brand-symbol { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 2px solid var(--accent); border-radius: 10px 3px 10px 3px; color: var(--accent); font-size: 22px; font-weight: 450; }
+.brand-symbol { display: block; width: 36px; height: 36px; flex-shrink: 0; }
 .header-caption { font-size: 13px; color: var(--muted); }
 .theme-button { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; background: var(--surface); border: 1px solid var(--border); border-radius: 50%; }
 .icon { flex-shrink: 0; }
@@ -112,7 +118,7 @@ button:disabled { cursor: default; }
 .disclosure-body { padding: 14px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; animation: reveal 140ms ease-out; }
 .address-text { overflow-wrap: anywhere; }
 .app-footer { display: flex; justify-content: space-between; gap: 16px; padding: 20px 5% 28px; color: var(--muted); font-size: 11px; }
-.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #7489a3; border-top-color: #e7ecf2; border-radius: 50%; animation: spin 850ms linear infinite; }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 850ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes reveal { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 .catalogue { max-width: 1050px; margin: 0 auto; padding: 40px; }

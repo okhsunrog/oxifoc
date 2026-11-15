@@ -117,10 +117,11 @@ fn Studio(
     let stopmodel = model.clone();
     let configmodel = model.clone();
     rsx! {
+    style {"{oxifoc_ui::CSS}"}
     style {"{CSS}"}
     div {class:"shell",
      aside {class:"rail",
-      div {class:"brand", span {class:"brandmark","◉"} "OxiFOC"}
+      oxifoc_ui::Brand {}
       p {class:"rail-caption","Drive studio"}
       nav {for (i,label) in ["Oscilloscope","Parameters","Session journal"].iter().enumerate(){
        button {class:if page()==i {"nav selected"} else {"nav"},onclick:move |_|page.set(i),"{label}"}
