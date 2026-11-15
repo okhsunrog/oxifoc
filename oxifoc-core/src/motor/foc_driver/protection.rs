@@ -400,6 +400,15 @@ where
     Phase: PhaseProvider,
     S: SinCos,
 {
+    /// Poll command expiry every 16 native protection updates: about 938 Hz
+    /// at 15 kHz or 1250 Hz at 20 kHz. This adds at most one such interval
+    /// while the ISR runs. Link loss, command stamps and Stop stay native.
+    #[cfg(feature = "runtime")]
+    #[inline]
+    pub fn deadman_check_due(&self) -> bool {
+        self.protection.protection_tick & 15 == 0
+    }
+
     /// Apply derating configuration (boot / live config write).
     pub fn set_derating(&mut self, cfg: DeratingConfig) {
         if self.protection.config.modulation != cfg.modulation {

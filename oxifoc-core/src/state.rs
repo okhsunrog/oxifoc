@@ -1401,8 +1401,10 @@ where
     // `DETECTION_ACTIVE`); the command-staleness deadman is not, so a hung
     // detection still raises CommTimeout.
     let link_lost_unacked = link_lost && !in_safe_mode && !DETECTION_ACTIVE.load(Ordering::Relaxed);
-    let staleness = driver.command_staleness_us(now_ticks);
-    let deadman_expired = driver.deadman_expired_with(staleness, now_ticks);
+    let deadman_expired = driver.deadman_check_due() && {
+        let staleness = driver.command_staleness_us(now_ticks);
+        driver.deadman_expired_with(staleness, now_ticks)
+    };
     if (deadman_expired || link_lost_unacked)
         && let Some(f) = F::from_category(FaultCategory::CommTimeout)
     {
