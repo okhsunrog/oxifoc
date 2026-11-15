@@ -1,5 +1,4 @@
-use crate::{PlotBuffer, PlotConfig, PlotRenderer, required_wgpu_settings};
-use slint::wgpu_30::wgpu;
+use crate::{PlotBuffer, PlotConfig, PlotRenderer};
 
 fn pixels(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
     let row = (texture.width() * 4).div_ceil(256) * 256;
@@ -38,16 +37,12 @@ fn pixels(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -
 fn peak_tail_line_mode_reset_and_cache() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
-    let settings = required_wgpu_settings(32768, 1);
-    let (device, queue) = pollster::block_on(
-        adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: settings.device_required_features,
-            required_limits: settings
-                .device_required_limits
-                .using_resolution(adapter.limits()),
-            ..Default::default()
-        }),
-    )
+
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features: crate::required_features(),
+        required_limits: crate::required_limits(32768, 1).using_resolution(adapter.limits()),
+        ..Default::default()
+    }))
     .unwrap();
     let buffer = PlotBuffer::new(1, 32768);
     let mut data = vec![0.0; 32768];

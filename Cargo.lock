@@ -4950,12 +4950,22 @@ dependencies = [
  "crossbeam-channel",
  "oxifoc-core",
  "oxifoc-host-lib",
+ "oxifoc-plot",
  "slint",
  "slint-build",
- "slint-wgpu-plot",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "oxifoc-plot"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "png",
+ "pollster",
+ "wgpu",
 ]
 
 [[package]]
@@ -6144,17 +6154,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "spin_on",
-]
-
-[[package]]
-name = "slint-wgpu-plot"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "png",
- "pollster",
- "slint",
- "wgpu",
 ]
 
 [[package]]

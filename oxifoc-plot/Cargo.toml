@@ -1,13 +1,12 @@
 [package]
-name = "slint-wgpu-plot"
+name = "oxifoc-plot"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-slint = { workspace = true }
-bytemuck = { workspace = true }
-wgpu = { workspace = true }
+bytemuck = { version = "1.25.2", features = ["derive"] }
 png = "0.18.1"
+wgpu.workspace = true
 
 [lints]
 workspace = true

@@ -43,7 +43,9 @@ use slint::wgpu_30::WGPUConfiguration;
 use slint::{
     GraphicsAPI, Image, ModelRc, RenderingState, SharedString, StandardListViewItem, VecModel,
 };
-use slint_wgpu_plot::{PlotBuffer, PlotConfig, PlotRenderer, required_wgpu_settings};
+mod graphics;
+use graphics::required_wgpu_settings;
+use oxifoc_plot::{PlotBuffer, PlotConfig, PlotRenderer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 

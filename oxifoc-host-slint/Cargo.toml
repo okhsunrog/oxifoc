@@ -18,12 +18,12 @@ android = ["slint/backend-android-activity-06"]
 [dependencies]
 oxifoc-host-lib = { path = "../oxifoc-host-lib", default-features = false }
 oxifoc-core = { workspace = true, features = ["icd", "storage"] }
-slint-wgpu-plot = { path = "../slint-wgpu-plot" }
 slint = { workspace = true, features = ["accessibility"] }
 crossbeam-channel = { workspace = true }
 tokio = { workspace = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+oxifoc-plot = { version = "0.1.0", path = "../oxifoc-plot" }
 
 [build-dependencies]
 slint-build = { workspace = true }

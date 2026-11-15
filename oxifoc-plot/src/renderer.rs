@@ -1,5 +1,4 @@
 use crate::{MAX_CHANNELS, PlotBuffer};
-use slint::wgpu_30::wgpu;
 use std::path::Path;
 
 // Matches the `PlotParams` struct in shader.wgsl exactly.
