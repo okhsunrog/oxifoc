@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="650" viewBox="0 0 1120 650">
+<rect width="1120" height="650" rx="20" fill="#0b1321"/>
+<g font-family="Inter, DejaVu Sans, sans-serif">
+<text x="40" y="48" font-size="22" fill="#eaf9ff" text-anchor="start" font-weight="600">OxiFOC</text>
+<text x="1080" y="48" font-size="13" fill="#9dc3da" text-anchor="end" font-weight="400">Instrument study · illustrative values</text>
+<path d="M40 73L1080 73" stroke="#30485e" stroke-width="1"/>
+<text x="40" y="111" font-size="26" fill="#eaf9ff" text-anchor="start" font-weight="500">Drive overview</text>
+<text x="1080" y="108" font-size="13" fill="#9dc3da" text-anchor="end" font-weight="400">Mechanical speed · signed current · thermal margin</text>
+<rect x="40" y="140" width="400" height="440" rx="16" fill="#141e2e"/>
+<path d="M141.71 408.29 A139 139 0 1 1 338.29 408.29" fill="none" stroke="#30485e" stroke-width="9" stroke-linecap="round"/>
+<path d="M240.00 171.00 A139 139 0 0 1 372.86 269.13" fill="none" stroke="#6ff5e6" stroke-width="9" stroke-linecap="round"/>
+<path d="M153.7329726952412 396.2670273047588L160.80404050710666 389.1959594928933" stroke="#9dc3da" stroke-width="2"/>
+<path d="M138.56070729908947 377.7795684283915L142.7180553606022 375.0017172632935" stroke="#42647b" stroke-width="1"/>
+<path d="M127.286697033623 356.68737874854094L131.90609469617942 354.7739615867155" stroke="#42647b" stroke-width="1"/>
+<path d="M120.34419579080588 333.80101928596764L125.24812219282204 332.82556767588704" stroke="#42647b" stroke-width="1"/>
+<path d="M118.0 310.0L128.0 310.0" stroke="#9dc3da" stroke-width="2"/>
+<path d="M120.34419579080588 286.19898071403236L125.24812219282204 287.174432324113" stroke="#42647b" stroke-width="1"/>
+<path d="M127.28669703362301 263.31262125145906L131.90609469617945 265.22603841328447" stroke="#42647b" stroke-width="1"/>
+<path d="M138.56070729908947 242.22043157160851L142.7180553606022 244.99828273670653" stroke="#42647b" stroke-width="1"/>
+<path d="M153.73297269524122 223.7329726952412L160.8040405071067 230.80404050710666" stroke="#9dc3da" stroke-width="2"/>
+<path d="M172.22043157160851 208.5607072990895L174.99828273670653 212.71805536060222" stroke="#42647b" stroke-width="1"/>
+<path d="M193.31262125145906 197.286697033623L195.2260384132845 201.90609469617945" stroke="#42647b" stroke-width="1"/>
+<path d="M216.19898071403236 190.34419579080588L217.174432324113 195.24812219282205" stroke="#42647b" stroke-width="1"/>
+<path d="M240.0 188.0L240.0 198.0" stroke="#9dc3da" stroke-width="2"/>
+<path d="M263.80101928596764 190.34419579080588L262.825567675887 195.24812219282205" stroke="#42647b" stroke-width="1"/>
+<path d="M286.68737874854094 197.286697033623L284.77396158671553 201.90609469617945" stroke="#42647b" stroke-width="1"/>
+<path d="M307.7795684283915 208.56070729908947L305.0017172632935 212.7180553606022" stroke="#42647b" stroke-width="1"/>
+<path d="M326.2670273047588 223.73297269524122L319.19595949289334 230.8040405071067" stroke="#9dc3da" stroke-width="2"/>
+<path d="M341.4392927009105 242.22043157160851L337.2819446393978 244.99828273670653" stroke="#42647b" stroke-width="1"/>
+<path d="M352.713302966377 263.31262125145906L348.0939053038205 265.2260384132845" stroke="#42647b" stroke-width="1"/>
+<path d="M359.6558042091941 286.19898071403236L354.75187780717795 287.174432324113" stroke="#42647b" stroke-width="1"/>
+<path d="M362.0 310.0L352.0 310.0" stroke="#9dc3da" stroke-width="2"/>
+<path d="M359.6558042091941 333.80101928596764L354.75187780717795 332.825567675887" stroke="#42647b" stroke-width="1"/>
+<path d="M352.713302966377 356.68737874854094L348.0939053038205 354.7739615867155" stroke="#42647b" stroke-width="1"/>
+<path d="M341.4392927009105 377.7795684283915L337.2819446393978 375.0017172632935" stroke="#42647b" stroke-width="1"/>
+<path d="M326.2670273047588 396.2670273047588L319.19595949289334 389.1959594928933" stroke="#9dc3da" stroke-width="2"/>
+<text x="124.03448788540618" y="430.96551211459376" font-size="13" fill="#9dc3da" text-anchor="middle" font-weight="400">−6k</text>
+<text x="88.48375666814897" y="252.23991709212527" font-size="13" fill="#9dc3da" text-anchor="middle" font-weight="400">−3k</text>
+<text x="240.0" y="151.0" font-size="13" fill="#9dc3da" text-anchor="middle" font-weight="400">0</text>
+<text x="391.516243331851" y="252.23991709212527" font-size="13" fill="#9dc3da" text-anchor="middle" font-weight="400">3k</text>
+<text x="355.9655121145938" y="430.96551211459376" font-size="13" fill="#9dc3da" text-anchor="middle" font-weight="400">6k</text>
+<circle cx="372.8552290569679" cy="269.12839479270974" r="6" fill="#eaf9ff"/>
+<text x="240" y="275" font-size="14" fill="#9dc3da" text-anchor="middle" font-weight="400">Shaft speed</text>
+<text x="240" y="330" font-size="52" fill="#eaf9ff" text-anchor="middle" font-weight="500">3 240</text>
+<text x="240" y="358" font-size="17" fill="#9dc3da" text-anchor="middle" font-weight="400">rpm</text>
+<text x="240" y="415" font-size="14" fill="#6ff5e6" text-anchor="middle" font-weight="400">Forward</text>
+<path d="M68 473L412 473" stroke="#30485e" stroke-width="1"/>
+<text x="68" y="505" font-size="14" fill="#9dc3da" text-anchor="start" font-weight="400">Control state</text>
+<text x="412" y="505" font-size="16" fill="#eaf9ff" text-anchor="end" font-weight="400">Running</text>
+<text x="68" y="547" font-size="14" fill="#9dc3da" text-anchor="start" font-weight="400">Duty</text>
+<text x="412" y="547" font-size="19" fill="#eaf9ff" text-anchor="end" font-weight="400">54.0 %</text>
+<text x="476" y="176" font-size="15" fill="#eaf9ff" text-anchor="start" font-weight="400">Torque current · Iq</text>
+<text x="1078" y="176" font-size="24" fill="#6ff5e6" text-anchor="end" font-weight="500">+18.6 A</text>
+<rect x="476" y="198" width="602" height="6" rx="3" fill="#25344a"/>
+<rect x="777" y="198" width="139.965" height="6" rx="3" fill="#6ff5e6"/>
+<path d="M777 192L777 210" stroke="#9dc3da" stroke-width="2"/>
+<text x="476" y="227" font-size="11" fill="#9dc3da" text-anchor="start" font-weight="400">−40 A</text>
+<text x="777" y="227" font-size="11" fill="#9dc3da" text-anchor="middle" font-weight="400">0</text>
+<text x="1078" y="227" font-size="11" fill="#9dc3da" text-anchor="end" font-weight="400">+40 A</text>
+<text x="476" y="286" font-size="15" fill="#eaf9ff" text-anchor="start" font-weight="400">DC bus power</text>
+<text x="1078" y="286" font-size="24" fill="#7dc3ff" text-anchor="end" font-weight="500">+890 W</text>
+<rect x="476" y="308" width="602" height="6" rx="3" fill="#25344a"/>
+<rect x="777" y="308" width="133.945" height="6" rx="3" fill="#7dc3ff"/>
+<path d="M777 302L777 320" stroke="#9dc3da" stroke-width="2"/>
+<text x="476" y="337" font-size="11" fill="#9dc3da" text-anchor="start" font-weight="400">−2 kW</text>
+<text x="777" y="337" font-size="11" fill="#9dc3da" text-anchor="middle" font-weight="400">0</text>
+<text x="1078" y="337" font-size="11" fill="#9dc3da" text-anchor="end" font-weight="400">+2 kW</text>
+<text x="476" y="363" font-size="17" fill="#eaf9ff" text-anchor="start" font-weight="500">Thermal headroom</text>
+<text x="1078" y="363" font-size="11" fill="#9dc3da" text-anchor="end" font-weight="400">Limits from controller configuration</text>
+<text x="476" y="402" font-size="14" fill="#9dc3da" text-anchor="start" font-weight="400">MOSFET</text>
+<text x="758" y="402" font-size="24" fill="#eaf9ff" text-anchor="end" font-weight="400">48 °C</text>
+<rect x="476" y="424" width="282" height="8" rx="4" fill="#25344a"/>
+<rect x="476" y="424" width="96.68571428571428" height="8" rx="4" fill="#ffd49a"/>
+<path d="M637.1428571428571 419L637.1428571428571 437" stroke="#ffd49a" stroke-width="2"/>
+<path d="M677.4285714285714 419L677.4285714285714 437" stroke="#ff9b9b" stroke-width="2"/>
+<text x="476" y="459" font-size="12" fill="#9dc3da" text-anchor="start" font-weight="400">32 °C to derating</text>
+<text x="476" y="483" font-size="11" fill="#9dc3da" text-anchor="start" font-weight="400">Derate 80° · Trip 100°</text>
+<text x="796" y="402" font-size="14" fill="#9dc3da" text-anchor="start" font-weight="400">Motor</text>
+<text x="1078" y="402" font-size="24" fill="#eaf9ff" text-anchor="end" font-weight="400">62 °C</text>
+<rect x="796" y="424" width="282" height="8" rx="4" fill="#25344a"/>
+<rect x="796" y="424" width="124.88571428571429" height="8" rx="4" fill="#ffd49a"/>
+<path d="M997.4285714285714 419L997.4285714285714 437" stroke="#ffd49a" stroke-width="2"/>
+<path d="M1037.7142857142858 419L1037.7142857142858 437" stroke="#ff9b9b" stroke-width="2"/>
+<text x="796" y="459" font-size="12" fill="#9dc3da" text-anchor="start" font-weight="400">38 °C to derating</text>
+<text x="796" y="483" font-size="11" fill="#9dc3da" text-anchor="start" font-weight="400">Derate 100° · Trip 120°</text>
+<path d="M476 510L1078 510" stroke="#30485e" stroke-width="1"/>
+<text x="476" y="540" font-size="14" fill="#9dc3da" text-anchor="start" font-weight="400">DC bus</text>
+<text x="476" y="570" font-size="22" fill="#eaf9ff" text-anchor="start" font-weight="400">48.2 V</text>
+<text x="698" y="540" font-size="14" fill="#9dc3da" text-anchor="start" font-weight="400">Faults</text>
+<text x="698" y="570" font-size="22" fill="#eaf9ff" text-anchor="start" font-weight="400">None</text>
+<text x="915" y="540" font-size="14" fill="#9dc3da" text-anchor="start" font-weight="400">Telemetry</text>
+<text x="915" y="570" font-size="22" fill="#6ff5e6" text-anchor="start" font-weight="400">Live</text>
+<text x="40" y="623" font-size="12" fill="#9dc3da" text-anchor="start" font-weight="400">Design proposal only. Values and limits are examples; this is not a connected device.</text>
+</g>
+</svg>

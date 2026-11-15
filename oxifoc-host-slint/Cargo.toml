@@ -12,29 +12,41 @@ path = "src/main.rs"
 
 [features]
 default = ["desktop"]
-desktop = ["slint/backend-winit", "slint/renderer-skia", "oxifoc-host-lib/desktop"]
+desktop = ["slint/backend-winit", "slint/renderer-skia", "slint/unstable-winit-030", "oxifoc-host-lib/desktop"]
 android = ["slint/backend-android-activity-06"]
 
 [dependencies]
 oxifoc-host-lib = { path = "../oxifoc-host-lib", default-features = false }
 oxifoc-core = { workspace = true, features = ["icd", "storage"] }
-slint-wgpu-plot = { path = "../slint-wgpu-plot" }
 slint = { workspace = true, features = ["accessibility"] }
 crossbeam-channel = { workspace = true }
 tokio = { workspace = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+oxifoc-plot = { version = "0.1.0", path = "../oxifoc-plot" }
+slint-kit = "=0.8.0"
 
 [build-dependencies]
+lucide-slint = "1.73.0"
 slint-build = { workspace = true }
+slint-kit-build = "=0.8.0"
 
 [package.metadata.android]
 package = "com.oxifoc.host"
+apk_name = "oxifoc-slint"
+resources = "../experiments/ble-mobile/android-res"
 build_targets = ["aarch64-linux-android"]
 
+[package.metadata.android.application]
+label = "OxiFOC Drive Studio (Slint)"
+icon = "@mipmap/ic_launcher"
+
 [package.metadata.android.sdk]
-min_sdk_version = 23
+min_sdk_version = 26
 target_sdk_version = 33
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
 
 [[package.metadata.android.uses_feature]]
 name = "android.hardware.bluetooth_le"
@@ -42,14 +54,14 @@ required = true
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.BLUETOOTH_SCAN"
-min_sdk_version = 31
+uses_permission_flags = "neverForLocation"
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.BLUETOOTH_CONNECT"
-min_sdk_version = 31
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.ACCESS_FINE_LOCATION"
+max_sdk_version = 30
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.BLUETOOTH"
@@ -61,3 +73,7 @@ max_sdk_version = 30
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+blec = { git = "https://github.com/okhsunrog/tauri-plugin-blec", rev = "6c5f1b5b5e55ff79312e9564efb9a560cdc788ba", version = "0.20.0", features = ["embedded-dex"] }
+jni = "0.22"

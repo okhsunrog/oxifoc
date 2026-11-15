@@ -1,6 +1,8 @@
 import { VerticalBox, HorizontalBox, Button, ComboBox, Slider, CheckBox, SpinBox, TabWidget,
          StandardListView, LineEdit, GroupBox, ScrollView, GridBox, ListView, Palette } from "std-widgets.slint";
-import { PlotWidget } from "@slint-wgpu-plot/plot.slint";
+import { PlotWidget } from "plot.slint";
+import { OxiButton, OxiField, OxiNumberField, OxiIcon } from "oxifoc-kit.slint";
+import { IconSet } from "@lucide";
 
 export struct LogMessage {
     text: string,
@@ -28,18 +30,23 @@ component TelemetryValue inherits Rectangle {
 }
 
 export component App inherits Window {
-    title: "Oxifoc Host";
+    title: "OxiFOC · Slint Kit trial";
+    default-font-family: "DejaVu Sans";
     preferred-width: 1120px;
     preferred-height: 820px;
     property <bool> is-dark: Palette.background.to-hsv().value < 0.5;
-    property <color> panel-color: is-dark ? #202b38 : #ffffff;
-    property <color> canvas-color: is-dark ? #151d27 : #edf2f7;
-    property <color> panel-border: is-dark ? #384757 : #d8e2ec;
+    property <color> panel-color: is-dark ? #141e2e : #ffffff;
+    property <color> canvas-color: is-dark ? #0b1321 : #edf2f7;
+    property <color> panel-border: is-dark ? #30485e : #d8e2ec;
     property <color> muted-text: Palette.foreground.transparentize(0.42);
     background: canvas-color;
+    init => { Palette.color-scheme = ColorScheme.dark; }
 
     // ── Page state ──
     in-out property <string> page: "connect";
+
+    in property <bool> desktop-transports: true;
+    icon: @image-url("../../oxifoc-ui/assets/oxifoc-icon.png");
 
     // ── Connection properties ──
     // transport-mode: 0=Serial, 1=RTT, 2=TCP, 3=UDP, 4=USB
@@ -352,10 +359,14 @@ export component App inherits Window {
             spacing: 12px;
             alignment: start;
 
+            HorizontalLayout { spacing: 12px;
+            Image {source: @image-url("../../oxifoc-ui/assets/oxifoc-icon.svg"); width: 36px; height: 36px;}
             Text {
-                text: "Connect to Oxifoc";
+                text: "Connect a controller";
                 font-size: 22px;
                 font-weight: 700;
+            }
+            OxiIcon { icon: root.transport-mode == 5 ? IconSet.Bluetooth : root.transport-mode == 2 || root.transport-mode == 3 ? IconSet.Network : IconSet.Cable; }
             }
             Text {
                 text: "Choose a transport and select the controller.";
@@ -368,32 +379,32 @@ export component App inherits Window {
                 spacing: 8px;
                 alignment: center;
 
-                Button {
+                if root.desktop-transports: OxiButton {
                     text: "Serial";
                     primary: root.transport-mode == 0;
                     clicked => { root.transport-mode = 0; }
                 }
-                Button {
+                if root.desktop-transports: OxiButton {
                     text: "RTT";
                     primary: root.transport-mode == 1;
                     clicked => { root.transport-mode = 1; }
                 }
-                Button {
+                OxiButton {
                     text: "TCP";
                     primary: root.transport-mode == 2;
                     clicked => { root.transport-mode = 2; }
                 }
-                Button {
+                OxiButton {
                     text: "UDP";
                     primary: root.transport-mode == 3;
                     clicked => { root.transport-mode = 3; }
                 }
-                Button {
+                if root.desktop-transports: OxiButton {
                     text: "USB";
                     primary: root.transport-mode == 4;
                     clicked => { root.transport-mode = 4; }
                 }
-                Button {
+                OxiButton {
                     text: "BLE";
                     primary: root.transport-mode == 5;
                     clicked => { root.transport-mode = 5; }
@@ -403,6 +414,7 @@ export component App inherits Window {
             if root.error-text != "" : Text {
                 text: root.error-text;
                 color: #ef4444;
+                wrap: word-wrap;
                 horizontal-alignment: center;
             }
 
@@ -425,7 +437,7 @@ export component App inherits Window {
                         checked <=> root.usb-only;
                         toggled => { root.refresh-serial-ports(); }
                     }
-                    Button {
+                    OxiButton {
                         text: "Refresh";
                         clicked => { root.refresh-serial-ports(); }
                     }
@@ -478,7 +490,7 @@ export component App inherits Window {
                         font-weight: 600;
                         vertical-alignment: center;
                     }
-                    Button {
+                    OxiButton {
                         text: "Refresh";
                         clicked => { root.refresh-probes(); }
                     }
@@ -508,8 +520,8 @@ export component App inherits Window {
                     alignment: start;
 
                     Text { text: "Target Chip:"; vertical-alignment: center; }
-                    LineEdit {
-                        text <=> root.chip-name;
+                    OxiField {
+                        accessible-name: "Target chip"; text <=> root.chip-name;
                         width: 220px;
                     }
                 }
@@ -530,13 +542,13 @@ export component App inherits Window {
                     alignment: start;
 
                     Text { text: "Host:"; vertical-alignment: center; }
-                    LineEdit {
-                        text <=> root.tcp-host;
+                    OxiField {
+                        accessible-name: "Controller host"; text <=> root.tcp-host;
                         width: 200px;
                     }
                     Text { text: "Port:"; vertical-alignment: center; }
-                    LineEdit {
-                        text <=> root.tcp-port;
+                    OxiField {
+                        accessible-name: "TCP port"; text <=> root.tcp-port;
                         width: 80px;
                     }
                 }
@@ -557,13 +569,13 @@ export component App inherits Window {
                     alignment: start;
 
                     Text { text: "Host:"; vertical-alignment: center; }
-                    LineEdit {
-                        text <=> root.udp-host;
+                    OxiField {
+                        accessible-name: "Controller host"; text <=> root.udp-host;
                         width: 200px;
                     }
                     Text { text: "Port:"; vertical-alignment: center; }
-                    LineEdit {
-                        text <=> root.udp-port;
+                    OxiField {
+                        accessible-name: "UDP port"; text <=> root.udp-port;
                         width: 80px;
                     }
                 }
@@ -614,7 +626,7 @@ export component App inherits Window {
                         font-weight: 600;
                         vertical-alignment: center;
                     }
-                    Button {
+                    OxiButton {
                         text: root.ble-scanning ? "Scanning..." : "Scan";
                         enabled: !root.ble-scanning;
                         clicked => { root.scan-ble(); }
@@ -645,7 +657,7 @@ export component App inherits Window {
             HorizontalLayout {
                 alignment: center;
 
-                Button {
+                OxiButton {
                     text: "Connect";
                     primary: true;
                     enabled: root.transport-mode == 0 ? root.selected-serial >= 0
@@ -1005,8 +1017,8 @@ export component App inherits Window {
                         current-index <=> root.config-group;
                         min-width: 160px;
                     }
-                    Button { text: "Read"; clicked => { root.config-read(); } }
-                    Button {
+                    OxiButton { text: "Read"; clicked => { root.config-read(); } }
+                    OxiButton {
                         text: root.config-group == 2 ? "Read-only" : "Write";
                         primary: root.config-group != 2;
                         enabled: root.config-group != 2;
@@ -1014,7 +1026,7 @@ export component App inherits Window {
                     }
                     Rectangle { width: 16px; }
                     CheckBox { text: "confirm"; checked <=> root.config-reset-confirm; }
-                    Button {
+                    OxiButton {
                         text: "Reset all";
                         enabled: root.config-reset-confirm;
                         clicked => { root.config-reset(); }
@@ -1031,37 +1043,37 @@ export component App inherits Window {
                 if root.config-group == 0 : GridLayout {
                     spacing: 6px;
                     Row {
-                        Text { text: "Resistance (Ω):"; } LineEdit { text <=> root.cfg-resistance; min-width: 120px; }
-                        Text { text: "Inductance D (H):"; } LineEdit { text <=> root.cfg-inductance-d; min-width: 120px; }
+                        Text { text: "Resistance (Ω):"; } OxiNumberField { accessible-name: "Resistance (Ω):"; text <=> root.cfg-resistance; min-width: 120px; }
+                        Text { text: "Inductance D (H):"; } OxiNumberField { accessible-name: "Inductance D (H):"; text <=> root.cfg-inductance-d; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Inductance Q (H):"; } LineEdit { text <=> root.cfg-inductance-q; min-width: 120px; }
-                        Text { text: "Flux linkage (Wb):"; } LineEdit { text <=> root.cfg-flux-linkage; min-width: 120px; }
+                        Text { text: "Inductance Q (H):"; } OxiNumberField { accessible-name: "Inductance Q (H):"; text <=> root.cfg-inductance-q; min-width: 120px; }
+                        Text { text: "Flux linkage (Wb):"; } OxiNumberField { accessible-name: "Flux linkage (Wb):"; text <=> root.cfg-flux-linkage; min-width: 120px; }
                     }
-                    Row { Text { text: "Pole pairs:"; } LineEdit { text <=> root.cfg-pole-pairs; min-width: 120px; } }
-                    Row { Text { text: "Rating limit (A, 0 = auto):"; } LineEdit { text <=> root.cfg-motor-rating; min-width: 120px; } }
-                    Row { Text { text: "Power class (W):"; } LineEdit { text <=> root.cfg-motor-power-loss; min-width: 120px; } }
+                    Row { Text { text: "Pole pairs:"; } OxiNumberField { accessible-name: "Pole pairs:"; text <=> root.cfg-pole-pairs; min-width: 120px; } }
+                    Row { Text { text: "Rating limit (A, 0 = auto):"; } OxiNumberField { accessible-name: "Rating limit (A, 0 = auto):"; text <=> root.cfg-motor-rating; min-width: 120px; } }
+                    Row { Text { text: "Power class (W):"; } OxiNumberField { accessible-name: "Power class (W):"; text <=> root.cfg-motor-power-loss; min-width: 120px; } }
                 }
                 if root.config-group == 1 : GridLayout {
                     spacing: 6px;
                     Row {
-                        Text { text: "Max Iq (A):"; } LineEdit { text <=> root.cfg-max-iq; min-width: 120px; }
-                        Text { text: "Max brake (A, 0 = Max Iq):"; } LineEdit { text <=> root.cfg-max-brake; min-width: 120px; }
+                        Text { text: "Max Iq (A):"; } OxiNumberField { accessible-name: "Max Iq (A):"; text <=> root.cfg-max-iq; min-width: 120px; }
+                        Text { text: "Max brake (A, 0 = Max Iq):"; } OxiNumberField { accessible-name: "Max brake (A, 0 = Max Iq):"; text <=> root.cfg-max-brake; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Max phase current (A):"; } LineEdit { text <=> root.cfg-max-phase-current; min-width: 120px; }
-                        Text { text: "Bus in max (A, <0 = off):"; } LineEdit { text <=> root.cfg-bus-in-max; min-width: 120px; }
+                        Text { text: "Max phase current (A):"; } OxiNumberField { accessible-name: "Max phase current (A):"; text <=> root.cfg-max-phase-current; min-width: 120px; }
+                        Text { text: "Bus in max (A, <0 = off):"; } OxiNumberField { accessible-name: "Bus in max (A, <0 = off):"; text <=> root.cfg-bus-in-max; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Bus regen max (A, 0 = none):"; } LineEdit { text <=> root.cfg-bus-regen-max; min-width: 120px; }
-                        Text { text: "Dissipation max (W, 0 = off):"; } LineEdit { text <=> root.cfg-max-dissipation; min-width: 120px; }
+                        Text { text: "Bus regen max (A, 0 = none):"; } OxiNumberField { accessible-name: "Bus regen max (A, 0 = none):"; text <=> root.cfg-bus-regen-max; min-width: 120px; }
+                        Text { text: "Dissipation max (W, 0 = off):"; } OxiNumberField { accessible-name: "Dissipation max (W, 0 = off):"; text <=> root.cfg-max-dissipation; min-width: 120px; }
                     }
                 }
                 if root.config-group == 2 : GridLayout {
                     spacing: 6px;
                     Row {
-                        Text { text: "Min VBUS (mV):"; } LineEdit { text <=> root.cfg-min-vbus; min-width: 120px; }
-                        Text { text: "Max VBUS (mV):"; } LineEdit { text <=> root.cfg-max-vbus; min-width: 120px; }
+                        Text { text: "Min VBUS (mV):"; } OxiNumberField { accessible-name: "Min VBUS (mV):"; text <=> root.cfg-min-vbus; min-width: 120px; }
+                        Text { text: "Max VBUS (mV):"; } OxiNumberField { accessible-name: "Max VBUS (mV):"; text <=> root.cfg-max-vbus; min-width: 120px; }
                     }
                 }
                 if root.config-group == 2 : Text {
@@ -1072,35 +1084,35 @@ export component App inherits Window {
                 if root.config-group == 3 : GridLayout {
                     spacing: 6px;
                     Row {
-                        Text { text: "Kp:"; } LineEdit { text <=> root.cfg-kp; min-width: 120px; }
-                        Text { text: "Ki:"; } LineEdit { text <=> root.cfg-ki; min-width: 120px; }
+                        Text { text: "Kp:"; } OxiNumberField { accessible-name: "Kp:"; text <=> root.cfg-kp; min-width: 120px; }
+                        Text { text: "Ki:"; } OxiNumberField { accessible-name: "Ki:"; text <=> root.cfg-ki; min-width: 120px; }
                     }
-                    Row { Text { text: "Bandwidth (rad/s):"; } LineEdit { text <=> root.cfg-bandwidth; min-width: 120px; } }
+                    Row { Text { text: "Bandwidth (rad/s):"; } OxiNumberField { accessible-name: "Bandwidth (rad/s):"; text <=> root.cfg-bandwidth; min-width: 120px; } }
                 }
                 if root.config-group == 4 : GridLayout {
                     spacing: 6px;
                     Row {
-                        Text { text: "Kp (A per rad/s):"; } LineEdit { text <=> root.cfg-vel-kp; min-width: 120px; }
-                        Text { text: "Ki (A per rad):"; } LineEdit { text <=> root.cfg-vel-ki; min-width: 120px; }
+                        Text { text: "Kp (A per rad/s):"; } OxiNumberField { accessible-name: "Kp (A per rad/s):"; text <=> root.cfg-vel-kp; min-width: 120px; }
+                        Text { text: "Ki (A per rad):"; } OxiNumberField { accessible-name: "Ki (A per rad):"; text <=> root.cfg-vel-ki; min-width: 120px; }
                     }
-                    Row { Text { text: "Accel limit (erad/s²):"; } LineEdit { text <=> root.cfg-vel-accel; min-width: 120px; } }
+                    Row { Text { text: "Accel limit (erad/s²):"; } OxiNumberField { accessible-name: "Accel limit (erad/s²):"; text <=> root.cfg-vel-accel; min-width: 120px; } }
                 }
                 if root.config-group == 5 : GridLayout {
                     spacing: 6px;
                     Row {
-                        Text { text: "Staleness (ms):"; } LineEdit { text <=> root.cfg-fs-staleness; min-width: 120px; }
-                        Text { text: "Policy (0=coast 1=ramp 2=stop):"; } LineEdit { text <=> root.cfg-fs-policy; min-width: 120px; }
+                        Text { text: "Staleness (ms):"; } OxiNumberField { accessible-name: "Staleness (ms):"; text <=> root.cfg-fs-staleness; min-width: 120px; }
+                        Text { text: "Policy (0=coast 1=ramp 2=stop):"; } OxiNumberField { accessible-name: "Policy (0=coast 1=ramp 2=stop):"; text <=> root.cfg-fs-policy; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Brake current (A, 0 = max brake):"; } LineEdit { text <=> root.cfg-fs-brake-current; min-width: 120px; }
-                        Text { text: "Slew (A/s):"; } LineEdit { text <=> root.cfg-fs-slew; min-width: 120px; }
+                        Text { text: "Brake current (A, 0 = max brake):"; } OxiNumberField { accessible-name: "Brake current (A, 0 = max brake):"; text <=> root.cfg-fs-brake-current; min-width: 120px; }
+                        Text { text: "Slew (A/s):"; } OxiNumberField { accessible-name: "Slew (A/s):"; text <=> root.cfg-fs-slew; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Standstill (erad/s):"; } LineEdit { text <=> root.cfg-fs-standstill; min-width: 120px; }
-                        Text { text: "Max decel (erad/s²):"; } LineEdit { text <=> root.cfg-fs-decel; min-width: 120px; }
+                        Text { text: "Standstill (erad/s):"; } OxiNumberField { accessible-name: "Standstill (erad/s):"; text <=> root.cfg-fs-standstill; min-width: 120px; }
+                        Text { text: "Max decel (erad/s²):"; } OxiNumberField { accessible-name: "Max decel (erad/s²):"; text <=> root.cfg-fs-decel; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Terminal (0=high-Z 1=brake):"; } LineEdit { text <=> root.cfg-fs-terminal; min-width: 120px; }
+                        Text { text: "Terminal (0=high-Z 1=brake):"; } OxiNumberField { accessible-name: "Terminal (0=high-Z 1=brake):"; text <=> root.cfg-fs-terminal; min-width: 120px; }
                     }
                 }
 

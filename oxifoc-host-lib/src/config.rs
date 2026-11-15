@@ -46,9 +46,8 @@ pub struct HostConfig {
     pub udp_port: Option<u16>,    // e.g. 2025
 
     // BLE transport options
-    /// Bluest device handle (set programmatically from scan results, not from config file)
-    #[serde(skip)]
-    pub ble_device: Option<bluest::Device>,
+    /// BLE address from discovery (MAC on Linux/Android, UUID on macOS).
+    pub ble_address: Option<String>,
 
     // Common options
     pub elf: Option<String>,        // path to device ELF with .defmt
@@ -198,8 +197,8 @@ impl HostConfig {
             }),
             TransportType::Usb => Ok(TransportConfig::Usb),
             TransportType::Ble => {
-                let device = self.ble_device.clone().ok_or_else(|| {
-                    anyhow::anyhow!("BLE transport requires a device from scan results")
+                let device = self.ble_address.clone().ok_or_else(|| {
+                    anyhow::anyhow!("BLE transport requires ble_address (from scan results)")
                 })?;
                 Ok(TransportConfig::Ble { device })
             }

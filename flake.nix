@@ -19,10 +19,12 @@
           libraries = with pkgs; [
             dbus
             fontconfig
+            freetype # Slint Skia loads libfreetype.so at runtime.
             libxkbcommon
             openssl
             udev
             wayland
+            zlib # Dioxus CLI's Android packaging tools.
           ];
         in
         {

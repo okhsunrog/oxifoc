@@ -1,0 +1,37 @@
+[package]
+name = "oxifoc-host-dioxus"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+anyrender = { git = "https://github.com/DioxusLabs/anyrender", rev = "97d06af9fe8fe1c2cc5916c6d09fba10774d86a6", version = "0.14.0" }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "4f61cffacee50fe4f944ebe9d0470d9a5d3997e0", version = "0.3.0-beta.4", default-features = false }
+dioxus = { git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", version = "0.8.0-alpha.3", default-features = false, features = ["minimal", "native"] }
+dioxus-native = { git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", version = "0.8.0-alpha.3", default-features = false, features = ["vello-hybrid", "svg", "system-fonts"] }
+oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", features = ["std"] }
+oxifoc-host-dioxus-ui = { version = "0.1.0", path = "../oxifoc-host-dioxus-ui", features = ["desktop"] }
+oxifoc-host-lib = { version = "0.1.0", path = "../oxifoc-host-lib", default-features = false }
+oxifoc-plot = { version = "0.1.0", path = "../oxifoc-plot" }
+oxifoc-ui = { version = "0.1.0", path = "../oxifoc-ui" }
+peniko = "0.6"
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["time"] }
+wgpu = "30"
+wgpu_context = { git = "https://github.com/DioxusLabs/anyrender", rev = "97d06af9fe8fe1c2cc5916c6d09fba10774d86a6", version = "0.10.0" }
+
+[workspace]
+
+[patch.crates-io]
+anyrender = { git = "https://github.com/DioxusLabs/anyrender", rev = "97d06af9fe8fe1c2cc5916c6d09fba10774d86a6", version = "0.14.0" }
+anyrender_vello_hybrid = { git = "https://github.com/DioxusLabs/anyrender", rev = "97d06af9fe8fe1c2cc5916c6d09fba10774d86a6", version = "0.11.0" }
+wgpu_context = { git = "https://github.com/DioxusLabs/anyrender", rev = "97d06af9fe8fe1c2cc5916c6d09fba10774d86a6", version = "0.10.0" }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "4f61cffacee50fe4f944ebe9d0470d9a5d3997e0", version = "0.3.0-beta.4" }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "4f61cffacee50fe4f944ebe9d0470d9a5d3997e0", version = "0.3.0-beta.4" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "4f61cffacee50fe4f944ebe9d0470d9a5d3997e0", version = "0.3.0-beta.4" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "4f61cffacee50fe4f944ebe9d0470d9a5d3997e0", version = "0.3.0-beta.4" }
+blitz-shell = { git = "https://github.com/DioxusLabs/blitz", rev = "4f61cffacee50fe4f944ebe9d0470d9a5d3997e0", version = "0.3.0-beta.4" }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "4f61cffacee50fe4f944ebe9d0470d9a5d3997e0", version = "0.3.0-beta.4" }
+
+[patch."https://github.com/DioxusLabs/dioxus"]
+dioxus-native = { path = "vendor/dioxus-native" }

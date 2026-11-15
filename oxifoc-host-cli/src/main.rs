@@ -246,6 +246,10 @@ struct Cli {
     #[arg(long)]
     ble_name: Option<String>,
 
+    /// Connect to this BLE address directly, without a pre-connect scan.
+    #[arg(long, conflicts_with = "ble_name")]
+    ble_address: Option<String>,
+
     /// Debug probe identifier (VID:PID or VID:PID:SERIAL). Required for RTT transport if not in config.
     #[arg(long)]
     probe: Option<String>,
@@ -1248,10 +1252,14 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         });
     }
 
-    // BLE needs a live device handle: scan and pin the peripheral before
+    if let Some(address) = &cli.ble_address {
+        cfg.ble_address = Some(address.clone());
+    }
+
+    // BLE stores an address: scan and pin the peripheral before
     // the backend starts. Ambiguity is refused (mirrors the USB identity
     // pinning) — a motor controller must not be picked by luck.
-    if cfg.transport == Some(TransportType::Ble) && cfg.ble_device.is_none() {
+    if cfg.transport == Some(TransportType::Ble) && cfg.ble_address.is_none() {
         let devices = oxifoc_host_lib::scan_ble_devices_blocking(Duration::from_secs(4));
         let matches: Vec<_> = devices
             .iter()
@@ -1263,7 +1271,7 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
             })
             .collect();
         match matches.as_slice() {
-            [one] => cfg.ble_device = Some(one.device.clone()),
+            [one] => cfg.ble_address = Some(one.id.clone()),
             [] => bail!(
                 "no BLE device matched (scanned {} peripheral(s)); \
                  check the device is advertising or pass --ble-name",

@@ -42,7 +42,7 @@ pub enum TransportType {
     Udp,
     /// USB bulk (via nusb, ergot device class)
     Usb,
-    /// BLE (via bluest) - default on Android
+    /// BLE (via blec) - default on Android
     #[cfg_attr(not(feature = "desktop"), default)]
     Ble,
 }
@@ -70,7 +70,7 @@ pub enum TransportConfig {
     },
     Usb,
     Ble {
-        device: bluest::Device,
+        device: String,
     },
 }
 

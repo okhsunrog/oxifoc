@@ -5,6 +5,8 @@ edition = "2024"
 
 [features]
 default = ["desktop"]
+# Only for the transport lifecycle regression test; never enable in a GUI.
+ble-mock-tests = ["blec/mock"]
 transport-bench = ["oxifoc-core/transport-bench"]
 desktop = [
     "dep:probe-rs",
@@ -36,10 +38,11 @@ toml = { workspace = true }
 tokio-stream = "0.1.19"
 bytes = "1.12.1"
 futures = "0.3.34"
-bluest = { git = "https://github.com/okhsunrog/bluest", rev = "9cb9dbcad63d7d2ffe18a20f87b7ffe1cb670537", features = ["unstable"] }
 serde_json = "1.0.154"
 object = { version = "0.41.0", default-features = false, features = ["read"] }
 nusb = "0.1"
+blec = { version = "0.20.0", git = "https://github.com/okhsunrog/tauri-plugin-blec", rev = "6c5f1b5b5e55ff79312e9564efb9a560cdc788ba" }
+uuid = "1.29.2"
 
 [lints]
 workspace = true
@@ -51,3 +54,6 @@ required-features = ["desktop"]
 [[example]]
 name = "usb_serial_jtag_bench"
 required-features = ["desktop", "transport-bench"]
+
+[dev-dependencies]
+btleplug = "0.13.5"

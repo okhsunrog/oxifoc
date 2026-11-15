@@ -23,6 +23,15 @@ type SharedRuntime = Arc<std::sync::Mutex<Option<HostRuntime>>>;
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
+    // Slint stores an Application context in ndk-context. BLE permission
+    // prompts need the current NativeActivity instead.
+    // SAFETY: AndroidApp owns these JNI references for this activity's lifetime;
+    // attach_current_thread supplies an environment for the calling thread.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
+    vm.attach_current_thread(|env| unsafe {
+        blec::android::init_with(env.get_raw(), app.activity_as_ptr().cast())
+    })
+    .expect("initialize Android BLE bridge with NativeActivity");
     slint::android::init(app).unwrap();
     main();
 }
@@ -35,7 +44,7 @@ use std::time::Duration;
 use oxifoc_core::types::{ConfigResponse, ConfigValue, ControlMode, MotorState};
 use oxifoc_host_lib::{
     BleDeviceInfo, HostCommand, HostConfig, HostRuntime, TransportType, config_channel, ops,
-    scan_ble_devices, start_host,
+    start_host, try_scan_ble_devices,
 };
 #[cfg(feature = "desktop")]
 use oxifoc_host_lib::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
@@ -43,12 +52,15 @@ use slint::wgpu_30::WGPUConfiguration;
 use slint::{
     GraphicsAPI, Image, ModelRc, RenderingState, SharedString, StandardListViewItem, VecModel,
 };
-use slint_wgpu_plot::{PlotBuffer, PlotConfig, PlotRenderer, required_wgpu_settings};
+mod graphics;
+use graphics::required_wgpu_settings;
+use oxifoc_plot::{PlotBuffer, PlotConfig, PlotRenderer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 const CAPACITY: usize = 32768;
 const MAX_LOG_LINES: usize = 2000;
+#[cfg(feature = "desktop")]
 const BAUD_RATES: [u32; 6] = [115200, 230400, 460800, 921600, 1_000_000, 2_000_000];
 
 fn cursor_readout(
@@ -133,12 +145,49 @@ pub fn main() {
     // Configure the WGPU backend (required for GPU chart rendering).
     // The current chart overlays five signals on the same ampere axis.
     let wgpu_settings = required_wgpu_settings(CAPACITY, 5);
-    slint::BackendSelector::new()
-        .require_wgpu_30(WGPUConfiguration::Automatic(wgpu_settings))
-        .select()
-        .expect("Failed to initialise WGPU backend");
+    let backend =
+        slint::BackendSelector::new().require_wgpu_30(WGPUConfiguration::Automatic(wgpu_settings));
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    let backend = backend.with_winit_window_attributes_hook(|attributes| {
+        use slint::winit_030::winit::platform::wayland::WindowAttributesExtWayland;
+        attributes.with_name("com.oxifoc.studio.slint", "oxifoc")
+    });
+    backend.select().expect("Failed to initialise WGPU backend");
 
     let app = App::new().unwrap();
+    slint_kit::install(&app);
+    app.set_desktop_transports(!cfg!(target_os = "android"));
+    #[cfg(target_os = "android")]
+    app.set_transport_mode(5);
+    {
+        use slint::ComponentHandle;
+        let mut theme = app.global::<KitThemes>().get_dark();
+        theme.typography.family = "DejaVu Sans".into();
+        theme.canvas = slint::Color::from_rgb_u8(0x0b, 0x13, 0x21);
+        theme.surface = slint::Color::from_rgb_u8(0x14, 0x1e, 0x2e);
+        theme.surface_raised = slint::Color::from_rgb_u8(0x25, 0x34, 0x4a);
+        theme.text_primary = slint::Color::from_rgb_u8(0xea, 0xf9, 0xff);
+        theme.text_secondary = slint::Color::from_rgb_u8(0x9d, 0xc3, 0xda);
+        theme.accent = slint::Color::from_rgb_u8(0x6f, 0xf5, 0xe6);
+        theme.on_accent = theme.canvas;
+        theme.accent_hover = slint::Color::from_rgb_u8(0x4b, 0xdb, 0xce);
+        theme.accent_pressed = slint::Color::from_rgb_u8(0x12, 0xb9, 0xb0);
+        theme.accent_subtle = theme.surface_raised;
+        theme.border_subtle = slint::Color::from_rgb_u8(0x30, 0x48, 0x5e);
+        theme.border_strong = theme.text_secondary;
+        app.global::<KitThemeContext>().set_current(theme);
+    }
+
+    // Optional local test endpoint; still requires an explicit Connect action.
+    if let Ok(port) = std::env::var("OXIFOC_TCP_PORT") {
+        app.set_transport_mode(2);
+        app.set_tcp_port(port.into());
+        app.set_tcp_host(
+            std::env::var("OXIFOC_TCP_HOST")
+                .unwrap_or_else(|_| "127.0.0.1".into())
+                .into(),
+        );
+    }
 
     // ── Log + faults models ──────────────────────────────────────────────────
     app.set_log_messages(ModelRc::new(VecModel::<LogMessage>::default()));
@@ -699,7 +748,23 @@ pub fn main() {
             }
             thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let devices = rt.block_on(scan_ble_devices(Duration::from_secs(4)));
+                let result = rt.block_on(async {
+                    #[cfg(target_os = "android")]
+                    {
+                        oxifoc_host_lib::initialize_ble().await?;
+                        if !blec::check_permissions(false).await? {
+                            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Bluetooth permission denied. Allow Nearby devices in Android settings and scan again.").into());
+                        }
+                    }
+                    try_scan_ble_devices(Duration::from_secs(4)).await
+                });
+                let (devices, error) = match result {
+                        Ok(devices) => (devices, String::new()),
+                        Err(error) => {
+                            tracing::warn!("BLE scan failed: {error:#}");
+                            (Vec::new(), format!("BLE scan: {error:#}"))
+                        },
+                    };
                 let items: Vec<StandardListViewItem> = devices
                     .iter()
                     .map(|d| SharedString::from(d.to_string()).into())
@@ -709,6 +774,7 @@ pub fn main() {
                     app.set_ble_devices(ModelRc::new(VecModel::from(items)));
                     app.set_selected_ble(-1);
                     app.set_ble_scanning(false);
+                    app.set_error_text(error.into());
                 });
             });
         });
@@ -820,6 +886,7 @@ pub fn main() {
                         ..Default::default()
                     }
                 }
+                #[cfg(feature = "desktop")]
                 4 => {
                     // USB
                     HostConfig {
@@ -840,7 +907,7 @@ pub fn main() {
                     let device = &guard[idx as usize];
                     HostConfig {
                         transport: Some(TransportType::Ble),
-                        ble_device: Some(device.device.clone()),
+                        ble_address: Some(device.id.clone()),
                         stream_defmt: Some(true),
                         stream_ergot: Some(true),
                         ..Default::default()

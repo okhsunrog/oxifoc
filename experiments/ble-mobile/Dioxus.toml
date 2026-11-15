@@ -1,0 +1,7 @@
+[application]
+name = "OxiFOC Drive Studio"
+[bundle]
+identifier = "com.oxifoc.blelab"
+icon = ["../../oxifoc-ui/assets/oxifoc-icon.png"]
+[android]
+min_sdk = 26

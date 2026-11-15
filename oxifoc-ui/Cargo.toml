@@ -1,0 +1,10 @@
+[package]
+name = "oxifoc-ui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+dioxus = { git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", version = "0.8.0-alpha.3", default-features = false, features = ["minimal", "mounted"] }

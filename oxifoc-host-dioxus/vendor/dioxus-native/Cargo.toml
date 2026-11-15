@@ -1,0 +1,133 @@
+[package]
+name = "dioxus-native"
+version = "0.8.0-alpha.3"
+authors = ["Jonathan Kelley", "Nico Burns"]
+edition = "2024"
+description = "Native renderer for Dioxus based on blitz"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DioxusLabs/dioxus/"
+homepage = "https://dioxuslabs.com/learn/0.7/getting_started"
+keywords = ["dom", "ui", "gui", "react"]
+
+[features]
+default = ["accessibility", "hot-reload", "net", "html", "svg", "system-fonts", "clipboard", "file-dialog", "vello-hybrid", "woff", "text-transform-icu", "apple-font-embolden"]
+prelude = ["dep:dioxus-vdom-macro", "dep:dioxus-hooks", "dep:dioxus-signals", "dep:dioxus-stores", "dep:manganis", "dioxus-vdom/manganis_08"]
+
+# DOM features
+svg = ["blitz-dom/svg", "blitz-paint/svg"]
+floats = ["blitz-dom/floats"]
+autofocus = ["blitz-dom/autofocus"]
+system-fonts = ["blitz-dom/system-fonts"]
+# complex-scripts: enable dictionary-based line-breaking
+complex-scripts = ["blitz-dom/complex-scripts"]
+# WOFF/WOFF2 decoder. Default-on so wasm callers (which can't use system fonts)
+# can bundle compressed fonts without extra setup.
+woff = ["blitz-dom/woff"]
+text-transform-icu = ["blitz-dom/text-transform-icu"]
+writing-mode = ["blitz-dom/writing-mode", "dioxus-native-dom/writing-mode"]
+
+# Shell Features
+clipboard = [] # Clipboard is now built into Blitz; upstream feature was removed.
+file-dialog = ["blitz-shell/file-dialog"]
+accessibility = ["blitz-shell/accessibility", "blitz-dom/accessibility"]
+data-uri = ["blitz-shell/data-uri"]
+
+# Renderer features
+vello = ["dep:anyrender_vello", "dep:wgpu_context"]
+vello-hybrid = ["dep:anyrender_vello_hybrid", "dep:wgpu_context"]
+skia = ["dep:anyrender_skia"]
+skia-pixels = ["skia-raster-base", "anyrender_skia/pixels_window_renderer"]
+skia-softbuffer = ["skia-raster-base", "anyrender_skia/softbuffer_window_renderer"]
+skia-raster-base = ["dep:anyrender_skia"]
+vello-cpu = ["vello-cpu-pixels"]
+vello-cpu-pixels = ["vello-cpu-base", "anyrender_vello_cpu/pixels_window_renderer"]
+vello-cpu-softbuffer = ["vello-cpu-base", "anyrender_vello_cpu/softbuffer_window_renderer"]
+vello-cpu-base = ["dep:anyrender_vello_cpu"]
+
+font-embolden = ["blitz-paint/font-embolden"]
+apple-font-embolden = ["blitz-paint/apple-font-embolden"]
+scrollbars = ["blitz-paint/scrollbars"]
+
+# Other features
+# No-op on wasm32 (blitz_net::Provider needs tokio's threaded runtime); launch_cfg
+# falls back to the in-process DioxusNativeNetProvider there.
+net = ["dep:tokio", "dep:blitz-net"]
+html = ["dep:blitz-html"]
+
+# Dev
+hot-reload = ["dep:dioxus-devtools"]
+
+# Debug/Logging
+log-times = ["log-phase-times", "log-frame-times"]
+log-phase-times = ["blitz-dom/log-phase-times"]
+log-frame-times = [
+  "anyrender_vello_cpu?/log_frame_times",
+  "anyrender_vello?/log_frame_times",
+  "anyrender_vello_hybrid?/log_frame_times",
+  "anyrender_skia?/log_frame_times",
+]
+tracing = ["dep:tracing", "dioxus-native-dom/tracing", "blitz-shell/tracing", "blitz-dom/tracing", "blitz-html/tracing", "blitz-net/tracing"]
+
+[dependencies]
+# Blitz dependencies
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["custom-widget"] }
+blitz-html = { version = "=0.3.0-beta.4", optional = true }
+blitz-net = { version = "=0.3.0-beta.4", optional = true }
+blitz-paint = { version = "=0.3.0-beta.4", optional = true, features = ["custom-widget"] }
+blitz-traits = { version = "=0.3.0-beta.4" }
+blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
+
+# AnyRender dependencies
+anyrender = { version = "0.14.0" }
+peniko = { version = "0.6.1", default-features = false }
+anyrender_vello = { version = "0.15.0", optional = true }
+anyrender_vello_hybrid = { version = "0.11.0", optional = true }
+anyrender_vello_cpu = { version = "0.18.0", optional = true }
+anyrender_skia = { version = "0.12.0", optional = true }
+wgpu_context = { version = "0.10.0", optional = true }
+
+# DioxusLabs dependencies
+dioxus-vdom = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39" }
+dioxus-html = { version = "=0.8.0-alpha.3", default-features = false, git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39" }
+dioxus-native-dom = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39" }
+dioxus-asset-resolver = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", features = ["native"] }
+dioxus-history = { version = "=0.8.0-alpha.3", default-features = false, git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39" }
+dioxus-document = { version = "=0.8.0-alpha.3", default-features = false, git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39" }
+dioxus-cli-config = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39" }
+
+# Dioxus hot reload
+dioxus-devtools = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", optional = true }
+
+# Dioxus prelude
+dioxus-hooks = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", optional = true }
+dioxus-signals = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", optional = true }
+dioxus-stores = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", optional = true }
+dioxus-vdom-macro = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", optional = true }
+manganis = { version = "=0.8.0-alpha.3", git = "https://github.com/DioxusLabs/dioxus", rev = "97adf7915e1adfef4e2da436c9bd0b6add0dfa39", optional = true }
+
+# Windowing & Input
+winit = { version = "=0.31.0-beta.4" }
+keyboard-types = { version = "0.8", default-features = false }
+
+# IO & Networking
+tokio = { version = "1.52.1", features = ["rt"], optional = true }
+webbrowser = { version = "1.2.2" }
+
+# Other dependencies
+tracing = { version = "0.1.44", optional = true }
+rustc-hash = { version = "2.1.1" }
+futures-util = { version = "0.3.32", default-features = false }
+cfg-if = "1.0.4"
+slotmap = { version = "1.0.7", features = ["serde"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.52.1", features = ["rt-multi-thread"], optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", default-features = false }
+
+[target.'cfg(all(target_os = "ios", target_abi = "sim"))'.dependencies]
+anyrender_vello_cpu = { version = "0.18.0", features = ["pixels_window_renderer"] }
+
+[package.metadata.docs.rs]
+all-features = true
