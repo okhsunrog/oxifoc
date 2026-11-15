@@ -24,9 +24,12 @@ tokio = { workspace = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 oxifoc-plot = { version = "0.1.0", path = "../oxifoc-plot" }
+slint-kit = "=0.8.0"
 
 [build-dependencies]
+lucide-slint = "1.73.0"
 slint-build = { workspace = true }
+slint-kit-build = "=0.8.0"
 
 [package.metadata.android]
 package = "com.oxifoc.host"

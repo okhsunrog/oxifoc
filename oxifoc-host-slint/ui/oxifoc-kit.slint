@@ -1,0 +1,33 @@
+import { KitButton, KitTextField, ButtonIntent, ControlSize, ValidationTiming } from "@kit";
+import { IconDisplay } from "@lucide";
+
+// Product-facing adapters keep the trial's API local to OxiFOC.
+export component OxiButton inherits KitButton {
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+    intent: root.primary ? ButtonIntent.primary : ButtonIntent.secondary;
+    control-size: ControlSize.medium;
+    disabled: !root.enabled;
+    activated => { root.clicked(); }
+}
+export component OxiField inherits KitTextField {
+    control-size: ControlSize.medium;
+    implicit-form-submit: false;
+}
+export component OxiIcon inherits IconDisplay {
+    size: 22px;
+    stroke: #9dc3da;
+    stroke-width: 1.7;
+}
+
+// Scientific notation remains editable; the existing Rust/controller checks
+// still decide whether a complete configuration can be applied.
+// Inline pattern feedback is not qualified in the current integration; see README.
+export component OxiNumberField inherits OxiField {
+    pattern: "[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?";
+    pattern-enabled: true;
+    validation-timing: ValidationTiming.on-input;
+    edited(_) => { root.report-validity(); }
+    pattern-message: "Enter a number, e.g. 0.5 or 5e-4.";
+}

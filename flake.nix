@@ -19,6 +19,7 @@
           libraries = with pkgs; [
             dbus
             fontconfig
+            freetype # Slint Skia loads libfreetype.so at runtime.
             libxkbcommon
             openssl
             udev

@@ -141,6 +141,36 @@ pub fn main() {
         .expect("Failed to initialise WGPU backend");
 
     let app = App::new().unwrap();
+    slint_kit::install(&app);
+    {
+        use slint::ComponentHandle;
+        let mut theme = app.global::<KitThemes>().get_dark();
+        theme.typography.family = "DejaVu Sans".into();
+        theme.canvas = slint::Color::from_rgb_u8(0x0b, 0x13, 0x21);
+        theme.surface = slint::Color::from_rgb_u8(0x14, 0x1e, 0x2e);
+        theme.surface_raised = slint::Color::from_rgb_u8(0x25, 0x34, 0x4a);
+        theme.text_primary = slint::Color::from_rgb_u8(0xea, 0xf9, 0xff);
+        theme.text_secondary = slint::Color::from_rgb_u8(0x9d, 0xc3, 0xda);
+        theme.accent = slint::Color::from_rgb_u8(0x6f, 0xf5, 0xe6);
+        theme.on_accent = theme.canvas;
+        theme.accent_hover = slint::Color::from_rgb_u8(0x4b, 0xdb, 0xce);
+        theme.accent_pressed = slint::Color::from_rgb_u8(0x12, 0xb9, 0xb0);
+        theme.accent_subtle = theme.surface_raised;
+        theme.border_subtle = slint::Color::from_rgb_u8(0x30, 0x48, 0x5e);
+        theme.border_strong = theme.text_secondary;
+        app.global::<KitThemeContext>().set_current(theme);
+    }
+
+    // Optional local test endpoint; still requires an explicit Connect action.
+    if let Ok(port) = std::env::var("OXIFOC_TCP_PORT") {
+        app.set_transport_mode(2);
+        app.set_tcp_port(port.into());
+        app.set_tcp_host(
+            std::env::var("OXIFOC_TCP_HOST")
+                .unwrap_or_else(|_| "127.0.0.1".into())
+                .into(),
+        );
+    }
 
     // ── Log + faults models ──────────────────────────────────────────────────
     app.set_log_messages(ModelRc::new(VecModel::<LogMessage>::default()));
