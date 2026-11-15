@@ -30,6 +30,56 @@ pub static OBSERVER_LOG_ENABLED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(true);
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
+    #[inline(never)]
+    fn angle_trustworthy_other(&self) -> bool {
+        match self.source {
+            PhaseSource::Hall
+            | PhaseSource::Encoder
+            | PhaseSource::HallToObserver { .. }
+            | PhaseSource::EncoderToObserver { .. } => !self.open_loop_override.active,
+            // Calibration/detection sources: the commanded angle IS the
+            // reference frame, trusted by construction.
+            PhaseSource::Manual | PhaseSource::OpenLoop => true,
+            // Pure sensorless: trusted once the observer locks, OR while the
+            // cold-start sequencer drives — there the open-loop angle IS the
+            // intended I/f reference and torque MUST flow into it to spin the
+            // rotor up (unlike the hall-dropout recovery override above, which
+            // is a fabricated frame under a moving rider and stays untrusted).
+            // Only `begin_cold_start` (a deliberate sensorless start) arms it.
+            PhaseSource::Observer => self.observer.is_ready() || self.startup.is_active(),
+            #[cfg(feature = "hfi")]
+            PhaseSource::Hfi => self.hfi.as_ref().is_some_and(HfiObserver::is_ready),
+            #[cfg(feature = "hfi")]
+            PhaseSource::HfiToObserver { min_confidence, .. }
+            | PhaseSource::HfiToObserverVolts { min_confidence, .. } => {
+                // The selector uses HFI until the crossover is COMPLETE,
+                // including the blend band. A ready background observer
+                // cannot certify the HFI contribution to that angle.
+                if self.crossover_latched {
+                    self.observer.is_ready() && self.observer.confidence() >= min_confidence
+                } else {
+                    self.hfi.as_ref().is_some_and(HfiObserver::is_ready)
+                }
+            }
+            // Before the latch, these modes actually commute from HFI, so a
+            // present Hall/encoder does not make a cold demodulation estimate
+            // safe. After the latch the hardware sensor carries the angle.
+            #[cfg(feature = "hfi")]
+            PhaseSource::HfiToEncoder { .. } => {
+                !self.open_loop_override.active
+                    && (self.crossover_latched
+                        || self.hfi.as_ref().is_some_and(HfiObserver::is_ready))
+            }
+            // HFI compiled out: these sources are unreachable (set_source
+            // rejects them), but the match must stay exhaustive.
+            #[cfg(not(feature = "hfi"))]
+            PhaseSource::Hfi
+            | PhaseSource::HfiToObserver { .. }
+            | PhaseSource::HfiToObserverVolts { .. }
+            | PhaseSource::HfiToEncoder { .. } => self.observer.is_ready(),
+        }
+    }
+
     /// Whether HFI runs this cycle: carrier injection AND the demod update
     /// — always as a pair (a demod without carrier measures silence, a
     /// carrier without demod is pure loss).
@@ -54,6 +104,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// keeps iq at zero for the few ms the lock takes.
     #[cfg(feature = "hfi")]
     fn hfi_active(&self) -> bool {
+        if !self.source_usage.hfi {
+            return false;
+        }
         match self.source {
             PhaseSource::Hfi => true,
             PhaseSource::HfiToObserver { min_vel, .. } => {
@@ -102,7 +155,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     fn requires_hall_reference(&self) -> bool {
-        self.source.requires_hall()
+        self.source_usage.hall
     }
 
     fn apply_hall_calibration(
@@ -162,7 +215,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     },
                 };
             }
-        } else if self.source.requires_hall() {
+        } else if self.source_usage.hall {
             self.update_hall_health(false, false);
         }
         true
@@ -223,7 +276,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // math ran every cycle for data nothing read (2026-07-06 ISR
         // profiling); everything downstream is already `requires_*`-gated
         // and treats `None` as "no sensor".
-        let (hall_stale, hall_sample) = if self.source.requires_hall() {
+        let (hall_stale, hall_sample) = if self.source_usage.hall {
             let observer = self
                 .observer
                 .is_ready()
@@ -263,7 +316,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             self.hall_motion_witness.reset();
             (false, None)
         };
-        let encoder_sample = if self.source.requires_encoder() {
+        let encoder_sample = if self.source_usage.encoder {
             self.encoder.sample_mut(now_ticks)
         } else {
             None
@@ -307,7 +360,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // Hall health is only meaningful for sources that consume hall data:
         // an idle hall during Manual-angle calibration or pure-observer
         // operation is not a failure.
-        if self.source.requires_hall() {
+        if self.source_usage.hall {
             self.update_hall_health(hall_sample.is_some(), hall_stale);
         }
 
@@ -654,52 +707,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     /// deliberate cost: no self-start from standstill with a dead hall
     /// until the sensorless promotion lands (fault-overhaul.md phase 6,
     /// variant A decision 2026-06-13).
+    #[inline(always)]
     fn angle_trustworthy(&self) -> bool {
-        match self.source {
-            PhaseSource::Hall
-            | PhaseSource::Encoder
-            | PhaseSource::HallToObserver { .. }
-            | PhaseSource::EncoderToObserver { .. } => !self.open_loop_override.active,
-            // Calibration/detection sources: the commanded angle IS the
-            // reference frame, trusted by construction.
-            PhaseSource::Manual | PhaseSource::OpenLoop => true,
-            // Pure sensorless: trusted once the observer locks, OR while the
-            // cold-start sequencer drives — there the open-loop angle IS the
-            // intended I/f reference and torque MUST flow into it to spin the
-            // rotor up (unlike the hall-dropout recovery override above, which
-            // is a fabricated frame under a moving rider and stays untrusted).
-            // Only `begin_cold_start` (a deliberate sensorless start) arms it.
-            PhaseSource::Observer => self.observer.is_ready() || self.startup.is_active(),
-            #[cfg(feature = "hfi")]
-            PhaseSource::Hfi => self.hfi.as_ref().is_some_and(HfiObserver::is_ready),
-            #[cfg(feature = "hfi")]
-            PhaseSource::HfiToObserver { min_confidence, .. }
-            | PhaseSource::HfiToObserverVolts { min_confidence, .. } => {
-                // The selector uses HFI until the crossover is COMPLETE,
-                // including the blend band. A ready background observer
-                // cannot certify the HFI contribution to that angle.
-                if self.crossover_latched {
-                    self.observer.is_ready() && self.observer.confidence() >= min_confidence
-                } else {
-                    self.hfi.as_ref().is_some_and(HfiObserver::is_ready)
-                }
-            }
-            // Before the latch, these modes actually commute from HFI, so a
-            // present Hall/encoder does not make a cold demodulation estimate
-            // safe. After the latch the hardware sensor carries the angle.
-            #[cfg(feature = "hfi")]
-            PhaseSource::HfiToEncoder { .. } => {
-                !self.open_loop_override.active
-                    && (self.crossover_latched
-                        || self.hfi.as_ref().is_some_and(HfiObserver::is_ready))
-            }
-            // HFI compiled out: these sources are unreachable (set_source
-            // rejects them), but the match must stay exhaustive.
-            #[cfg(not(feature = "hfi"))]
-            PhaseSource::Hfi
-            | PhaseSource::HfiToObserver { .. }
-            | PhaseSource::HfiToObserverVolts { .. }
-            | PhaseSource::HfiToEncoder { .. } => self.observer.is_ready(),
+        if self.source_usage.sensored_trust {
+            !self.open_loop_override.active
+        } else {
+            self.angle_trustworthy_other()
         }
     }
 
@@ -742,7 +755,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     /// data report; an idle hall during Manual calibration or pure
     /// sensorless is not a failure.
     fn hall_fault(&self) -> Option<HallFaultKind> {
-        if !self.source.requires_hall() {
+        if !self.source_usage.hall {
             return None;
         }
         if let Some(kind) = self.hall.fault_kind() {

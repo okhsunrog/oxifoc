@@ -64,6 +64,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             self.hall_motion_witness.reset();
         }
         self.source = source;
+        self.source_usage = super::SourceUsage::new(source);
         self.motion_reference_epoch.advance();
         self.rotor_velocity = None;
         // Crossover memory belongs to the previous source's thresholds.

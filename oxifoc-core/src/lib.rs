@@ -234,8 +234,24 @@ pub mod foc {
     /// always. The `%` fallback (f32 `%` = `fmodf` → libm's remquo path,
     /// ~100+ cycles — 2026-07-06 ISR PC-profiling caught it at ~1% of the
     /// whole CPU) only runs for arbitrary out-of-range inputs.
+    ///
+    /// The common case — already inside [0, 2π) — is decided by one integer
+    /// compare of the bit pattern: non-negative floats order like their
+    /// bits, while negative values, -0.0, infinities and NaN all compare
+    /// above 2π and take the general path. On the F405 each float constant
+    /// is a flash literal load that usually misses the 8-line ART data
+    /// cache (PC profile 2026-11-14: 30–40 cycles per call before this).
     #[inline]
     pub fn wrap_angle(angle: f32) -> f32 {
+        if angle.to_bits() < TAU.to_bits() {
+            return angle;
+        }
+        wrap_angle_general(angle)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn wrap_angle_general(angle: f32) -> f32 {
         let mut a = angle;
         // Keep exact 2*TAU cold: one subtraction would still leave TAU.
         if !(-TAU..2.0 * TAU).contains(&a) {
@@ -265,9 +281,23 @@ pub mod foc {
     /// lands in range; both common angle conventions take this fast path —
     /// `libm::remainderf` (which cost ~1% of the ISR CPU) stays as the cold
     /// fallback for arbitrary inputs.
+    ///
+    /// |diff| < π needs no correction and is decided by one integer compare
+    /// of the magnitude bits (NaN and infinities fall through), for the
+    /// same flash-literal reason as [`wrap_angle`] (40–70 cycles per call
+    /// before this).
     #[inline]
     pub fn angle_difference(a: f32, b: f32) -> f32 {
-        let mut diff = a - b;
+        let diff = a - b;
+        if diff.to_bits() & 0x7fff_ffff < core::f32::consts::PI.to_bits() {
+            return diff;
+        }
+        angle_difference_general(diff)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn angle_difference_general(mut diff: f32) -> f32 {
         let three_pi = TAU + core::f32::consts::PI;
         if diff <= -three_pi || diff > three_pi || diff.is_nan() {
             // Cold: inputs weren't wrapped angles.
@@ -284,6 +314,105 @@ pub mod foc {
     #[cfg(test)]
     mod angle_tests {
         use super::*;
+
+        // Verbatim pre-fast-path implementations (8fa1e5b).
+        fn frozen_wrap(angle: f32) -> f32 {
+            let mut a = angle;
+            if !(-TAU..2.0 * TAU).contains(&a) {
+                a %= TAU;
+            }
+            if a < 0.0 {
+                a += TAU;
+            } else if a >= TAU {
+                a -= TAU;
+            }
+            a
+        }
+
+        fn frozen_difference(a: f32, b: f32) -> f32 {
+            let mut diff = a - b;
+            let three_pi = TAU + core::f32::consts::PI;
+            if diff <= -three_pi || diff > three_pi || diff.is_nan() {
+                diff = libm::remainderf(diff, TAU);
+            }
+            if diff <= -core::f32::consts::PI {
+                diff += TAU;
+            } else if diff > core::f32::consts::PI {
+                diff -= TAU;
+            }
+            diff
+        }
+
+        fn same(actual: f32, expected: f32) -> bool {
+            (actual.is_nan() && expected.is_nan()) || actual.to_bits() == expected.to_bits()
+        }
+
+        // Special values plus every multiple of π/2 up to ±9π/2 … ±9·2π with
+        // three neighbours on each side; no allocation (the crate is no_std).
+        fn edge_values(mut visit: impl FnMut(f32)) {
+            use core::f32::consts::PI;
+            for value in [
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::MAX,
+                f32::MIN,
+                f32::MIN_POSITIVE,
+                f32::from_bits(1),
+                -f32::from_bits(1),
+                0.0,
+                -0.0,
+                1e-30,
+                -1e-30,
+                1e30,
+                -1e30,
+            ] {
+                visit(value);
+            }
+            for k in -9_i32..=9 {
+                for edge in [k as f32 * PI, k as f32 * TAU, k as f32 * 0.5 * PI] {
+                    let (mut below, mut above) = (edge, edge);
+                    visit(edge);
+                    for _ in 0..3 {
+                        below = below.next_down();
+                        above = above.next_up();
+                        visit(below);
+                        visit(above);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn integer_fast_paths_are_bit_identical_to_the_frozen_implementations() {
+            edge_values(|a| {
+                assert!(same(wrap_angle(a), frozen_wrap(a)), "wrap({a:?})");
+                edge_values(|b| {
+                    assert!(
+                        same(angle_difference(a, b), frozen_difference(a, b)),
+                        "difference({a:?}, {b:?})"
+                    );
+                });
+            });
+            // Every exponent and sign, plus dense coverage of the angle range.
+            let mut bits = 0x9e37_79b9_u32;
+            let mut next = || {
+                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                bits
+            };
+            for _ in 0..2_000_000 {
+                let raw = f32::from_bits(next());
+                let angle = (next() as f32 / u32::MAX as f32 - 0.5) * 8.0 * TAU;
+                let other = (next() as f32 / u32::MAX as f32 - 0.5) * 8.0 * TAU;
+                for a in [raw, angle] {
+                    assert!(same(wrap_angle(a), frozen_wrap(a)), "wrap({a:?})");
+                    assert!(
+                        same(angle_difference(a, other), frozen_difference(a, other)),
+                        "difference({a:?}, {other:?})"
+                    );
+                }
+            }
+        }
 
         fn previous_wrap(angle: f32) -> f32 {
             let mut a = angle;

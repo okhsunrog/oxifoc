@@ -174,7 +174,7 @@ impl HallTimebase {
 
     #[inline]
     fn seconds(&self, ticks: u64) -> f32 {
-        crate::foc::fast_math::u64_to_f32(ticks) / self.hz
+        crate::foc::fast_math::u64_to_f32(ticks) * self.seconds_per_tick
     }
 }
 
@@ -446,7 +446,7 @@ impl HallSensor {
     /// Convert electrical velocity (rad/s) to eRPM
     #[inline]
     fn vel_to_erpm(vel_rad_s: f32) -> f32 {
-        vel_rad_s.abs() * 60.0 / TAU
+        vel_rad_s.abs() * (60.0 / TAU)
     }
 
     /// Set rate limit factor for angle changes.

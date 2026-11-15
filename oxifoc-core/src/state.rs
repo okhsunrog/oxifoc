@@ -11,7 +11,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use critical_section::Mutex as CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_sync::waitqueue::AtomicWaker;
 
@@ -146,7 +145,9 @@ impl DriverCommand {
 }
 
 /// Command channel - servers send DriverCommands here, ISR receives them
-pub static CMD_CHANNEL: Channel<CriticalSectionRawMutex, DriverCommand, 8> = Channel::new();
+mod command_channel;
+pub use command_channel::CommandChannel;
+pub static CMD_CHANNEL: CommandChannel<DriverCommand, 8> = CommandChannel::new();
 
 #[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1277,9 +1278,10 @@ where
     {
         // Edge-detect on the failsafe not yet running: this gate re-fires
         // every cycle while the link stays down and would spam the ISR log.
-        if !foc.failsafe_active() {
-            warn!("failsafe: host link lost while running");
-        }
+        // ISR log disabled 2026-11-14, see the CommTimeout note in this file.
+        // if !foc.failsafe_active() {
+        //     warn!("failsafe: host link lost while running");
+        // }
         foc.enter_failsafe();
     }
 
@@ -1403,12 +1405,18 @@ where
     {
         // Log the raise edge only, and say which detector fired — the two have
         // different bench remedies (host affirm cadence vs transport drop).
-        if !fault_registry.has_category(FaultCategory::CommTimeout) {
-            warn!(
-                "CommTimeout raised: deadman_expired={} link_lost={}",
-                deadman_expired, link_lost_unacked
-            );
-        }
+        // ISR log disabled 2026-11-14: each defmt message costs about 15 us
+        // inside the control ISR, and this path emits up to three in one
+        // cycle (a 91 us body was recorded at failsafe entry, against a
+        // 66.7 us period). The event stays visible in the fault registry.
+        // To restore, uncomment or move to a deferred task-side logger;
+        // scripts/benchsuite.py matches this text.
+        // if !fault_registry.has_category(FaultCategory::CommTimeout) {
+        //     warn!(
+        //         "CommTimeout raised: deadman_expired={} link_lost={}",
+        //         deadman_expired, link_lost_unacked
+        //     );
+        // }
         fault_registry.set(f);
     }
 
@@ -1457,9 +1465,10 @@ where
             crate::foc::detection::excitation::DONE_WAKER.wake();
         }
         // Edge log: safe_off() latches Stopped, so this fires once per trip.
-        if !matches!(driver.mode(), ControlMode::Stopped) {
-            error!("KILL fault active: cutting gate drive");
-        }
+        // ISR log disabled 2026-11-14: it also ran before the gate cut below.
+        // if !matches!(driver.mode(), ControlMode::Stopped) {
+        //     error!("KILL fault active: cutting gate drive");
+        // }
         // Cut the gate drive NOW, re-asserted every cycle the Kill stays
         // latched. `set_mode(Stopped)` alone only floats the bridge on the
         // next step() in Stopped mode, which the early return below skips —
@@ -1493,9 +1502,10 @@ where
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
         )
     {
-        if !driver.failsafe_active() {
-            warn!("failsafe: stopping-class fault active");
-        }
+        // ISR log disabled 2026-11-14, see the CommTimeout note in this file.
+        // if !driver.failsafe_active() {
+        //     warn!("failsafe: stopping-class fault active");
+        // }
         driver.enter_failsafe();
     }
 

@@ -258,6 +258,11 @@ impl CurrentLimits {
         let id = clamp_f32(id_target, -limit, limit);
         // Q-axis gets the remaining circular budget
         let iq_budget_sq = limit * limit - id * id;
+        // Strict comparison keeps the square-root path at the rounding
+        // boundary, including zero/subnormal budgets and underflowed squares.
+        if iq_target * iq_target < iq_budget_sq {
+            return (id, iq_target);
+        }
         let iq_budget = if iq_budget_sq > 0.0 {
             // .max(0.0) lets the compiler prove -iq_budget <= iq_budget,
             // eliminating clamp's panic branch (sqrtf can't return NaN here,
@@ -286,6 +291,73 @@ impl CurrentLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_circle_fast_path_matches_sqrt_at_boundaries_and_extreme_inputs() {
+        let check = |limit: f32, id: f32, iq: f32| {
+            let limits = CurrentLimits::from_max_current(limit);
+            let actual = limits.clamp_targets(id, iq);
+            let expected = if limit > 0.0 {
+                let id = clamp_f32(id, -limit, limit);
+                let squared = limit * limit - id * id;
+                let room = if squared > 0.0 {
+                    sqrtf(squared).max(0.0)
+                } else {
+                    0.0
+                };
+                (id, clamp_f32(iq, -room, room))
+            } else {
+                (id, iq)
+            };
+            assert_eq!(
+                actual.0.to_bits(),
+                expected.0.to_bits(),
+                "limit={limit}, id={id}, iq={iq}"
+            );
+            assert_eq!(
+                actual.1.to_bits(),
+                expected.1.to_bits(),
+                "limit={limit}, id={id}, iq={iq}"
+            );
+        };
+        for limit in [
+            0.0,
+            f32::from_bits(1),
+            1e-20,
+            1e-10,
+            1.0,
+            10.0,
+            100.0,
+            1e20,
+            f32::MAX,
+            f32::INFINITY,
+        ] {
+            for id in [0.0, -0.0, limit * 0.5, limit, -limit, f32::NAN] {
+                let room = sqrtf((limit * limit - id * id).max(0.0));
+                for iq in [
+                    0.0,
+                    -0.0,
+                    f32::from_bits(1),
+                    room.next_down(),
+                    room,
+                    room.next_up(),
+                    -room.next_up(),
+                    f32::INFINITY,
+                    f32::NAN,
+                ] {
+                    check(limit, id, iq);
+                }
+            }
+        }
+        let mut bits = 0x1234_5678_u32;
+        for _ in 0..100_000 {
+            let mut next = || {
+                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                f32::from_bits(bits)
+            };
+            check(next().abs(), next(), next());
+        }
+    }
 
     #[test]
     fn source_replacement_preserves_motor_and_trip_limits() {

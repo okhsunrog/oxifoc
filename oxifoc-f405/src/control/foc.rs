@@ -750,7 +750,7 @@ fn ADC() {
             &STATE,
             &FAULT_REGISTRY,
             driver,
-            vbus_mv as f32 / 1000.0,
+            vbus_mv as f32 * 0.001,
             now_ticks,
             protection_board,
         );

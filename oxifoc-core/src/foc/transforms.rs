@@ -41,7 +41,10 @@ pub fn clarke(ia: f32, ib: f32) -> (f32, f32) {
 /// diagnostics; this projection is not a sensor-validity check.
 #[inline]
 pub fn clarke_three(ia: f32, ib: f32, ic: f32) -> (f32, f32) {
-    ((2.0 * ia - ib - ic) / 3.0, (ib - ic) * FRAC_1_SQRT_3)
+    (
+        (2.0 * ia - ib - ic) * (1.0 / 3.0),
+        (ib - ic) * FRAC_1_SQRT_3,
+    )
 }
 
 impl CurrentSenseTopology {

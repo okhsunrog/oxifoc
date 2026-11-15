@@ -319,6 +319,11 @@ pub struct BackEmfObserver {
     /// bound to `READY_HOLD_MAX_PHASE_ERR_RAD`. Updated at the end of
     /// every `update` (evaluated against the previous latch state).
     ready_latched: bool,
+    /// Cached [`Self::is_ready`] decision. Its inputs (confidence, readiness
+    /// error, PLL velocity, valid travel and the latch) change only in
+    /// `update`, `reset` and the seed setters; each of them refreshes it.
+    /// Debug builds compare every read with the live evaluation.
+    ready: bool,
     /// PLL velocity of the previous update (rad/s) and its low-passed
     /// slope (rad/s², τ = [`ACCEL_LAG_FILTER_TAU_S`]) — the acceleration
     /// estimate behind the readiness lag compensation (see
@@ -566,6 +571,7 @@ impl BackEmfObserver {
             invalid_time: 0.0,
             lambda_learn_travel: 0.0,
             ready_latched: false,
+            ready: false,
             vel_pll_prev: 0.0,
             accel_filt: 0.0,
             readiness_err: core::f32::consts::PI,
@@ -889,7 +895,10 @@ impl BackEmfObserver {
         // for the next cycle and for `is_ready` callers in between.
         let prof_t2 = crate::isr_prof::now();
         self.refresh_readiness_err();
-        self.ready_latched = self.is_ready();
+        // The refresh evaluated readiness against the previous latch. With
+        // the hold bound no tighter than the acquire bound, the same value
+        // is also the answer under the new latch, so the cache stays valid.
+        self.ready_latched = self.ready;
         crate::isr_prof::add(&crate::isr_prof::OBS_TAIL, prof_t2, crate::isr_prof::now());
     }
 
@@ -936,8 +945,8 @@ impl BackEmfObserver {
         self.readiness_err
     }
 
-    /// Recompute the cached readiness error (end of every `update`, and
-    /// eagerly by state-jamming test/seed paths).
+    /// Recompute the cached readiness error and decision (end of every
+    /// `update`, and eagerly by state-jamming test/seed paths).
     fn refresh_readiness_err(&mut self) {
         let lag = if self.pll_ki > 0.0 {
             (self.accel_filt.abs() / self.pll_ki).min(ACCEL_LAG_COMP_MAX_RAD)
@@ -945,6 +954,12 @@ impl BackEmfObserver {
             0.0
         };
         self.readiness_err = (self.phase_err_filt - lag).max(0.0);
+        self.refresh_ready();
+    }
+
+    /// Re-evaluate the cached readiness decision after changing its inputs.
+    fn refresh_ready(&mut self) {
+        self.ready = self.ready_now();
     }
 
     /// Whether the estimate is trustworthy for commutation.
@@ -977,7 +992,19 @@ impl BackEmfObserver {
     /// strict threshold and a chattering gate chops torque, which itself
     /// pumps the oscillation — see the hold constant's dossier). The other
     /// three criteria have their own slow dynamics and stay un-hysteresed.
+    #[inline]
     pub fn is_ready(&self) -> bool {
+        debug_assert_eq!(
+            self.ready,
+            self.ready_now(),
+            "stale observer readiness cache"
+        );
+        self.ready
+    }
+
+    fn ready_now(&self) -> bool {
+        // `update` reuses one evaluation for both latch states.
+        const { assert!(READY_HOLD_MAX_PHASE_ERR_RAD >= READY_MAX_PHASE_ERR_RAD) };
         let err_bound = if self.ready_latched {
             READY_HOLD_MAX_PHASE_ERR_RAD
         } else {
@@ -1011,6 +1038,7 @@ impl BackEmfObserver {
         self.vel_pll_prev = 0.0;
         self.accel_filt = 0.0;
         self.readiness_err = core::f32::consts::PI;
+        self.refresh_ready();
     }
 
     /// Set motor parameters (re-anchors the λ-tracking bounds; resets the
@@ -1087,6 +1115,7 @@ impl BackEmfObserver {
         // until the corroboration is re-earned on the live flux integrator
         // (see `lambda_learn_travel`).
         self.lambda_learn_travel = 0.0;
+        self.refresh_ready();
     }
 
     /// Set velocity estimate (for testing or handoff from other source)
@@ -1104,6 +1133,7 @@ impl BackEmfObserver {
         // force_phase + set_velocity in either order, and a stale proxy
         // would revoke the seed's validity credit on the first update.
         self.bemf_q_filt = self.lambda * velocity;
+        self.refresh_ready();
     }
 }
 
