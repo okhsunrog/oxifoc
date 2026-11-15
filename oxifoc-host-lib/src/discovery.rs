@@ -3,10 +3,8 @@
 //! Provides enumeration of available devices for each transport type:
 //! - Serial ports (via tokio_serial, which re-exports mio_serial/serialport)
 //! - Debug probes for RTT (via probe-rs)
-//! - BLE devices (via bluest)
+//! - BLE devices (via blec)
 
-use bluest::Adapter;
-use futures::StreamExt;
 #[cfg(feature = "desktop")]
 use probe_rs::probe::list::Lister;
 #[cfg(feature = "desktop")]
@@ -164,8 +162,6 @@ pub fn list_probes() -> Vec<ProbeInfo> {
 /// Information about a discovered BLE device.
 #[derive(Debug, Clone)]
 pub struct BleDeviceInfo {
-    /// The bluest device handle (used for connecting)
-    pub device: bluest::Device,
     /// Device ID string (MAC address on Linux/Android, opaque on macOS)
     pub id: String,
     /// Local name advertised by the device (if any)
@@ -190,8 +186,7 @@ impl fmt::Display for BleDeviceInfo {
 
 /// Scan for BLE devices for the given duration.
 ///
-/// Returns all discovered peripherals with their device handles.
-/// Uses bluest's async stream-based scanning.
+/// Returns addresses independent of the scanner runtime and GUI framework.
 pub async fn scan_ble_devices(scan_duration: Duration) -> Vec<BleDeviceInfo> {
     match scan_ble_devices_inner(scan_duration).await {
         Ok(devices) => devices,
@@ -220,61 +215,59 @@ pub fn scan_ble_devices_blocking(scan_duration: Duration) -> Vec<BleDeviceInfo> 
     }
 }
 
-async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<BleDeviceInfo>> {
-    let adapter = Adapter::default().await?;
-    adapter.wait_available().await?;
+/// Initialize the process-wide adapter independently of a GUI or scan runtime.
+pub async fn initialize_ble() -> anyhow::Result<()> {
+    crate::transport::ble::handler().await.map(|_| ())
+}
 
-    let mut devices: Vec<BleDeviceInfo> = Vec::new();
-    // On BlueZ a previous CLI invocation can leave the system link active.
-    // Connected peripherals do not advertise, so include known NUS peers.
-    #[cfg(target_os = "linux")]
-    {
-        let services = [crate::transport::ble::NUS_SERVICE_UUID];
-        let connected = adapter.connected_devices_with_services(&services);
-        if let Ok(Ok(connected)) = tokio::time::timeout(Duration::from_secs(1), connected).await {
-            for device in connected {
-                let id = format!("{}", device.id());
-                let name = device.name_async().await.ok();
-                devices.push(BleDeviceInfo {
-                    device,
-                    id,
-                    name,
-                    rssi: None,
-                });
-            }
+/// Fallible discovery for interfaces that need to show permission/adapter errors.
+pub async fn try_scan_ble_devices(scan_duration: Duration) -> anyhow::Result<Vec<BleDeviceInfo>> {
+    scan_ble_devices_inner(scan_duration).await
+}
+
+async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<BleDeviceInfo>> {
+    // Serialize scan ownership: cancelling one picker must not stop another scan.
+    static SCAN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = SCAN.lock().await;
+    let handler = crate::transport::ble::handler().await?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    handler
+        .discover(
+            Some(tx),
+            scan_duration.as_millis().max(200) as u64,
+            blec::models::ScanFilter::Service(crate::transport::ble::NUS_SERVICE_UUID),
+            false,
+        )
+        .await?;
+    let mut devices = std::collections::BTreeMap::new();
+    while let Some(batch) = rx.recv().await {
+        for device in batch {
+            devices.insert(
+                device.address.clone(),
+                BleDeviceInfo {
+                    id: device.address,
+                    name: (!device.name.is_empty()).then_some(device.name),
+                    rssi: device.rssi,
+                },
+            );
         }
     }
-
-    let services: &[bluest::Uuid] = &[];
-    let mut scan: std::pin::Pin<
-        Box<dyn futures::Stream<Item = bluest::AdvertisingDevice> + Send + '_>,
-    > = Box::pin(adapter.scan(services).await?);
-    let collect = async {
-        while let Some(adv) = scan.next().await {
-            let name = adv.adv_data.local_name.clone();
-            let rssi = adv.rssi;
-            // Deduplicate: update existing entry or add new one
-            if let Some(existing) = devices.iter_mut().find(|d| d.device == adv.device) {
-                existing.name = name.or(existing.name.take());
-                existing.rssi = rssi.or(existing.rssi);
-            } else {
-                let id = format!("{}", adv.device.id());
-                devices.push(BleDeviceInfo {
-                    device: adv.device,
-                    id,
-                    name,
-                    rssi,
+    for device in handler.connected_devices().await {
+        if device
+            .services
+            .contains(&crate::transport::ble::NUS_SERVICE_UUID)
+        {
+            devices
+                .entry(device.address.clone())
+                .or_insert(BleDeviceInfo {
+                    id: device.address,
+                    name: Some(device.name),
+                    rssi: device.rssi,
                 });
-            }
         }
-    };
-
-    let _ = tokio::time::timeout(scan_duration, collect).await;
-    drop(scan);
-
-    // Sort by RSSI descending (strongest signal first)
-    devices.sort_by(|a, b| b.rssi.unwrap_or(i16::MIN).cmp(&a.rssi.unwrap_or(i16::MIN)));
-
+    }
+    let mut devices: Vec<_> = devices.into_values().collect();
+    devices.sort_by_key(|d| std::cmp::Reverse(d.rssi.unwrap_or(i16::MIN)));
     Ok(devices)
 }
 

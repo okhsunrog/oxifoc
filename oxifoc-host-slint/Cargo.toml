@@ -33,7 +33,7 @@ package = "com.oxifoc.host"
 build_targets = ["aarch64-linux-android"]
 
 [package.metadata.android.sdk]
-min_sdk_version = 23
+min_sdk_version = 26
 target_sdk_version = 33
 
 [[package.metadata.android.uses_feature]]
@@ -61,3 +61,6 @@ max_sdk_version = 30
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+blec = { git = "https://github.com/okhsunrog/tauri-plugin-blec", rev = "493ad73d63e03d12161b6220731ee69f94af856b", version = "0.20.0", features = ["embedded-dex"] }

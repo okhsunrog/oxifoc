@@ -44,8 +44,14 @@ impl Model {
             .and_then(|s| s.parse().ok())
             .unwrap_or(2025);
         let host = std::env::var("OXIFOC_TCP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+        let ble_address = std::env::var("OXIFOC_BLE_ADDRESS").ok();
         let runtime = start_host(HostConfig {
-            transport: Some(TransportType::Tcp),
+            transport: Some(if ble_address.is_some() {
+                TransportType::Ble
+            } else {
+                TransportType::Tcp
+            }),
+            ble_address,
             tcp_host: Some(host),
             tcp_port: Some(port),
             fast_hz: Some(1000),
@@ -224,7 +230,9 @@ impl Drop for Model {
 /// Explicit integration probe for a separately launched virtual controller.
 pub fn verify_virtual() -> anyhow::Result<()> {
     anyhow::ensure!(
-        std::env::var("OXIFOC_TCP_HOST").unwrap_or_else(|_| "127.0.0.1".into()) == "127.0.0.1",
+        std::env::var("OXIFOC_BLE_ADDRESS").is_err()
+            && std::env::var("OXIFOC_TCP_HOST").unwrap_or_else(|_| "127.0.0.1".into())
+                == "127.0.0.1",
         "verification requires loopback"
     );
     anyhow::ensure!(

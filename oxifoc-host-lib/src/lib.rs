@@ -49,7 +49,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 pub use config::{FastSource, HostConfig, ReconnectPolicy};
-pub use discovery::{BleDeviceInfo, scan_ble_devices, scan_ble_devices_blocking};
+pub use discovery::{
+    BleDeviceInfo, initialize_ble, scan_ble_devices, scan_ble_devices_blocking,
+    try_scan_ble_devices,
+};
 #[cfg(feature = "desktop")]
 pub use discovery::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
 pub use transport::{TransportConfig, TransportType};
@@ -849,22 +852,24 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         TransportConfig::Ble { device } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
             let (stack, queue) = transport::ble::new_stack();
-            let register_fn = {
-                let stack = stack.clone();
-                let notify = state_notify.clone();
-                let mut workers = Vec::new();
-                async move || {
-                    transport::ble::register(
-                        &stack,
-                        &queue,
-                        &device,
-                        Some(notify.clone()),
-                        &mut workers,
-                    )
-                    .await
-                }
+            let mut session = transport::ble::Session::default();
+            let result = {
+                let register_fn = async || {
+                    session
+                        .register(&stack, &queue, &device, state_notify.clone())
+                        .await
+                };
+                run_framed_with_reconnect(
+                    stack.clone(),
+                    register_fn,
+                    state_notify.clone(),
+                    &cfg,
+                    ctx,
+                )
+                .await
             };
-            run_framed_with_reconnect(stack, register_fn, state_notify, &cfg, ctx).await
+            session.close().await;
+            result
         }
     }
 }

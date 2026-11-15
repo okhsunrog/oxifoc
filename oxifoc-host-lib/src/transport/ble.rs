@@ -1,47 +1,69 @@
-//! BLE NUS transport for oxifoc host communication.
-//!
-//! Uses bluest to connect as a BLE central to an oxifoc bridge device
-//! running a Nordic UART Service (NUS) GATT server. Each ergot frame
-//! maps to one GATT write (host → bridge) or notification (bridge → host).
-//!
-//! This is a **framed** transport (like USB/UDP), not a COBS stream.
-
-use anyhow::{Context, Result, anyhow};
-use bluest::{Adapter, Characteristic, Device, Uuid};
+//! NUS framed transport: one ergot frame per GATT write/notification.
+//! The shared backend owns BLE; UI signals never carry protocol packets.
+use anyhow::{Context, Result, anyhow, ensure};
+use blec::{Connection, OnDisconnectHandler, models::WriteType};
 use ergot::interface_manager::profiles::direct_edge::{
     DirectEdge, EDGE_NODE_ID, EdgeFrameProcessor,
 };
 use ergot::interface_manager::utils::framed_stream;
 use ergot::interface_manager::{FrameProcessor, InterfaceState, Profile};
 use ergot::net_stack::ArcNetStack;
-use futures::StreamExt;
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use std::sync::{Arc, LazyLock};
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
+use uuid::Uuid;
 
 type StdQueue = ergot::interface_manager::utils::std::StdQueue;
 type WaitQueue = ergot::toolkits::tokio_stream::WaitQueue;
-
-// NUS UUIDs
 pub(crate) const NUS_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
 const NUS_RX_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
 const NUS_TX_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
-
-/// BLE NUS MTU: bridge PacketPool MTU (512) - L2CAP (4) - ATT (3) = 505
 const BLE_MTU: u16 = 505;
 const OUT_BUFFER_SIZE: usize = 4096;
+const RX_QUEUE_FRAMES: usize = 128;
 
-/// BLE NUS interface marker.
+// blec's global adapter must not belong to the CLI's short-lived scan runtime.
+// Initialize it on a process-lifetime thread. Connection workers still belong
+// to each HostRuntime and are explicitly joined before it shuts down.
+static BLE_RUNTIME: LazyLock<tokio::runtime::Handle> = LazyLock::new(|| {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("BLE runtime");
+    let handle = runtime.handle().clone();
+    std::thread::Builder::new()
+        .name("oxifoc-ble".into())
+        .spawn(move || runtime.block_on(std::future::pending::<()>()))
+        .expect("BLE thread");
+    handle
+});
+
+pub(crate) async fn handler() -> Result<&'static blec::Handler> {
+    BLE_RUNTIME
+        .spawn(async {
+            static INIT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+            let _guard = INIT.lock().await;
+            let handler = blec::init().await?;
+            // init() creates only the handler; the adapter/event pump is lazy.
+            // Force that first access onto the long-lived runtime too. Android
+            // may report Unknown until permission is granted; discovery returns
+            // the actionable error, and the next call retries initialization.
+            let _ = handler.get_adapter_state().await;
+            Ok::<_, blec::Error>(handler)
+        })
+        .await
+        .context("BLE initialization task")?
+        .context("BLE initialization")
+}
+
 pub struct BleNusInterface;
-
 impl ergot::interface_manager::Interface for BleNusInterface {
     type Sink = framed_stream::Sink<StdQueue>;
 }
-
 pub type EdgeStack = ArcNetStack<
     ergot::exports::mutex::raw_impls::cs::CriticalSectionRawMutex,
     DirectEdge<BleNusInterface>,
 >;
-
 pub fn new_stack() -> (EdgeStack, StdQueue) {
     let queue = ergot::interface_manager::utils::std::new_std_queue(OUT_BUFFER_SIZE);
     let stack = EdgeStack::new_with_profile(DirectEdge::new_target(
@@ -50,190 +72,291 @@ pub fn new_stack() -> (EdgeStack, StdQueue) {
     (stack, queue)
 }
 
-/// Connect to an oxifoc bridge device over BLE NUS and register it onto the
-/// (long-lived) stack. Only succeeds while the interface is Down, i.e. on
-/// first connect or after a teardown.
-///
-/// `workers` carries the rx/tx task handles between reconnects: the old
-/// tasks are aborted before new ones attach, so the bbqueue never ends up
-/// with two competing consumers.
-pub async fn register(
-    stack: &EdgeStack,
-    queue: &StdQueue,
-    device: &Device,
-    state_notify: Option<Arc<WaitQueue>>,
-    workers: &mut Vec<tokio::task::JoinHandle<()>>,
-) -> Result<()> {
-    for handle in workers.drain(..) {
-        handle.abort();
-    }
-
-    // Same precondition the ergot toolkits enforce: never double-activate.
-    let is_down = stack
-        .manage_profile(|im| matches!(im.interface_state(()), Some(InterfaceState::Down) | None));
-    if !is_down {
-        return Err(anyhow!("BLE interface not in Down state"));
-    }
-
-    // Connect via adapter
-    let adapter = Adapter::default()
-        .await
-        .context("Failed to get BLE adapter")?;
-    // The CLI scans on a short-lived runtime. On Linux the scanned handle's
-    // BlueZ session is tied to that runtime, so reopen it on the backend.
-    #[cfg(target_os = "linux")]
-    let reopened = adapter
-        .open_device(&device.id())
-        .await
-        .context("Failed to open BLE device")?;
-    #[cfg(target_os = "linux")]
-    let device = &reopened;
-    #[cfg(target_os = "linux")]
-    let should_connect = !device.is_connected().await;
-    #[cfg(not(target_os = "linux"))]
-    let should_connect = true;
-    if should_connect {
-        info!("Connecting to BLE device...");
-        adapter
-            .connect_device(device)
-            .await
-            .context("BLE connection failed")?;
-    }
-    info!("BLE connected");
-
-    // Discover NUS service
-    let services = device
-        .discover_services_with_uuid(NUS_SERVICE_UUID)
-        .await
-        .context("NUS service discovery failed")?;
-
-    let nus_service = services
-        .first()
-        .ok_or_else(|| anyhow!("NUS service not found on device"))?;
-
-    let chars = nus_service
-        .discover_characteristics()
-        .await
-        .context("Failed to discover NUS characteristics")?;
-
-    let rx_char = chars
-        .iter()
-        .find(|c| c.uuid() == NUS_RX_UUID)
-        .ok_or_else(|| anyhow!("NUS RX characteristic not found"))?
-        .clone();
-
-    let tx_char = chars
-        .iter()
-        .find(|c| c.uuid() == NUS_TX_UUID)
-        .ok_or_else(|| anyhow!("NUS TX characteristic not found"))?
-        .clone();
-
-    info!("NUS service discovered (RX + TX characteristics)");
-
-    stack.manage_profile(|im| {
-        let _ = im.set_interface_state(
-            (),
-            InterfaceState::Active {
-                net_id: 0,
-                node_id: EDGE_NODE_ID,
-            },
-        );
-    });
-
-    if let Some(ref n) = state_notify {
-        n.wake_all();
-    }
-
-    // Spawn RX worker — tx_char moved in so notify() borrow is 'static
-    let rx_stack = stack.clone();
-    let rx_notify = state_notify.clone();
-    workers.push(tokio::spawn(async move {
-        let notifications = match tx_char.notify().await {
-            Ok(n) => n,
-            Err(e) => {
-                error!("[ble] failed to subscribe to NUS TX: {:?}", e);
-                mark_down(&rx_stack, rx_notify.as_ref());
-                return;
-            }
-        };
-        ble_rx_worker(rx_stack, notifications, rx_notify).await;
-    }));
-
-    // Spawn TX worker
-    let tx_queue = queue.clone();
-    let tx_stack = stack.clone();
-    let tx_notify = state_notify.clone();
-    workers.push(tokio::spawn(async move {
-        ble_tx_worker(tx_queue, rx_char, tx_stack, tx_notify).await;
-    }));
-
-    info!("BLE NUS transport registered");
-    Ok(())
+#[derive(Default)]
+pub(crate) struct Session {
+    address: Option<String>,
+    workers: Vec<tokio::task::JoinHandle<()>>,
 }
-
-/// RX worker: reads NUS TX notifications and feeds them to ergot.
-async fn ble_rx_worker(
-    stack: EdgeStack,
-    mut notifications: impl futures::Stream<Item = Result<Vec<u8>, bluest::Error>> + Unpin + Send,
-    state_notify: Option<Arc<WaitQueue>>,
-) {
-    let mut processor = EdgeFrameProcessor::new();
-
-    loop {
-        match notifications.next().await {
-            Some(Ok(data)) => {
-                debug!("[ble rx] {} bytes", data.len());
-                let changed = processor.process_frame(&data, &stack, ());
-                if changed && let Some(ref n) = state_notify {
-                    n.wake_all();
-                }
-            }
-            Some(Err(e)) => {
-                error!("[ble rx] notification error: {:?}", e);
-                break;
-            }
-            None => {
-                info!("[ble rx] notification stream ended");
-                break;
-            }
+impl Session {
+    pub async fn close(&mut self) {
+        for worker in self.workers.drain(..) {
+            worker.abort();
+            let _ = worker.await;
+        }
+        if let Some(address) = self.address.take()
+            && let Ok(handler) = handler().await
+            && handler.is_device_connected(&address)
+            && let Err(error) = handler.disconnect_device(&address).await
+        {
+            warn!("BLE disconnect: {error}");
         }
     }
 
-    mark_down(&stack, state_notify.as_ref());
-    warn!("[ble rx] worker exited");
+    pub async fn register(
+        &mut self,
+        stack: &EdgeStack,
+        queue: &StdQueue,
+        address: &str,
+        state_notify: Arc<WaitQueue>,
+    ) -> Result<()> {
+        self.close().await;
+        ensure!(
+            stack.manage_profile(|im| matches!(
+                im.interface_state(()),
+                Some(InterfaceState::Down) | None
+            )),
+            "BLE interface not in Down state"
+        );
+        let handler = handler().await?;
+        self.address = Some(address.to_owned());
+        let failed = CancellationToken::new();
+        let disconnected = failed.clone();
+        let connection = handler
+            .connect(
+                address,
+                OnDisconnectHandler::from_sync(move || {
+                    disconnected.cancel();
+                }),
+                false,
+            )
+            .await
+            .context("BLE connection")?;
+        let setup = async {
+            let mtu = connection.mtu().await.context("ATT MTU")?;
+            validate_mtu(mtu)?;
+            let services = connection.services().await.context("NUS discovery")?;
+            let nus = services
+                .iter()
+                .find(|s| s.uuid == NUS_SERVICE_UUID)
+                .ok_or_else(|| anyhow!("NUS service missing"))?;
+            ensure!(
+                nus.characteristics.iter().any(|c| c.uuid == NUS_RX_UUID),
+                "NUS RX missing"
+            );
+            ensure!(
+                nus.characteristics.iter().any(|c| c.uuid == NUS_TX_UUID),
+                "NUS TX missing"
+            );
+            let (tx, rx) = tokio::sync::mpsc::channel(RX_QUEUE_FRAMES);
+            let overflow = failed.clone();
+            connection
+                .subscribe(NUS_TX_UUID, Some(NUS_SERVICE_UUID), move |data: Vec<u8>| {
+                    // Never stall blec's event loop. A dropped protocol frame requires
+                    // a new session; it must not silently corrupt the ergot stream.
+                    if data.len() > usize::from(BLE_MTU) || tx.try_send(data).is_err() {
+                        overflow.cancel();
+                    }
+                })
+                .await
+                .context("NUS notifications")?;
+            ensure!(
+                !failed.is_cancelled(),
+                "BLE disconnected during subscription"
+            );
+            stack.manage_profile(|im| {
+                let _ = im.set_interface_state(
+                    (),
+                    InterfaceState::Active {
+                        net_id: 0,
+                        node_id: EDGE_NODE_ID,
+                    },
+                );
+            });
+            state_notify.wake_all();
+            self.workers.push(tokio::spawn(rx_worker(
+                stack.clone(),
+                rx,
+                failed.clone(),
+                state_notify.clone(),
+            )));
+            self.workers.push(tokio::spawn(tx_worker(
+                stack.clone(),
+                queue.clone(),
+                connection.clone(),
+                failed.clone(),
+                state_notify.clone(),
+            )));
+            info!("BLE NUS active: {address}, ATT MTU {mtu}, frame limit {BLE_MTU}");
+            Ok(())
+        }
+        .await;
+        if setup.is_err() {
+            self.close().await;
+        }
+        setup
+    }
 }
 
-/// TX worker: reads framed ergot data from bbqueue and writes to NUS RX char.
-async fn ble_tx_worker(
-    queue: StdQueue,
-    rx_char: Characteristic,
+fn validate_mtu(mtu: u16) -> Result<()> {
+    ensure!(
+        mtu.saturating_sub(3) >= BLE_MTU,
+        "ATT MTU {mtu} is too small: OxiFOC needs at least {} for {BLE_MTU}-byte frames",
+        BLE_MTU + 3
+    );
+    Ok(())
+}
+
+async fn rx_worker(
     stack: EdgeStack,
-    state_notify: Option<Arc<WaitQueue>>,
+    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    failed: CancellationToken,
+    notify: Arc<WaitQueue>,
+) {
+    let mut processor = EdgeFrameProcessor::new();
+    loop {
+        tokio::select! {
+            biased;
+            _ = failed.cancelled() => break,
+            data = rx.recv() => match data {
+                Some(data) => { if processor.process_frame(&data, &stack, ()) { notify.wake_all(); } }
+                None => break,
+            }
+        }
+    }
+    failed.cancel();
+    mark_down(&stack, &notify);
+}
+async fn tx_worker(
+    stack: EdgeStack,
+    queue: StdQueue,
+    connection: Connection,
+    failed: CancellationToken,
+    notify: Arc<WaitQueue>,
 ) {
     use ergot::exports::bbqueue::traits::bbqhdl::BbqHandle;
     let consumer: ergot::exports::bbqueue::prod_cons::framed::FramedConsumer<StdQueue> =
         queue.framed_consumer();
-
     loop {
-        let frame = consumer.wait_read().await;
-        debug!("[ble tx] {} bytes", frame.len());
-        if let Err(e) = rx_char.write_without_response(&frame).await {
-            error!("[ble tx] write error: {:?}", e);
-            frame.release();
-            break;
+        tokio::select! {
+            biased;
+            _ = failed.cancelled() => break,
+            frame = consumer.wait_read() => {
+                let result = connection.send_data(NUS_RX_UUID, Some(NUS_SERVICE_UUID), &frame, WriteType::WithoutResponse).await;
+                frame.release();
+                if let Err(error) = result { warn!("BLE write: {error}"); break; }
+            }
         }
-        frame.release();
     }
-
-    mark_down(&stack, state_notify.as_ref());
-    warn!("[ble tx] worker exited");
+    failed.cancel();
+    mark_down(&stack, &notify);
 }
-
-fn mark_down(stack: &EdgeStack, state_notify: Option<&Arc<WaitQueue>>) {
+fn mark_down(stack: &EdgeStack, notify: &WaitQueue) {
     stack.manage_profile(|im| {
         let _ = im.set_interface_state((), InterfaceState::Down);
     });
-    if let Some(notify) = state_notify {
-        notify.wake_all();
+    notify.wake_all();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn nus_requires_a_complete_frame_in_one_att_packet() {
+        for mtu in [0, 3, 23, 247, 507] {
+            assert!(super::validate_mtu(mtu).is_err());
+        }
+        for mtu in [508, 512, 517] {
+            assert!(super::validate_mtu(mtu).is_ok());
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ble-mock-tests"))]
+mod lifecycle_tests {
+    use super::*;
+    use blec::mock::{DeviceSpec, FailKind, MockWorld, OpBehaviour, ServiceSpec};
+    use btleplug::api::CharPropFlags;
+    use std::time::Duration;
+
+    fn spec(last: u8, mtu: u16) -> DeviceSpec {
+        DeviceSpec::new([0xfa, 0, 0, 0, 0, last])
+            .name("OxiFOC test")
+            .mtu(mtu)
+            .service(
+                ServiceSpec::new(NUS_SERVICE_UUID)
+                    .characteristic(NUS_RX_UUID, CharPropFlags::WRITE_WITHOUT_RESPONSE)
+                    .characteristic(NUS_TX_UUID, CharPropFlags::NOTIFY),
+            )
+    }
+    fn is_down(stack: &EdgeStack) -> bool {
+        stack.manage_profile(|im| matches!(im.interface_state(()), Some(InterfaceState::Down)))
+    }
+
+    // One test owns the process-wide mock adapter, just as one application does.
+    // Use wall time: the adapter intentionally survives individual Tokio runtimes.
+    #[test]
+    fn scan_runtime_drop_mtu_failure_reconnect_and_shutdown() {
+        let world = MockWorld::global();
+        let good = world.add_device(spec(1, 517));
+        let small = world.add_device(spec(2, 247));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let found = rt
+            .block_on(crate::try_scan_ble_devices(Duration::from_millis(250)))
+            .unwrap();
+        assert_eq!(found.len(), 2);
+        drop(rt);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (stack, queue) = new_stack();
+            let notify = Arc::new(WaitQueue::new());
+            let mut session = Session::default();
+            let error = session
+                .register(&stack, &queue, &small.address_string(), notify.clone())
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("too small"));
+            assert!(!small.is_connected());
+            assert!(is_down(&stack));
+            good.set_subscribe_behaviour(OpBehaviour::Fail(FailKind::NotSupported));
+            assert!(
+                session
+                    .register(&stack, &queue, &good.address_string(), notify.clone())
+                    .await
+                    .is_err()
+            );
+            assert!(!good.is_connected());
+            assert!(is_down(&stack));
+            good.set_subscribe_behaviour(OpBehaviour::Ok);
+            for _ in 0..3 {
+                session
+                    .register(&stack, &queue, &good.address_string(), notify.clone())
+                    .await
+                    .unwrap();
+                assert!(!is_down(&stack));
+                assert_eq!(good.subscriptions().len(), 1);
+                good.drop_link();
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while !is_down(&stack) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert!(is_down(&stack));
+            }
+            session
+                .register(&stack, &queue, &good.address_string(), notify.clone())
+                .await
+                .unwrap();
+            // An invalid/oversized packet must fail the whole session, not drop
+            // a packet and leave the transport apparently healthy.
+            assert!(good.notify(NUS_SERVICE_UUID, NUS_TX_UUID, vec![0; 506]));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !is_down(&stack) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            session.close().await;
+            assert!(!good.is_connected());
+            assert!(session.workers.is_empty());
+        });
+        drop(rt);
     }
 }

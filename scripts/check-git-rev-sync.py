@@ -4,7 +4,7 @@
 
 The workspace excludes the firmware crates (different toolchain), so the
 repo carries ~10 independent lock files. Bumping a git rev (ergot, slint,
-bluest, …) means touching all of them — and a stale rev in one lock file
+blec, …) means touching all of them — and a stale rev in one lock file
 has already slipped through once, surviving unnoticed until an on-target
 test build happened to fail. This guard catches the desync directly and
 deterministically instead of as a compilation side effect.

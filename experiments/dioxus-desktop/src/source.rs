@@ -34,8 +34,14 @@ impl Source {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(25266);
+            let ble_address = std::env::var("OXIFOC_BLE_ADDRESS").ok();
             let runtime = start_host(HostConfig {
-                transport: Some(TransportType::Tcp),
+                transport: Some(if ble_address.is_some() {
+                    TransportType::Ble
+                } else {
+                    TransportType::Tcp
+                }),
+                ble_address,
                 tcp_host: Some("127.0.0.1".into()),
                 tcp_port: Some(port),
                 fast_hz: Some(1000),
@@ -88,7 +94,7 @@ impl Source {
                     d.status = format!(
                         "{} · {state} · {rpm:.0} RPM · {volts:.1} V · faults {fault_count} · {samples} samples",
                         if connected.load(Ordering::Relaxed) {
-                            "Virtual controller"
+                            "Controller"
                         } else {
                             "Disconnected"
                         }

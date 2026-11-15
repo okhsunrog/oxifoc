@@ -35,7 +35,7 @@ use std::time::Duration;
 use oxifoc_core::types::{ConfigResponse, ConfigValue, ControlMode, MotorState};
 use oxifoc_host_lib::{
     BleDeviceInfo, HostCommand, HostConfig, HostRuntime, TransportType, config_channel, ops,
-    scan_ble_devices, start_host,
+    start_host, try_scan_ble_devices,
 };
 #[cfg(feature = "desktop")]
 use oxifoc_host_lib::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
@@ -701,7 +701,11 @@ pub fn main() {
             }
             thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let devices = rt.block_on(scan_ble_devices(Duration::from_secs(4)));
+                let (devices, error) =
+                    match rt.block_on(try_scan_ble_devices(Duration::from_secs(4))) {
+                        Ok(devices) => (devices, String::new()),
+                        Err(error) => (Vec::new(), format!("BLE scan: {error:#}")),
+                    };
                 let items: Vec<StandardListViewItem> = devices
                     .iter()
                     .map(|d| SharedString::from(d.to_string()).into())
@@ -711,6 +715,7 @@ pub fn main() {
                     app.set_ble_devices(ModelRc::new(VecModel::from(items)));
                     app.set_selected_ble(-1);
                     app.set_ble_scanning(false);
+                    app.set_error_text(error.into());
                 });
             });
         });
@@ -842,7 +847,7 @@ pub fn main() {
                     let device = &guard[idx as usize];
                     HostConfig {
                         transport: Some(TransportType::Ble),
-                        ble_device: Some(device.device.clone()),
+                        ble_address: Some(device.id.clone()),
                         stream_defmt: Some(true),
                         stream_ergot: Some(true),
                         ..Default::default()

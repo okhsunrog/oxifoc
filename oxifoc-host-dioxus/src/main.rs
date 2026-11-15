@@ -62,6 +62,9 @@ fn App() -> Element {
     let busy = s.pending;
     let port = std::env::var("OXIFOC_TCP_PORT").unwrap_or_else(|_| "2025".into());
     let host = std::env::var("OXIFOC_TCP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let endpoint = std::env::var("OXIFOC_BLE_ADDRESS")
+        .map(|address| format!("BLE  {address}"))
+        .unwrap_or_else(|_| format!("TCP  {host}:{port}"));
     let rpm = if online {
         format!("{:.0}", s.rpm)
     } else {
@@ -104,14 +107,14 @@ fn App() -> Element {
       div {class:"rail-bottom",strong {"Native workspace"} p {"Motor control & diagnostics"} span {"Experimental GUI"}}
      }
      div {class:"body",
-      header {div {class:"connection",span {class:if online{"dot online"}else{"dot"}},strong {"{conn}"} span {"TCP  {host}:{port}"}} span {class:"session-state","{state}"}}
+      header {div {class:"connection",span {class:if online{"dot online"}else{"dot"}},strong {"{conn}"} span {"{endpoint}"}} span {class:"session-state","{state}"}}
       div {class:"workspace",
        main {
         div {class:"titlebar",div {h1 {match page(){0=>"Drive observatory",1=>"Controller parameters",_=>"Session journal"}} p {match page(){0=>"Currents, motion and operating conditions",1=>"Values read directly from the connected controller",_=>"Connection changes and acknowledged commands"}}}
          if page()==0 {button {class:"button",onclick:move |_| {paused.toggle();pmodel.paused.store(paused(),Ordering::Relaxed);},if paused(){"Resume plots"}else{"Pause plots"}}}
          if page()==1 {button {class:"button primary",disabled:!online,onclick:move |_|configmodel.read_config(),"Read motor parameters"}}
         }
-        if !online {div {class:"notice","Waiting for telemetry. Start oxifoc-virtual on the selected TCP port. Retained traces are stale."}}
+        if !online {div {class:"notice","Waiting for the selected controller. Retained traces are stale."}}
         if page()==0 {
          div {class:"plot-stack",
           Chart {model:model.clone(),index:0,title:"Phase & dq currents",unit:"A",tick:frame(),paused:paused()}
