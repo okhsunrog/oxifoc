@@ -351,6 +351,12 @@ where
         self.position.position()
     }
 
+    /// Experiment: allow one native-cycle delay of a due speed PI update.
+    /// Fresh commands and native current/protection work still run immediately.
+    pub fn defer_velocity_for_cycle(&mut self, defer: bool) {
+        self.velocity_schedule.defer_for_cycle(defer);
+    }
+
     /// Set control mode.
     ///
     /// A temporary PI override belongs to the bench mode sequence, not an

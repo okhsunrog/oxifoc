@@ -1,6 +1,96 @@
 use super::*;
 
 #[test]
+fn first_request_can_wait_one_native_cycle_but_keeps_zero_initial_pi_dt() {
+    let mut clock = OuterClock::default();
+    assert!(matches!(
+        clock.advance_with_defer(0, true).1,
+        VelocityTick::Hold
+    ));
+    let VelocityTick::Update { dt } = clock.advance_with_defer(67, true).1 else {
+        panic!()
+    };
+    assert_eq!(dt, 0.0);
+    assert_eq!(clock.deadline, 1_000);
+    let VelocityTick::Update { dt } = clock.advance_with_defer(1_000, false).1 else {
+        panic!()
+    };
+    assert!((dt - 0.000933).abs() < 1e-9);
+}
+
+#[test]
+fn postponement_keeps_actual_dt_and_periodic_grid() {
+    let mut clock = OuterClock::default();
+    assert!(matches!(
+        clock.advance_with_defer(0, false).1,
+        VelocityTick::Update { dt: 0.0 }
+    ));
+    assert!(matches!(
+        clock.advance_with_defer(950, false).1,
+        VelocityTick::Hold
+    ));
+    assert!(matches!(
+        clock.advance_with_defer(1_000, true).1,
+        VelocityTick::Hold
+    ));
+    assert_eq!(clock.deadline, 1_000);
+    let VelocityTick::Update { dt } = clock.advance_with_defer(1_067, false).1 else {
+        panic!()
+    };
+    assert!((dt - 0.001067).abs() < 1e-9);
+    assert_eq!(clock.deadline, 2_000);
+    let VelocityTick::Update { dt } = clock.advance_with_defer(2_000, false).1 else {
+        panic!()
+    };
+    assert!((dt - 0.000933).abs() < 1e-9);
+}
+
+#[test]
+fn command_flood_cannot_starve_a_postponed_update_or_disable_gap_reanchor() {
+    let mut clock = OuterClock::default();
+    clock.advance_with_defer(0, false);
+    assert!(matches!(
+        clock.advance_with_defer(1_000, true).1,
+        VelocityTick::Hold
+    ));
+    assert!(matches!(
+        clock.advance_with_defer(1_067, true).1,
+        VelocityTick::Update { .. }
+    ));
+    assert!(matches!(
+        clock.advance_with_defer(2_000, true).1,
+        VelocityTick::Hold
+    ));
+    assert!(matches!(
+        clock.advance_with_defer(7_000, true).1,
+        VelocityTick::Reanchor
+    ));
+    assert!(!clock.postponed);
+}
+
+#[test]
+fn postponed_cycle_retains_native_feedback_and_held_request() {
+    let mut schedule = VelocitySchedule::default();
+    schedule.begin_cycle(0);
+    schedule.set_request(3.0);
+    schedule.record_delivery(3.0, 1.0, 1.0);
+    schedule.begin_cycle(500);
+    schedule.defer_for_cycle(true);
+    assert!(matches!(schedule.begin_cycle(1_000), VelocityTick::Hold));
+    assert_eq!(schedule.requested_iq(), 3.0);
+    schedule.record_delivery(3.0, 2.0, -1.0);
+    schedule.defer_for_cycle(false);
+    assert!(matches!(
+        schedule.begin_cycle(1_067),
+        VelocityTick::Update { .. }
+    ));
+    let (residual, blocked, voltage) = schedule.take_feedback();
+    assert!((residual - (-2.0 * 1_000.0 - 67.0) / 1_067.0).abs() < 1e-6);
+    assert!(blocked.positive() && blocked.negative());
+    assert!(voltage.positive() && voltage.negative());
+}
+
+#[test]
 fn clock_keeps_its_grid_and_uses_actual_elapsed_time_at_different_native_rates() {
     for native_hz in [1_000_u64, 5_000, 15_000, 20_000] {
         let mut clock = OuterClock::default();

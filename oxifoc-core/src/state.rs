@@ -1373,6 +1373,9 @@ where
     );
     publish_current_offset_outcome(state_mutex, driver);
 
+    // Experiment: commands execute now; only a due outer PI may wait one cycle.
+    driver.defer_velocity_for_cycle(saw_set_mode);
+
     // Command-staleness deadman (ISR-resident — survives an async-executor
     // hang): stamp on a fresh setpoint; a stale link while running raises
     // the CommTimeout fault, whose GracefulStop severity the gate below
