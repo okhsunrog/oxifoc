@@ -4,8 +4,11 @@
 
 use defmt_rtt as _;
 
+mod support;
+
 #[embedded_test::tests(executor = embassy_executor::Executor::new())]
 mod tests {
+    use super::support::dwt::{Stats, cycles as dwt_cycles, enable as enable_dwt};
     use core::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
     use core::mem::ManuallyDrop;
 
@@ -24,22 +27,9 @@ mod tests {
         // harness epilogue: dropping Output would disconnect these pins.
         _shutdown_latch: ManuallyDrop<embassy_stm32::gpio::Output<'static>>,
         _gate_disable: ManuallyDrop<embassy_stm32::gpio::Output<'static>>,
-    }
-
-    fn enable_dwt() {
-        // SAFETY: these are Cortex-M4 debug registers; init runs once per test.
-        unsafe {
-            let demcr = 0xE000_EDFC as *mut u32;
-            core::ptr::write_volatile(demcr, core::ptr::read_volatile(demcr) | (1 << 24));
-            core::ptr::write_volatile(0xE000_1004 as *mut u32, 0);
-            let ctrl = 0xE000_1000 as *mut u32;
-            core::ptr::write_volatile(ctrl, core::ptr::read_volatile(ctrl) | 1);
-        }
-    }
-
-    fn dwt_cycles() -> u32 {
-        // SAFETY: DWT CYCCNT is a readable Cortex-M4 register, enabled in init.
-        unsafe { core::ptr::read_volatile(0xE000_1004 as *const u32) }
+        _timer: ManuallyDrop<
+            embassy_stm32::timer::low_level::Timer<'static, embassy_stm32::peripherals::TIM3>,
+        >,
     }
 
     #[init]
@@ -68,9 +58,16 @@ mod tests {
 
         let dp = embassy_stm32::init(config);
         use embassy_stm32::gpio::{Level, Output, Speed};
+        let timer = embassy_stm32::timer::low_level::Timer::new(dp.TIM3);
+        let regs = timer.regs_gp16();
+        regs.psc().write_value(83);
+        regs.arr().write(|w| w.set_arr(u16::MAX));
+        regs.egr().write(|w| w.set_ug(true));
+        timer.start();
         let state = TestState {
             _shutdown_latch: ManuallyDrop::new(Output::new(dp.PC5, Level::High, Speed::Low)),
             _gate_disable: ManuallyDrop::new(Output::new(dp.PB5, Level::Low, Speed::Low)),
+            _timer: ManuallyDrop::new(timer),
         };
         // Match shipping F405 flash acceleration after RCC sets wait states.
         // TIM1 and all six phase PWM pins remain at their reset defaults.
@@ -156,11 +153,7 @@ mod tests {
             let center = max_duty / 2;
             let tolerance = max_duty / 10;
             for (i, &duty) in telem.duties.iter().enumerate() {
-                let diff = if duty > center {
-                    duty - center
-                } else {
-                    center - duty
-                };
+                let diff = duty.abs_diff(center);
                 defmt::assert!(diff <= tolerance, "angle {}: duty[{}] = {}", angle, i, duty);
             }
         }
@@ -280,43 +273,6 @@ mod tests {
         })
     }
 
-    #[derive(Clone, Copy)]
-    struct WrapCycles {
-        min: u32,
-        max: u32,
-        total: u64,
-    }
-
-    impl WrapCycles {
-        const fn new() -> Self {
-            Self {
-                min: u32::MAX,
-                max: 0,
-                total: 0,
-            }
-        }
-
-        fn record(&mut self, cycles: u32) {
-            // Far below the controller watchdog's three-second timeout;
-            // no watchdog is started by this test image.
-            defmt::assert!(cycles > 0 && cycles < 1_000_000, "unexpected batch length");
-            self.min = self.min.min(cycles);
-            self.max = self.max.max(cycles);
-            self.total += u64::from(cycles);
-        }
-
-        fn report(&self, label: &str) {
-            let mean = self.total * 1_000 / u64::from(WRAP_ROUNDS * WRAP_BATCH_CALLS);
-            defmt::info!(
-                "{}: mean={} milli-cycles/call, batch min={} max={} cycles",
-                label,
-                mean,
-                self.min,
-                self.max
-            );
-        }
-    }
-
     #[test]
     fn z_bench_wrap_angle(_state: TestState) {
         use core::f32::consts::TAU;
@@ -399,7 +355,7 @@ mod tests {
                     core::hint::black_box(measure_wrap_batch(function, &inputs));
                 }
             }
-            let mut stats = [WrapCycles::new(); 4];
+            let mut stats = [Stats::new(); 4];
             for round in 0..WRAP_ROUNDS {
                 // Mixed-radix selection visits all 24 permutations once,
                 // balancing positions and every preceding/following pair.
@@ -414,17 +370,22 @@ mod tests {
                 }
             }
             defmt::info!("wrap input: {}", label);
-            stats[0].report("identity");
-            stats[1].report("old");
-            stats[2].report("shipping");
-            stats[3].report("outlined cold");
-            let delta = (stats[1].total as i64 - stats[2].total as i64) * 1_000
+            stats[0].report("identity", WRAP_ROUNDS, WRAP_BATCH_CALLS);
+            stats[1].report("old", WRAP_ROUNDS, WRAP_BATCH_CALLS);
+            stats[2].report("shipping", WRAP_ROUNDS, WRAP_BATCH_CALLS);
+            stats[3].report("outlined cold", WRAP_ROUNDS, WRAP_BATCH_CALLS);
+            let delta = (stats[1].total() as i64 - stats[2].total() as i64) * 1_000
                 / i64::from(WRAP_ROUNDS * WRAP_BATCH_CALLS);
             defmt::info!("old minus shipping: {} milli-cycles/call", delta);
-            let delta = (stats[1].total as i64 - stats[3].total as i64) * 1_000
+            let delta = (stats[1].total() as i64 - stats[3].total() as i64) * 1_000
                 / i64::from(WRAP_ROUNDS * WRAP_BATCH_CALLS);
             defmt::info!("old minus outlined cold: {} milli-cycles/call", delta);
         }
+    }
+
+    #[test]
+    fn z_bench_schedule(_state: TestState) {
+        super::support::schedule::run();
     }
 
     // ========== Benchmark: full FOC step at 168MHz ==========
@@ -455,7 +416,7 @@ mod tests {
             core::hint::black_box(&result);
 
             let elapsed = end.wrapping_sub(start);
-            total_cycles += elapsed as u64;
+            total_cycles += u64::from(elapsed);
             if elapsed < min_cycles {
                 min_cycles = elapsed;
             }
@@ -464,12 +425,12 @@ mod tests {
             }
         }
 
-        let avg_cycles = (total_cycles / N as u64) as u32;
-        let avg_ns = (avg_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
-        let min_ns = (min_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
-        let max_ns = (max_cycles as u64 * 1_000_000_000) / SYSCLK_HZ as u64;
+        let avg_cycles = (total_cycles / u64::from(N)) as u32;
+        let avg_ns = (u64::from(avg_cycles) * 1_000_000_000) / u64::from(SYSCLK_HZ);
+        let min_ns = (u64::from(min_cycles) * 1_000_000_000) / u64::from(SYSCLK_HZ);
+        let max_ns = (u64::from(max_cycles) * 1_000_000_000) / u64::from(SYSCLK_HZ);
         let budget_cycles = SYSCLK_HZ / 20_000;
-        let utilization = (avg_cycles as u64 * 100) / budget_cycles as u64;
+        let utilization = (u64::from(avg_cycles) * 100) / u64::from(budget_cycles);
 
         defmt::info!(
             "=== FOC {} ({} iters @ {}MHz) ===",

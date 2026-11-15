@@ -767,8 +767,11 @@ name = "oxifoc-core"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "critical-section",
  "defmt",
  "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
  "heapless",
  "libm",
  "postcard-schema",

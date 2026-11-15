@@ -177,6 +177,10 @@ clippy-core:
 bench-wrap-f405:
     cd tests/stm32f405 && cargo test --release --locked --test foc -- z_bench_wrap_angle --nocapture
 
+# On-target microbenchmarks, exact ELF + JSON results, automatic image restore.
+bench-embedded-f405 output recovery filter="z_bench_schedule" repeats="3":
+    uv run --no-project python -B scripts/bench_embedded_f405.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --filter {{quote(filter)}} --repeats {{repeats}}
+
 # Build the CLI before a recording session.
 build-cli:
     cargo build -p oxifoc-host-cli --locked
