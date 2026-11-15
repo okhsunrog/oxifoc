@@ -44,12 +44,12 @@ binary and its `--loadQml` option, without connecting to hardware. The existing
 binary is an older build; the inspected QML was loaded from the checkout.
 No VESC source was copied into OxiFOC or modified.
 
-## Proposed instruments (not implemented yet)
+## Instrument design
 
 ![Telemetry design study](telemetry-concept.svg)
 
 This SVG is a static design study with illustrative values, not a live screen
-or telemetry fixture. It proposes three reusable visual primitives:
+or telemetry fixture. It defines three reusable visual primitives:
 
 1. **Speed dial.** One prominent open 270-degree arc with a short marker,
    sparse ticks, a large value and a separate direction label. Signed shaft
@@ -89,3 +89,28 @@ were visually checked in Native and compact WebKitGTK, including the light
 theme. The Native plot workspace was also checked with TCP telemetry from
 `oxifoc-virtual`, without sending motor commands. Android uses the same
 components, but this branding revision has not been installed on a phone yet.
+
+## Initial instrument implementation
+
+`SpeedDial`, `SignedMeter`, `ThermalMeter` and the adaptive `Instruments` group
+are now shared Dioxus components. Native uses actual mechanical RPM, calibrated
+Iq and slow FET/motor temperatures; WebView uses the same measurements and builds current calibration off the UI thread. Fast
+readings expire after two seconds, slow readings after three. Disconnected,
+missing and non-finite readings become unavailable. Display ranges are fixed
+and explicitly labeled; a reading outside the range retains its numeric value.
+
+DC bus power is unavailable in the current stream. It is not estimated from
+Iq and bus voltage. The thermal component accepts derating/trip markers, but
+the connected screen currently has no verified trip configuration mapping,
+so it explicitly reports unavailable limits. A derating ramp end must not be
+presented as a hardware trip threshold. Meter fills interpolate for 100 ms using CSS; the
+SVG dial currently follows each UI sample immediately. Reduced motion disables
+meter transitions. Android runtime validation remains pending for these widgets.
+
+Native instruments were visually checked with actual virtual-controller TCP
+telemetry and in a 420-pixel catalogue window. The latter is explicitly
+labeled reference data. [Native runtime screenshot](instruments-native.png).
+WebKitGTK was also connected over TCP: calibrated Iq, mechanical speed,
+FET temperature and the absent motor-temperature state rendered correctly.
+Stopping the virtual controller changed the WebView to Reconnecting and cleared
+all instrument values, rather than leaving their last readings displayed.

@@ -119,6 +119,11 @@ pub fn HostApp() -> Element {
 pub fn SessionOverview(session: ConnectedSession, ondisconnect: EventHandler<()>) -> Element {
     let light = use_signal(|| false);
     let mut connected = use_signal(|| true);
+    let mut rpm = use_signal(|| None::<f32>);
+    let mut iq = use_signal(|| None::<f32>);
+    let calibration = use_hook(|| Arc::new(std::sync::Mutex::new(None)));
+    let mut fet = use_signal(|| None::<f32>);
+    let mut motor_temp = use_signal(|| None::<f32>);
     let mut samples = use_signal(|| 0u64);
     let mut volts = use_signal(|| "—".to_owned());
     let mut motor = use_signal(|| "Waiting for telemetry".to_owned());
@@ -127,17 +132,51 @@ pub fn SessionOverview(session: ConnectedSession, ondisconnect: EventHandler<()>
     let runtime = session.runtime.clone();
     use_future(move || {
         let runtime = runtime.clone();
+        let calibration = calibration.clone();
         async move {
+            let mut fast_seen = std::time::Instant::now();
+            let mut slow_seen = std::time::Instant::now();
             loop {
                 connected.set(runtime.connected.load(Ordering::Relaxed));
-                *samples.write() += runtime.fast_rx.try_iter().count() as u64;
+                for data in runtime.fast_rx.try_iter() {
+                    *samples.write() += 1;
+                    rpm.set(Some(data.rpm as f32 * 2.));
+                    iq.set(
+                        calibration
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|ctx| data.enrich(ctx).iq),
+                    );
+                    fast_seen = std::time::Instant::now();
+                }
                 for data in runtime.slow_rx.try_iter() {
+                    slow_seen = std::time::Instant::now();
+                    fet.set(Some(data.fet_temp_c_x10 as f32 / 10.));
+                    motor_temp.set(data.motor_temp_c_x10.map(|v| v as f32 / 10.));
                     volts.set(format!("{:.1} V", data.vbus_mv as f32 / 1000.));
                     motor.set(format!("{:?}", data.motor_state));
                     faults.set(data.fault_count);
                 }
                 for info in runtime.device_info_rx.try_iter() {
                     identity.set(info.hw.to_string());
+                    let calibration = calibration.clone();
+                    let runtime = runtime.clone();
+                    std::thread::spawn(move || {
+                        let ctx = oxifoc_host_lib::build_enrich_ctx(&runtime.cmd_tx, Some(&info));
+                        *calibration.lock().unwrap() = ctx;
+                    });
+                }
+                if !connected() || fast_seen.elapsed().as_secs_f32() > 2. {
+                    rpm.set(None);
+                    iq.set(None);
+                    if !connected() {
+                        *calibration.lock().unwrap() = None;
+                    }
+                }
+                if !connected() || slow_seen.elapsed().as_secs_f32() > 3. {
+                    fet.set(None);
+                    motor_temp.set(None);
                 }
                 for _ in runtime.fault_rx.try_iter() {}
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -152,6 +191,7 @@ pub fn SessionOverview(session: ConnectedSession, ondisconnect: EventHandler<()>
                 div { class: "session-heading", div { h1 { "{identity}" } p { "{session.form.transport.label()} · {session.form.endpoint()}" } }
                     Button { variant: ButtonVariant::Secondary, onclick: move |_| ondisconnect.call(()), "Disconnect" } }
                 Status { tone: if connected() { Tone::Success } else { Tone::Warning }, if connected() { "Connected" } else { "Reconnecting" } }
+                Instruments {rpm:rpm(),iq:iq(),fet:fet(),motor:motor_temp()}
                 div { class: "session-metrics",
                     div { class: "metric", p { "Bus voltage" } strong { class: "numeric", if connected() { "{volts}" } else { "—" } } }
                     div { class: "metric", p { "Drive state" } strong { if connected() { "{motor}" } else { "Unavailable" } } }

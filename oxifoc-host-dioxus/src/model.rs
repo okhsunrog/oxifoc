@@ -16,6 +16,10 @@ pub struct Snapshot {
     pub samples: u64,
     pub hz: f64,
     pub rpm: f32,
+    pub iq: Option<f32>,
+    pub motor_temp: Option<f32>,
+    pub fast_seen: Option<Instant>,
+    pub slow_seen: Option<Instant>,
     pub volts: f32,
     pub temperature: f32,
     pub state: String,
@@ -105,10 +109,12 @@ impl Model {
                 }
                 let paused = m.paused.load(Ordering::Relaxed);
                 let mut last = None;
+                let mut iq = None;
                 for sample in m.runtime.fast_rx.try_iter() {
                     count += 1;
                     if let Some(ctx) = &ctx {
                         let rich = sample.enrich(ctx);
+                        iq = Some(rich.iq);
                         if !paused {
                             m.plots[0].push_frame(&[rich.ia, rich.ib, rich.ic, rich.id, rich.iq]);
                             m.plots[1].push_frame(&[f32::from(sample.rpm) * 2.0]);
@@ -120,8 +126,12 @@ impl Model {
                 s.connected = connected;
                 if let Some(last) = last {
                     s.rpm = f32::from(last.rpm) * 2.0;
+                    s.iq = iq;
+                    s.fast_seen = Some(Instant::now());
                 }
                 for sample in m.runtime.slow_rx.try_iter() {
+                    s.slow_seen = Some(Instant::now());
+                    s.motor_temp = sample.motor_temp_c_x10.map(|v| v as f32 / 10.);
                     s.volts = sample.vbus_mv as f32 / 1000.;
                     s.temperature = f32::from(sample.fet_temp_c_x10) / 10.;
                     s.state = format!("{:?}", sample.motor_state);

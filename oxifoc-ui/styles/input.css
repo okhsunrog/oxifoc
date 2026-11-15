@@ -177,3 +177,25 @@ button:disabled { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   .ox-app *, .ox-app *::before, .ox-app *::after { animation: none !important; transition: none !important; }
 }
+.instruments { display: grid; grid-template-columns: 320px minmax(0,1fr); gap: 32px; padding: 24px; margin: 24px 0; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; }
+.speed-dial { position: relative; width: 320px; max-width: 100%; }
+.speed-dial svg { display: block; width: 100%; height: auto; }
+.dial-reading { position: absolute; top: 85px; left: 30px; right: 30px; text-align: center; }
+.dial-reading strong { display: block; font-size: 48px; line-height: 1.3; font-weight: 550; }
+.dial-reading span { color: var(--muted); }
+.dial-direction { margin-top: 12px !important; color: var(--accent) !important; }
+.dial-range, .meter-labels { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+.dial-range { margin-top: -35px; padding: 0 20px; }
+.instrument-stack { display: flex; flex-direction: column; justify-content: center; gap: 28px; min-width: 0; }
+.instrument-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.instrument-heading span { color: var(--muted); font-size: 13px; }
+.instrument-heading strong { font-weight: 550; font-size: 23px; }
+.meter-track { position: relative; height: 7px; background: var(--border); margin: 16px 0 12px; border-radius: 4px; }
+.meter-fill { position: absolute; top: 0; height: 7px; background: var(--accent); border-radius: 4px; transition: width 100ms linear, left 100ms linear; }
+.meter-zero, .threshold { position: absolute; left: 50%; top: -5px; height: 17px; width: 2px; background: var(--muted); }
+.thermal-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.thermal-fill, .threshold { background: var(--warn); }
+.threshold.trip, .danger .thermal-fill { background: var(--bad); }
+.instrument-note { font-size: 11px; margin-top: 8px !important; }
+@media(max-width:960px) { .instruments { grid-template-columns: 1fr; gap: 24px; } .speed-dial { margin: 0 auto; } }
+@media(max-width:480px) { .instruments { padding: 16px; } .thermal-pair { grid-template-columns: 1fr; } }

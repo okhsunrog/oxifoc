@@ -24,6 +24,8 @@ pub fn Catalogue() -> Element {
             main { class: "catalogue",
                 h1 { "Interface workshop" }
                 p { class: "intro-copy", "OxiFOC components. Reference states, keyboard interaction and renderer compatibility." }
+                Instruments {rpm:Some(3240.),iq:Some(18.6),fet:Some(48.),motor:Some(62.)}
+                p {"Instrument values above are catalogue examples."}
                 section { class: "catalogue-section", h2 { "Actions" }
                     div { class: "flex flex-wrap gap-3",
                         Button { onclick: move |_| message.set("Primary action received.".into()), "Connect" }

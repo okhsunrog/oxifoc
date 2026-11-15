@@ -20,3 +20,6 @@ pub const PLOT_COLORS: [[f32; 4]; 5] = [
 const fn rgba(r: u8, g: u8, b: u8) -> [f32; 4] {
     [r as f32 / 255., g as f32 / 255., b as f32 / 255., 1.]
 }
+
+pub mod instruments;
+pub use instruments::*;

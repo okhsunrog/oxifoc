@@ -132,7 +132,13 @@ fn Studio(
       header {div {class:"connection",span {class:if online{"dot online"}else{"dot"}},strong {"{conn}"} span {"{endpoint}"}} span {class:"session-state","{state}"} button {class:"button",onclick:move |_| ondisconnect.call(()),onkeydown:move |e|{if oxifoc_ui::keyboard_activate(&e){ondisconnect.call(());}}, "Disconnect"}}
       div {class:"workspace",
        main {
-        div {class:"titlebar",div {h1 {match page(){0=>"Drive observatory",1=>"Controller parameters",_=>"Session journal"}} p {match page(){0=>"Currents, motion and operating conditions",1=>"Values read directly from the connected controller",_=>"Connection changes and acknowledged commands"}}}
+        oxifoc_ui::Instruments {
+        rpm: (online && s.fast_seen.is_some_and(|t|t.elapsed().as_secs_f32()<2.)).then_some(s.rpm),
+        iq: s.iq.filter(|_|online && s.fast_seen.is_some_and(|t|t.elapsed().as_secs_f32()<2.)),
+        fet: (online && s.slow_seen.is_some_and(|t|t.elapsed().as_secs_f32()<3.)).then_some(s.temperature),
+        motor: s.motor_temp.filter(|_|online && s.slow_seen.is_some_and(|t|t.elapsed().as_secs_f32()<3.)),
+       }
+       div {class:"titlebar",div {h1 {match page(){0=>"Drive observatory",1=>"Controller parameters",_=>"Session journal"}} p {match page(){0=>"Currents, motion and operating conditions",1=>"Values read directly from the connected controller",_=>"Connection changes and acknowledged commands"}}}
          if page()==0 {button {class:"button",onclick:move |_| {paused.toggle();pmodel.paused.store(paused(),Ordering::Relaxed);},if paused(){"Resume plots"}else{"Pause plots"}}}
          if page()==1 {button {class:"button primary",disabled:!online,onclick:move |_|configmodel.read_config(),"Read motor parameters"}}
         }
