@@ -628,7 +628,7 @@ fn ADC() {
 
     let adcs = ADCS.get_or_insert_with(|| {
         defmt::unwrap!(
-            ADC_HANDOFF.lock(|cell| cell.take()),
+            ADC_HANDOFF.lock(RefCell::take),
             "ADC interrupt enabled before handles were installed"
         )
     });
@@ -735,7 +735,7 @@ fn ADC() {
     // The release flag avoids touching the boot handoff while the task
     // waits for its first VBUS reading. Once taken, DRIVER stays ISR-local.
     if DRIVER.is_none() && FOC_READY.load(Ordering::Acquire) {
-        *DRIVER = FOC_HANDOFF.lock(|cell| cell.take());
+        *DRIVER = FOC_HANDOFF.lock(RefCell::take);
     }
     let foc_telem = DRIVER.as_deref_mut().and_then(|driver| {
         #[cfg(feature = "fast-telemetry")]

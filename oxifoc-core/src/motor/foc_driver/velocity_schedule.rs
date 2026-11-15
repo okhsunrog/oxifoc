@@ -72,7 +72,7 @@ impl OuterClock {
             self.deadline = now_us.wrapping_add(PERIOD_US);
             return (0, VelocityTick::Reanchor);
         }
-        // Experiment: at most one native-cycle postponement. Do not consume
+        // Allow at most one native-cycle postponement. Do not consume
         // the deadline or last actual update; feedback still advances below.
         if defer && !self.postponed {
             self.postponed = true;

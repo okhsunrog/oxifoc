@@ -1,86 +1,79 @@
-# Бенчмарки на STM32F405 / MK5
+# STM32F405 / MK5 benchmarks
 
-Этот target использует `embedded-test` и уже содержит проверки математики,
-синтетический FOC, бенчмарк FOC с двумя реализациями sin/cos и сравнение
-`wrap_angle`. Добавлен `z_bench_schedule`: счётчики, остатки, маски и чтение
-времени. Драйвер затворов выключен, PC5 удерживает питание MK5; TIM1/PWM
-не запускаются. Это отдельная тестовая прошивка, заменяющая контроллер.
+See [ADC ISR optimization](../../docs/notes/adc-isr-optimization.md) for the
+measurement contract, optimization history and accepted implementation.
 
-## Воспроизводимый запуск
+This `embedded-test` target contains math checks, synthetic FOC, two sin/cos
+implementations, `wrap_angle` comparisons and `z_bench_schedule` for counters,
+modulo/masks and time reads. The gate driver stays disabled; PC5 holds MK5
+power. TIM1/PWM never starts. This test image replaces the normal controller.
 
-Из корня проекта, в окружении `nix develop`:
+## Reproducible runs
 
-```sh
-just bench-embedded-f405 <новый-каталог-артефактов> <проверенный-recovery.elf>
-```
-
-По умолчанию выполняются три независимых запуска `z_bench_schedule` одного
-ELF. Для прежнего сравнения углов:
+From the repository root in the Nix development shell:
 
 ```sh
-just bench-embedded-f405 <новый-каталог-артефактов> <recovery.elf> z_bench_wrap_angle 3
+just bench-embedded-f405 NEW_OUTPUT_DIRECTORY VERIFIED_RECOVERY_ELF
 ```
 
-Артефакты размещать под
-`/home/okhsunrog/tmp_zfs/codex_tmp/<task>/`. Recovery должен быть известным
-рабочим образом для подключённого стенда. Запуск проверяет Stopped, питание и
-температуру, собирает тесты без запуска в обычном target-каталоге, сохраняет
-точный ELF, SHA256, версии инструментов, build log, сырые логи и JSON.
-После тестов или ошибки в `finally` восстанавливает recovery под reset,
-проверяет Stopped, отсутствие faults и отключённые PWM outputs. Ошибка
-восстановления считается ошибкой запуска. Процесс должен оставаться живым
-до завершения восстановления; `finally` не переживает SIGKILL/отключение хоста.
+The default is three independent runs of `z_bench_schedule` using one exact ELF.
+For angle comparisons:
 
-Настройки сравнения заданы runner явно: release, opt-level=3, fat LTO,
-codegen-units=1, incremental=false. В Cargo.toml этого тестового target
-исторически остаётся incremental=true: обычный `cargo test` и запуск runner
-имеют разные настройки. Тестовый RCC использует номинальный HSE 8 MHz,
-PLL N=168; результат сохраняется в CPU cycles. Номинальные 168 MHz нельзя
-принимать за измеренную частоту конкретного кварца или путать с production
-`bench-calibrated-clock`.
+```sh
+just bench-embedded-f405 NEW_OUTPUT_DIRECTORY VERIFIED_RECOVERY_ELF z_bench_wrap_angle 3
+```
 
-## Как устроен замер
+Place artifacts under `/home/okhsunrog/tmp_zfs/codex_tmp/<task>/`. Recovery
+must be a known working image for the connected bench. The runner verifies
+Stopped, supply and temperature, builds without running in the usual target
+directory, and saves the exact ELF/SHA256, tool versions, build log, raw logs
+and decoded JSON. After completion or failure, `finally` restores recovery
+under reset and checks Stopped, zero faults and disabled phase PWM outputs.
+Restoration failure fails the run. The process must remain alive through
+recovery; `finally` cannot survive SIGKILL or host power loss.
 
-- `tests/support/dwt.rs`: DWT CYCCNT, ограниченное окно с IRQ masked,
-  compiler fences, min/max/total; вывод результатов после измерений.
-- `tests/support/schedule.rs`: 64 операции на окно, 32 повторения,
-  прогрев, чередование порядка. `black_box` защищает результат и непрозрачные
-  входы от удаления компилятором. Вывод `BENCHV1` декодирует
-  `scripts/bench_embedded_f405.py`.
-- Сравниваются константные `% 15/20/16/32`, `%` с runtime divisor,
-  сброс счётчика по порогу, `& 15/31`, Embassy ticks/microseconds,
-  прямое чтение TIM3 и общие `CaptureTimebase`/`scale_capture_ticks`.
-- Начальные значения 0 и `0x12345600` различают короткую работу после reset
-  и большие операнды. Для timebase проверяются нулевая и ненулевая
-  Q32-поправки. Это не исчерпывающий перебор latency деления или overflow.
-- Сохраняется полная стоимость окна, включая вызов функции, цикл,
-  `black_box` и чтение DWT. Есть базовые циклы u32/u64. Разница с ними
-  помогает сравнить варианты; не следует выдавать её за точную стоимость
-  одной инструкции или гарантированный максимум операции.
-- TIM3 adapter использует те же общие примитивы и порядок чтения регистров,
-  что Hall `now_ticks`, но не вызывает функцию из production ELF. Его
-  timebase передаётся непрозрачно: иначе LTO удаляет overflow accounting,
-  поскольку в тестовой прошивке нет Hall ISR, меняющего этот счётчик.
-  Для нового бенчмарка надо проверять ARM disassembly, а не полагаться
-  только на `black_box` результата.
+The runner explicitly selects release, opt3, fat LTO, CGU1 and incremental=false.
+The test crate's Cargo.toml still has incremental=true, so a bare `cargo test`
+does not use the same settings. Test RCC uses nominal HSE 8 MHz and PLL N=168;
+results are retained in CPU cycles. Nominal 168 MHz is not an independent
+measurement of the board's oscillator or the production calibrated clock.
 
-## Где измерять полный контроллер
+## Measurement implementation
 
-| Вопрос | Инструмент |
+- `tests/support/dwt.rs`: DWT CYCCNT, bounded IRQ-masked windows, compiler
+  fences and min/max/total; reporting happens after the timed region.
+- `tests/support/schedule.rs`: 64 operations per window, 32 rounds, warm-up
+  and alternating order. `black_box` protects results and opaque inputs.
+  `scripts/bench_embedded_f405.py` decodes the `BENCHV1` records.
+- Cases cover constant `%15/20/16/32`, runtime divisors, reset-at-threshold
+  counters, `&15/31`, Embassy ticks/microseconds, direct TIM3 reads and shared
+  `CaptureTimebase`/`scale_capture_ticks` primitives.
+- Seeds 0 and `0x12345600` distinguish early runtime from larger operands.
+  Timebase cases include zero/nonzero Q32 correction. These are not exhaustive
+  division-latency or overflow tests.
+- Keep gross window cost: call, loop, `black_box` and DWT overhead included.
+  u32/u64 baseline loops help compare cases; subtraction does not establish
+  exact instruction cost or a guaranteed operation maximum.
+- The TIM3 adapter uses the Hall `now_ticks` primitives and register-read
+  order, but does not invoke the function from a production ELF. Its timebase
+  is opaque to LTO; otherwise overflow accounting disappears because this
+  image has no Hall ISR updating the counter. Inspect ARM assembly for new
+  cases instead of relying only on `black_box` around the result.
+
+## Full-controller measurements
+
+| Question | Tool |
 |---|---|
-| Сколько стоит изолированная операция на Cortex-M4? | Этот `embedded-test` target |
-| Среднее, распределение и максимум тела работающего ADC ISR | `bench-foc-distribution`, `diagnostics/foc_distribution.rs` |
-| Интервалы входа в ADC ISR | Отдельная гистограмма того же recorder |
-| Успели ли применить PWM к следующему preload? | `bench-foc-deadline`, `diagnostics/pwm_deadline.rs`, TIM5/TIM1 |
-| Частота/фаза TIM1 и последовательность ADC действительно правильные? | `scripts/f405_timing.py`, чтение регистров при Stopped |
-| Правильно ли работает мотор, команды и deadman? | Ограниченный манёвр host CLI, Packed28, ACK, fault_generation |
+| Isolated Cortex-M4 operation cost | This `embedded-test` target |
+| Running ADC ISR body distribution | `bench-foc-distribution`, `diagnostics/foc_distribution.rs` |
+| ISR entry intervals | Separate histogram in the same recorder |
+| PWM applied before preload | `bench-foc-deadline`, `diagnostics/pwm_deadline.rs`, TIM5/TIM1 |
+| Actual TIM1/ADC cadence and phase | `scripts/f405_timing.py`, Stopped register readback |
+| Motor, commands and deadman | Bounded CLI maneuver, Packed28, ACK, fault generation |
 
-Для полного контроллера уже есть `just bench-mk5-foc` и
-`scripts/bench_foc_profile.py`. Специфическая матрица исследования 2026-11-15
-пока использует отдельную временную обвязку для одинаковых ELF и сценариев,
-но декодер и аппаратные измерители берёт из проекта. Изолированный тест
-не заменяет эту проверку: в нём нет ADC ISR, нагрузки протокола, реального
-движения или совпадения PI с командами. Body recorder исключает собственную
-статистику в конце ISR; интервал входа и PWM margin отвечают на другие вопросы.
-Не складывать эти значения и не сравнивать разные уровни инструментирования
-как одинаковые сборки.
+Use `just bench-mk5-foc` / `scripts/bench_foc_profile.py` for the full controller.
+Research matrices reuse those hardware recorders and decoders with fixed images
+and scenarios. Isolated tests lack ADC interrupt load, protocol activity, real
+motion and PI/command collisions. Body timing excludes final statistics; entry
+intervals and PWM margins answer different questions. Do not combine their
+values or treat different instrumentation levels as identical builds.

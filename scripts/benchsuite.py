@@ -19,7 +19,7 @@ Scenarios (all thresholds live in SCENARIOS below):
 
 Preconditions: the canonical firmware is flashed and the transport is
 reachable; the rotor is free to spin; no active faults. The runner checks
-faults before and after every scenario and inserts a coast-down settle
+faults and their generation before and after every scenario, and inserts a coast-down settle
 between scenarios so each one starts from standstill (the cold-start
 check would fail otherwise — that is intentional).
 
@@ -216,6 +216,21 @@ def query_faults(timeout: float = 30.0) -> tuple[list[dict], str]:
     return resp.get("faults", []), ""
 
 
+def query_fault_generation(timeout: float = 30.0) -> tuple[int | None, str]:
+    """Catch faults cleared by terminal Stop even when their ISR log is disabled."""
+    code, _log, body = run_cli(["--json", "status"], timeout)
+    if code != 0:
+        return None, f"status query failed (exit {code})"
+    try:
+        status = json.loads(body)
+    except json.JSONDecodeError:
+        return None, "status query returned unparseable output"
+    generation = status.get("fault_generation") if isinstance(status, dict) else None
+    if type(generation) is not int or not 0 <= generation <= 0xFFFFFFFF:
+        return None, "status query missing a valid fault_generation"
+    return generation, ""
+
+
 def unwrap_seq(seq: np.ndarray, period: int = 65536) -> np.ndarray:
     s = seq.astype(np.int64)
     d = np.diff(s)
@@ -371,6 +386,9 @@ def run_scenario(name: str, spec: dict, out_dir: Path) -> dict:
         return dict(scenario=name, ok=False, error=err or
                     f"active faults before run: {pre_faults} — clear them first",
                     checks=[])
+    pre_generation, err = query_fault_generation()
+    if err:
+        return dict(scenario=name, ok=False, error=err, checks=[])
 
     code, log_lines, body = run_cli(
         ["--json", "maneuver", "run", str(maneuver), "--out", str(out_parquet)],
@@ -387,11 +405,18 @@ def run_scenario(name: str, spec: dict, out_dir: Path) -> dict:
     post_faults, fault_err = query_faults()
     if fault_err:
         return dict(scenario=name, ok=False, checks=[], error=fault_err)
+    post_generation, err = query_fault_generation()
+    if err:
+        return dict(scenario=name, ok=False, checks=[], error=err)
 
     checks = evaluate(name, spec, summary, device_lines(log_lines),
                       out_parquet, post_faults)
+    checks.append(dict(check="fault generation unchanged",
+                       ok=pre_generation == post_generation,
+                       detail=f"{pre_generation} -> {post_generation}"))
     return dict(scenario=name, ok=all(c["ok"] for c in checks), checks=checks,
-                capture=str(out_parquet))
+                capture=str(out_parquet),
+                fault_generation=dict(before=pre_generation, after=post_generation))
 
 
 # ---------------------------------------------------------------------------

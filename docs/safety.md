@@ -71,7 +71,7 @@ to a different USB controller before the mismatch is discovered.
 or a valid affirmation refreshes it. The host affirms the last acknowledged
 active setpoint every 50 ms. An affirmation names that setpoint's sequence and
 cannot acquire ownership. `run_foc_cycle` checks command staleness
-(default 150 ms) while running and, if stale, raises the **CommTimeout fault**
+(default 150 ms) every 16 control cycles while running and, if stale, raises the **CommTimeout fault**
 (GracefulStop class) — the severity gate then arms the failsafe (see
 [notes/fault-overhaul.md](notes/fault-overhaul.md): the deadman and the
 Layer-1 link gate are *detectors*, the fault gate is the *executor*, and the
@@ -80,6 +80,11 @@ activity clears the fault. The re-arm latch still demands the explicit
 safe-mode acknowledgement. The check is ISR-resident (`now_ticks` is
 the 1 MHz hall capture timer), so it survives an async-executor hang where
 Layer 1 can't fire.
+
+Expiry polling adds at most 16 running ISR periods: about 1.07 ms at 15 kHz
+or 0.8 ms at 20 kHz. Accepted commands refresh the timestamp every ISR;
+Stop, the link gate and execution of active faults retain their native rate.
+See the [ADC ISR optimization history](notes/adc-isr-optimization.md).
 
 The failsafe is a self-contained controller
 ([`motor/failsafe.rs`](../oxifoc-core/src/motor/failsafe.rs)) run every cycle

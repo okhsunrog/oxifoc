@@ -77,8 +77,10 @@ impl<const N: usize> FastTelemetryQueue<N> {
             let records = match bytemuck::try_cast_slice::<u8, FastTelemetry>(bytes) {
                 Ok(frames) => frames.iter().take_while(|frame| accept(frame)).count(),
                 Err(_) => bytes
-                    .chunks_exact(FRAME_BYTES)
-                    .take_while(|frame| accept(&bytemuck::pod_read_unaligned(frame)))
+                    .as_chunks::<FRAME_BYTES>()
+                    .0
+                    .iter()
+                    .take_while(|frame| accept(&bytemuck::pod_read_unaligned(*frame)))
                     .count(),
             };
             grant.release(records * FRAME_BYTES);

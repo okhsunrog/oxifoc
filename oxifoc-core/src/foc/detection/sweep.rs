@@ -717,8 +717,7 @@ async fn probe_hfi_pipeline_lag<H: DetectionHardware, T: Timer, S: SinCos>(
     }
     let mut corr_q = [0.0f32; PIPELINE_LAG_MAX + 1];
     let mut corr_i = [0.0f32; PIPELINE_LAG_MAX + 1];
-    for k in warmup..count {
-        let sample = capture.samples[k];
+    for (k, sample) in capture.samples.iter().enumerate().take(count).skip(warmup) {
         for d in 1..=PIPELINE_LAG_MAX {
             let theta = ((k - d) % FFT_SIZE) as f32 * core::f32::consts::TAU / FFT_SIZE as f32;
             let phase = (k - d) as f32 * omega_c * dt;
@@ -796,7 +795,7 @@ impl HfiResponse {
         }
         // Remove the DC component independently in each spatial window. DC
         // hold and packet-to-packet drift must not count as HFI excitation.
-        for window in capture.samples[lag..capture.len].chunks_exact(FFT_SIZE) {
+        for window in capture.samples[lag..capture.len].as_chunks::<FFT_SIZE>().0 {
             let mut mean = [0.0; 2];
             for (k, sample) in window.iter().enumerate() {
                 for (axis, value) in [sample.alpha, sample.beta].iter().enumerate() {
@@ -863,9 +862,7 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
         response.record(&capture, lag)?;
         let first = capture.samples[lag - 1];
         measurement.prime_currents(first.alpha, first.beta);
-        for k in lag..capture.len {
-            let sample = capture.samples[k];
-            let index = k - lag;
+        for (index, sample) in capture.samples[lag..capture.len].iter().enumerate() {
             let (v_a, v_b) = program.injection::<S>(index);
             let angle = (index % FFT_SIZE) as f32 * core::f32::consts::TAU / FFT_SIZE as f32;
             measurement.record(sample.alpha, sample.beta, angle, v_a, v_b);

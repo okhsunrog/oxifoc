@@ -22,8 +22,10 @@
 
 - [Hall-to-observer tuning](notes/hall-observer-tuning.md) records the current
   thresholds, their baseline and how to revisit the estimator.
-- [FOC loop journal](notes/foc-loop-research.md) records MK5 timing, telemetry,
-  low-speed behavior and crossover captures.
+- [ADC ISR optimization](notes/adc-isr-optimization.md) records the accepted
+  implementation, timing methodology, measured history and rejected experiments.
+- [Motor and telemetry journal](notes/foc-loop-research.md) records low-speed
+  behavior, transport qualification and Hall-to-observer crossover captures.
 - [Commissioning design and implementation history](notes/motor-setup-wizard.md)
   and [protocol design notes](notes/protocol-versioning.md).
 - [Decisions](decisions.md) records the rationale at the time of each decision.
