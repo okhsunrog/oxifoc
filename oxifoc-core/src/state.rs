@@ -1318,6 +1318,7 @@ where
 {
     let board = prepared_board.board();
     driver.set_vbus(vbus_v);
+    let check_deadman = driver.deadman_check_due();
 
     let prof_t0 = crate::isr_prof::now();
 
@@ -1401,7 +1402,7 @@ where
     // `DETECTION_ACTIVE`); the command-staleness deadman is not, so a hung
     // detection still raises CommTimeout.
     let link_lost_unacked = link_lost && !in_safe_mode && !DETECTION_ACTIVE.load(Ordering::Relaxed);
-    let deadman_expired = driver.deadman_check_due() && {
+    let deadman_expired = check_deadman && {
         let staleness = driver.command_staleness_us(now_ticks);
         driver.deadman_expired_with(staleness, now_ticks)
     };
