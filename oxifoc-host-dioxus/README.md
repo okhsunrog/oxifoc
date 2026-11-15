@@ -2,7 +2,8 @@
 
 Experimental Dioxus Native frontend. Uses `oxifoc-host-lib` directly and the shared
 `oxifoc-plot` WGPU renderer. No generated telemetry or simulator-specific protocol.
-Default connection: TCP 127.0.0.1:2025, 1000 Hz fast telemetry.
+Opens a connection page with BLE, TCP/UDP and desktop USB/serial/RTT options.
+The shared connection flow requests 100 Hz fast telemetry.
 
 From the repository root, start the existing virtual controller:
 
@@ -16,7 +17,11 @@ Then start the GUI:
 nix develop -c cargo run --manifest-path oxifoc-host-dioxus/Cargo.toml --release --locked
 ```
 
-`OXIFOC_TCP_HOST` and `OXIFOC_TCP_PORT` select the controller. Apply current sends
+Choose Network, enter `127.0.0.1:2025`, then Connect. `OXIFOC_TCP_HOST` and
+`OXIFOC_TCP_PORT` prefill the form without automatically connecting.
+`--catalogue` opens the shared [component catalogue](../oxifoc-ui/README.md);
+`--compact` starts a narrow window for inspecting the connection layout.
+Apply current sends
 an acknowledged current-control command. Stop sends acknowledged Stopped.
 Pausing freezes chart history while receiving continues. Wheel zoom anchors at
 the pointer when paused. Currents use the controller's calibration through
@@ -24,7 +29,8 @@ the pointer when paused. Currents use the controller's calibration through
 
 The initial slice includes phase/dq currents, RPM, bus voltage, FET temperature,
 channel toggles, plot focus, motor parameter readback and session events.
-Parameter editing, transport discovery and commissioning workflows are planned.
+Parameter editing and commissioning workflows are planned. Discovery and the
+connection page use the shared `oxifoc-ui` and `oxifoc-host-dioxus-ui` crates.
 
 This crate has its own workspace/lockfile to isolate experimental Dioxus/Blitz
 patches from the established Slint and firmware dependency graph. Shared crates

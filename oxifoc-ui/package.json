@@ -1,0 +1,12 @@
+{
+  "name": "oxifoc-ui-styles",
+  "private": true,
+  "scripts": {
+    "build": "tailwindcss -i styles/input.css -o assets/oxifoc.css --minify",
+    "dev": "tailwindcss -i styles/input.css -o assets/oxifoc.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.5",
+    "tailwindcss": "^4.3.5"
+  }
+}

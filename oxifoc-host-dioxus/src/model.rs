@@ -26,7 +26,7 @@ pub struct Snapshot {
     pub pending: bool,
 }
 pub struct Model {
-    pub runtime: HostRuntime,
+    pub runtime: Arc<HostRuntime>,
     pub plots: [PlotBuffer; 4],
     pub paused: AtomicBool,
     pub snapshot: Mutex<Snapshot>,
@@ -58,6 +58,9 @@ impl Model {
             stream_defmt: Some(false),
             ..Default::default()
         });
+        Self::from_runtime(Arc::new(runtime))
+    }
+    pub fn from_runtime(runtime: Arc<HostRuntime>) -> Arc<Self> {
         let model = Arc::new(Self {
             runtime,
             plots: [

@@ -25,7 +25,11 @@ fn main() {
             Box::new(
                 WindowAttributes::default()
                     .with_title("OxiFOC • Drive studio")
-                    .with_surface_size(LogicalSize::new(1440, 1000)),
+                    .with_surface_size(if std::env::args().any(|s| s == "--compact") {
+                        LogicalSize::new(420, 900)
+                    } else {
+                        LogicalSize::new(1440, 1000)
+                    }),
             ),
             Box::new(oxifoc_plot::required_features()),
             Box::new(oxifoc_plot::required_limits(CAPACITY, 5)),
@@ -34,7 +38,25 @@ fn main() {
 }
 #[component]
 fn App() -> Element {
-    let model = use_hook(Model::connect);
+    if std::env::args().any(|s| s == "--catalogue") {
+        return rsx! { oxifoc_ui::Catalogue {} };
+    }
+    let flow = oxifoc_host_dioxus_ui::use_connection(oxifoc_ui::Capabilities::DESKTOP);
+    let session = (flow.snapshot)().session;
+    match session {
+        Some(session) => {
+            rsx! { Studio { session, ondisconnect: move |_| flow.controller.disconnect() } }
+        }
+        None => rsx! { oxifoc_host_dioxus_ui::ConnectScreen { flow } },
+    }
+}
+
+#[component]
+fn Studio(
+    session: oxifoc_host_dioxus_ui::ConnectedSession,
+    ondisconnect: EventHandler<()>,
+) -> Element {
+    let model = use_hook(|| Model::from_runtime(session.runtime.clone()));
     let mut data = use_signal(Snapshot::default);
     let mut frame = use_signal(|| 0u64);
     let mut page = use_signal(|| 0);
@@ -55,16 +77,15 @@ fn App() -> Element {
     let m = model.clone();
     use_drop(move || {
         m.alive.store(false, Ordering::Relaxed);
-        m.runtime.shutdown();
     });
     let s = data();
     let online = s.connected;
     let busy = s.pending;
-    let port = std::env::var("OXIFOC_TCP_PORT").unwrap_or_else(|_| "2025".into());
-    let host = std::env::var("OXIFOC_TCP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let endpoint = std::env::var("OXIFOC_BLE_ADDRESS")
-        .map(|address| format!("BLE  {address}"))
-        .unwrap_or_else(|_| format!("TCP  {host}:{port}"));
+    let endpoint = format!(
+        "{}  {}",
+        session.form.transport.label(),
+        session.form.endpoint()
+    );
     let rpm = if online {
         format!("{:.0}", s.rpm)
     } else {
@@ -107,7 +128,7 @@ fn App() -> Element {
       div {class:"rail-bottom",strong {"Native workspace"} p {"Motor control & diagnostics"} span {"Experimental GUI"}}
      }
      div {class:"body",
-      header {div {class:"connection",span {class:if online{"dot online"}else{"dot"}},strong {"{conn}"} span {"{endpoint}"}} span {class:"session-state","{state}"}}
+      header {div {class:"connection",span {class:if online{"dot online"}else{"dot"}},strong {"{conn}"} span {"{endpoint}"}} span {class:"session-state","{state}"} button {class:"button",onclick:move |_| ondisconnect.call(()),onkeydown:move |e|{if oxifoc_ui::keyboard_activate(&e){ondisconnect.call(());}}, "Disconnect"}}
       div {class:"workspace",
        main {
         div {class:"titlebar",div {h1 {match page(){0=>"Drive observatory",1=>"Controller parameters",_=>"Session journal"}} p {match page(){0=>"Currents, motion and operating conditions",1=>"Values read directly from the connected controller",_=>"Connection changes and acknowledged commands"}}}

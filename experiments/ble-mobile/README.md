@@ -1,7 +1,8 @@
-# OxiFOC BLE Lab
+# OxiFOC mobile connection frontend
 
-Minimal Android Dioxus frontend for the shared `oxifoc-host-lib` BLE transport.
-It scans for NUS devices and displays connection state, sample count, bus
+Android Dioxus frontend using the shared adaptive `oxifoc-ui` connection page
+and `oxifoc-host-dioxus-ui` controller. It offers BLE, TCP and UDP; USB is not
+offered on Android. It scans for NUS devices and displays connection state, sample count, bus
 voltage, motor state and faults. Data comes from the connected controller; no
 mock feature is enabled. It does not send motor-control commands.
 
@@ -14,6 +15,9 @@ Enable `dioxus-blec/android-webview` and call `prepare_android()` after the
 WebView is mounted, before initializing the shared host backend. This supplies
 the current Activity for runtime permission requests. An Application context
 from `ndk-context` alone cannot display that prompt.
+
+Shared components, renderer limitations and the current device validation are
+documented in [OxiFOC UI](../../oxifoc-ui/README.md).
 
 ## Build and run
 
@@ -36,9 +40,10 @@ Linux [BLE virtual bridge](../ble-virtual-bridge/README.md), scan and select
 TCP → the normal `oxifoc-virtual` backend. The BLE client and protocol are real;
 only the controller physics is virtual.
 
-## Device validation
+## Earlier BLE Lab device validation
 
-On 2026-11-15, the debug APK was built, installed and exercised on a Pixel 8 Pro
+Before the shared connection-page migration, on 2026-11-15 the BLE Lab debug
+APK was built, installed and exercised on a Pixel 8 Pro
 running Android API 37. Runtime permission request and NUS discovery worked.
 The negotiated ATT MTU was 517; the UI received the virtual controller's
 identity, `Stopped` state, 24.0 V bus voltage and fast telemetry configured at
