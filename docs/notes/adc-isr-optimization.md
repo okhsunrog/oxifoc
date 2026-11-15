@@ -216,9 +216,9 @@ the complete 0.33-us gain to individual instructions.
   32,149,101 samples and 256 commands. Rejected attempts remain separate;
   the deadman threshold was not relaxed.
 
-### Stock 15-kHz integration
+### Stock 15-kHz integration: archived images
 
-The integrated source was additionally exercised without the carrier override:
+The initial integration images were exercised without the carrier override:
 normal-image +120/+450 holds and the reversal maneuver, plus separate DWT and
 PWM witnesses. Seven captures retained 1,267,584 raw samples without loss;
 all 18 commands were acknowledged and fault generation stayed unchanged.
@@ -234,6 +234,8 @@ No measured body exceeded the period; PWM late/ambiguous/masked = 0/0/0.
 The ordinary image was restored at 15 kHz, Stopped, zero faults and all phase
 PWM enables off. Normal-image SHA256:
 `a49890da1bd04767da6773c58c7a901ddaa476a0202e059cb5ec4762a7cd5e9c`.
+These timings identify the archived images, before later iterator-only source
+cleanup; they are not measurements of every subsequent rebuild.
 
 ## Other experiments and rejected alternatives
 
