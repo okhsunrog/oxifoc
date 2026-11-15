@@ -75,6 +75,7 @@ pub fn new_stack() -> (EdgeStack, StdQueue) {
 #[derive(Default)]
 pub(crate) struct Session {
     address: Option<String>,
+    subscribed: bool,
     workers: Vec<tokio::task::JoinHandle<()>>,
 }
 impl Session {
@@ -83,17 +84,29 @@ impl Session {
             worker.abort();
             let _ = worker.await;
         }
+        let subscribed = std::mem::take(&mut self.subscribed);
         if let Some(address) = self.address.take()
             && let Ok(handler) = handler().await
-            && let Err(error) = handler.disconnect_device(&address).await
         {
+            // Android can retain the physical link for other GATT clients.
+            // Explicitly end our notification session even in that case.
+            if subscribed
+                && handler.is_device_connected(&address)
+                && let Err(error) = handler
+                    .unsubscribe_from(&address, NUS_TX_UUID, Some(NUS_SERVICE_UUID))
+                    .await
+            {
+                warn!("BLE unsubscribe: {error}");
+            }
             // Also cancel a pending connect: it has a link entry but has not
             // become is_device_connected() yet. No entry is normal when a
             // cancelled connect was still discovering the address.
-            if !matches!(
-                error,
-                blec::Error::DeviceNotConnected(_) | blec::Error::NoDeviceConnected
-            ) {
+            if let Err(error) = handler.disconnect_device(&address).await
+                && !matches!(
+                    error,
+                    blec::Error::DeviceNotConnected(_) | blec::Error::NoDeviceConnected
+                )
+            {
                 warn!("BLE disconnect: {error}");
             }
         }
@@ -146,6 +159,8 @@ impl Session {
             );
             let (tx, rx) = tokio::sync::mpsc::channel(RX_QUEUE_FRAMES);
             let overflow = failed.clone();
+            // Also clean up if setup is cancelled while the CCCD write is in flight.
+            self.subscribed = true;
             connection
                 .subscribe(NUS_TX_UUID, Some(NUS_SERVICE_UUID), move |data: Vec<u8>| {
                     // Never stall blec's event loop. A dropped protocol frame requires
@@ -384,6 +399,8 @@ mod lifecycle_tests {
             session.close().await;
             assert!(!good.is_connected());
             assert!(session.workers.is_empty());
+            assert!(good.count_ops(&blec::mock::Op::Unsubscribe(NUS_TX_UUID)) > 0);
+            assert!(!session.subscribed);
         });
         drop(rt);
     }
