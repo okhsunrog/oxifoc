@@ -225,14 +225,26 @@ async fn rx_worker(
     notify: Arc<WaitQueue>,
 ) {
     let mut processor = EdgeFrameProcessor::new();
+    let mut have_received = false;
     loop {
         tokio::select! {
             biased;
             _ = failed.cancelled() => break,
             data = rx.recv() => match data {
-                Some(data) => { if processor.process_frame(&data, &stack, ()) { notify.wake_all(); } }
+                Some(data) => {
+                    have_received = true;
+                    if processor.process_frame(&data, &stack, ()) { notify.wake_all(); }
+                }
                 None => break,
-            }
+            },
+            // Match the other framed transports: handshake bounds initial
+            // silence, then loss of incoming traffic fails the active link.
+            _ = tokio::time::sleep(std::time::Duration::from_millis(
+                oxifoc_core::icd::LIVENESS_TIMEOUT_MS
+            )), if have_received => {
+                warn!("BLE liveness timeout");
+                break;
+            },
         }
     }
     failed.cancel();
@@ -271,6 +283,38 @@ fn mark_down(stack: &EdgeStack, notify: &WaitQueue) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn silent_connected_peer_goes_down_without_a_disconnect_event() {
+        use super::*;
+        let (stack, _queue) = new_stack();
+        stack.manage_profile(|im| {
+            im.set_interface_state(
+                (),
+                InterfaceState::Active {
+                    net_id: 0,
+                    node_id: EDGE_NODE_ID,
+                },
+            )
+            .unwrap();
+        });
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let failed = CancellationToken::new();
+        let notify = Arc::new(WaitQueue::new());
+        // Keep the sender open: only the liveness deadline can end this worker.
+        tx.send(Vec::new()).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(oxifoc_core::icd::LIVENESS_TIMEOUT_MS * 2),
+            rx_worker(stack.clone(), rx, failed.clone(), notify),
+        )
+        .await
+        .unwrap();
+        assert!(failed.is_cancelled());
+        assert!(
+            stack.manage_profile(|im| matches!(im.interface_state(()), Some(InterfaceState::Down)))
+        );
+        drop(tx);
+    }
+
     #[test]
     fn nus_requires_a_complete_frame_in_one_att_packet() {
         for mtu in [0, 3, 23, 247, 507] {
