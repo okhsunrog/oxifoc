@@ -1,0 +1,6 @@
+[application]
+name = "OxiFOC BLE Lab"
+[bundle]
+identifier = "com.oxifoc.blelab"
+[android]
+min_sdk = 26

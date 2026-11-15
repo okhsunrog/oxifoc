@@ -63,4 +63,4 @@ max_sdk_version = 30
 workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-blec = { git = "https://github.com/okhsunrog/tauri-plugin-blec", rev = "493ad73d63e03d12161b6220731ee69f94af856b", version = "0.20.0", features = ["embedded-dex"] }
+blec = { git = "https://github.com/okhsunrog/tauri-plugin-blec", rev = "6c5f1b5b5e55ff79312e9564efb9a560cdc788ba", version = "0.20.0", features = ["embedded-dex"] }

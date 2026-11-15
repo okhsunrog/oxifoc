@@ -23,6 +23,7 @@
             openssl
             udev
             wayland
+            zlib # Dioxus CLI's Android packaging tools.
           ];
         in
         {
