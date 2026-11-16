@@ -505,7 +505,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     angle: wrap_angle(self.observer.phase().unwrap_or(0.0) - obs_vel * input.dt),
                     velocity: obs_vel,
                 };
-                match self.startup.feed_confirm(
+                #[cfg(feature = "isr-profiling")]
+                let confirm_start = crate::isr_prof::now();
+                let confirm = self.startup.feed_confirm(
                     input.i_alpha,
                     input.i_beta,
                     input.dt,
@@ -513,7 +515,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     l,
                     lambda,
                     claim,
-                ) {
+                );
+                #[cfg(feature = "isr-profiling")]
+                crate::isr_prof::add(
+                    &crate::isr_prof::STARTUP_CONFIRM,
+                    confirm_start,
+                    crate::isr_prof::now(),
+                );
+                match confirm {
                     ConfirmResult::Confirmed { velocity } => {
                         if self.startup.log_allow() {
                             info!(
@@ -538,14 +547,39 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                         // trust the measurement, reseed the observer from
                         // it — same as the deadshort catch.
                         if self.startup.log_allow() {
+                            #[cfg(feature = "isr-profiling")]
+                            let log_start = crate::isr_prof::now();
                             warn!(
                                 "startup: observer diverged from probed rotor \
                                  (probe_vel={} observer_vel={}), seeding observer from probe",
                                 velocity, obs_vel
                             );
+                            #[cfg(feature = "isr-profiling")]
+                            let log_end = crate::isr_prof::now();
+                            #[cfg(feature = "isr-profiling")]
+                            crate::isr_prof::add(&crate::isr_prof::STARTUP_LOG, log_start, log_end);
+                            #[cfg(feature = "isr-profiling")]
+                            {
+                                use core::sync::atomic::Ordering;
+                                let elapsed = log_end.wrapping_sub(log_start);
+                                crate::isr_prof::BENCH_STARTUP_LOG_EVENTS
+                                    .fetch_add(1, Ordering::Relaxed);
+                                crate::isr_prof::BENCH_STARTUP_LOG_CYCLES
+                                    .fetch_add(elapsed, Ordering::Relaxed);
+                                crate::isr_prof::BENCH_STARTUP_LOG_MAX
+                                    .fetch_max(elapsed, Ordering::Relaxed);
+                            }
                         }
+                        #[cfg(feature = "isr-profiling")]
+                        let seed_start = crate::isr_prof::now();
                         self.observer
                             .seed(wrap_angle(angle + velocity * input.dt), velocity);
+                        #[cfg(feature = "isr-profiling")]
+                        crate::isr_prof::add(
+                            &crate::isr_prof::STARTUP_SEED,
+                            seed_start,
+                            crate::isr_prof::now(),
+                        );
                     }
                     ConfirmResult::Probing => {}
                 }

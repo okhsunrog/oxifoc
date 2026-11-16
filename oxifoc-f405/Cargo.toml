@@ -68,7 +68,10 @@ bench-foc-phase-ram = ["bench-foc-sections-ram", "oxifoc-core/isr-profile-phase"
 bench-ntc-check = []
 # Explicit bench build for a motor with no thermistor connected to TMP.
 # Finite ADC-owned records of the first and longest over-budget cycles.
-bench-cycle-outliers = ["isr-profiling", "bench-clock-reference"]
+bench-cycle-outliers = ["isr-profiling"]
+bench-dissipative-inline = ["oxifoc-core/bench-dissipative-inline"]
+bench-iq-authority = ["oxifoc-core/bench-iq-authority"]
+bench-outline-circle = ["oxifoc-core/bench-outline-circle"]
 # A/B reproduction of the former periodic observer log inside ADC.
 bench-observer-logging = ["oxifoc-core/observer-logging"]
 # Finite Stopped-only CPU comparison; no transport I/O inside timed regions.
@@ -163,22 +166,23 @@ postcard = { version = "1.1", features = ["use-defmt"] }
 
 # Local crates
 oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery", "hfi", "hfi-detect", "isr-speed"] }
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a", default-features = false, features = [
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a", version = "0.12.0", default-features = false, features = [
     "embedded-io-async-v0_7",
     "embassy-time",
     "disable-cache-padding",
-    "defmt-sink-rtt",
-    "defmt-sink-network",
+    "defmt-v1",
 ] }
-rtt-target = "0.6"
 libm = "0.2.16"
 serde = { version = "1.0.229", default-features = false }
 embedded-hal = "1.0.0"
 bitbang-hal-ng = { version = "0.5.0", features = ["cortex-m"], optional = true }
+rtt-target = { version = "0.6", default-features = false }
+bbqueue = { version = "0.7", default-features = false, features = ["maitake-sync-0_3", "disable-cache-padding"] }
 
 # Keep Embassy types used through ergot on the same main-branch revision as
 # embassy-stm32.
 [patch.crates-io]
+rtt-target = { path = "../vendor/rtt-target" }
 embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }
 
 [profile.dev]

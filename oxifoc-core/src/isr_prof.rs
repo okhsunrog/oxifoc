@@ -7,7 +7,11 @@
 //! the shared code cost nothing on host builds.
 
 use core::sync::atomic::AtomicU32;
-#[cfg(any(feature = "isr-profiling", feature = "runtime"))]
+#[cfg(any(
+    feature = "isr-profiling",
+    feature = "isr-profile-phase",
+    feature = "runtime"
+))]
 use core::sync::atomic::Ordering;
 
 /// `run_foc_cycle`: command drain + deadman/link/fault gates.
@@ -57,6 +61,34 @@ pub static GATE_CURR: AtomicU32 = AtomicU32::new(0);
 pub static OUT_TRK: AtomicU32 = AtomicU32::new(0);
 /// Due-only outer velocity update, including both torque-authority probes.
 pub static VELOCITY_REQUEST: AtomicU32 = AtomicU32::new(0);
+/// Negative-current authority probe inside the due-only velocity update.
+#[cfg(feature = "isr-profiling")]
+pub static AUTHORITY_NEGATIVE: AtomicU32 = AtomicU32::new(0);
+/// Positive-current authority probe inside the due-only velocity update.
+#[cfg(feature = "isr-profiling")]
+pub static AUTHORITY_POSITIVE: AtomicU32 = AtomicU32::new(0);
+/// Nonlinear winding-power solver inside a dissipative torque grant.
+#[cfg(feature = "isr-profiling")]
+pub static DISSIPATIVE_SOLVE: AtomicU32 = AtomicU32::new(0);
+/// Startup confirmation probe, before processing its result.
+#[cfg(feature = "isr-profiling")]
+pub static STARTUP_CONFIRM: AtomicU32 = AtomicU32::new(0);
+/// Warning emitted when a startup confirmation reseeds the observer.
+#[cfg(feature = "isr-profiling")]
+pub static STARTUP_LOG: AtomicU32 = AtomicU32::new(0);
+/// Finite-run event totals, retained through the periodic profiling reset.
+#[cfg(feature = "isr-profiling")]
+#[unsafe(no_mangle)]
+pub static BENCH_STARTUP_LOG_EVENTS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "isr-profiling")]
+#[unsafe(no_mangle)]
+pub static BENCH_STARTUP_LOG_CYCLES: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "isr-profiling")]
+#[unsafe(no_mangle)]
+pub static BENCH_STARTUP_LOG_MAX: AtomicU32 = AtomicU32::new(0);
+/// Observer reseed after a startup confirmation.
+#[cfg(feature = "isr-profiling")]
+pub static STARTUP_SEED: AtomicU32 = AtomicU32::new(0);
 /// PhaseManager sensor sampling, Hall health and prediction before estimators.
 pub static EST_SENSE: AtomicU32 = AtomicU32::new(0);
 /// Applied-voltage selection/conversion before PhaseManager::update.
@@ -91,6 +123,18 @@ pub enum Section {
     VelocityRequest,
     SensorSampling,
     PhaseVoltage,
+    #[cfg(feature = "isr-profiling")]
+    AuthorityNegative,
+    #[cfg(feature = "isr-profiling")]
+    AuthorityPositive,
+    #[cfg(feature = "isr-profiling")]
+    DissipativeSolve,
+    #[cfg(feature = "isr-profiling")]
+    StartupConfirm,
+    #[cfg(feature = "isr-profiling")]
+    StartupLog,
+    #[cfg(feature = "isr-profiling")]
+    StartupSeed,
     // Keep last: adding a section above this also grows Snapshot's array.
     ObserverTail,
 }
@@ -123,6 +167,18 @@ impl Snapshot {
             &VELOCITY_REQUEST,
             &EST_SENSE,
             &EST_VOLTAGE,
+            #[cfg(feature = "isr-profiling")]
+            &AUTHORITY_NEGATIVE,
+            #[cfg(feature = "isr-profiling")]
+            &AUTHORITY_POSITIVE,
+            #[cfg(feature = "isr-profiling")]
+            &DISSIPATIVE_SOLVE,
+            #[cfg(feature = "isr-profiling")]
+            &STARTUP_CONFIRM,
+            #[cfg(feature = "isr-profiling")]
+            &STARTUP_LOG,
+            #[cfg(feature = "isr-profiling")]
+            &STARTUP_SEED,
             &OBS_TAIL,
         ]
     }
@@ -230,7 +286,7 @@ pub fn phase_now() -> u32 {
 #[inline(always)]
 pub fn phase_add(sum: &AtomicU32, t0: u32, t1: u32) {
     #[cfg(any(feature = "isr-profiling", feature = "isr-profile-phase"))]
-    sum.fetch_add(t1.wrapping_sub(t0), core::sync::atomic::Ordering::Relaxed);
+    sum.fetch_add(t1.wrapping_sub(t0), Ordering::Relaxed);
     #[cfg(not(any(feature = "isr-profiling", feature = "isr-profile-phase")))]
     {
         let _ = (sum, t0, t1);

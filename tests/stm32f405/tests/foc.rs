@@ -80,6 +80,11 @@ mod tests {
         state
     }
 
+    #[test]
+    fn z_bench_brake(_state: TestState) {
+        super::support::brake::run();
+    }
+
     // ========== libm sin/cos accuracy ==========
 
     #[test]

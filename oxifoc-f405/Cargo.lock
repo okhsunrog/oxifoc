@@ -1602,6 +1602,7 @@ name = "oxifoc-f405"
 version = "0.1.0"
 dependencies = [
  "assign-resources",
+ "bbqueue",
  "bitbang-hal-ng",
  "cortex-m",
  "cortex-m-rt",
@@ -1762,8 +1763,6 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rtt-target"
 version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7afed1f4302eeba88c601636cf2c554c45e1cbb464bab44c6012bab0e71473c"
 dependencies = [
  "critical-section",
  "portable-atomic",

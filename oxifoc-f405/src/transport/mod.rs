@@ -161,8 +161,6 @@ pub static RTT_OUTQ: RttQueue = io_kit::Queue::new();
 /// State notification queue — woken on interface state transitions
 pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
 
-/// RTT defmt channel storage
-static RTT_DEFMT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 #[cfg(feature = "transport-rtt")]
 static RTT_ERGOT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
 #[cfg(feature = "transport-rtt")]
@@ -192,12 +190,10 @@ bind_interrupts!(pub struct RngIrqs {
 
 // ========== Initialization ==========
 
-/// Initialize RTT + network for defmt logging (no ergot-over-RTT interface).
-/// Returns a DefmtConsumer for forwarding frames over the ergot network.
+/// Initialize the RTT-only defmt logger.
 /// Used when `transport-rtt` is disabled.
 #[cfg(not(feature = "transport-rtt"))]
-pub fn init_defmt() -> ergot::logging::defmt_sink::DefmtConsumer {
-    use ergot::logging::defmt_sink;
+pub fn init_defmt() {
     #[cfg(not(feature = "bench-raw-rtt"))]
     let channels = rtt_init! {
         up: {
@@ -215,8 +211,7 @@ pub fn init_defmt() -> ergot::logging::defmt_sink::DefmtConsumer {
     };
     #[cfg(feature = "bench-raw-rtt")]
     raw_fast::init_rtt(channels.up.2);
-    let defmt_up = RTT_DEFMT_UP.init(channels.up.0);
-    defmt_sink::init_network_and_rtt(defmt_up)
+    crate::logging::init(channels.up.0);
 }
 
 /// RTT transport handles (ergot over RTT channels; defmt stays on channel 0).
@@ -226,17 +221,13 @@ pub struct RttTransport {
     pub tx: RttWriter,
 }
 
-/// Initialize RTT: defmt sink (RTT ch0 + network forwarding) **and** an ergot
+/// Initialize the defmt sink on RTT ch0 and an ergot
 /// interface on the ergot up/down channels, registered on the Router. Replaces
 /// `init_defmt` when `transport-rtt` is enabled (one `rtt_init!` owns the
 /// control block, so defmt and ergot channels are declared together). Needs the
 /// stack, so call right after `init_stack`.
 #[cfg(feature = "transport-rtt")]
-pub fn init_rtt(
-    stack: &'static Stack,
-) -> (ergot::logging::defmt_sink::DefmtConsumer, RttTransport, u8) {
-    use ergot::logging::defmt_sink;
-
+pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
     let channels = rtt_init! {
         up: {
             0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
@@ -252,7 +243,7 @@ pub fn init_rtt(
             0: { size: 1024, name: "ergot-down" }
         }
     };
-    let defmt_consumer = defmt_sink::init_network_and_rtt(RTT_DEFMT_UP.init(channels.up.0));
+    crate::logging::init(channels.up.0);
 
     let rtt_rx = RttReader::new(RTT_ERGOT_DOWN.init(channels.down.0));
     let rtt_tx = RttWriter::new(RTT_ERGOT_UP.init(channels.up.1));
@@ -274,7 +265,6 @@ pub fn init_rtt(
         .with_state_notify(&STATE_NOTIFY);
 
     (
-        defmt_consumer,
         RttTransport {
             rx_worker,
             tx: rtt_tx,

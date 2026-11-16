@@ -35,6 +35,15 @@
 
 use crate::foc::fast_math::sqrtf;
 
+#[cfg(feature = "isr-profiling")]
+#[unsafe(no_mangle)]
+pub static BENCH_DISSIPATION_CALLS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "isr-profiling")]
+#[unsafe(no_mangle)]
+pub static BENCH_DISSIPATION_SEARCHES: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 /// The winding parameters the power balance runs on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindingModel {
@@ -92,6 +101,19 @@ pub fn dissipate(
     dissipate_with_id(0.0, iq, omega, model, budget, id_max, i_max)
 }
 
+/// The q-current component of [`dissipate`] for an authority probe.
+/// The actual actuator grant must still compute and apply the required id.
+pub fn dissipate_iq(
+    iq: f32,
+    omega: f32,
+    model: &WindingModel,
+    budget: &RegenBudget,
+    id_max: f32,
+    i_max: f32,
+) -> Option<f32> {
+    dissipate_magnitude::<false>(0.0, iq, omega, model, budget, id_max, i_max).map(|(_, q)| q)
+}
+
 /// As [`dissipate`], retaining the caller's existing d-current direction and
 /// minimum magnitude. A zero request selects the aligning (positive) direction.
 /// Its current-circle share and reluctance power must be included BEFORE
@@ -105,13 +127,13 @@ pub(super) fn dissipate_with_id(
     id_max: f32,
     i_max: f32,
 ) -> Option<(f32, f32)> {
-    let (d, q) = dissipate_magnitude(id.abs(), iq, omega, model, budget, id_max, i_max)?;
+    let (d, q) = dissipate_magnitude::<true>(id.abs(), iq, omega, model, budget, id_max, i_max)?;
     Some((if id < 0.0 { -d } else { d }, q))
 }
 
 /// Solve the polarity-independent power bound. Keep the choice of magnetic
 /// alignment outside the scalar heat/current-circle calculation.
-fn dissipate_magnitude(
+fn dissipate_magnitude<const COMPUTE_D: bool>(
     id_abs: f32,
     iq: f32,
     omega: f32,
@@ -120,6 +142,8 @@ fn dissipate_magnitude(
     id_max: f32,
     i_max: f32,
 ) -> Option<(f32, f32)> {
+    #[cfg(feature = "isr-profiling")]
+    BENCH_DISSIPATION_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let r = model.r_ohm;
     let w = omega.abs() * model.flux_wb;
     let k = omega.abs() * model.saliency_h;
@@ -149,7 +173,11 @@ fn dissipate_magnitude(
     // crossing lies inside [d_min, d_max]. Keep the full search for requests
     // which actually reach a heat/current-circle boundary.
     if q * q + d_max * d_max <= i_sq && charge_w(w, k, r, q, d_max) <= allow {
-        let d = required_d(q, w, k, r, a).max(d_min);
+        let d = if COMPUTE_D {
+            required_d(q, w, k, r, a).max(d_min)
+        } else {
+            d_min
+        };
         return Some((d, iq.signum() * q));
     }
     let boundary = sqrtf((i_sq - d_max * d_max).max(0.0));
@@ -172,19 +200,28 @@ fn dissipate_magnitude(
         } else if circle_charge(q) <= a {
             q
         } else if circle_charge(boundary) <= a {
+            #[cfg(feature = "isr-profiling")]
+            BENCH_DISSIPATION_SEARCHES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             // q*sqrt(I²-q²) is concave for q>=0. With a feasible left
             // endpoint and an infeasible right one, there is exactly one
             // lower crossing. Retain the feasible side of the bracket.
-            let (mut lo, mut hi) = (boundary, q);
-            for _ in 0..16 {
-                let mid = 0.5 * (lo + hi);
-                if circle_charge(mid) <= a {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
+            #[cfg(feature = "bench-outline-circle")]
+            {
+                circle_crossing(boundary, q, i_sq, w, k, r, a)
             }
-            lo
+            #[cfg(not(feature = "bench-outline-circle"))]
+            {
+                let (mut lo, mut hi) = (boundary, q);
+                for _ in 0..16 {
+                    let mid = 0.5 * (lo + hi);
+                    if circle_charge(mid) <= a {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                lo
+            }
         } else {
             // Both endpoints violate a concave inequality: no solution
             // in this part of the current circle.
@@ -196,12 +233,27 @@ fn dissipate_magnitude(
     }
 
     let q = granted.min(q);
-    let d = if charge_w(w, k, r, q, d_min) <= allow {
+    let d = if !COMPUTE_D || charge_w(w, k, r, q, d_min) <= allow {
         d_min
     } else {
         required_d(q, w, k, r, a).max(d_min)
     };
     Some((d, iq.signum() * q))
+}
+
+#[cfg(feature = "bench-outline-circle")]
+#[inline(never)]
+fn circle_crossing(mut lo: f32, mut hi: f32, i_sq: f32, w: f32, k: f32, r: f32, a: f32) -> f32 {
+    for _ in 0..16 {
+        let mid = 0.5 * (lo + hi);
+        let charge = (w + k * sqrtf((i_sq - mid * mid).max(0.0))) * mid - r * i_sq;
+        if charge <= a {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
 }
 
 /// Positive crossing of R d² - k q d - (w q - R q² - a) = 0.

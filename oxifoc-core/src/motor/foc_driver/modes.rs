@@ -275,8 +275,30 @@ where
         };
         // The bounds and final current grant use the same speed policy.
         let constraints = self.torque_constraints(self.torque_speed());
+        #[cfg(feature = "isr-profiling")]
+        let negative_start = crate::isr_prof::now();
+        #[cfg(not(feature = "bench-iq-authority"))]
         let iq_min = self.grant_torque_constrained(0.0, -full, &constraints).1;
+        #[cfg(feature = "bench-iq-authority")]
+        let iq_min = self.grant_iq_authority(-full, &constraints);
+        #[cfg(feature = "isr-profiling")]
+        crate::isr_prof::add(
+            &crate::isr_prof::AUTHORITY_NEGATIVE,
+            negative_start,
+            crate::isr_prof::now(),
+        );
+        #[cfg(feature = "isr-profiling")]
+        let positive_start = crate::isr_prof::now();
+        #[cfg(not(feature = "bench-iq-authority"))]
         let iq_max = self.grant_torque_constrained(0.0, full, &constraints).1;
+        #[cfg(feature = "bench-iq-authority")]
+        let iq_max = self.grant_iq_authority(full, &constraints);
+        #[cfg(feature = "isr-profiling")]
+        crate::isr_prof::add(
+            &crate::isr_prof::AUTHORITY_POSITIVE,
+            positive_start,
+            crate::isr_prof::now(),
+        );
         voltage_clip.note_clip(self.controller.q_voltage_clip());
         blockage.merge(voltage_clip);
         let iq_max = if voltage_clip.positive() {

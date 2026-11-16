@@ -13,7 +13,10 @@ use embassy_stm32::{
     time::Hertz,
 };
 use embassy_time::{Duration, Instant, Timer, with_timeout};
-use ergot as _;
+// Reuse the application logger; this probe has no ADC producer or worker.
+#[allow(dead_code)]
+#[path = "../logging.rs"]
+mod logging;
 
 bind_interrupts!(struct Irqs {
     DMA2_STREAM0 => dma::InterruptHandler<peripherals::DMA2_CH0>;

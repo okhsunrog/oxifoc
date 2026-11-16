@@ -53,6 +53,7 @@ pub fn feed_watchdog() {
 fn panic(info: &core::panic::PanicInfo) -> ! {
     cortex_m::interrupt::disable();
     kill_gates();
+    crate::logging::enter_fatal();
     defmt::error!("PANIC: {}", defmt::Display2Format(info));
     // Same exit as panic-probe: UDF halts the core under a debugger
     // (vector catch); standalone it escalates to lockup and the IWDG
@@ -63,6 +64,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 #[cortex_m_rt::exception]
 unsafe fn HardFault(frame: &cortex_m_rt::ExceptionFrame) -> ! {
     kill_gates();
+    crate::logging::enter_fatal();
     defmt::error!(
         "HARD FAULT: pc={=u32:#x} lr={=u32:#x}",
         frame.pc(),

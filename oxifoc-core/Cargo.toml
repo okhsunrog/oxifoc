@@ -69,6 +69,10 @@ default = ["algorithms", "detection", "offset-diagnostics"]
 compact-foc = []
 # Fused atan2 polynomial. no_std builds with this policy require nightly.
 atan2-fma = []
+# Bounded MCU experiments for optional dissipative torque authority.
+bench-dissipative-inline = []
+bench-iq-authority = []
+bench-outline-circle = []
 
 # Runtime current-offset comparison (undriven / per-phase / all-phases).
 # Boot calibration remains unconditional; flash-tight devices can omit this

@@ -321,6 +321,7 @@ Local artifact root:
 | `oxifoc-callee-layout-2026-11-15/` | Extended 14-candidate placement sweeps, fixed-address compiler-object controls and native captures |
 | `oxifoc-compact-arithmetic-2026-11-15/` | Compact-layout arithmetic follow-up, 492-function address controls, opcode controls, fresh embedded-test results and native validation |
 | `oxifoc-final-compact-atan-2026-11-16/` | Main-derived compact-layout/atan2-FMA integration, release and diagnostic ELFs, 15/20-kHz transition and PWM-margin qualification |
+| `oxifoc-rare-peaks-2026-11-16/` | Startup/braking attribution, RTT-only logger trial, same-ELF output control, scalar MCU benchmarks and atomic-logger assembly audit |
 
 Reference 20-kHz research ELF: `services/pw-current-cold20/firmware.elf`, SHA256
 `1f66ad2379f65da87cdb054025ecd36eeea7fe86ba2ddab33f27db3220053827`.
@@ -332,11 +333,10 @@ and complete worst-case stack use. Instrumented PGO, new SRAM-transfer boundarie
 and other MIR/LLVM thresholds remain open. Arithmetic and explicit placement
 results follow below.
 
-The next investigation targets the reproducible 52–55-us bodies in Observer
-startup and velocity-PI dissipative-authority probes. Record per-stage cycles,
-identify overlapping work, and compare outlining, scheduling and solver changes
-against the existing unmoved ELF. Measure effects on startup, live torque limits
-and fault response, and quantify any proposed numerical compromise.
+The rare-path investigation below attributes the Observer-startup peak to its
+reseed warning and the braking peaks to an expensive authority probe coinciding
+with other native-cycle work. Further candidates include a smaller q-authority
+dispatcher and an atomic or single-writer logging backend.
 
 ## Arithmetic experiments, Nov 15
 
@@ -984,6 +984,171 @@ dissipative-authority peaks remain the next investigation. After the series,
 the qualified pre-experiment image is restored at saved and active 15 kHz,
 Stopped, zero active faults and phase enables off. Current limits and live
 readback are recorded in `final-hardware.json`.
+
+### Rare startup/braking paths and RTT-only logging, November 16
+
+Production-equivalent control ELF `6d6e8a93…` reproduces a 54.071-us Observer
+startup body and 51.747–53.213-us braking peaks. A later exact-ELF repeat gives
+37.621 us in the ordinary +450 hold and 37.867 us with dissipative authority,
+with a braking maximum of 52.623 us. These controls use native 20-kHz recording.
+
+Detailed per-event markers locate the startup cost in `SeedAndHandoff`.
+One instrumented event spends 26.633 us in startup, including 21.384 us in
+the reseed warning, 2.556 us in the confirmation probe and 1.782 us reseeding
+the observer. These nested measurements identify contributions inside a
+profiling build. Clean body maxima come from separate minimal-timing ELFs.
+
+The negative torque-authority probe takes 5.708 us in the detailed braking
+profile, including 3.754 us in the scalar winding solver. The positive probe
+takes 0.429 us. The complete due-only velocity update takes 10.445 us.
+Slow cycles also coincide with protection refresh or longer Hall sampling.
+A retained counter records 7,897 solver calls and **zero current-circle
+bisection searches** in an eight-second braking scenario. The fixed 16-step
+search contributes code size here, while the executed endpoint calculations
+and their callers account for the measured solver cost.
+
+| Braking candidate, 20 kHz | Mean body, us | Largest body, us | Outcome |
+|---|---:|---:|---|
+| Research source control | 38.228–38.238 | 54.845 | Control for the first compiler variants |
+| Forced dissipative-helper inlining | 38.350–38.366 | 52.611 | Slower mean |
+| Outlined 16-step circle search | 38.008–38.017 | 52.587 | Caller shrinks, peaks persist |
+| q-only authority prototype | 38.048–38.050 | 51.580 | Fewer overruns, added ordinary-path dispatch |
+| RTT-only, cleaned diagnostic gating | 37.853–37.864 | 52.438 | Logging change preserves braking cost |
+| RTT-only + q-only prototype | 37.881–37.897 | 51.485 | 35 overruns across two holds, versus 250 for RTT-only |
+
+The q-only prototype computes the same available iq while omitting an id
+result that the authority caller discards. In `tests/stm32f405`, its real-motor
+fixture measures 545.392 cycles per call versus 758.799 for the frozen full
+solver, including fixture/loop costs. Full and projected q outputs have zero
+bit differences across 30,000 sampled parameter sets. Both ordinary and
+outlined MCU builds repeat this check. The outlined circle fixture gets
+slower, 1465.594 → 1537.973 cycles for the full grant.
+
+Assembly shows 3292 → 1964 bytes in the outlined grant, with a separate
+1442-byte, unrolled circle helper. The q-only helper is 2876 bytes and removes
+two static divisions and three square roots relative to the full grant.
+Its plain paths add dispatch/tail calls into `grant_torque_constrained`.
+The cleaned whole-image ordinary mean worsens 37.606 → 37.718 us with this
+prototype. It remains experimental. A small inlined dispatcher with an
+outlined nonlinear q solver is a follow-up candidate.
+
+Early new profiling marks changed ordinary code generation even when their
+counter operations optimized away. Explicit `cfg(isr-profiling)` now excludes
+the new marks and enlarged section snapshots from normal builds. The cleaned
+cycle body returns to 30,072 bytes and the ordinary mean to 37.606 us. The
+earlier compiler controls are retained as a separate series in `summary.json`.
+
+#### Logger ownership and measured output cost
+
+The pinned ergot logger holds a `critical-section` guard from `acquire` through
+`release`, protecting its shared encoder, RTT channel and network accumulator.
+On this single-core Cortex-M build the guard uses PRIMASK. The stock
+`rtt-target 0.6.2` defmt logger also serializes the entire frame this way.
+Its incremental encoder callbacks repeatedly construct/commit RTT writes,
+including SeqCst cursor operations and their DMB instructions.
+
+| Warning path | Cycles | Time, us |
+|---|---:|---:|
+| ergot RTT + network, detailed event | 3589 | 21.384 |
+| Stock RTT-only, three retained events | 2768 | 16.492 |
+| Same RTT-only ELF, channel disabled in RAM, two events | 932 | 5.553 |
+
+The RAM control changes only the stopped logger's channel-present byte.
+It preserves code, addresses, encoder and warning call. The measured difference
+is 1836 cycles, 10.939 us, for the RTT output path in these events. The disabled
+output control is diagnostic evidence. Reset restores the channel.
+
+The F405 RTT-only trial enables `rtt-target/defmt`, removes ergot's sink features
+and forwarding task, and retains the existing RTT channel setup. Commands and
+raw telemetry continue through their existing transports. Defmt messages in
+this trial are available through RTT. Probe reads occur after Stop and use
+`--rtt-channel-mode no-block-skip`.
+
+The cleaned RTT-only startup maximum is 49.942 us at a measured 49.989-us PWM
+period. Body duration excludes final bookkeeping and exception return.
+A separate witness sees zero late PWM writes across 840,357 writes. Minimum
+margins are 14.860 us in Observer startup, 11.297 us with dissipative authority
+and 14.705 us in the ordinary hold. The exact normal-release ELF also completes
+Observer startup at 15/20 kHz and current/velocity/reverse/Coast/Stop transitions
+at 20 kHz, with lossless captures and unchanged fault generation.
+
+#### Removing the logging critical section
+
+`defmt-rtt 1.3.1` provides `drop-on-contention` together with
+`disable-blocking-mode`. It identifies the execution context through IPSR,
+claims the encoder with atomic compare-exchange, stages a complete frame and
+publishes the write cursor at release. A colliding context or full buffer drops
+the whole frame. This contract fits one cooperative thread-mode context plus
+interrupts. Its own RTT control block requires a separate integration choice
+for the project's multi-channel RTT diagnostic profiles.
+
+A Cortex-M4 compile and linked assembly audit find zero CPSID/PRIMASK operations
+in `_defmt_acquire`, `_defmt_write` and `_defmt_release`. Acquire contains
+LDREX/STREX and an IPSR read. This backend has **not been run on the board**.
+[defmt-rtt backend contract](https://docs.rs/defmt-rtt/1.3.1/defmt_rtt/)
+
+A custom alternative gives one foreground task exclusive ownership of encoder
+and RTT writer, with fixed-size events delivered from ADC through an SPSC
+queue. Additional interrupt producers need their own queues or an MPSC design.
+Queue capacity and dropped-event accounting become explicit. A foreground
+writer using the current stock global logger would still take its PRIMASK guard.
+
+The combined candidate queues ADC events for an ordinary Embassy thread-mode
+task, which emits defmt through the atomic, nonblocking backend. Other direct
+interrupt log calls use its drop-on-contention behavior. ADC publishes owned
+parameters and an event timestamp, while the task handles encoding and output
+in bounded batches below protocol work. The queue and wake path need an
+implementation without a CriticalSectionRawMutex. Queue overflow and backend
+frame loss are separate outcomes. This combined design is still a proposal.
+
+The artifact root contains 73 accepted timing/witness windows, exact image
+hashes, raw attempts, source hashes and disassemblies. One full-rate detailed
+profile lost producer samples and is retained as rejected. Detailed attribution
+then used 5-kHz recording with the ISR still at 20 kHz. Final readback restores
+the committed main image at 15 kHz, Stopped, zero active faults and phase enables
+off. The RTT-only and torque prototypes remain on the experimental branch.
+
+#### Deferred ADC logger candidate, November 16
+
+The experimental F405 logger uses a locally patched `rtt-target` 0.6.2.
+`write_frame` always selects nonblocking, whole-frame output and ignores
+debugger changes to channel mode. Application routing lives in `logging.rs`.
+ADC serializes into a 2-KiB `Texas<_, MaiNotSpsc>` queue with a 256-byte maximum
+raw record. One thread-mode worker encodes and outputs each record. Ordinary
+direct logging and fatal logging have separate encoders with 512-byte output
+buffers. Atomic try-acquire drops contending direct calls. Panic selects fatal
+mode after gate shutdown, so a panic inside ADC bypasses the queue. An occupied
+RTT writer can still lose a fatal message. `LOG_STATS` counts queued records,
+queue overflow, oversize records, contention, full RTT and uninitialized output.
+
+| Measurement | Stock RTT-only | Deferred ADC |
+|---|---:|---:|
+| Actual startup warning, CPU cycles | 2,768 | 1,285 in both recorded events |
+| Observer startup maximum body, us | 49.942 | 43.364 |
+| Ordinary +450 mean body, us | 37.606 | 37.723 |
+
+The warning comparison uses detailed event markers. Body measurements use
+separate minimal-timing images. The ordinary mean increases by 0.117 us in this
+hold. Function addresses move while the compact hot-section entry residues
+remain 4/12/4 and the cycle function stays 30,072 bytes. The normal image adds
+2,960 bytes of `.text` and 3,840 bytes of `.data` plus `.bss` against stock RTT-only.
+
+Two embedded-test runs measure 1,128.6–1,128.8 mean cycles for a two-float ADC
+warning, including queue publication with a waiting consumer. Real-IRQ fixtures
+exercise queue overflow, oversized records, preemption, contention and fatal
+bypass with PWM disabled. The subsequently added nested-fatal fixture still
+needs its hardware rerun at this checkpoint.
+
+Normal-image Observer starts at 15/20 kHz and the 20-kHz current, velocity,
+reverse, Coast and Stop sequence complete with lossless captures and unchanged
+fault generation. Separate 20-kHz PWM witness windows record 320,131 enabled
+writes, zero late writes and a minimum margin of 15.479 us. Running captures
+report zero logger losses. The board is restored to the committed image at
+15 kHz, Stopped, zero active faults and phase enables off.
+
+This candidate remains on the experimental branch. Artifacts, exact image
+hashes and assembly audits are in
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-deferred-logging-2026-11-16/`.
 
 ### Further reading on instruction placement
 

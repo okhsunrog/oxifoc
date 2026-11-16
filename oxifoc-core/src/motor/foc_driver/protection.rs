@@ -750,9 +750,52 @@ where
         )
     }
 
+    #[cfg(feature = "bench-iq-authority")]
+    pub(super) fn grant_iq_authority(
+        &self,
+        iq_target: f32,
+        constraints: &TorqueConstraints,
+    ) -> f32 {
+        let limits = &self.current_limits;
+        if !limits.is_enabled() || iq_target * constraints.omega >= 0.0 {
+            return self.grant_torque_constrained(0.0, iq_target, constraints).1;
+        }
+        let Some(model) = self.dissipation_model() else {
+            return self.grant_torque_constrained(0.0, iq_target, constraints).1;
+        };
+        let brake = self.derating().brake;
+        let (_, iq) = limits.clamp_targets(
+            0.0,
+            clamp_f32(
+                iq_target,
+                -limits.max_brake_a * brake,
+                limits.max_brake_a * brake,
+            ),
+        );
+        let budget = RegenBudget {
+            frac: self.derating().regen,
+            max_w: if limits.bus_regen_max_a >= 0.0 {
+                self.vbus * limits.bus_regen_max_a
+            } else {
+                f32::INFINITY
+            },
+        };
+        let id_max = sqrtf(limits.max_dissipation_w * brake / (1.5 * model.r_ohm));
+        crate::motor::dissipation::dissipate_iq(
+            iq,
+            constraints.omega,
+            &model,
+            &budget,
+            id_max,
+            limits.max_current_a,
+        )
+        .unwrap_or_else(|| constraints.bus.clamp(iq))
+    }
+
     // Keep the optional nonlinear solve out of the common torque grant: its
     // register requirements otherwise spill into motoring and plain braking.
-    #[inline(never)]
+    #[cfg_attr(feature = "bench-dissipative-inline", inline(always))]
+    #[cfg_attr(not(feature = "bench-dissipative-inline"), inline(never))]
     fn grant_dissipative_brake(
         &self,
         id_target: f32,
@@ -777,7 +820,9 @@ where
         // thermal brake derate: a hot motor or board burns less (and so
         // brakes less on a full pack).
         let id_max = sqrtf(limits.max_dissipation_w * brake / (1.5 * model.r_ohm));
-        match dissipate_with_id(
+        #[cfg(feature = "isr-profiling")]
+        let solve_start = crate::isr_prof::now();
+        let result = dissipate_with_id(
             id_target,
             iq,
             omega,
@@ -785,7 +830,14 @@ where
             &budget,
             id_max,
             limits.max_current_a,
-        ) {
+        );
+        #[cfg(feature = "isr-profiling")]
+        crate::isr_prof::add(
+            &crate::isr_prof::DISSIPATIVE_SOLVE,
+            solve_start,
+            crate::isr_prof::now(),
+        );
+        match result {
             // The solver preserves an explicit d-axis direction and uses
             // aligning current when it introduces a new heat request.
             Some(grant) => grant,

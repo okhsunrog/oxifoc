@@ -432,31 +432,6 @@ impl DetectionBackend for F405Backend {
     }
 }
 
-/// Forward defmt frames from the network bbqueue to the ergot defmt topic.
-/// Connected hosts receive these on `ErgotDefmtRxOwnedTopic`.
-#[embassy_executor::task]
-pub async fn defmt_forwarder(
-    consumer: ergot::logging::defmt_sink::DefmtConsumer,
-    stack: &'static Stack,
-) {
-    // Profiling windows are useless if a backlogged stream starves delivery
-    // until the diagnostic ring has dropped the active-state measurements.
-    // This worker waits for new frames; it never polls an empty ring.
-    #[cfg(all(feature = "isr-timing", feature = "task-priority"))]
-    embassy_executor::MetadataRef::for_current_task()
-        .await
-        .set_priority(2);
-    // (2026-07-08: defmt-over-USB works end-to-end. It was broken by TWO
-    // stacked bugs, fixed the same day: ergot's defmt sink granted half
-    // the ring per frame and could park its pointer in a geometric dead
-    // zone — permanent silent drop of every frame (fixed in ergot
-    // b59fd1d: exact-size grants via a scratch accumulator); and the
-    // host decoded the rzcobs frames with Table::decode, which only
-    // accepts unencoded frames (fixed in oxifoc-host-lib: per-message
-    // stream decoder).)
-    ergot::logging::defmt_sink::forward_to_ergot_topic(&consumer, stack, None).await;
-}
-
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
 #[cfg(not(any(
     feature = "bench-raw-usb",
@@ -523,7 +498,6 @@ pub fn spawn_servers(
     spawner: &Spawner,
     stack: &'static Stack,
     idents: &heapless::Vec<crate::transport::InterfaceIdent, 3>,
-    defmt_consumer: ergot::logging::defmt_sink::DefmtConsumer,
     detection_boot: u64,
     foc_freq_hz: u32,
 ) {
@@ -558,7 +532,6 @@ pub fn spawn_servers(
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
     spawner.spawn(defmt::unwrap!(detect_server(stack, detection_boot)));
     spawner.spawn(defmt::unwrap!(network_services_task(stack)));
-    spawner.spawn(defmt::unwrap!(defmt_forwarder(defmt_consumer, stack)));
 }
 
 // ========== RTT Transport workers (feature = "transport-rtt") ==========

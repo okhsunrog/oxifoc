@@ -6,8 +6,10 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_stm32::gpio::{Flex, Input, Level, Output, Pull, Speed};
-// Supply the existing defmt sink used by HAL diagnostics; no network is started.
-use ergot as _;
+// Reuse the application logger; this probe has no ADC producer or worker.
+#[allow(dead_code)]
+#[path = "../logging.rs"]
+mod logging;
 
 /// 0: initializing, 2: running, 3: complete.
 #[unsafe(no_mangle)]

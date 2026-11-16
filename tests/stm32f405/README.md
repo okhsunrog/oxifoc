@@ -5,7 +5,9 @@ measurement contract, optimization history and accepted implementation.
 
 This `embedded-test` target contains math checks, synthetic FOC, two sin/cos
 implementations, `wrap_angle` comparisons and `z_bench_schedule` for counters,
-modulo/masks and time reads. The gate driver stays disabled; PC5 holds MK5
+modulo/masks and time reads. `z_bench_brake` compares frozen full grants,
+current full grants and q-only authority, with numerical results in amperes.
+The gate driver stays disabled; PC5 holds MK5
 power. TIM1/PWM never starts. This test image replaces the normal controller.
 
 ## Reproducible runs
@@ -22,6 +24,16 @@ For angle comparisons:
 ```sh
 just bench-embedded-f405 NEW_OUTPUT_DIRECTORY VERIFIED_RECOVERY_ELF z_bench_wrap_angle 3
 ```
+
+Use `z_bench_brake` as the filter for the dissipative-braking fixture.
+Use `deferred_logging` for the separate `logging` target. It software-pends
+real ADC/USART2 handlers with PWM disabled, measures one ADC log per DWT
+window, and checks deferred output, queue overflow, oversized records,
+preemption, contention drops and fatal bypass. The worker runs on the real
+Embassy executor with the same application logger source. The test harness
+selects `embassy-010` and patches its executor dependency to the pinned revision.
+`scripts/bench_embedded_f405.py --features DEPENDENCY/FEATURE` selects a
+compiler variant while retaining its features in the measurement manifest.
 
 Place artifacts under `/home/okhsunrog/tmp_zfs/codex_tmp/<task>/`. Recovery
 must be a known working image for the connected bench. The runner verifies

@@ -53,16 +53,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--recovery-elf", type=Path, required=True)
-    parser.add_argument("--filter", choices=["z_bench_schedule", "z_bench_wrap_angle"], default="z_bench_schedule")
+    parser.add_argument("--filter", choices=["z_bench_schedule", "z_bench_wrap_angle", "z_bench_brake", "deferred_logging"], default="z_bench_schedule")
     parser.add_argument("--repeats", type=int, default=3, choices=range(1, 6))
     parser.add_argument("--serial-path", default=PORT)
+    parser.add_argument("--features", default="")
     args = parser.parse_args()
+    test_target = "logging" if args.filter == "deferred_logging" else "foc"
     recovery = args.recovery_elf.resolve(strict=True)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     env = {**os.environ, "CARGO_INCREMENTAL": "0", "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
            "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1"}
-    manifest = dict(schema=1, filter=args.filter, incremental=False, codegen_units=1,
+    manifest = dict(schema=1, filter=args.filter, features=args.features, incremental=False, codegen_units=1,
         opt_level=3, lto="fat", recovery_elf=str(recovery), recovery_sha256=sha(recovery),
         commit=probe.run(["git", "rev-parse", "HEAD"]).stdout.strip(),
         dirty_files=probe.run(["git", "status", "--porcelain"]).stdout.splitlines(), runs=[])
@@ -70,8 +72,8 @@ def main():
         manifest[label] = subprocess.check_output(command, cwd=CRATE, text=True).strip()
     # Keep normal crate build/cache paths. No source copies or patch snapshots.
     with (output / "build.jsonl").open("w") as stdout, (output / "build.log").open("w") as stderr:
-        subprocess.run(["cargo", "test", "-vv", "--release", "--locked", "--test", "foc",
-            "--no-run", "--message-format=json"], cwd=CRATE, env=env,
+        subprocess.run(["cargo", "test", "-vv", "--release", "--locked", "--test", test_target,
+            "--no-run", "--message-format=json", *(["--features", args.features] if args.features else [])], cwd=CRATE, env=env,
             stdout=stdout, stderr=stderr, check=True, timeout=600)
     # cargo -vv also forwards prefixed build-script output to stdout when a
     # script reruns. Only Cargo JSON records start with an opening brace.
@@ -79,7 +81,7 @@ def main():
                  if line.startswith("{")]
     built = next(Path(row["executable"]) for row in artifacts
                  if row.get("reason") == "compiler-artifact" and row.get("executable")
-                 and row["target"]["name"] == "foc")
+                 and row["target"]["name"] == test_target)
     image = output / "benchmark.elf"
     shutil.copyfile(built, image)
     manifest["benchmark_sha256"] = sha(image)

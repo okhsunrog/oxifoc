@@ -67,6 +67,7 @@ mod protocol;
 mod diagnostics;
 #[cfg(all(feature = "bench-overclock", not(feature = "transport-spi")))]
 compile_error!("clock qualification requires the SPI-only MK5 transport");
+mod logging;
 mod safety;
 mod sensors;
 mod storage;
@@ -163,11 +164,13 @@ async fn main(spawner: Spawner) {
         (u64::from(rng.blocking_next_u32()) << 32) | u64::from(rng.blocking_next_u32());
     let stack = transport::init_stack(oxifoc_core::stm32_rng::ErgotRng::new(rng));
 
-    // ========== STEP 3: Initialize defmt logging (RTT + network) ==========
+    // ========== STEP 3: Initialize RTT-only defmt logging ==========
     #[cfg(not(feature = "transport-rtt"))]
-    let defmt_consumer = transport::init_defmt();
+    transport::init_defmt();
     #[cfg(feature = "transport-rtt")]
-    let (defmt_consumer, rtt_transport, rtt_ident) = transport::init_rtt(stack);
+    let (rtt_transport, rtt_ident) = transport::init_rtt(stack);
+
+    spawner.spawn(defmt::unwrap!(logging::worker()));
 
     #[cfg(feature = "bench-ntc-check")]
     sensors::temperature::verify_on_target();
@@ -293,7 +296,6 @@ async fn main(spawner: Spawner) {
         &spawner,
         stack,
         &idents,
-        defmt_consumer,
         detection_boot,
         pwm_config.pwm_freq_hz,
     );
