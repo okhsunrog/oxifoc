@@ -1108,9 +1108,9 @@ then used 5-kHz recording with the ISR still at 20 kHz. Final readback restores
 the committed main image at 15 kHz, Stopped, zero active faults and phase enables
 off. The RTT-only and torque prototypes remain on the experimental branch.
 
-#### Deferred ADC logger candidate, November 16
+#### Deferred ADC logger, November 16
 
-The experimental F405 logger uses a locally patched `rtt-target` 0.6.2.
+The F405 logger uses a locally patched `rtt-target` 0.6.2.
 `write_frame` always selects nonblocking, whole-frame output and ignores
 debugger changes to channel mode. Application routing lives in `logging.rs`.
 ADC serializes into a 2-KiB `Texas<_, MaiNotSpsc>` queue with a 256-byte maximum
@@ -1146,7 +1146,7 @@ writes, zero late writes and a minimum margin of 15.479 us. Running captures
 report zero logger losses. The board is restored to the committed image at
 15 kHz, Stopped, zero active faults and phase enables off.
 
-This candidate remains on the experimental branch. Artifacts, exact image
+The F405 firmware uses this deferred RTT backend. Artifacts, exact image
 hashes and assembly audits are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-deferred-logging-2026-11-16/`.
 
