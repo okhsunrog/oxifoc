@@ -132,22 +132,14 @@ where
     /// measured current go through the same apply_dq/observer path as a
     /// DirectVoltage(0,0), and the manager seeds the observer on a catch.
     ///
-    /// `Some` while the probe owns the bridge. The PI reset on the way out
-    /// still runs when this returns `None`.
+    /// `Some` while the probe owns the bridge. Retain current-PI bias across
+    /// the brief short so regulation resumes with its pre-probe voltage bias.
     #[inline(always)]
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn step_deadshort(&mut self, dt: f32, now_ticks: u64) -> Option<Result<FocOutput, StepError>> {
-        let wants_short = self.phase.startup_status().wants_short();
-        if self.was_short && !wants_short {
-            // Probe short → commutation: the PI state predates the short
-            // (amps of drive current that have since decayed into the
-            // bridge). Re-integrating from zero is a soft re-engage;
-            // slamming the stale voltage into ~zero current spikes |i_dq|
-            // (sim: 6 A on the ZD2808 confirm-probe exit at 1.5 A command).
-            self.controller.reset();
-        }
-        self.was_short = wants_short;
-        wants_short
+        self.phase
+            .startup_status()
+            .wants_short()
             .then(|| self.step_direct_voltage(0.0, 0.0, self.phase.get().angle, dt, now_ticks))
     }
 

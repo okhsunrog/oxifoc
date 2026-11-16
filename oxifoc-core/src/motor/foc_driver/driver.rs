@@ -70,7 +70,6 @@ where
             actuation: ActuationModel::default(),
             watchdog: CommandWatchdog::default(),
             pwm_off: false,
-            was_short: false,
             untrusted_time: 0.0,
             stopped_housekeeping: 0,
             failsafe_cfg: FailsafeConfig::default(),

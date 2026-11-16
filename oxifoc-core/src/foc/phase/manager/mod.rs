@@ -150,12 +150,15 @@ const TRACKER_HUNT_TAU_S: f32 = 0.012;
 /// below it.
 #[derive(Clone, Copy, Default)]
 struct PhaseTracker {
+    /// Cold-start acquisition retains the current frame across source changes.
+    /// Cleared when it catches the observer or a flying probe seeds the frame.
+    startup_tracking: bool,
     /// ωn² (1/s²); 0 = tracker disabled (raw observer commutation).
     kp: f32,
     /// 2ζωn (1/s) — damping-path gain (applied to the low-passed Δ).
     kd: f32,
-    /// Engaged — cleared whenever the startup sequencer owns commutation
-    /// (re-seeds from the estimate at the next closed-loop cycle).
+    /// Engaged while source selection uses the tracker. Flying catches seed
+    /// directly from the measurement, cold-start transitions retain continuity.
     active: bool,
     theta: f32,
     omega: f32,
@@ -319,7 +322,7 @@ where
     // Open-loop override state (for Hall failure recovery)
     open_loop_override: OpenLoopOverride,
 
-    // Sensorless cold-start sequencer (align → ramp → handoff). Distinct from
+    // Sensorless cold-start sequencer (ramp → hold → confirm). Distinct from
     // `open_loop_override` above: that is the reactive hall-dropout nudge from
     // a known angle; this is the proactive from-standstill start that a pure
     // back-EMF observer needs (it can't commutate below ~READY_MIN_VELOCITY).

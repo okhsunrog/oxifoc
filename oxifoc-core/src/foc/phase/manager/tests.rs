@@ -12,6 +12,104 @@ use crate::virtual_motor::VirtualMotorOutput;
 use core::f32::consts::TAU;
 
 #[test]
+fn startup_tracker_releases_a_prior_acquisition_on_a_flying_catch() {
+    use crate::foc::phase::BackEmfObserver;
+
+    let dt = 1.0 / 20_000.0;
+    let mut manager = PhaseManager::sensorless();
+    manager.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 50e-6, 0.005)));
+    manager.set_source(PhaseSource::Observer).unwrap();
+    manager.set_phase_tracker(100.0, 1.2);
+    manager.startup.begin_cold_start(1.0, 1.0);
+    manager.tracker.startup_tracking = true;
+    manager.tracker.active = true;
+    let (mut angle, mut alpha, mut beta) = (0.3_f32, 0.0, 0.0);
+    for cycle in 1..100 {
+        for _ in 0..10 {
+            angle += 300.0 * dt / 10.0;
+            let (sin, cos) = angle.sin_cos();
+            alpha += (-0.1 * alpha + 300.0 * 0.005 * sin) / 50e-6 * dt / 10.0;
+            beta += (-0.1 * beta - 300.0 * 0.005 * cos) / 50e-6 * dt / 10.0;
+        }
+        manager.update(
+            &PhaseInput {
+                i_alpha: alpha,
+                i_beta: beta,
+                dt,
+                ..Default::default()
+            },
+            cycle * 50,
+        );
+        if !manager.startup.is_active() {
+            assert!(!manager.tracker.startup_tracking);
+            assert!(
+                angle_difference(manager.output.angle, manager.observer.phase().unwrap()).abs()
+                    < 0.001
+            );
+            return;
+        }
+    }
+    panic!("spinning rotor was not caught");
+}
+
+#[test]
+fn startup_tracker_leaves_the_initial_forced_ramp_direct() {
+    use crate::foc::phase::BackEmfObserver;
+    use crate::foc::phase::startup::DeadshortResult;
+
+    let dt = 1.0 / 20_000.0;
+    let mut manager = PhaseManager::sensorless();
+    manager.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 50e-6, 0.005)));
+    manager.set_source(PhaseSource::Observer).unwrap();
+    manager.set_phase_tracker(100.0, 1.2);
+    manager.startup.begin_cold_start(1.0, 1.0);
+    for _ in 0..32 {
+        assert_eq!(
+            manager
+                .startup
+                .feed_deadshort(0.0, 0.0, dt, 0.1, 50e-6, 0.005),
+            DeadshortResult::Probing
+        );
+    }
+    manager.startup.tick(dt, 1.5, false, 0.0);
+    manager.tracker.startup_tracking = true;
+    let expected = PhaseOutput {
+        angle: manager.startup.angle(),
+        velocity: manager.startup.velocity(),
+    };
+    assert_eq!(
+        manager.compute_phase_with_fallback(None, None, None, dt, false),
+        expected
+    );
+    assert!(!manager.tracker.active);
+}
+
+#[test]
+fn startup_tracker_acquires_across_wrap_without_reseeding_the_output() {
+    let dt = 1.0 / 20_000.0;
+    let mut manager = PhaseManager::sensorless();
+    manager.set_phase_tracker(100.0, 1.2);
+    manager.output = PhaseOutput {
+        angle: 6.2,
+        velocity: 150.0,
+    };
+    manager.tracker.startup_tracking = true;
+    let mut raw = PhaseOutput {
+        angle: 1.2,
+        velocity: 150.0,
+    };
+    let first = manager.tracker_output(raw, dt);
+    assert!(angle_difference(first.angle, 6.2 + 150.0 * dt).abs() < 0.01);
+    manager.output = first;
+    for _ in 0..2_000 {
+        raw.angle = wrap_angle(raw.angle + raw.velocity * dt);
+        manager.output = manager.tracker_output(raw, dt);
+    }
+    assert!(angle_difference(manager.output.angle, raw.angle).abs() < 0.1);
+    assert!(!manager.tracker.startup_tracking);
+}
+
+#[test]
 fn source_usage_changes_only_on_acceptance_and_keeps_dynamic_trust_live() {
     let hall = HallSensor::new(1_000_000);
     let mut manager = PhaseManager::with_hall(hall);

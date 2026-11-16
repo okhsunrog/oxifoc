@@ -1,14 +1,48 @@
 # Sensorless Startup & Current Sampling — Ideas to Borrow from VESC & MESC
 
-> **STATUS.** Part 1 (V0_V7) is a deliberate scope decision — no code changes
-> without bench evidence. **Part 2 is IMPLEMENTED (2026-06-13)** as the
-> `phase/startup.rs` state machine: align→ramp→handoff cold start with a
-> current-scheduled ceiling (Phase A) + deadshort flying restart (Phase B),
-> both current-only / g431-capable, host-test covered. See
-> [decisions.md](../decisions.md → Firmware/platform). Remaining: bench
-> validation + the v1 refinements in TODO.md «Sensorless startup». The Part 2
-> analysis below is kept as the design rationale; the "Proposed work" maps to
-> what shipped.
+> **Status.** Part 1 records the sampling scope decision. Part 2 preserves
+> the original startup design rationale from June 2026. The current Observer
+> implementation and November bench results are summarized below.
+
+## Current Observer startup
+
+Pure `Observer` mode starts with a brief shorted-winding flying-restart probe.
+A spinning rotor seeds the observer directly. Standstill enters a soft-started
+I/f ramp, then hold and back-EMF confirmation. This path uses current sensing
+and the motor model. HFI has its own startup path.
+
+The existing second-order phase tracker engages at the first ready-observer
+transition, seeded from the current commutation frame. It retains continuity
+across subsequent startup source changes. During initial acquisition the
+tracker can exceed its 0.6 rad cruise lag bound. The bound resumes once the
+startup completes and the initial angle gap closes. A flying catch clears
+acquisition state and seeds directly from the physical probe measurement,
+including a catch following a cold-start retry.
+
+Confirmation uses a 2 A current threshold and a three-sample current forecast
+after the actuation pipeline has passed. Decaying over-threshold drive current
+is allowed to settle before evaluation. The initial flying-restart probe uses
+an 8 A threshold. These are probe termination thresholds. PWM latency allows
+the measured peak to grow further. Current PI retains its voltage bias across
+the short confirmation window.
+
+MK5 bench measurements on 2026-11-16 used approximately 24 V, an unloaded
+Hall-equipped motor switched to Observer while stopped, and a +450 electrical
+rad/s velocity command, approximately 614 mechanical RPM. Initial angles were
+inherited from the previous Hall-backed output and varied between trials.
+
+| Policy | PWM | Starts | Peak current magnitude |
+| --- | --- | --- | --- |
+| Previous control | 15 kHz | 1 | 11.45 A |
+| Continuous transition and predictive probe termination | 15 kHz | 3 | 3.20–3.87 A |
+| Same policy, including two runs with explicit flying-catch reset | 20 kHz | 7 | 2.52–5.06 A |
+
+All ten candidate runs reached the target with zero hold-give-up recycles.
+Early low-speed oscillation and braking-current transients remain visible.
+Load, controlled rotor-position and arbitrary sensorless power-on-angle
+measurements are needed to establish broader startup reliability.
+
+## Reference investigation
 
 Working notes from a line-by-line comparison of the current-sampling path and
 the sensorless-startup path against **VESC** (`bldc`) and **MESC**

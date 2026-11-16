@@ -149,6 +149,13 @@ const CONFIRM_STRONG_PROBE_VEL: f32 = 60.0;
 /// instead of a const once the probe plumbing carries them.
 const DEADSHORT_MAX_CURRENT_A: f32 = 8.0;
 
+/// Confirm probes enter from active commutation, so leave more room for
+/// current growth while the resumed command traverses the PWM pipeline.
+const CONFIRM_MAX_CURRENT_A: f32 = 2.0;
+
+/// Probe-completion scheduling and PWM actuation latency, in sample periods.
+const CONFIRM_CURRENT_LOOKAHEAD: f32 = 3.0;
+
 /// Handoff-confirm probe: settle time (PWM periods) for the DRIVE current to
 /// decay into the short before the window opens. Longer than the cold-start
 /// probe's settle: here amps of commanded current are flowing at entry
@@ -466,9 +473,23 @@ impl SensorlessStartup {
     /// back-EMF of every sample interval. Returns `true` once the window is
     /// done (full, or ended early by the current cap).
     fn probe_sample(&mut self, i_alpha: f32, i_beta: f32, dt: f32, r: f32, l: f32) -> bool {
+        let current_cap = if self.phase == StartupPhase::Confirm {
+            CONFIRM_MAX_CURRENT_A
+        } else {
+            DEADSHORT_MAX_CURRENT_A
+        };
         let prev = self.ds_prev.replace((i_alpha, i_beta));
         let i_sq = i_alpha * i_alpha + i_beta * i_beta;
         let i_mag = sqrtf(i_sq);
+        let predicted_cap = self.phase == StartupPhase::Confirm
+            && self.ds_settle_done >= PROBE_PIPELINE_SAMPLES
+            && i_mag < current_cap
+            && prev.is_some_and(|(pa, pb)| {
+                // Include probe-completion scheduling and PWM actuation delay.
+                let next_a = i_alpha + CONFIRM_CURRENT_LOOKAHEAD * (i_alpha - pa);
+                let next_b = i_beta + CONFIRM_CURRENT_LOOKAHEAD * (i_beta - pb);
+                next_a * next_a + next_b * next_b >= current_cap * current_cap
+            });
         if self.ds_settle > 0 {
             // A short current at the cap and still CLIMBING past the
             // actuation pipeline is back-EMF building it: measure now
@@ -480,7 +501,7 @@ impl SensorlessStartup {
             // R/L model error would read as a fast rotor.
             let rising = prev.is_some_and(|(pa, pb)| i_sq > pa * pa + pb * pb);
             let pipelined = self.ds_settle_done >= PROBE_PIPELINE_SAMPLES;
-            if !(pipelined && rising && i_mag >= DEADSHORT_MAX_CURRENT_A) {
+            if !(pipelined && rising && i_mag >= current_cap || predicted_cap) {
                 self.ds_settle -= 1;
                 self.ds_settle_done += 1;
                 return false;
@@ -497,7 +518,7 @@ impl SensorlessStartup {
             self.ds_sum_beta += eb;
             self.ds_emf_terms += 1;
         }
-        self.ds_cycles >= DEADSHORT_CYCLES || i_mag >= DEADSHORT_MAX_CURRENT_A
+        self.ds_cycles >= DEADSHORT_CYCLES || i_mag >= current_cap || predicted_cap
     }
 
     /// Rotor estimate from the probe window (see `backemf_estimate`).

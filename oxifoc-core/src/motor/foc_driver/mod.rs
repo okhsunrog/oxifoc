@@ -259,10 +259,6 @@ where
     /// the Stopped arm still re-asserts the disable periodically as a
     /// backstop.
     pwm_off: bool,
-    /// Previous cycle's `phase.wants_short()` — detects the probe-short →
-    /// commutation transition so the current-loop PI can restart from zero
-    /// (see `step_inner`).
-    was_short: bool,
     /// How long (s) the angle has been continuously untrustworthy under an
     /// active nonzero drive command — drives the
     /// [`SENSORLESS_RESTART_AFTER_S`] restart.

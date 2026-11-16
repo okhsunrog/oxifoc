@@ -28,17 +28,22 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     fn tracker_output_inner(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
         let tr = &mut self.tracker;
         if !tr.active {
-            // Engage on the estimate: zero initial gap (the same angle step
-            // a plain confirmed handoff performs) at its frequency. Not the
-            // last output's: after a deadshort catch that is the probe's
-            // standstill hold, ω = 0 — the tracker then trailed a
-            // 1000 rad/s rotor at the lag clamp and tripped OC at 2000 on a
-            // 5065 (flying_restart_catches_low_tau_motors). The freq-led
-            // predecessor's `self.output` angle seed froze the startup
-            // ramp's ~90° load angle into cruise — see the PhaseTracker doc
-            // and docs/TODO.md dossier.
-            tr.theta = raw.angle;
-            tr.omega = raw.velocity;
+            // Cold starts acquire from the current commutation frame.
+            // Flying catches engage directly on the measured estimate at
+            // its frequency. Seeding those from the probe's standstill
+            // output previously left a 1000 rad/s rotor at the lag clamp
+            // and tripped OC at 2000 on a 5065. See the flying-restart
+            // regression and the PhaseTracker design history.
+            let seed = if tr.startup_tracking {
+                PhaseOutput {
+                    angle: wrap_angle(self.output.angle + self.output.velocity * dt),
+                    velocity: self.output.velocity,
+                }
+            } else {
+                raw
+            };
+            tr.theta = seed.angle;
+            tr.omega = seed.velocity;
             tr.d_filt = 0.0;
             tr.v_slow = raw.velocity;
             tr.a_est = 0.0;
@@ -93,7 +98,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // frequency catches up on a fast τ so the clamp releases into
         // soft tracking.
         let d2 = angle_difference(raw.angle, tr.theta);
-        if d2.abs() > TRACKER_MAX_LAG_RAD {
+        // A cold-start frame can begin far from the real rotor. Restore
+        // the cruise lag clamp once the tracker has closed that initial gap.
+        if tr.startup_tracking && !self.startup.is_active() && d2.abs() <= TRACKER_MAX_LAG_RAD {
+            tr.startup_tracking = false;
+        }
+        if !tr.startup_tracking && d2.abs() > TRACKER_MAX_LAG_RAD {
             let sign = if d2 > 0.0 { 1.0 } else { -1.0 };
             tr.theta = wrap_angle(raw.angle - sign * TRACKER_MAX_LAG_RAD);
             let a_v = (dt / TRACKER_CATCHUP_TAU_S).min(1.0);

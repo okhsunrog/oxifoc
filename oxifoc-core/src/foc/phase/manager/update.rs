@@ -462,6 +462,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 log_suppressed
             );
         }
+        if self.startup.is_active() && self.startup.phase() != StartupPhase::Deadshort {
+            self.tracker.startup_tracking = true;
+        }
         if self.startup.is_active() {
             let phase_before = self.startup.phase();
             if phase_before == StartupPhase::Deadshort {
@@ -486,6 +489,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     // observer's phase lives one period ahead.
                     self.observer
                         .seed(wrap_angle(angle + velocity * input.dt), velocity);
+                    // A retry can catch an already spinning rotor after
+                    // a cold-start acquisition. Seed its frame directly.
+                    self.tracker.startup_tracking = false;
+                    self.tracker.active = false;
                 } else if self.startup.phase() == StartupPhase::Ramp && self.startup.log_allow() {
                     info!("startup: deadshort saw standstill, ramp cold start");
                 }

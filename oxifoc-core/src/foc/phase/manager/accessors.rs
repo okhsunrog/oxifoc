@@ -80,6 +80,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         self.deactivate_open_loop_override();
         // A live cold-start sequence belongs to the source that began it.
         self.startup.deactivate();
+        self.tracker.startup_tracking = false;
         Ok(())
     }
 

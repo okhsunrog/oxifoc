@@ -94,12 +94,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                                 angle,
                                 velocity: vel,
                             };
-                            // Filter only POST-handoff: while the startup
-                            // sequencer is still active a ready observer
-                            // takes commutation raw (pre-existing behavior
-                            // the hold/confirm dynamics are tuned around);
-                            // the filter seeds continuity at the handoff.
-                            if self.tracker.kp > 0.0 && !self.startup.is_active() {
+                            // Keep the commutation frame continuous through
+                            // cold-start source changes and confirmed handoff.
+                            if self.tracker.kp > 0.0
+                                && (!self.startup.is_active() || self.tracker.startup_tracking)
+                            {
                                 self.tracker_output(raw, dt)
                             } else {
                                 self.tracker.active = false;
@@ -109,8 +108,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                         _ => self.output,
                     }
                 } else if self.startup.is_active() {
-                    // The sequencer owns commutation: the tracker re-seeds
-                    // continuity at the next handoff.
+                    if self.tracker.kp > 0.0 && self.tracker.startup_tracking && self.tracker.active
+                    {
+                        return self.tracker_output(
+                            PhaseOutput {
+                                angle: self.startup.angle(),
+                                velocity: self.startup.velocity(),
+                            },
+                            dt,
+                        );
+                    }
+                    // The initial forced ramp runs directly until the first
+                    // transition to a ready observer engages the tracker.
                     self.tracker.active = false;
                     PhaseOutput {
                         angle: self.startup.angle(),
