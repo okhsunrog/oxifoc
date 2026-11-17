@@ -1,7 +1,7 @@
-//! Nordic UART Service (NUS) GATT definition.
+//! OxiFOC ergot transport GATT definition.
 //!
-//! Defines a GATT server with a single NUS service for bidirectional
-//! ergot frame transfer over BLE. Each ergot frame maps to one GATT
+//! A NUS-shaped service under the OxiFOC UUIDs from [`oxifoc_core::ble`]
+//! carries ergot frames in both directions. Each ergot frame maps to one GATT
 //! write (central → peripheral) or notification (peripheral → central).
 
 // The gatt_server/gatt_service macros re-qualify types in their expansions,
@@ -23,13 +23,13 @@ pub struct NusServer {
     pub nus: NusService,
 }
 
-#[gatt_service(uuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e")]
+#[gatt_service(uuid = oxifoc_core::ble::SERVICE_UUID)]
 pub struct NusService {
     /// RX characteristic — central writes ergot frames here.
-    #[characteristic(uuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e", write_without_response)]
+    #[characteristic(uuid = oxifoc_core::ble::RX_UUID, write_without_response)]
     pub rx: Vec<u8, NUS_MAX_PAYLOAD>,
 
     /// TX characteristic — peripheral notifies ergot frames to central.
-    #[characteristic(uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e", notify)]
+    #[characteristic(uuid = oxifoc_core::ble::TX_UUID, notify)]
     pub tx: Vec<u8, NUS_MAX_PAYLOAD>,
 }

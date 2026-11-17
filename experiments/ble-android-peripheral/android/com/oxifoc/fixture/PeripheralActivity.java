@@ -14,9 +14,10 @@ import java.util.concurrent.*;
 
 /** Dedicated NUS peripheral fixture. Only bridges to loopback, never generates telemetry. */
 public class PeripheralActivity extends Activity {
-    static final UUID SERVICE=UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
-    static final UUID RX=UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e");
-    static final UUID TX=UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e");
+    // Keep in sync with oxifoc_core::ble.
+    static final UUID SERVICE=UUID.fromString("0b960001-d748-4b2e-b03a-6ada6467f15d");
+    static final UUID RX=UUID.fromString("0b960002-d748-4b2e-b03a-6ada6467f15d");
+    static final UUID TX=UUID.fromString("0b960003-d748-4b2e-b03a-6ada6467f15d");
     static final UUID CCCD=UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     BluetoothGattServer server;
     BluetoothLeAdvertiser advertiser;

@@ -235,7 +235,7 @@ async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<B
         .discover(
             Some(tx),
             scan_duration.as_millis().max(200) as u64,
-            blec::models::ScanFilter::Service(crate::transport::ble::NUS_SERVICE_UUID),
+            blec::models::ScanFilter::Service(crate::transport::ble::SERVICE_UUID),
             false,
         )
         .await?;
@@ -255,7 +255,7 @@ async fn scan_ble_devices_inner(scan_duration: Duration) -> anyhow::Result<Vec<B
     for device in handler.connected_devices().await {
         if device
             .services
-            .contains(&crate::transport::ble::NUS_SERVICE_UUID)
+            .contains(&crate::transport::ble::SERVICE_UUID)
         {
             devices
                 .entry(device.address.clone())

@@ -2,7 +2,7 @@
 
 Android Dioxus frontend using the shared adaptive `oxifoc-ui` connection page
 and `oxifoc-host-dioxus-ui` controller. It offers BLE, TCP and UDP; USB is not
-offered on Android. It scans for NUS devices and displays connection state, sample count, bus
+offered on Android. It scans for OxiFOC service devices and displays connection state, sample count, bus
 voltage, motor state and faults. Data comes from the connected controller; no
 mock feature is enabled. It does not send motor-control commands.
 

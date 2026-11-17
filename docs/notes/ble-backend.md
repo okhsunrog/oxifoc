@@ -11,7 +11,10 @@ attempt is cleaned up. The pinned fork revision is
 
 `HostConfig::ble_address` is a string (MAC on Linux/Android, peripheral UUID on
 macOS). `BleDeviceInfo` contains presentation data and that address, never a
-platform handle. Discovery filters the Nordic UART service. CLI selection
+platform handle. Discovery filters by the OxiFOC service UUID
+(`oxifoc_core::ble::SERVICE_UUID`), which the bridge advertises; the name is
+in the scan response. The service mirrors the Nordic UART layout under its own
+UUIDs, so generic NUS tools do not list the board. CLI selection
 still rejects ambiguous results; `--ble-address` bypasses discovery.
 
 The global BLE adapter and its event pump are initialized on a persistent
@@ -23,7 +26,7 @@ radio link alive after our client closes. Pending connection attempts are also
 cancelled. Android permissions remain
 an OS decision and errors are exposed to the picker.
 
-One ergot frame maps to one NUS write/notification. The bridge's 505-byte frame
+One ergot frame maps to one GATT write/notification. The bridge's 505-byte frame
 limit requires an ATT MTU of at least 508. Smaller MTUs are rejected with an
 explicit error; splitting packets would change the existing wire protocol.
 Notifications enter a bounded 128-frame queue. Overflow, oversize packets,
@@ -71,7 +74,7 @@ it. The live Android lab uses the real platform backend.
 
 For a motor-free radio test, run `oxifoc-virtual --port 25267` and
 `experiments/ble-virtual-bridge` on Linux. The latter advertises **OxiFOC Virtual**
-and forwards complete NUS frames to the loopback COBS TCP connection. It opens
+and forwards complete GATT frames to the loopback COBS TCP connection. It opens
 a fresh TCP connection for each subscription and closes it when notifications
 stop. It does not change the adapter's power state or pairing configuration.
 Only one central is supported. Stop the fixture after the test.

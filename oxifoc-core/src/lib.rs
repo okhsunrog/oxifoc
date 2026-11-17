@@ -101,6 +101,9 @@
 #[macro_use]
 mod fmt;
 
+/// BLE GATT UUIDs of the ergot transport service
+pub mod ble;
+
 /// Timer abstraction for async delays
 pub mod timer;
 

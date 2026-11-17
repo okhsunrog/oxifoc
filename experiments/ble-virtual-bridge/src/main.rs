@@ -15,9 +15,10 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::{Mutex, mpsc},
 };
-const SERVICE: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
-const RX: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
-const TX: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
+// Keep in sync with oxifoc_core::ble (this crate is outside the workspace).
+const SERVICE: Uuid = Uuid::from_u128(0x0b960001_d748_4b2e_b03a_6ada6467f15d);
+const RX: Uuid = Uuid::from_u128(0x0b960002_d748_4b2e_b03a_6ada6467f15d);
+const TX: Uuid = Uuid::from_u128(0x0b960003_d748_4b2e_b03a_6ada6467f15d);
 
 #[tokio::main]
 async fn main() -> Result<()> {

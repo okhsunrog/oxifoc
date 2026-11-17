@@ -1,7 +1,7 @@
-//! Nordic UART Service (NUS) constants.
+//! OxiFOC BLE transport constants.
 //!
 //! The remote is a BLE central (GATT client), so it doesn't define
-//! a GATT server — only the shared constants for NUS UUIDs and payload size.
+//! a GATT server. The service UUIDs live in `oxifoc_core::ble`.
 
 /// Maximum payload per GATT characteristic value.
 ///

@@ -1,4 +1,5 @@
-//! NUS framed transport: one ergot frame per GATT write/notification.
+//! BLE framed transport over the OxiFOC GATT service (NUS-shaped, own UUIDs):
+//! one ergot frame per GATT write/notification.
 //! The shared backend owns BLE; UI signals never carry protocol packets.
 use anyhow::{Context, Result, anyhow, ensure};
 use blec::{Connection, OnDisconnectHandler, models::WriteType};
@@ -15,9 +16,9 @@ use uuid::Uuid;
 
 type StdQueue = ergot::interface_manager::utils::std::StdQueue;
 type WaitQueue = ergot::toolkits::tokio_stream::WaitQueue;
-pub(crate) const NUS_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
-const NUS_RX_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
-const NUS_TX_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
+pub(crate) const SERVICE_UUID: Uuid = Uuid::from_u128(oxifoc_core::ble::SERVICE_UUID);
+const RX_UUID: Uuid = Uuid::from_u128(oxifoc_core::ble::RX_UUID);
+const TX_UUID: Uuid = Uuid::from_u128(oxifoc_core::ble::TX_UUID);
 const BLE_MTU: u16 = 505;
 const OUT_BUFFER_SIZE: usize = 4096;
 const RX_QUEUE_FRAMES: usize = 128;
@@ -93,7 +94,7 @@ impl Session {
             if subscribed
                 && handler.is_device_connected(&address)
                 && let Err(error) = handler
-                    .unsubscribe_from(&address, NUS_TX_UUID, Some(NUS_SERVICE_UUID))
+                    .unsubscribe_from(&address, TX_UUID, Some(SERVICE_UUID))
                     .await
             {
                 warn!("BLE unsubscribe: {error}");
@@ -147,22 +148,22 @@ impl Session {
             let services = connection.services().await.context("NUS discovery")?;
             let nus = services
                 .iter()
-                .find(|s| s.uuid == NUS_SERVICE_UUID)
-                .ok_or_else(|| anyhow!("NUS service missing"))?;
+                .find(|s| s.uuid == SERVICE_UUID)
+                .ok_or_else(|| anyhow!("OxiFOC BLE service missing"))?;
             ensure!(
-                nus.characteristics.iter().any(|c| c.uuid == NUS_RX_UUID),
-                "NUS RX missing"
+                nus.characteristics.iter().any(|c| c.uuid == RX_UUID),
+                "OxiFOC BLE RX missing"
             );
             ensure!(
-                nus.characteristics.iter().any(|c| c.uuid == NUS_TX_UUID),
-                "NUS TX missing"
+                nus.characteristics.iter().any(|c| c.uuid == TX_UUID),
+                "OxiFOC BLE TX missing"
             );
             let (tx, rx) = tokio::sync::mpsc::channel(RX_QUEUE_FRAMES);
             let overflow = failed.clone();
             // Also clean up if setup is cancelled while the CCCD write is in flight.
             self.subscribed = true;
             connection
-                .subscribe(NUS_TX_UUID, Some(NUS_SERVICE_UUID), move |data: Vec<u8>| {
+                .subscribe(TX_UUID, Some(SERVICE_UUID), move |data: Vec<u8>| {
                     // Never stall blec's event loop. A dropped protocol frame requires
                     // a new session; it must not silently corrupt the ergot stream.
                     if data.len() > usize::from(BLE_MTU) || tx.try_send(data).is_err() {
@@ -265,7 +266,7 @@ async fn tx_worker(
             biased;
             _ = failed.cancelled() => break,
             frame = consumer.wait_read() => {
-                let result = connection.send_data(NUS_RX_UUID, Some(NUS_SERVICE_UUID), &frame, WriteType::WithoutResponse).await;
+                let result = connection.send_data(RX_UUID, Some(SERVICE_UUID), &frame, WriteType::WithoutResponse).await;
                 frame.release();
                 if let Err(error) = result { warn!("BLE write: {error}"); break; }
             }
@@ -338,9 +339,9 @@ mod lifecycle_tests {
             .name("OxiFOC test")
             .mtu(mtu)
             .service(
-                ServiceSpec::new(NUS_SERVICE_UUID)
-                    .characteristic(NUS_RX_UUID, CharPropFlags::WRITE_WITHOUT_RESPONSE)
-                    .characteristic(NUS_TX_UUID, CharPropFlags::NOTIFY),
+                ServiceSpec::new(SERVICE_UUID)
+                    .characteristic(RX_UUID, CharPropFlags::WRITE_WITHOUT_RESPONSE)
+                    .characteristic(TX_UUID, CharPropFlags::NOTIFY),
             )
     }
     fn is_down(stack: &EdgeStack) -> bool {
@@ -432,7 +433,7 @@ mod lifecycle_tests {
                 .unwrap();
             // An invalid/oversized packet must fail the whole session, not drop
             // a packet and leave the transport apparently healthy.
-            assert!(good.notify(NUS_SERVICE_UUID, NUS_TX_UUID, vec![0; 506]));
+            assert!(good.notify(SERVICE_UUID, TX_UUID, vec![0; 506]));
             tokio::time::timeout(Duration::from_secs(2), async {
                 while !is_down(&stack) {
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -443,7 +444,7 @@ mod lifecycle_tests {
             session.close().await;
             assert!(!good.is_connected());
             assert!(session.workers.is_empty());
-            assert!(good.count_ops(&blec::mock::Op::Unsubscribe(NUS_TX_UUID)) > 0);
+            assert!(good.count_ops(&blec::mock::Op::Unsubscribe(TX_UUID)) > 0);
             assert!(!session.subscribed);
         });
         drop(rt);

@@ -53,7 +53,8 @@ the capture's loss counters and command acknowledgements before using it
 as evidence.
 
 To use BLE with the C5 bridge, flash it with `just flash-bridge ble`.
-The host uses the same controller commands over Ergot/NUS, for example
+The host uses the same controller commands over Ergot on the OxiFOC GATT
+service (NUS-shaped, own UUIDs), for example
 `just cli --transport ble --ble-name "Oxifoc Bridge" --wait-secs 12 status`.
 For slow telemetry use `monitor --fast-hz 0`. Use USB Serial/JTAG for
 native-rate captures. The optional BLE service currently accepts unpaired

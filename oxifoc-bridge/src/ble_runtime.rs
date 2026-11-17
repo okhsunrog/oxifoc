@@ -83,13 +83,20 @@ async fn advertise<'v, 's, C: Controller>(
     peripheral: &mut Peripheral<'v, C, DefaultPacketPool>,
     server: &'s NusServer<'v>,
 ) -> Result<GattConnection<'v, 's, DefaultPacketPool>, BleHostError<C::Error>> {
+    // Flags + the 128-bit service UUID take 21 of the 31 advertising bytes, so
+    // the name goes in the scan response. Hosts filter scans by the UUID.
     let mut adv_data = [0; 31];
     let len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteLocalName(b"Oxifoc Bridge"),
+            AdStructure::CompleteServiceUuids128(&[oxifoc_core::ble::SERVICE_UUID.to_le_bytes()]),
         ],
         &mut adv_data[..],
+    )?;
+    let mut scan_data = [0; 31];
+    let scan_len = AdStructure::encode_slice(
+        &[AdStructure::CompleteLocalName(b"Oxifoc Bridge")],
+        &mut scan_data[..],
     )?;
 
     let advertiser = peripheral
@@ -97,7 +104,7 @@ async fn advertise<'v, 's, C: Controller>(
             &Default::default(),
             Advertisement::ConnectableScannableUndirected {
                 adv_data: &adv_data[..len],
-                scan_data: &[],
+                scan_data: &scan_data[..scan_len],
             },
         )
         .await?;

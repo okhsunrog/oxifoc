@@ -291,21 +291,11 @@ async fn nus_session<C: Controller>(
     client: &GattClient<'_, C, DefaultPacketPool, 10>,
     _conn: &Connection<'_, DefaultPacketPool>,
 ) {
-    // NUS UUIDs
-    let nus_uuid = Uuid::new_long([
-        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40,
-        0x6e,
-    ]);
-    let rx_uuid = Uuid::new_long([
-        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00, 0x40,
-        0x6e,
-    ]);
-    let tx_uuid = Uuid::new_long([
-        0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x03, 0x00, 0x40,
-        0x6e,
-    ]);
+    let nus_uuid = Uuid::from(oxifoc_core::ble::SERVICE_UUID);
+    let rx_uuid = Uuid::from(oxifoc_core::ble::RX_UUID);
+    let tx_uuid = Uuid::from(oxifoc_core::ble::TX_UUID);
 
-    // Discover NUS service
+    // Discover the OxiFOC transport service
     let services = match client.services_by_uuid(&nus_uuid).await {
         Ok(s) => s,
         Err(_e) => {
@@ -314,7 +304,7 @@ async fn nus_session<C: Controller>(
         }
     };
     let Some(service) = services.first() else {
-        error!("[nus] NUS service not found");
+        error!("[nus] OxiFOC service not found");
         return;
     };
 

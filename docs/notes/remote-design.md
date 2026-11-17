@@ -320,7 +320,11 @@ GATT. The internal board↔remote link could also be L2CAP (both ESP), but
 GATT-everywhere is simpler and the throttle semantics favor write-without-
 response.
 
-**[decided] Custom 128-bit UUIDs**, not the Nordic UART Service UUIDs:
+**[decided, implemented 2026-11-17] Custom 128-bit UUIDs**, not the Nordic
+UART Service UUIDs. Service `0b960001-d748-4b2e-b03a-6ada6467f15d`, RX
+`…0002…`, TX `…0003…`, defined once in `oxifoc_core::ble`. The bridge
+advertises the service UUID (name in the scan response) and hosts filter
+scans by it:
 - Semantic identity — host/app filters by the oxifoc service UUID; random NUS
   terminal apps don't think they own the controller (a mild safety point for a
   motor controller), and we don't accidentally match other NUS devices.

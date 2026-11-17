@@ -1,7 +1,7 @@
-# Android NUS peripheral fixture
+# Android BLE peripheral fixture
 
-Diagnostic app, separate from both product frontends. It advertises a Nordic
-UART service and bridges each raw BLE packet to one COBS TCP frame over
+Diagnostic app, separate from both product frontends. It advertises the OxiFOC
+GATT service (NUS-shaped, UUIDs from `oxifoc_core::ble`) and bridges each raw BLE packet to one COBS TCP frame over
 loopback. Telemetry and protocol responses come from `oxifoc-virtual` on the
 laptop, via `adb reverse`; this app does not synthesize controller data.
 

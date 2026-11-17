@@ -1,6 +1,7 @@
 # BLE / virtual-controller bridge
 
-Linux test fixture. Advertises **OxiFOC Virtual**, serves Nordic UART GATT,
+Linux test fixture. Advertises **OxiFOC Virtual**, serves the OxiFOC GATT service
+(NUS-shaped, UUIDs from `oxifoc_core::ble`),
 and translates each BLE packet to/from one COBS TCP frame. The target is
 restricted to loopback; the default port is 25267. Start `oxifoc-virtual` on
 that port first. Bluetooth must already be powered on.
