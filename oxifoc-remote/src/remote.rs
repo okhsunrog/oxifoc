@@ -206,15 +206,15 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
                 info!("[ble] connecting to bridge...");
 
                 let connect_config = ConnectConfig {
-                    connect_params: if boot_task.is_some() {
-                        // Two BLE events for an Ergot round trip must fit in the drive deadman.
-                        RequestedConnParams {
-                            min_connection_interval: Duration::from_millis(15),
-                            max_connection_interval: Duration::from_millis(20),
-                            ..Default::default()
-                        }
-                    } else {
-                        Default::default()
+                    // A short interval keeps an Ergot round trip inside the drive deadman
+                    // and avoided the C5 missing the first connection after a link loss
+                    // (docs/notes/ble-link-reliability.md). The 1 s supervision timeout
+                    // frees the bridge's single slot quickly after a remote reset.
+                    connect_params: RequestedConnParams {
+                        min_connection_interval: Duration::from_millis(15),
+                        max_connection_interval: Duration::from_millis(20),
+                        supervision_timeout: Duration::from_millis(1000),
+                        ..Default::default()
                     },
                     scan_config: ScanConfig {
                         filter_accept_list: &[bridge_addr],

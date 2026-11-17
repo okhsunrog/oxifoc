@@ -244,6 +244,9 @@ perfect link — you need: rarely disconnect, reconnect fast, and the gap is saf
   hundreds of ms.
 - The deadman makes any reconnect gap a *graceful slowdown*, not a hazard.
 
+Bench measurements and the current reliability plan are in
+[ble-link-reliability.md](ble-link-reliability.md).
+
 **[bench] Revisit criterion:** reconsider a second radio link only if the
 bench shows BLE can't hold the **throttle + phone** connections with
 the throttle's timing under the phone's telemetry load. That's a measurable
