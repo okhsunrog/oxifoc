@@ -45,12 +45,18 @@ Remaining budget after a loss: 1 s supervision timeout, ≈0.7 s C5 boot when
 the bridge itself restarted, ≈0.28 s GATT discovery + MTU exchange, and
 ≈0.1 s per failed establishment.
 
-### 0x3E investigation
+### 0x3E investigation — cause found
 
-Failed establishment persists at roughly 30–50 % per attempt (power-on and
-reconnect alike, all intervals tried). The bridge logs nothing for failed
-attempts, even with `trouble_host=debug`, and keeps advertising, so the C5
-most likely never accepts the CONNECT_IND. Ruled out or not confirmed:
+Failed establishment ran at roughly 30–50 % per attempt. The bridge logged
+nothing for failed attempts, even with `trouble_host=debug`, and kept
+advertising, so the C5 never accepted the CONNECT_IND.
+
+**Cause: a display next to the bridge's antenna.** After moving it, the same
+firmware gave 0 failures in 17 attempts (10 remote power-ons, 7 bridge
+resets), and loss → session active settled at 287–312 ms. Keep displays and
+their flex cables away from both antennas on the custom boards.
+
+Checked on the way, not the cause:
 
 - **C5 BLE low-power timer clock.** On the running bridge
   `MODEM_LPCON.LP_TIMER_CONF = 0` and `CLK_CONF.clk_lp_timer_en = 0`:
@@ -59,16 +65,27 @@ most likely never accepts the CONNECT_IND. Ruled out or not confirmed:
   divided by 480 (100 kHz) with `rtc_freq = 100000`. A local esp-radio patch
   doing the same (`LP_TIMER_CONF = 0x1df4`) did not change the failure rate.
   Still worth reporting upstream.
-- **Advertising channel.** Single-channel runs first suggested channel 37
-  was clean (0/6), but a 10-run repeat on 37 gave 7 failures in 15 attempts.
+- **Advertising channel.** Single-channel runs gave no consistent pattern.
 - **`ble_npl_callout_is_active`.** The "missing real implementation" debug
   line is stale; the function is implemented.
 - **nrf-sdc `NordicCompatModeWindowOffsetSet`** asserts in the SoftDevice
   Controller (`57:2031`), sent before or after host init. Untested.
 
-Next: compare with the laptop as central (BlueZ reports 0x3E as
-`le-connection-abort-by-local`), and capture CONNECT_IND with an nRF52840
-sniffer to see whether the C5 answers the first connection event.
+### ESP32 comparison
+
+`oxifoc-remote-stick` (M5StickC Plus, ESP32 v1.1, single core) runs a port of
+the same link code against the same bridge, after the display was moved:
+
+| | nRF52840 remote | ESP32 stick |
+|---|---|---|
+| Bridge reset: loss → session active | 287–312 ms, 0 failures in 7 | 280–419 ms, median ≈319 ms |
+| Power-on: connect start → session active | ≈490 ms, 0 failures in 10 | 300–380 ms, 0 failures in 8 |
+| Failed establishments, all runs | 0 of 17 | 2 of 17 |
+
+Reconnect behaviour is equivalent. The nRF's extra ≈200 ms at power-on sits
+between `connect` and the connection; the 32.768 kHz crystal also adds
+≈250 ms before the stack starts. Range, hand blocking and long runs were not
+compared.
 
 ## Plan
 
