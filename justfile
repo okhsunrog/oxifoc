@@ -416,11 +416,11 @@ flash-bridge features="": (build-bridge features)
     probe-rs download --verify --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10 oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge
     probe-rs reset --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10
 
-# Build ESP32 remote firmware.
+# Build nRF52840 remote firmware.
 build-remote:
     cd oxifoc-remote && cargo build --release
 
-# Build and flash ESP32 remote firmware.
+# Build and flash nRF52840 remote firmware.
 flash-remote:
     cd oxifoc-remote && cargo run --release
 

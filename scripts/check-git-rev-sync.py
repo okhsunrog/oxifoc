@@ -16,6 +16,12 @@ import sys
 
 SKIP_PARTS = {"target", "build", ".git"}
 
+# Trouble pins its optional crypto dependency to its own Embassy snapshot.
+# The BLE builds leave Trouble's security feature disabled. Keep checking
+# the active Embassy pins used by the motor controllers and host workspace.
+TROUBLE_LOCKS = {"oxifoc-bridge/Cargo.lock", "oxifoc-remote/Cargo.lock"}
+TROUBLE_CRYPTO_REV = "bd35bd7a7d19147c8bcae9c2eda99b25e597294c"
+
 
 def main() -> int:
     root = pathlib.Path(__file__).resolve().parent.parent
@@ -36,9 +42,15 @@ def main() -> int:
             src_m = re.search(r'^source = "(git\+[^"]+)"', block, re.M)
             if name_m and src_m:
                 rel = str(lock.relative_to(root))
-                sources.setdefault(name_m.group(1), {}).setdefault(
-                    src_m.group(1), set()
-                ).add(rel)
+                name, source = name_m.group(1), src_m.group(1)
+                if (
+                    name == "embassy-crypto"
+                    and rel in TROUBLE_LOCKS
+                    and source
+                    == f"git+https://github.com/embassy-rs/embassy.git?rev={TROUBLE_CRYPTO_REV}#{TROUBLE_CRYPTO_REV}"
+                ):
+                    continue
+                sources.setdefault(name, {}).setdefault(source, set()).add(rel)
 
     bad = {name: srcs for name, srcs in sources.items() if len(srcs) > 1}
     if bad:

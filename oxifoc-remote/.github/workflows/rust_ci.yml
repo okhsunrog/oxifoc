@@ -29,12 +29,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          target: riscv32imac-unknown-none-elf
-          toolchain: stable
-          components: rust-src, rustfmt, clippy
+      - name: Install Rust components
+        run: rustup component add clippy
+      - name: Install libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
       - name: Enable caching
         uses: Swatinem/rust-cache@v2
       - name: Run command

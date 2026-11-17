@@ -7,20 +7,16 @@
 // embedded_test::tests expands to `cfg(rust_analyzer)`, unknown to check-cfg.
 #![allow(unexpected_cfgs)]
 
-esp_bootloader_esp_idf::esp_app_desc!();
+use nrf_mpsl as _;
 
 #[cfg(test)]
-#[embedded_test::tests(executor = esp_rtos::embassy::Executor::new())]
+#[embedded_test::tests(executor = embassy_executor::Executor::new())]
 mod tests {
     use defmt::assert_eq;
 
     #[init]
     fn init() {
-        let peripherals = esp_hal::init(esp_hal::Config::default());
-
-        let timg0 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
-        esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
-
+        embassy_nrf::init(Default::default());
         rtt_target::rtt_init_defmt!();
     }
 

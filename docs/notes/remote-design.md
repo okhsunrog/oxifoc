@@ -1,5 +1,9 @@
 # Handheld Remote — Design Notes
 
+The current `oxifoc-remote` prototype runs on nRF52840 with the Voyager
+SSD1306 wiring. It remains a BLE central for `oxifoc-bridge`. The ESP32-C6
+handheld hardware described below is from the original design.
+
 > **STATUS: design (forward-looking), nothing implemented.** This is a
 > design doc, not a research note with an implementation status, so the
 > status is tracked per section via the markers below, not in this header.
@@ -497,7 +501,7 @@ physical layout is fixed — no firmware rework.
 
 ## Reference map
 
-- `oxifoc-remote/` — the remote firmware (ESP32-C6, riscv32imac)
+- `oxifoc-remote/` — the remote firmware (nRF52840, `thumbv7em-none-eabihf`)
 - `oxifoc-bridge/` — the BLE↔wired bridge (ESP32-C6)
 - `axp2101-dd` (own, published) — PMIC driver
 - `~/code/rust/m5core2v1-1_esp-hal_demo/src/pmic.rs` — AXP2101 usage reference + M5Core2 v1.1 rail map

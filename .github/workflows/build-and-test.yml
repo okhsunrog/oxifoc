@@ -151,11 +151,15 @@ jobs:
           chip="${{ matrix.target }}"
           cd "tests/stm32${chip#oxifoc-}" && cargo build --tests --locked
 
-  device-esp:
+  device-ble:
     strategy:
       fail-fast: false
       matrix:
-        target: [oxifoc-bridge, oxifoc-remote]
+        include:
+          - target: oxifoc-bridge
+            triple: riscv32imac-unknown-none-elf
+          - target: oxifoc-remote
+            triple: thumbv7em-none-eabihf
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -173,8 +177,14 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
-          targets: riscv32imac-unknown-none-elf
+          targets: ${{ matrix.triple }}
           components: clippy, llvm-tools, rust-src
+
+      - name: install libclang for the Nordic SDK bindings
+        if: matrix.target == 'oxifoc-remote'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
 
       - uses: Swatinem/rust-cache@v2
         with:

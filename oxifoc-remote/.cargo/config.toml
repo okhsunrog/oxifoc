@@ -1,19 +1,10 @@
-[target.riscv32imac-unknown-none-elf]
-runner = "probe-rs run --chip=esp32c6 --preverify --always-print-stacktrace --no-location"
+[target.thumbv7em-none-eabihf]
+runner = "probe-rs run --chip nRF52840_xxAA --preverify --always-print-stacktrace --no-location"
 
 [env]
 DEFMT_LOG = "info"
-TROUBLE_HOST_DEFAULT_PACKET_POOL_MTU = "512"
+# Generate the Nordic bindings for bare metal without using host libc headers.
+BINDGEN_EXTRA_CLANG_ARGS_thumbv7em_none_eabihf = "-ffreestanding"
 
 [build]
-rustflags = [
-  # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
-  # NOTE: May negatively impact performance of produced code
-  "-C", "force-frame-pointers",
-  "-Z", "stack-protector=all",
-]
-
-target = "riscv32imac-unknown-none-elf"
-
-[unstable]
-build-std = ["alloc", "core"]
+target = "thumbv7em-none-eabihf"

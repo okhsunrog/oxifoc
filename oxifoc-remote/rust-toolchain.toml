@@ -2,5 +2,5 @@
 # Pinned like the STM32 crates — a floating "nightly" makes CI break on any
 # upstream nightly regression and builds non-reproducible.
 channel    = "nightly-2026-11-13"
-components = ["rust-src"]
-targets = ["riscv32imac-unknown-none-elf"]
+components = ["rust-src", "rustfmt", "llvm-tools"]
+targets = ["thumbv7em-none-eabihf"]
