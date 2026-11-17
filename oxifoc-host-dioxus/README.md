@@ -28,9 +28,12 @@ the pointer when paused. Currents use the controller's calibration through
 `build_enrich_ctx`, exactly as the Slint frontend does.
 
 The initial slice includes phase/dq currents, RPM, bus voltage, FET temperature,
-channel toggles, plot focus, motor parameter readback and session events.
-Parameter editing and commissioning workflows are planned. Discovery and the
-connection page use the shared `oxifoc-ui` and `oxifoc-host-dioxus-ui` crates.
+channel toggles, plot focus, motor parameter editing and session events.
+Parameters reads the motor model when first opened and reloads it after
+reconnecting. Apply to RAM uses the revision and boot epoch from the read.
+Save to flash persists the acknowledged revision.
+Commissioning workflows are planned. Discovery and the connection page use
+the shared `oxifoc-ui` and `oxifoc-host-dioxus-ui` crates.
 
 This crate has its own workspace/lockfile to isolate experimental Dioxus/Blitz
 patches from the established Slint and firmware dependency graph. Shared crates
@@ -62,5 +65,5 @@ commands, then reconnected and resumed acquisition. All four plots fit the
 
 This is the first working frontend slice, not feature parity with the Slint GUI.
 Narrow-window layouts, other operating systems, physical devices and accessibility
-have not yet been validated. Parameter editing and commissioning remain future
-work. No physical controller was used. Test processes were stopped afterward.
+were outside the scope of this run. No physical controller was used. Test
+processes were stopped afterward.

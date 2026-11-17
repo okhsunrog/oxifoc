@@ -1,4 +1,5 @@
 mod model;
+mod parameters;
 mod plot;
 mod viewport;
 use dioxus::html::geometry::WheelDelta;
@@ -76,6 +77,7 @@ fn Studio(
     let mut data = use_signal(Snapshot::default);
     let mut frame = use_signal(|| 0u64);
     let mut page = use_signal(|| 0);
+    let editor = use_signal(parameters::Editor::default);
     let mut paused = use_signal(|| false);
     let mut current = use_signal(|| "1.0".to_string());
     let mut error = use_signal(String::new);
@@ -94,8 +96,19 @@ fn Studio(
     use_drop(move || {
         m.alive.store(false, Ordering::Relaxed);
     });
+    let m = model.clone();
+    use_effect(move || {
+        let s = data.read();
+        parameters::sync_connection(
+            editor,
+            &m,
+            s.connected.then_some(s.connection_generation),
+            page() == 1,
+        );
+    });
     let s = data();
     let online = s.connected;
+    let connection = online.then_some(s.connection_generation);
     let busy = s.pending;
     let endpoint = format!(
         "{}  {}",
@@ -131,16 +144,15 @@ fn Studio(
     let pmodel = model.clone();
     let runmodel = model.clone();
     let stopmodel = model.clone();
-    let configmodel = model.clone();
     rsx! {
     style {"{oxifoc_ui::CSS}"}
     style {"{CSS}"}
-    div {class:"shell",
+    div {class:if page()==1 {"shell parameter-shell"} else {"shell"},
      aside {class:"rail",
       oxifoc_ui::Brand {}
       p {class:"rail-caption","Drive studio"}
       nav {for (i,label) in ["Oscilloscope","Parameters","Session journal"].iter().enumerate(){
-       button {class:if page()==i {"nav selected"} else {"nav"},onclick:move |_|page.set(i),"{label}"}
+       button {class:if page()==i {"nav selected"} else {"nav"},onclick:move |_|page.set(i),onkeydown:move |e|{if oxifoc_ui::keyboard_activate(&e){page.set(i);}},"{label}"}
       }}
       div {class:"rail-bottom",strong {"Native workspace"} p {"Motor control & diagnostics"} span {"Experimental GUI"}}
      }
@@ -148,18 +160,21 @@ fn Studio(
       header {div {class:"connection",span {class:if online{"dot online"}else{"dot"}},strong {"{conn}"} span {"{endpoint}"}} span {class:"session-state","{state}"} button {class:"button",onclick:move |_| ondisconnect.call(()),onkeydown:move |e|{if oxifoc_ui::keyboard_activate(&e){ondisconnect.call(());}}, "Disconnect"}}
       div {class:"workspace",
        main {
-        oxifoc_ui::Instruments {
-        rpm: (online && s.fast_seen.is_some_and(|t|t.elapsed().as_secs_f32()<2.)).then_some(s.rpm),
-        iq: s.iq.filter(|_|online && s.fast_seen.is_some_and(|t|t.elapsed().as_secs_f32()<2.)),
-        fet: (online && s.slow_seen.is_some_and(|t|t.elapsed().as_secs_f32()<3.)).then_some(s.temperature),
-        motor: s.motor_temp.filter(|_|online && s.slow_seen.is_some_and(|t|t.elapsed().as_secs_f32()<3.)),
-       }
-       div {class:"titlebar",div {h1 {match page(){0=>"Drive observatory",1=>"Controller parameters",_=>"Session journal"}} p {match page(){0=>"Currents, motion and operating conditions",1=>"Values read directly from the connected controller",_=>"Connection changes and acknowledged commands"}}}
-         if page()==0 {button {class:"button",onclick:move |_| {paused.toggle();pmodel.paused.store(paused(),Ordering::Relaxed);},if paused(){"Resume plots"}else{"Pause plots"}}}
-         if page()==1 {button {class:"button primary",disabled:!online,onclick:move |_|configmodel.read_config(),"Read motor parameters"}}
-        }
-        if !online {div {class:"notice","Waiting for the selected controller. Retained traces are stale."}}
         if page()==0 {
+         oxifoc_ui::Instruments {
+          rpm: (online && s.fast_seen.is_some_and(|t| t.elapsed().as_secs_f32() < 2.)).then_some(s.rpm),
+          iq: s.iq.filter(|_| online && s.fast_seen.is_some_and(|t| t.elapsed().as_secs_f32() < 2.)),
+          fet: (online && s.slow_seen.is_some_and(|t| t.elapsed().as_secs_f32() < 3.)).then_some(s.temperature),
+          motor: s.motor_temp.filter(|_| online && s.slow_seen.is_some_and(|t| t.elapsed().as_secs_f32() < 3.)),
+         }
+         div {class:"titlebar",
+          div {
+           h1 {"Drive observatory"}
+           p {"Currents, motion and operating conditions"}
+          }
+          button {class:"button",onclick:move |_| {paused.toggle();pmodel.paused.store(paused(),Ordering::Relaxed);},if paused(){"Resume plots"}else{"Pause plots"}}
+         }
+         if !online {div {class:"notice","Waiting for the selected controller. Retained traces are stale."}}
          div {class:"plot-stack",
           Chart {model:model.clone(),index:0,title:"Phase & dq currents",unit:"A",tick:frame(),paused:paused()}
           div {class:"twoplots",
@@ -171,8 +186,14 @@ fn Studio(
           }
          }
         } else if page()==1 {
-         section {class:"parameter-panel",h2 {"Motor model"} p {"Readback includes the controller revision and persistence state."} if s.config.is_empty(){p {"Select Read motor parameters to fetch the current configuration."}}else{p {class:"config-state","{s.config}"} div {class:"config-fields",for (name,value) in &s.config_fields {div {class:"config-field",span {"{name}"} strong {"{value}"}}}}}}
+         parameters::Parameters {editor, model: model.clone(), connection, running: s.state == "Running"}
         } else {
+         div {class:"titlebar",
+          div {
+           h1 {"Session journal"}
+           p {"Connection changes and acknowledged commands"}
+          }
+         }
          section {class:"journal",if s.events.is_empty(){p {"No session events yet."}} for (i,event) in s.events.iter().enumerate().rev(){div {class:"event",span {"{i}"} p {"{event}"}}}}
         }
        }
@@ -191,7 +212,7 @@ fn Studio(
         div {class:"health",h3 {"Acquisition"} div {span {"Received"} strong {"{rate} Hz"}} div {span {"Samples"} strong {"{s.samples}"}} div {span {"Active faults"} strong {"{s.faults}"}} p {if paused(){"Plots paused. Acquisition continues."}else{"Live telemetry from the controller."}}}
        }
       }
-      footer {span {"OxiFOC native"} span {"{conn}"} span {"Wheel to zoom • double-click a plot to focus"}}
+      footer {span {"OxiFOC native"} span {"{conn}"} if page()==0 {span {"Wheel to zoom • double-click a plot to focus"}}}
      }
     }
     }

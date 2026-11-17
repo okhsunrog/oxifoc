@@ -13,6 +13,7 @@ pub const CAPACITY: usize = 32768;
 #[derive(Clone, Default)]
 pub struct Snapshot {
     pub connected: bool,
+    pub connection_generation: u64,
     pub samples: u64,
     pub hz: f64,
     pub rpm: f32,
@@ -25,8 +26,6 @@ pub struct Snapshot {
     pub state: String,
     pub faults: u8,
     pub events: Vec<String>,
-    pub config: String,
-    pub config_fields: Vec<(String, String)>,
     pub pending: bool,
 }
 pub struct Model {
@@ -101,6 +100,7 @@ impl Model {
                     }
                 }
                 while let Ok(info) = m.runtime.device_info_rx.try_recv() {
+                    m.snapshot.lock().unwrap().connection_generation += 1;
                     ctx = oxifoc_host_lib::build_enrich_ctx(&m.runtime.cmd_tx, Some(&info));
                     for plot in &m.plots {
                         plot.clear();
@@ -200,37 +200,10 @@ impl Model {
             m.snapshot.lock().unwrap().pending = false;
         });
     }
-    pub fn read_config(self: &Arc<Self>) {
-        let m = self.clone();
-        std::thread::spawn(move || {
-            let result = ops::config::current_value(&m.runtime.cmd_tx, ConfigGroupId::MotorParams);
-            let mut s = m.snapshot.lock().unwrap();
-            match result {
-                Ok((value, state)) => {
-                    s.config = format!(
-                        "Revision {} • {}",
-                        state.revision,
-                        if state.persisted {
-                            "Saved on controller"
-                        } else {
-                            "Volatile configuration"
-                        }
-                    );
-                    s.config_fields = value
-                        .as_object()
-                        .map(|o| {
-                            o.iter()
-                                .map(|(k, v)| (k.replace('_', " "), v.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                }
-                Err(e) => {
-                    s.config = format!("Read failed: {e:#}");
-                    s.config_fields.clear();
-                }
-            }
-        });
+    pub fn configuration_connection(&self) -> Option<u64> {
+        let snapshot = self.snapshot.lock().unwrap();
+        (snapshot.connected && self.runtime.connected.load(Ordering::Relaxed))
+            .then_some(snapshot.connection_generation)
     }
 }
 impl Drop for Model {
