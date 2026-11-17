@@ -410,15 +410,32 @@ mod tests {
             inline_difference,
         ]);
         for (label, inputs) in [
-            ("ordinary", [0.001, 0.01, 0.1, 0.5, -0.001, -0.01, -0.1, -0.5]),
-            ("seam", [TAU - 0.001, TAU + 0.001, -TAU - 0.001, -TAU + 0.001,
-                TAU - 0.01, TAU + 0.01, -TAU - 0.01, -TAU + 0.01]),
+            (
+                "ordinary",
+                [0.001, 0.01, 0.1, 0.5, -0.001, -0.01, -0.1, -0.5],
+            ),
+            (
+                "seam",
+                [
+                    TAU - 0.001,
+                    TAU + 0.001,
+                    -TAU - 0.001,
+                    -TAU + 0.001,
+                    TAU - 0.01,
+                    TAU + 0.01,
+                    -TAU - 0.01,
+                    -TAU + 0.01,
+                ],
+            ),
         ] {
             let inputs = core::hint::black_box(inputs);
             let mut stats = [Stats::new(); 4];
             for pair in [(0, 1), (2, 3)] {
                 for input in inputs {
-                    defmt::assert_eq!(functions[pair.0](input).to_bits(), functions[pair.1](input).to_bits());
+                    defmt::assert_eq!(
+                        functions[pair.0](input).to_bits(),
+                        functions[pair.1](input).to_bits()
+                    );
                 }
             }
             for round in 0..WRAP_ROUNDS {
@@ -428,7 +445,15 @@ mod tests {
                 }
             }
             defmt::info!("wrap input: {}", label);
-            for (index, name) in ["shipping wrap", "inline wrap", "shipping difference", "inline difference"].iter().enumerate() {
+            for (index, name) in [
+                "shipping wrap",
+                "inline wrap",
+                "shipping difference",
+                "inline difference",
+            ]
+            .iter()
+            .enumerate()
+            {
                 stats[index].report(name, WRAP_ROUNDS, WRAP_BATCH_CALLS);
             }
         }

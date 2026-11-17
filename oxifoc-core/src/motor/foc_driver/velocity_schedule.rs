@@ -24,7 +24,11 @@ pub(super) struct ServiceSlots {
 impl ServiceSlots {
     pub fn new(dt: f32) -> Self {
         let length = ((0.001 / dt + 0.5) as u8).max(2);
-        Self { slot: length - 1, frame: u8::MAX, length }
+        Self {
+            slot: length - 1,
+            frame: u8::MAX,
+            length,
+        }
     }
 
     pub fn advance(&mut self) {
@@ -47,7 +51,11 @@ impl ServiceSlots {
 
     #[cfg(any(test, feature = "runtime"))]
     fn next_slot(&self) -> u8 {
-        if self.slot + 1 >= self.length { 0 } else { self.slot + 1 }
+        if self.slot + 1 >= self.length {
+            0
+        } else {
+            self.slot + 1
+        }
     }
 
     #[cfg(feature = "pi-bounds-ahead")]
@@ -84,7 +92,9 @@ pub(super) enum VelocityTick {
     /// Compute the authority bounds for the following outer update.
     #[cfg(feature = "pi-bounds-ahead")]
     Prepare,
-    Update { dt: f32 },
+    Update {
+        dt: f32,
+    },
     Reanchor,
 }
 
@@ -231,7 +241,10 @@ pub(super) struct VelocitySchedule {
 impl VelocitySchedule {
     #[cfg(all(feature = "service-slots", any(test, not(feature = "pi-bounds-ahead"))))]
     pub fn begin_slotted_cycle(&mut self, now_us: u64, due: bool) -> VelocityTick {
-        let elapsed = self.clock.previous.replace(now_us)
+        let elapsed = self
+            .clock
+            .previous
+            .replace(now_us)
             .map_or(0, |previous| now_us.wrapping_sub(previous));
         if elapsed > MAX_GAP_US {
             self.clock.postponed = false;
@@ -249,7 +262,10 @@ impl VelocitySchedule {
         }
         self.clock.postponed = false;
         self.clock.deadline = now_us.wrapping_add(PERIOD_US);
-        let dt = self.clock.updated.replace(now_us)
+        let dt = self
+            .clock
+            .updated
+            .replace(now_us)
             .map_or(0.0, |last| u64_to_f32(now_us.wrapping_sub(last)) * 1e-6);
         VelocityTick::Update { dt }
     }
@@ -259,7 +275,10 @@ impl VelocitySchedule {
     /// update is never later than slot 1.
     #[cfg(feature = "pi-bounds-ahead")]
     pub fn begin_pipelined_cycle(&mut self, now_us: u64, slot: u8, length: u8) -> VelocityTick {
-        let elapsed = self.clock.previous.replace(now_us)
+        let elapsed = self
+            .clock
+            .previous
+            .replace(now_us)
             .map_or(0, |previous| now_us.wrapping_sub(previous));
         if elapsed > MAX_GAP_US {
             self.clock.postponed = false;
@@ -294,7 +313,10 @@ impl VelocitySchedule {
         }
         self.clock.postponed = false;
         self.clock.deadline = now_us.wrapping_add(PERIOD_US);
-        let dt = self.clock.updated.replace(now_us)
+        let dt = self
+            .clock
+            .updated
+            .replace(now_us)
             .map_or(0.0, |last| u64_to_f32(now_us.wrapping_sub(last)) * 1e-6);
         VelocityTick::Update { dt }
     }
@@ -325,7 +347,7 @@ impl VelocitySchedule {
         (now_us.wrapping_sub(prepared.prepared_us) <= MAX_AUTHORITY_AGE_US
             && prepared.direction == direction(omega)
             && prepared.bus_class == bus_class)
-        .then_some((prepared.iq_min, prepared.iq_max))
+            .then_some((prepared.iq_min, prepared.iq_max))
     }
 
     #[cfg(feature = "pi-bounds-ahead")]
@@ -487,7 +509,9 @@ mod pipeline_tests {
                             }
                             if let Some(previous) = last_update {
                                 let gap = cycle - previous;
-                                assert!((u64::from(length) - 1..=u64::from(length) + 1).contains(&gap));
+                                assert!(
+                                    (u64::from(length) - 1..=u64::from(length) + 1).contains(&gap)
+                                );
                             }
                             last_update = Some(cycle);
                             updates += 1;
@@ -527,14 +551,20 @@ mod pipeline_tests {
         // After three missed native cycles the backstop updates in slot 3.
         let mut schedule = VelocitySchedule::default();
         schedule.defer_for_cycle(false);
-        assert!(matches!(schedule.begin_pipelined_cycle(0, 0, 20), VelocityTick::Update { .. }));
+        assert!(matches!(
+            schedule.begin_pipelined_cycle(0, 0, 20),
+            VelocityTick::Update { .. }
+        ));
         for slot in 1..3 {
             assert!(matches!(
                 schedule.begin_pipelined_cycle(u64::from(slot) * 50, slot, 20),
                 VelocityTick::Hold
             ));
         }
-        assert!(matches!(schedule.begin_pipelined_cycle(1_000, 3, 20), VelocityTick::Update { .. }));
+        assert!(matches!(
+            schedule.begin_pipelined_cycle(1_000, 3, 20),
+            VelocityTick::Update { .. }
+        ));
     }
 
     #[test]
@@ -544,7 +574,10 @@ mod pipeline_tests {
         assert_eq!(schedule.take_authority(11.0, 1, 1_100), Some((-2.0, 3.0)));
         assert_eq!(schedule.take_authority(11.0, 1, 1_100), None);
         schedule.store_authority(-2.0, 3.0, 10.0, 1, 1_000);
-        assert_eq!(schedule.take_authority(10.0, 1, 1_000 + MAX_AUTHORITY_AGE_US + 1), None);
+        assert_eq!(
+            schedule.take_authority(10.0, 1, 1_000 + MAX_AUTHORITY_AGE_US + 1),
+            None
+        );
         for (prepared, used) in [(10.0, -10.0), (10.0, 0.0), (0.0, 1.0), (-1.0, 1.0)] {
             schedule.store_authority(-2.0, 3.0, prepared, 1, 1_000);
             assert_eq!(schedule.take_authority(used, 1, 1_050), None);

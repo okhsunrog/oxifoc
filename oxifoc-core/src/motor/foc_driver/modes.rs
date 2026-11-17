@@ -257,9 +257,9 @@ where
             self.velocity_feedback_available = true;
         }
         #[cfg(all(feature = "service-slots", not(feature = "pi-bounds-ahead")))]
-        let tick = self.velocity_schedule.begin_slotted_cycle(
-            now_ticks, self.protection.service_slots.slot == 0,
-        );
+        let tick = self
+            .velocity_schedule
+            .begin_slotted_cycle(now_ticks, self.protection.service_slots.slot == 0);
         #[cfg(feature = "pi-bounds-ahead")]
         let tick = self.velocity_schedule.begin_pipelined_cycle(
             now_ticks,

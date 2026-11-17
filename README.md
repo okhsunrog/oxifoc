@@ -61,6 +61,11 @@ clients, so enable it only on a controlled bench.
 
 ## Develop
 
+Install the shared formatting hook once per clone with `just install-hooks`.
+It formats staged Rust files with each crate's toolchain and edition and stages
+the result. A partially staged file that needs formatting requires manual
+formatting and selection of the desired hunks before committing.
+
 ```sh
 just check                  # Host and device checks
 cargo test --workspace      # Host tests

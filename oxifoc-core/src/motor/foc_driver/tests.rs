@@ -6413,9 +6413,18 @@ fn model_replacement_rejects_unsupported_provider_and_preserves_board_settings()
 fn prepared_authority_tracks_same_cycle_bounds_in_closed_loop_scenarios() {
     use super::modes::authority_audit::{AUDIT, Audit};
     let scenarios: [(&str, fn()); 5] = [
-        ("full-pack descent by dissipation", full_pack_descent_holds_its_cruise_by_dissipation),
-        ("cruise resumed mid brake ramp", cruise_resumed_mid_brake_ramp_starts_from_the_rotor),
-        ("cruise past top speed", cruise_past_top_speed_answers_a_lower_target_at_once),
+        (
+            "full-pack descent by dissipation",
+            full_pack_descent_holds_its_cruise_by_dissipation,
+        ),
+        (
+            "cruise resumed mid brake ramp",
+            cruise_resumed_mid_brake_ramp_starts_from_the_rotor,
+        ),
+        (
+            "cruise past top speed",
+            cruise_past_top_speed_answers_a_lower_target_at_once,
+        ),
         ("bus-current clamp", cruise_loop_sees_the_bus_current_clamp),
         ("position move and park", position_control_moves_and_parks),
     ];

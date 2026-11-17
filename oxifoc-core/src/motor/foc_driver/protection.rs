@@ -249,7 +249,9 @@ impl ProtectionMonitor {
 
     pub(super) fn set_control_period(&mut self, dt: f32) {
         #[cfg(feature = "service-slots")]
-        { self.service_slots = super::velocity_schedule::ServiceSlots::new(dt); }
+        {
+            self.service_slots = super::velocity_schedule::ServiceSlots::new(dt);
+        }
         self.voltage_decay = 1.0 - (dt / 0.005).min(1.0);
     }
 
@@ -426,7 +428,9 @@ where
             self.protection.service_slots.deadman_due()
         }
         #[cfg(not(feature = "service-slots"))]
-        { self.protection.protection_tick & 15 == 0 }
+        {
+            self.protection.protection_tick & 15 == 0
+        }
     }
 
     /// Apply derating configuration (boot / live config write).

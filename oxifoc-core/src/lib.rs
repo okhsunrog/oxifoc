@@ -382,8 +382,12 @@ pub mod foc {
         if single_turn {
             #[cfg(feature = "isr-work-events")]
             crate::isr_work::mark(crate::isr_work::ANGLE_WRAP);
-            if angle < 0.0 { return angle + TAU; }
-            if angle >= TAU { return angle - TAU; }
+            if angle < 0.0 {
+                return angle + TAU;
+            }
+            if angle >= TAU {
+                return angle - TAU;
+            }
             return angle;
         }
         wrap_angle_general(angle)
@@ -418,7 +422,9 @@ pub mod foc {
         let magnitude = bits & 0x7fff_ffff;
         if magnitude < (TAU + core::f32::consts::PI).to_bits() {
             // (-pi, pi] is already the result; -pi itself moves to +pi.
-            if magnitude < core::f32::consts::PI.to_bits() || bits == core::f32::consts::PI.to_bits() {
+            if magnitude < core::f32::consts::PI.to_bits()
+                || bits == core::f32::consts::PI.to_bits()
+            {
                 return diff;
             }
             return diff - f32::from_bits(TAU.to_bits() | (bits & 0x8000_0000));
@@ -563,7 +569,10 @@ pub mod foc {
         fn observer_turn_matches_frozen_boundaries_and_random_values() {
             edge_values(|a| {
                 edge_values(|b| {
-                    assert!(same(angle_difference_signed_minus_wrapped(a, b), frozen_difference(a, b)));
+                    assert!(same(
+                        angle_difference_signed_minus_wrapped(a, b),
+                        frozen_difference(a, b)
+                    ));
                 });
             });
             let mut bits = 0x2545_f491_u32;
@@ -572,12 +581,18 @@ pub mod foc {
                 let a = f32::from_bits(bits);
                 bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let b = f32::from_bits(bits);
-                assert!(same(angle_difference_signed_minus_wrapped(a, b), frozen_difference(a, b)));
+                assert!(same(
+                    angle_difference_signed_minus_wrapped(a, b),
+                    frozen_difference(a, b)
+                ));
                 // The observer's own domain: atan2 output against a wrapped PLL angle.
                 let a = (bits >> 8) as f32 / (1 << 24) as f32 * TAU - core::f32::consts::PI;
                 bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let b = (bits >> 8) as f32 / (1 << 24) as f32 * TAU;
-                assert!(same(angle_difference_signed_minus_wrapped(a, b), frozen_difference(a, b)));
+                assert!(same(
+                    angle_difference_signed_minus_wrapped(a, b),
+                    frozen_difference(a, b)
+                ));
             }
         }
 
@@ -587,7 +602,10 @@ pub mod foc {
             edge_values(|a| {
                 assert!(same(wrap_angle_single_turn(a), frozen_wrap(a)));
                 edge_values(|b| {
-                    assert!(same(angle_difference_single_turn(a, b), frozen_difference(a, b)));
+                    assert!(same(
+                        angle_difference_single_turn(a, b),
+                        frozen_difference(a, b)
+                    ));
                 });
             });
             let mut bits = 0x9e37_79b9_u32;
@@ -597,7 +615,10 @@ pub mod foc {
                 bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let b = f32::from_bits(bits);
                 assert!(same(wrap_angle_single_turn(a), frozen_wrap(a)));
-                assert!(same(angle_difference_single_turn(a, b), frozen_difference(a, b)));
+                assert!(same(
+                    angle_difference_single_turn(a, b),
+                    frozen_difference(a, b)
+                ));
             }
         }
 

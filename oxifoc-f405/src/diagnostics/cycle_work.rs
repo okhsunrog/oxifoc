@@ -18,8 +18,18 @@ const CLASS_BITS: [u8; 8] = [0, 1, 2, 3, 14, 15, 8, 11];
 #[used]
 #[unsafe(no_mangle)]
 pub static FOC_WORK_CLASS_BITS: [AtomicU32; 2] = [
-    AtomicU32::new(u32::from_le_bytes([CLASS_BITS[0], CLASS_BITS[1], CLASS_BITS[2], CLASS_BITS[3]])),
-    AtomicU32::new(u32::from_le_bytes([CLASS_BITS[4], CLASS_BITS[5], CLASS_BITS[6], CLASS_BITS[7]])),
+    AtomicU32::new(u32::from_le_bytes([
+        CLASS_BITS[0],
+        CLASS_BITS[1],
+        CLASS_BITS[2],
+        CLASS_BITS[3],
+    ])),
+    AtomicU32::new(u32::from_le_bytes([
+        CLASS_BITS[4],
+        CLASS_BITS[5],
+        CLASS_BITS[6],
+        CLASS_BITS[7],
+    ])),
 ];
 
 #[inline(always)]

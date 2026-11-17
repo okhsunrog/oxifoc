@@ -148,7 +148,8 @@ impl HallControlMotion {
                                 angle,
                             );
                             #[cfg(feature = "bench-hall-single-turn")]
-                            let delta = crate::foc::angle_difference_single_turn(sample.angle, angle);
+                            let delta =
+                                crate::foc::angle_difference_single_turn(sample.angle, angle);
                             #[cfg(not(feature = "bench-hall-single-turn"))]
                             let delta = angle_difference(sample.angle, angle);
                             self.velocity = (VELOCITY_TAU_S * self.velocity + delta)
