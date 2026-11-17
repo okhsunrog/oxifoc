@@ -144,13 +144,11 @@ compared.
    one at boot. Bonding (item 9) replaces it with a resolvable private
    address; verify then that the C5 does not resolve it to the old identity
    and reject it the same way.
-9. **Bonding and privacy** (trouble `security` feature: LE Secure
-   Connections, `BondInformation`, IRK). Needed anyway: the bridge accepts
-   any central today. Once bonded, the bridge can restrict connections to the
-   remote with its filter accept list and, after a loss, send high-duty
-   directed advertising to it (`ConnectableNonscannableDirectedHighDuty`,
-   up to 1.28 s). Bonds must be persisted by the application on both sides.
-10. **Pairing instead of the hard-coded bridge address** in `remote.rs`.
+9. **Bonding, privacy and enrollment** — designed in
+   [ble-pairing.md](ble-pairing.md): Ergot carries the keys, only bonded and
+   encrypted BLE links reach Ergot, pairing windows opened by a trusted
+   channel, MITM-protected methods only, at most 8 bonds. Replaces the
+   hard-coded bridge address in `remote.rs` with bond-based discovery.
 
 ### P2 — monitoring and environment
 
