@@ -68,36 +68,52 @@ clears its code.
 
 ## Roles
 
-- **Admin** (laptop, phone): configuration and service commands.
-- **Remote**: may become the selected drive controller. Only the selected
-  remote's drive intent is accepted. Reconnection requires neutral followed by
-  fresh intent ([remote design](remote-design.md), [safety](../safety.md)).
+Each bond records a role at pairing time: **Remote** or **Host** (phone,
+laptop). Enforcement is deferred (decided 2026-11-17); storing the role now
+avoids re-pairing every device when it is enabled.
 
-All bonded devices may manage pairing (invariant 2). The remote can show and
-confirm codes on its screen. Service commands that can drive the motor or start
-detection still require an explicit service mode with the board stopped.
+**Now:** every bonded device has the same rights, including drive commands.
+The motor controller's drive ownership (session + sequence, affirm, deadman)
+resolves conflicts between sources.
+
+**Later, when the phone app gets motor controls:** the bridge drops drive
+traffic from Host links unless service mode is on.
+
+- Filter at the bridge's BLE ingress, before `RouterFrameProcessor`, so the
+  STM32 spends no cycles on it. Drop frames from a link without drive rights
+  that address `MotorEndpoint` (by key on port 0, or by its port on the
+  STM32) or publish to the drive-intent topic. The bridge learns the
+  `MotorEndpoint` port with a SocketQuery when the controller appears and
+  again after it restarts. Answer with a rejection so the client sees an
+  error.
+- Service mode: switched on by a Host command only while the motor is stopped
+  and no Remote is connected; it ends as soon as a Remote connects. USB stays
+  trusted for bench work.
+- With two controllers each C5 filters its own BLE ingress; the internal CAN
+  is trusted.
+
+All bonded devices may manage pairing (invariant 2). Service commands that can
+drive the motor or start detection still require an explicit service mode with
+the board stopped.
 
 ## Flows
 
-**First admin (bench, board open).** OxiFOC Host over USB opens a window. The
+**First trusted device (bench, board open).** OxiFOC Host over USB opens a window. The
 laptop pairs over BLE using Numeric Comparison, with the number shown by Host
 on the same laptop. It is now trusted over BLE.
 
 **Add a remote.** A trusted device opens a window with role Remote. The remote
 enters pairing mode (button), connects and shows its passkey. The user enters
 it in Host. Both save the bond. The bridge confirms that the remote reconnects
-with it. The admin selects it as the drive controller and may remove the old
-remote. If the attempt fails, the previously selected remote reconnects and
-resumes. If the old remote holds the last free slot, the bridge frees it for
-the candidate and keeps the old bond and selection.
+with it; the old remote's bond can then be removed. If the attempt fails, the
+old remote reconnects and resumes. If the old remote holds the last free slot,
+the bridge frees it for the candidate and keeps the old bond.
 
-**Add a phone or laptop.** A trusted device opens a window with role Admin.
+**Add a phone or laptop.** A trusted device opens a window with role Host.
 The candidate pairs from its system Bluetooth dialog or the app; the user
 compares the number with the one on the remote's screen or in Host.
 
-**Remove.** Any trusted device lists bonds and removes one. Removing the
-current drive controller stops drive acceptance until another remote is
-selected.
+**Remove.** Any trusted device lists bonds and removes one.
 
 ## Ergot interface (sketch)
 
@@ -116,9 +132,8 @@ Served by the bridge, not the motor controller. Names and paths follow
 | `ListBonds` | `Bonds(Vec<BondEntry, 8>)` | id, name, role, identity address, selected flag |
 | `RemoveBond { id }` | `Ok` | |
 | `RenameBond { id, name }` | `Ok` | |
-| `SelectRemote { id }` | `Ok` | Drive authority |
 
-Errors: `NotStopped`, `TableFull`, `NoSuchAttempt`, `NoSuchBond`, `WrongRole`.
+Errors: `NotStopped`, `TableFull`, `NoSuchAttempt`, `NoSuchBond`.
 
 `PairingEventTopic`, `events/pairing`: `PairingEvent`
 
@@ -130,7 +145,7 @@ Errors: `NotStopped`, `TableFull`, `NoSuchAttempt`, `NoSuchBond`, `WrongRole`.
 - `Bonded { id, name, role }`, `BondRemoved { id }`, `Failed { attempt, reason }`
 
 Bond record in bridge flash: id, identity address, IRK, LTK, security level,
-role, name (≤ 24 bytes), added-by id.
+role (Remote or Host), name (≤ 24 bytes), added-by id.
 
 ## Implementation notes
 
@@ -156,7 +171,7 @@ role, name (≤ 24 bytes), added-by id.
   resolve the new RPA to the old identity and reject it the same way. If it
   does, drop the old link when the same identity reconnects.
 - Encryption start cost on reconnect (expect two connection events).
-- Laptop first-admin over USB; remote enrollment with the code typed in Host;
+- First laptop over USB; remote enrollment with the code typed in Host;
   wrong code, cancellation and timeout; bond persistence across reboots of
   both sides; recovery of the previous remote after a failed replacement.
 - Android enrollment with Numeric Comparison; revocation; phone telemetry
