@@ -29,8 +29,8 @@ use ergot::socket::HeaderMessage;
 use esp_radio::ble::controller::BleConnector;
 use oxifoc_core::icd::{PairingEndpoint, PairingEventTopic};
 use oxifoc_core::types::pairing::{
-    MAX_BONDS, PairingError, PairingEvent, PairingFailure, PairingRequest, PairingResponse,
-    WindowCloseReason,
+    BondRole, MAX_BONDS, PairingError, PairingEvent, PairingFailure, PairingRequest,
+    PairingResponse, WindowCloseReason,
 };
 use trouble_host::prelude::*;
 
@@ -373,9 +373,13 @@ async fn link_session<C: Controller, P: PacketPool>(
                         );
                     }
                 }
+                // The method tells the device kind: a remote has only a screen
+                // (it shows the code, Passkey Entry with input here); phones
+                // and laptops compare numbers or type a code. A candidate of
+                // the wrong kind does not take the window.
                 GattConnectionEvent::PassKeyDisplay(key) => {
                     // The candidate types the code (it is KeyboardOnly).
-                    if let Some(a) = claim(ctx, conn, link, &mut attempt) {
+                    if let Some(a) = claim(ctx, conn, link, &mut attempt, Some(BondRole::Host)) {
                         PAIRING.set_stage(a, Stage::Pairing { link });
                         publish(
                             ctx.stack,
@@ -389,7 +393,7 @@ async fn link_session<C: Controller, P: PacketPool>(
                     }
                 }
                 GattConnectionEvent::PassKeyConfirm(key) => {
-                    if let Some(a) = claim(ctx, conn, link, &mut attempt) {
+                    if let Some(a) = claim(ctx, conn, link, &mut attempt, Some(BondRole::Host)) {
                         PAIRING.set_stage(a, Stage::AwaitComparison { link });
                         publish(
                             ctx.stack,
@@ -403,7 +407,7 @@ async fn link_session<C: Controller, P: PacketPool>(
                     }
                 }
                 GattConnectionEvent::PassKeyInput => {
-                    if let Some(a) = claim(ctx, conn, link, &mut attempt) {
+                    if let Some(a) = claim(ctx, conn, link, &mut attempt, Some(BondRole::Remote)) {
                         PAIRING.set_stage(a, Stage::AwaitPasskey { link });
                         publish(ctx.stack, &PairingEvent::EnterPasskey { attempt: a });
                     } else {
@@ -430,10 +434,20 @@ async fn link_session<C: Controller, P: PacketPool>(
                         }
                     }
                 }
-                GattConnectionEvent::PairingFailed(_e) => {
-                    warn!("[ble{}] pairing failed", link);
+                GattConnectionEvent::PairingFailed(e) => {
+                    warn!("[ble{}] pairing failed: {:?}", link, e);
+                    let reason = match e {
+                        Error::Security(
+                            PairingFailedReason::ConfirmValueFailed
+                            | PairingFailedReason::DHKeyCheckFailed,
+                        ) => PairingFailure::WrongCode,
+                        Error::Security(PairingFailedReason::PasskeyEntryFailed) => {
+                            PairingFailure::Cancelled
+                        }
+                        _ => PairingFailure::Protocol,
+                    };
                     if let Some(a) = attempt.take() {
-                        fail(ctx.stack, a, PairingFailure::Protocol);
+                        fail(ctx.stack, a, reason);
                     }
                     conn.raw().disconnect();
                 }
@@ -504,7 +518,12 @@ async fn link_session<C: Controller, P: PacketPool>(
                 Input::Comparison(false) | Input::Cancel => {
                     let _ = conn.raw().pass_key_cancel();
                     if let Some(a) = attempt.take() {
-                        fail(ctx.stack, a, PairingFailure::Rejected);
+                        let reason = if matches!(input, Input::Cancel) {
+                            PairingFailure::Cancelled
+                        } else {
+                            PairingFailure::Rejected
+                        };
+                        fail(ctx.stack, a, reason);
                     }
                     conn.raw().disconnect();
                 }
@@ -528,8 +547,9 @@ fn claim<C: Controller, P: PacketPool>(
     conn: &GattConnection<'_, '_, P>,
     link: usize,
     attempt: &mut Option<u32>,
+    role: Option<BondRole>,
 ) -> Option<u32> {
-    let claimed = PAIRING.claim(link)?;
+    let claimed = PAIRING.claim(link, role)?;
     if attempt.replace(claimed).is_none() {
         let mut address = [0; 6];
         address.copy_from_slice(conn.raw().peer_address().addr.raw());
@@ -561,7 +581,7 @@ async fn pairing_complete<C: Controller, P: PacketPool>(
     bond: Option<BondInformation>,
 ) -> Option<u8> {
     // Just Works raises no passkey event, so claim here as well.
-    let claimed = attempt.or_else(|| claim(ctx, conn, link, attempt));
+    let claimed = attempt.or_else(|| claim(ctx, conn, link, attempt, None));
     // Drop a bond trouble added for this pairing, never one we store.
     let forget = async |bond: &Option<BondInformation>| {
         if let Some(bond) = bond

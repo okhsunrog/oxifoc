@@ -9,8 +9,10 @@
 > bonded reconnects, unbonded hosts rejected, bond removal on the bridge
 > followed by automatic re-pairing on the remote, and the controller filter
 > accept list (an unbonded laptop cannot even connect outside a window).
-> Not yet: the stopped-controller check for opening a window, wrong-code and
-> timeout tests, a pairing button on the remote, GUI.
+> Also verified: window timeout with and without a candidate, wrong passkey,
+> rejected Numeric Comparison, and an unbonded remote not taking a Host
+> window. Not yet: the stopped-controller check for opening a window, a
+> pairing button on the remote, GUI.
 
 The C5 bridge is the BLE peripheral and the trust anchor. The remote, phones
 and laptops are centrals. The design targets accidental pairing and
@@ -212,6 +214,20 @@ role (Remote or Host), name (≤ 24 bytes), added-by id.
   bond restart advertising with the new filter; the short idle gap also lets
   trouble update the resolving list. A stranger's connection request is
   ignored by the controller (BlueZ reports `le-connection-abort-by-local`).
+- **Method matches role.** The pairing method shows the device kind: the
+  remote (`DisplayOnly`) uses Passkey Entry with input on the bridge
+  (`PassKeyInput`); phones and laptops use Numeric Comparison or type a code
+  (`PassKeyConfirm`, `PassKeyDisplay`). A candidate whose method does not fit
+  the window's role is refused and the window stays open. Without this an
+  unbonded remote, which pairs on its own, took a Host window meant for a
+  phone.
+- **Failure reasons.** SMP `ConfirmValueFailed` and `DHKeyCheckFailed` are
+  reported as `WrongCode`, `PasskeyEntryFailed` and window timeouts or
+  cancellations as `Cancelled`, a "no" on a trusted device as `Rejected`.
+- **Topic keys include the message schema.** Changing `PairingEvent`
+  (directly or through a nested type) changes the topic key; a host built
+  against the old types silently receives no events. Rebuild host and bridge
+  together after changing these types.
 - **Lingering BlueZ link.** After pairing from `bluetoothctl`, BlueZ keeps the
   link; with the remote in the other slot the bridge stops advertising, and
   the CLI scan finds nothing until `bluetoothctl disconnect`.

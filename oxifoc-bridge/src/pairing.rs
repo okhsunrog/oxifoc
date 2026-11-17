@@ -145,11 +145,15 @@ impl PairingState {
     }
 
     /// Let `link` pair inside the open window. Returns the attempt when the
-    /// window is open and no other slot holds it.
-    pub fn claim(&self, link: usize) -> Option<u32> {
+    /// window is open, no other slot holds it, and the candidate's pairing
+    /// method fits the window's role (`role: None` skips that check).
+    pub fn claim(&self, link: usize, role: Option<BondRole>) -> Option<u32> {
         self.window.lock(|w| {
             let mut w = w.borrow_mut();
             let window = w.as_mut()?;
+            if role.is_some_and(|role| role != window.role) {
+                return None;
+            }
             match window.stage.link() {
                 None => {
                     window.stage = Stage::Pairing { link };

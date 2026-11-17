@@ -123,8 +123,12 @@ pub enum WindowCloseReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PairingFailure {
-    /// Rejected on a trusted device, or the codes did not match.
+    /// Rejected on a trusted device (Numeric Comparison answered no).
     Rejected,
+    /// The passkey or comparison did not match (wrong code typed).
+    WrongCode,
+    /// The window closed or was cancelled while pairing was in progress.
+    Cancelled,
     /// The candidate offered no MITM-protected method (Just Works).
     NotAuthenticated,
     /// The candidate did not create a bond.
