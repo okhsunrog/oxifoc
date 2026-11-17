@@ -37,8 +37,10 @@ use trouble_host::prelude::*;
 const CONNECTIONS_MAX: usize = transport::BLE_LINKS;
 // Signal + ATT per link.
 const L2CAP_CHANNELS_MAX: usize = 2 * CONNECTIONS_MAX;
-/// An untrusted link that neither encrypts with a bond nor pairs is dropped.
-const UNTRUSTED_TIMEOUT: Duration = Duration::from_secs(10);
+/// An untrusted link that neither encrypts with a bond nor pairs is dropped,
+/// so a stranger holds a link slot only briefly. Bonded devices encrypt well
+/// within this (see docs/notes/ble-pairing.md for measurements).
+const UNTRUSTED_TIMEOUT: Duration = Duration::from_secs(3);
 
 type Bonds = Mutex<NoopRawMutex, BondStore>;
 
@@ -274,9 +276,15 @@ async fn link_session<C: Controller, P: PacketPool>(
     // A bond can only be created while a window is open at connection time:
     // the bonding flag is exchanged when pairing starts.
     let _ = conn.raw().set_bondable(PAIRING.is_open());
+    let connected_at = Instant::now();
     let mut trusted: Option<u8> = None;
     let mut attempt: Option<u32> = None;
-    let untrusted_deadline = Instant::now() + UNTRUSTED_TIMEOUT;
+    // While a window is open a new device may need longer before it starts
+    // pairing (service discovery first), so it may stay until the window ends.
+    let untrusted_deadline = match PAIRING.window() {
+        Some(window) => window.deadline.max(Instant::now() + UNTRUSTED_TIMEOUT),
+        None => Instant::now() + UNTRUSTED_TIMEOUT,
+    };
 
     loop {
         let frame = async {
@@ -308,7 +316,12 @@ async fn link_session<C: Controller, P: PacketPool>(
                     {
                         trusted = Some(id);
                         PAIRING.link_bond[link].store(id, Ordering::Relaxed);
-                        info!("[ble{}] trusted, bond {}", link, id);
+                        info!(
+                            "[ble{}] trusted, bond {}, {} ms after connect",
+                            link,
+                            id,
+                            connected_at.elapsed().as_millis()
+                        );
                     }
                 }
                 GattConnectionEvent::PassKeyDisplay(key) => {

@@ -199,6 +199,14 @@ role (Remote or Host), name (≤ 24 bytes), added-by id.
 - **Fast restarts with RPA.** The bridge resolves the remote's fresh RPA to
   the same identity, so a restart within the 1 s supervision timeout still
   loses one attempt (≈0.1 s) to the stale link.
+- **Untrusted links.** A link that neither encrypts with a stored bond nor
+  pairs is dropped after 3 s (until the window ends while one is open).
+  Measured time from connection to trusted: remote ≈80 ms, laptop
+  330–490 ms. A passive unbonded central was dropped after 3 s; a laptop that
+  lost its bond tried to pair and was dropped after 0.45 s.
+- **Lingering BlueZ link.** After pairing from `bluetoothctl`, BlueZ keeps the
+  link; with the remote in the other slot the bridge stops advertising, and
+  the CLI scan finds nothing until `bluetoothctl disconnect`.
 - **Debug probe and USB.** On the C5 the debug probe and USB Serial/JTAG share
   one USB device; while probe-rs is attached the host cannot open the serial
   port.
