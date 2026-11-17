@@ -150,6 +150,13 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
     static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
     let rng = RNG.init(rng::Rng::new(p.RNG, Irqs));
     let drive_session = boot_task.map(|_| rng.blocking_next_u64());
+    // Fresh static random address per boot. After a quick restart the bridge
+    // still holds the dead link to the previous address until its 1 s
+    // supervision timeout, and the C5 ignores CONNECT_IND from an address it is
+    // connected to. A new address connects at once. Bonding will replace this
+    // with a resolvable private address.
+    let mut addr_bytes = rng.blocking_next_u64().to_le_bytes();
+    addr_bytes[5] |= 0xc0;
     static SDC_MEM: StaticCell<nrf_sdc::Mem<2904>> = StaticCell::new();
     // Controller ACL fragments are at most 251 bytes. Trouble reassembles
     // them into its 512-byte L2CAP packets used by the existing NUS transport.
@@ -179,7 +186,15 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
 
-    let address = Address::random([0xff, 0x8f, 0x2b, 0x06, 0xe5, 0xff]);
+    let address = Address::random([
+        addr_bytes[0],
+        addr_bytes[1],
+        addr_bytes[2],
+        addr_bytes[3],
+        addr_bytes[4],
+        addr_bytes[5],
+    ]);
+    info!("[ble] own address {:?}", address);
     let ble_stack = trouble_host::new(ble_controller, &mut resources)
         .set_random_address(address)
         .build();

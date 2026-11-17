@@ -138,8 +138,12 @@ compared.
    supervision timeout, the bridge still holds the dead link to the same
    address, and the C5 ignores CONNECT_IND from that address: every attempt
    fails with 0x3E until the old link times out (seen as two failed attempts,
-   ≈0.2 s). A random connection interval per attempt did not help. Revisit
-   with item 9: a fresh resolvable private address per boot may avoid it.
+   ≈0.2 s). A random connection interval per attempt did not help; a fresh
+   static random address per boot did (5 of 5 quick restarts without
+   failures, power-on → session active 0.39–0.42 s), so the remote now picks
+   one at boot. Bonding (item 9) replaces it with a resolvable private
+   address; verify then that the C5 does not resolve it to the old identity
+   and reject it the same way.
 9. **Bonding and privacy** (trouble `security` feature: LE Secure
    Connections, `BondInformation`, IRK). Needed anyway: the bridge accepts
    any central today. Once bonded, the bridge can restrict connections to the
