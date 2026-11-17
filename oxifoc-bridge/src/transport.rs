@@ -16,6 +16,9 @@ pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
 // Host scheduling jitter is buffered on C5, without consuming STM32 SRAM.
 pub type UsbQueue = kit::Queue<131072, AtomicCoord>;
 pub type BleQueue = kit::Queue<1024, AtomicCoord>;
+/// Simultaneous BLE centrals, e.g. the remote and a phone or laptop. Each link
+/// is its own ergot interface with its own outbound queue.
+pub const BLE_LINKS: usize = 2;
 pub struct SpiInterface;
 impl Interface for SpiInterface {
     type Sink = framed_stream::Sink<&'static SpiQueue>;
@@ -36,10 +39,10 @@ ergot::multi_interface! {
     }
 }
 pub type Stack =
-    NetStack<CriticalSectionRawMutex, Router<BridgeInterface, esp_hal::rng::Rng, 3, 8>>;
+    NetStack<CriticalSectionRawMutex, Router<BridgeInterface, esp_hal::rng::Rng, 4, 8>>;
 pub static SPI_OUTQ: SpiQueue = kit::Queue::new();
 pub static USB_OUTQ: UsbQueue = kit::Queue::new();
-pub static BLE_OUTQ: BleQueue = kit::Queue::new();
+pub static BLE_OUTQ: [BleQueue; BLE_LINKS] = [const { kit::Queue::new() }; BLE_LINKS];
 pub static STATE_NOTIFY: ergot::exports::maitake_sync::WaitQueue =
     ergot::exports::maitake_sync::WaitQueue::new();
 

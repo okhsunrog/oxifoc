@@ -2,28 +2,31 @@ use crate::{ble_nus::NusServer, transport};
 use bt_hci::controller::ExternalController;
 use defmt::{error, info, warn};
 use embassy_futures::{
-    join::join,
+    join::join3,
     select::{Either, select},
 };
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::Timer;
 use ergot::interface_manager::{
     FrameProcessor, InterfaceState, Profile, profiles::router::RouterFrameProcessor,
 };
 use esp_radio::ble::controller::BleConnector;
 use trouble_host::prelude::*;
-const CONNECTIONS_MAX: usize = 1;
-const L2CAP_CHANNELS_MAX: usize = 1;
+const CONNECTIONS_MAX: usize = transport::BLE_LINKS;
+// Signal + ATT per link.
+const L2CAP_CHANNELS_MAX: usize = 2 * CONNECTIONS_MAX;
 
 #[embassy_executor::task]
 pub async fn run(
     stack: &'static transport::Stack,
     bt: esp_hal::peripherals::BT<'static>,
-    ble_ident: u8,
+    ble_idents: [u8; transport::BLE_LINKS],
 ) {
     // ========== BLE setup ==========
     // Maximum TX power: the board is powered and the link carries the throttle.
-    let radio_config =
-        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P20);
+    let radio_config = esp_radio::ble::Config::default()
+        .with_default_tx_power(esp_radio::ble::TxPower::P20)
+        .with_max_connections(CONNECTIONS_MAX as u16);
     let bt_transport = BleConnector::new(bt, radio_config).expect("BLE connector init");
     let ble_controller = ExternalController::<_, CONNECTIONS_MAX>::new(bt_transport);
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
@@ -33,7 +36,7 @@ pub async fn run(
     let ble_stack = trouble_host::new(ble_controller, &mut resources)
         .set_random_address(address)
         .build();
-    let mut peripheral = ble_stack.peripheral();
+    let peripheral = Mutex::<NoopRawMutex, _>::new(ble_stack.peripheral());
     let runner = ble_stack.runner();
 
     let nus_server = NusServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
@@ -42,28 +45,53 @@ pub async fn run(
     }))
     .expect("NUS GATT server init");
 
-    join(ble_runner(runner), async {
-        loop {
-            match advertise(&mut peripheral, &nus_server).await {
-                Ok(conn) => {
-                    // The central chooses the PHY: the remote stays on 1M for
-                    // sensitivity, host tools may request 2M for telemetry.
-                    info!("[ble] connection established");
+    // Each link slot advertises while it is free. The peripheral mutex lets
+    // one free slot advertise at a time; a connected slot releases it, so the
+    // bridge keeps advertising while any slot is free.
+    let [ident_a, ident_b] = ble_idents;
+    join3(
+        ble_runner(runner),
+        link_slot(stack, &peripheral, &nus_server, 0, ident_a),
+        link_slot(stack, &peripheral, &nus_server, 1, ident_b),
+    )
+    .await;
+}
 
-                    nus_connection_task(stack, &nus_server, &conn, ble_ident).await;
-                    stack.manage_profile(|router| {
-                        let _ = router.set_interface_state(ble_ident, InterfaceState::Inactive);
-                    });
-                    info!("[ble] disconnected, returning to advertising");
+#[allow(clippy::large_stack_frames)]
+async fn link_slot<'v, C: Controller>(
+    stack: &'static transport::Stack,
+    peripheral: &Mutex<NoopRawMutex, Peripheral<'v, C, DefaultPacketPool>>,
+    server: &NusServer<'v>,
+    link: usize,
+    ident: u8,
+) {
+    loop {
+        let accepted = {
+            let mut peripheral = peripheral.lock().await;
+            advertise(&mut peripheral, server).await
+        };
+        match accepted {
+            Ok(conn) => {
+                // The central chooses the PHY: the remote stays on 1M for
+                // sensitivity, host tools may request 2M for telemetry.
+                info!("[ble{}] connection established", link);
+                nus_connection_task(stack, server, &conn, link, ident).await;
+                stack.manage_profile(|router| {
+                    let _ = router.set_interface_state(ident, InterfaceState::Inactive);
+                });
+                // Never send frames queued for the old central to the next one.
+                let consumer = transport::BLE_OUTQ[link].framed_consumer();
+                while let Ok(frame) = consumer.read() {
+                    frame.release();
                 }
-                Err(_e) => {
-                    warn!("[ble] advertise error, retrying");
-                    Timer::after_secs(1).await;
-                }
+                info!("[ble{}] disconnected, slot free", link);
+            }
+            Err(_e) => {
+                warn!("[ble{}] advertise error, retrying", link);
+                Timer::after_secs(1).await;
             }
         }
-    })
-    .await;
+    }
 }
 
 async fn ble_runner<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
@@ -126,11 +154,12 @@ async fn nus_connection_task<P: PacketPool>(
     stack: &'static transport::Stack,
     server: &NusServer<'_>,
     conn: &GattConnection<'_, '_, P>,
+    link: usize,
     ble_ident: u8,
 ) {
     let rx_handle = server.nus.rx.handle;
     let tx_char = &server.nus.tx;
-    let consumer = transport::BLE_OUTQ.framed_consumer();
+    let consumer = transport::BLE_OUTQ[link].framed_consumer();
     let net = stack
         .manage_profile(|p| p.net_id_of(ble_ident))
         .expect("registered BLE segment");
@@ -142,7 +171,6 @@ async fn nus_connection_task<P: PacketPool>(
         match select(gatt_event, tx_frame).await {
             Either::First(event) => match event {
                 GattConnectionEvent::Disconnected { .. } => {
-                    info!("[ble] disconnected");
                     break;
                 }
                 GattConnectionEvent::Gatt { event } => {

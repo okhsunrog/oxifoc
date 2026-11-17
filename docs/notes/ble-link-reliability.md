@@ -100,11 +100,14 @@ compared.
    three failed attempts retry immediately; longer runs of failures back off
    50 ms → 1 s. `central.connect` has no timeout
    of its own; it waits until the bridge advertises.
-3. **Two connections on the bridge.** With one slot a stale link, the laptop
-   or the phone blocks the remote. esp-radio's C5 config defaults to
-   `max_connections = 2`; trouble needs `CONNECTIONS_MAX = 2` and the bridge
-   must keep advertising while one link is up. This is also required for
-   remote + phone (remote-design §7).
+3. **[done] Two connections on the bridge.** Two link slots share the
+   trouble `Peripheral` through a mutex: a free slot advertises, a connected
+   slot releases the mutex, so the bridge advertises while any slot is free.
+   Each slot is its own ergot router interface with its own outbound queue,
+   flushed on disconnect. With a laptop holding a `monitor --fast-hz 0`
+   session, 6 remote power-ons connected without failures in 479–491 ms
+   (connect start → session active), and the laptop stream (270 samples in
+   135 s) was not interrupted.
 4. **[done] Fast advertising on the bridge.** The default interval is 160 ms. The
    bridge is board-powered, so use 20–30 ms whenever a remote slot is free.
 5. **[done] 1M PHY for the remote.** The remote's controller is built without

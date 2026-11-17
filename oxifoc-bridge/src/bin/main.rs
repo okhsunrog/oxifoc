@@ -69,16 +69,18 @@ async fn main(spawner: Spawner) -> ! {
     #[cfg(feature = "ble")]
     {
         esp_alloc::heap_allocator!(size: 65536);
-        let ble_ident = stack
-            .manage_profile(|p| {
-                p.register_interface(BridgeSink::Ble(framed_stream::Sink::new(
-                    transport::BLE_OUTQ.framed_producer(),
-                    transport::BLE_MTU,
-                )))
-            })
-            .expect("BLE interface slot must be available at startup");
+        let ble_idents = core::array::from_fn(|link| {
+            stack
+                .manage_profile(|p| {
+                    p.register_interface(BridgeSink::Ble(framed_stream::Sink::new(
+                        transport::BLE_OUTQ[link].framed_producer(),
+                        transport::BLE_MTU,
+                    )))
+                })
+                .expect("BLE interface slots must be available at startup")
+        });
         spawner.spawn(
-            oxifoc_bridge::ble_runtime::run(stack, p.BT, ble_ident)
+            oxifoc_bridge::ble_runtime::run(stack, p.BT, ble_idents)
                 .expect("BLE task is spawned once"),
         );
     }

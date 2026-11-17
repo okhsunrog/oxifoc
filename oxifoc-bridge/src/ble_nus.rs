@@ -18,7 +18,7 @@ use trouble_host::prelude::*;
 /// negotiated ATT_MTU is 508, giving 505 bytes of usable payload.
 pub const NUS_MAX_PAYLOAD: usize = 505;
 
-#[gatt_server]
+#[gatt_server(connections_max = crate::transport::BLE_LINKS)]
 pub struct NusServer {
     pub nus: NusService,
 }

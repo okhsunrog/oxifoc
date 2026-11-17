@@ -57,8 +57,9 @@ The host uses the same controller commands over Ergot on the OxiFOC GATT
 service (NUS-shaped, own UUIDs), for example
 `just cli --transport ble --ble-name "Oxifoc Bridge" --wait-secs 12 status`.
 For slow telemetry use `monitor --fast-hz 0`. Use USB Serial/JTAG for
-native-rate captures. The optional BLE service currently accepts unpaired
-clients, so enable it only on a controlled bench.
+native-rate captures. The bridge accepts two BLE centrals at once, for
+example the remote and a laptop. The optional BLE service currently accepts
+unpaired clients, so enable it only on a controlled bench.
 
 ## Develop
 
