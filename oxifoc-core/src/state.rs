@@ -826,6 +826,10 @@ where
         critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
     }
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
+        #[cfg(feature = "isr-work-events")]
+        crate::isr_work::mark(crate::isr_work::COMMAND);
+        #[cfg(feature = "pi-bounds-ahead")]
+        foc.drop_velocity_authority();
         let detection_authority = match cmd {
             DriverCommand::DetectionMode { token, .. } => Some(token),
             _ => None,
@@ -1328,6 +1332,10 @@ where
     let board = prepared_board.board();
     driver.set_vbus(vbus_v);
     let check_deadman = driver.deadman_check_due();
+    #[cfg(feature = "isr-work-events")]
+    if check_deadman {
+        crate::isr_work::mark(crate::isr_work::DEADMAN);
+    }
 
     let prof_t0 = crate::isr_prof::now();
 
@@ -1343,8 +1351,8 @@ where
     // into the shared state (link flag, previous-cycle temperatures,
     // derating scales). These used to be four separate CS + RefCell
     // entries per cycle — pure lock overhead in the ISR. The derating
-    // mirror is the PREVIOUS cycle's value (recomputed every 256 ticks
-    // anyway; the slow-telemetry consumer cannot tell).
+    // mirror carries the previous cycle's value. Derating itself is
+    // refreshed at the decimated service cadence.
     let CycleInputs {
         link_active,
         fet_t,

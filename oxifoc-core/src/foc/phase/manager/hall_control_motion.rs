@@ -141,6 +141,15 @@ impl HallControlMotion {
                         if elapsed_s > 4.0 * VELOCITY_TAU_S || possible_travel >= PI {
                             self.velocity = applied_velocity;
                         } else {
+                            #[cfg(feature = "isr-work-events")]
+                            crate::isr_work::angle_difference(
+                                crate::isr_work::HALL_VELOCITY_WRAP,
+                                sample.angle,
+                                angle,
+                            );
+                            #[cfg(feature = "bench-hall-single-turn")]
+                            let delta = crate::foc::angle_difference_single_turn(sample.angle, angle);
+                            #[cfg(not(feature = "bench-hall-single-turn"))]
                             let delta = angle_difference(sample.angle, angle);
                             self.velocity = (VELOCITY_TAU_S * self.velocity + delta)
                                 / (VELOCITY_TAU_S + elapsed_s);

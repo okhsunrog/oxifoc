@@ -1189,6 +1189,15 @@ impl HallSensor {
         let max_step = effective_vel * dt_sample * self.rate_limit_factor;
 
         // Calculate desired step from current rate-limited angle
+        #[cfg(feature = "isr-work-events")]
+        crate::isr_work::angle_difference(
+            crate::isr_work::HALL_SLEW_WRAP,
+            target_angle,
+            self.rate_limited_angle,
+        );
+        #[cfg(feature = "bench-hall-single-turn")]
+        let desired_step = super::angle_difference_single_turn(target_angle, self.rate_limited_angle);
+        #[cfg(not(feature = "bench-hall-single-turn"))]
         let desired_step = angle_difference(target_angle, self.rate_limited_angle);
 
         // Apply rate limiting
@@ -1196,6 +1205,8 @@ impl HallSensor {
             desired_step
         } else {
             // Clamp to max step, preserving sign
+            #[cfg(feature = "isr-work-events")]
+            crate::isr_work::mark(crate::isr_work::HALL_SLEW_CLIPPED);
             if desired_step > 0.0 {
                 max_step
             } else {
@@ -1203,7 +1214,10 @@ impl HallSensor {
             }
         };
 
-        self.rate_limited_angle = wrap_angle(self.rate_limited_angle + actual_step);
+        #[cfg(feature = "bench-hall-single-turn")]
+        { self.rate_limited_angle = super::wrap_angle_single_turn(self.rate_limited_angle + actual_step); }
+        #[cfg(not(feature = "bench-hall-single-turn"))]
+        { self.rate_limited_angle = wrap_angle(self.rate_limited_angle + actual_step); }
 
         Some(AngleSample {
             angle: self.rate_limited_angle,

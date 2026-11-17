@@ -29,6 +29,8 @@ where
     /// * `Err(&str)` - Error message if sensors not ready or overcurrent detected
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     pub fn step(&mut self, now_ticks: u64) -> Result<FocOutput, StepError> {
+        #[cfg(feature = "service-slots")]
+        self.protection.service_slots.advance();
         if self.current_offset.is_active() {
             return Ok(self.step_current_offset());
         }

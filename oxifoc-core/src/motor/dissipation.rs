@@ -200,6 +200,8 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
         } else if circle_charge(q) <= a {
             q
         } else if circle_charge(boundary) <= a {
+            #[cfg(feature = "isr-work-events")]
+            crate::isr_work::mark(crate::isr_work::CIRCLE_SEARCH);
             #[cfg(feature = "isr-profiling")]
             BENCH_DISSIPATION_SEARCHES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             // q*sqrt(I²-q²) is concave for q>=0. With a feasible left

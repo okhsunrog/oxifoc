@@ -365,6 +365,12 @@ where
         self.velocity_schedule.defer_for_cycle(defer);
     }
 
+    /// Any dequeued command may change limits, mode or models.
+    #[cfg(feature = "pi-bounds-ahead")]
+    pub fn drop_velocity_authority(&mut self) {
+        self.velocity_schedule.drop_authority();
+    }
+
     /// Set control mode.
     ///
     /// A temporary PI override belongs to the bench mode sequence, not an

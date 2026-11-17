@@ -31,6 +31,11 @@ bbqueue = { version = "0.7", default-features = false, features = ["maitake-sync
 embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8", version = "0.1.2" }
 embedded-test = { version = "0.7.3", features = ["defmt", "external-executor", "embassy-010", "panic-handler"] }
 
+[features]
+bench-hall-single-turn = ["oxifoc-core/bench-hall-single-turn"]
+bench-hall-bit-step = ["bench-hall-single-turn", "oxifoc-core/bench-hall-bit-step"]
+lean-angle = ["oxifoc-core/lean-angle"]
+
 [profile.dev]
 debug = true
 lto = "fat"

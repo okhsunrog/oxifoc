@@ -12,6 +12,51 @@ use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
 
+/// Host-only comparison of prepared bounds against the same-cycle probes.
+#[cfg(all(test, feature = "pi-bounds-ahead"))]
+pub(super) mod authority_audit {
+    use core::cell::Cell;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Audit {
+        pub used: u32,
+        pub fallback: u32,
+        /// Largest |prepared - fresh| over both bounds, in amperes.
+        pub max_delta_a: f32,
+        /// Updates whose prepared and fresh bounds differ by more than 10 mA.
+        pub above_10_ma: u32,
+        /// The same count above 0.5 A.
+        pub above_500_ma: u32,
+    }
+
+    std::thread_local! {
+        pub static AUDIT: Cell<Audit> = const { Cell::new(Audit {
+            used: 0, fallback: 0, max_delta_a: 0.0, above_10_ma: 0, above_500_ma: 0,
+        }) };
+    }
+
+    pub fn used(prepared: (f32, f32), fresh: (f32, f32, f32)) {
+        let delta = |a: f32, b: f32| if a == b { 0.0 } else { (a - b).abs() };
+        let worst = delta(prepared.0, fresh.0).max(delta(prepared.1, fresh.1));
+        AUDIT.with(|cell| {
+            let mut audit = cell.get();
+            audit.used += 1;
+            audit.max_delta_a = audit.max_delta_a.max(worst);
+            audit.above_10_ma += u32::from(worst > 0.01);
+            audit.above_500_ma += u32::from(worst > 0.5);
+            cell.set(audit);
+        });
+    }
+
+    pub fn fallback() {
+        AUDIT.with(|cell| {
+            let mut audit = cell.get();
+            audit.fallback += 1;
+            cell.set(audit);
+        });
+    }
+}
+
 #[derive(Clone, Copy)]
 enum CurrentFeedback {
     Ignore,
@@ -211,8 +256,24 @@ where
             self.velocity_schedule.rearm(epoch);
             self.velocity_feedback_available = true;
         }
-        match self.velocity_schedule.begin_cycle(now_ticks) {
+        #[cfg(all(feature = "service-slots", not(feature = "pi-bounds-ahead")))]
+        let tick = self.velocity_schedule.begin_slotted_cycle(
+            now_ticks, self.protection.service_slots.slot == 0,
+        );
+        #[cfg(feature = "pi-bounds-ahead")]
+        let tick = self.velocity_schedule.begin_pipelined_cycle(
+            now_ticks,
+            self.protection.service_slots.slot,
+            self.protection.service_slots.length(),
+        );
+        #[cfg(not(feature = "service-slots"))]
+        let tick = self.velocity_schedule.begin_cycle(now_ticks);
+        match tick {
             super::velocity_schedule::VelocityTick::Hold => {}
+            #[cfg(feature = "pi-bounds-ahead")]
+            super::velocity_schedule::VelocityTick::Prepare => {
+                self.prepare_velocity_authority(now_ticks);
+            }
             super::velocity_schedule::VelocityTick::Update { dt } => {
                 self.update_velocity_request(target, omega, dt, now_ticks);
             }
@@ -231,6 +292,45 @@ where
         )
     }
 
+    /// Both anti-windup probes at the current torque speed.
+    #[cfg(feature = "pi-bounds-ahead")]
+    #[inline(never)]
+    fn velocity_authority(&self) -> (f32, f32, f32) {
+        let full = if self.current_limits.max_current_a > 0.0 {
+            self.current_limits.max_current_a
+        } else {
+            f32::INFINITY
+        };
+        let omega = self.torque_speed();
+        let constraints = self.torque_constraints(omega);
+        #[cfg(not(feature = "iq-authority"))]
+        let iq_min = self.grant_torque_constrained(0.0, -full, &constraints).1;
+        #[cfg(feature = "iq-authority")]
+        let iq_min = self.grant_iq_authority(-full, &constraints);
+        #[cfg(not(feature = "iq-authority"))]
+        let iq_max = self.grant_torque_constrained(0.0, full, &constraints).1;
+        #[cfg(feature = "iq-authority")]
+        let iq_max = self.grant_iq_authority(full, &constraints);
+        (iq_min, iq_max, omega)
+    }
+
+    /// Stage A, one slot before the outer update. Commands, limit changes and
+    /// velocity invalidation drop the stored bounds.
+    #[cfg(feature = "pi-bounds-ahead")]
+    #[inline(never)]
+    fn prepare_velocity_authority(&mut self, now_ticks: u64) {
+        #[cfg(feature = "isr-work-events")]
+        crate::isr_work::mark(crate::isr_work::AUTHORITY_AHEAD);
+        let (iq_min, iq_max, omega) = self.velocity_authority();
+        self.velocity_schedule.store_authority(
+            iq_min,
+            iq_max,
+            omega,
+            self.bus_modulation_class(),
+            now_ticks,
+        );
+    }
+
     // Keep authority, position P, slew and PI register pressure off the held
     // current path. Only this due-only helper sees the elapsed outer-loop dt.
     #[inline(never)]
@@ -241,6 +341,8 @@ where
         dt: f32,
         _now_ticks: u64,
     ) {
+        #[cfg(feature = "isr-work-events")]
+        crate::isr_work::mark(crate::isr_work::VELOCITY_PI);
         let profile_start = crate::isr_prof::phase_now();
         let target_vel = self.velocity_target(target);
         let (tracking, mut blockage, mut voltage_clip) = self.velocity_schedule.take_feedback();
@@ -268,37 +370,63 @@ where
         // 10.8 A commanded against 1 A delivered), and the reference ran on
         // toward a target past top speed: told to slow down, the motor held
         // top speed for seconds while the reference ramped back.
-        let full = if self.current_limits.max_current_a > 0.0 {
-            self.current_limits.max_current_a
-        } else {
-            f32::INFINITY
+        #[cfg(not(feature = "pi-bounds-ahead"))]
+        let (iq_min, iq_max) = {
+            let full = if self.current_limits.max_current_a > 0.0 {
+                self.current_limits.max_current_a
+            } else {
+                f32::INFINITY
+            };
+            // The bounds and final current grant use the same speed policy.
+            let constraints = self.torque_constraints(self.torque_speed());
+            #[cfg(feature = "isr-profiling")]
+            let negative_start = crate::isr_prof::now();
+            #[cfg(not(feature = "iq-authority"))]
+            let iq_min = self.grant_torque_constrained(0.0, -full, &constraints).1;
+            #[cfg(feature = "iq-authority")]
+            let iq_min = self.grant_iq_authority(-full, &constraints);
+            #[cfg(feature = "isr-profiling")]
+            crate::isr_prof::add(
+                &crate::isr_prof::AUTHORITY_NEGATIVE,
+                negative_start,
+                crate::isr_prof::now(),
+            );
+            #[cfg(feature = "isr-profiling")]
+            let positive_start = crate::isr_prof::now();
+            #[cfg(not(feature = "iq-authority"))]
+            let iq_max = self.grant_torque_constrained(0.0, full, &constraints).1;
+            #[cfg(feature = "iq-authority")]
+            let iq_max = self.grant_iq_authority(full, &constraints);
+            #[cfg(feature = "isr-profiling")]
+            crate::isr_prof::add(
+                &crate::isr_prof::AUTHORITY_POSITIVE,
+                positive_start,
+                crate::isr_prof::now(),
+            );
+            (iq_min, iq_max)
         };
-        // The bounds and final current grant use the same speed policy.
-        let constraints = self.torque_constraints(self.torque_speed());
-        #[cfg(feature = "isr-profiling")]
-        let negative_start = crate::isr_prof::now();
-        #[cfg(not(feature = "bench-iq-authority"))]
-        let iq_min = self.grant_torque_constrained(0.0, -full, &constraints).1;
-        #[cfg(feature = "bench-iq-authority")]
-        let iq_min = self.grant_iq_authority(-full, &constraints);
-        #[cfg(feature = "isr-profiling")]
-        crate::isr_prof::add(
-            &crate::isr_prof::AUTHORITY_NEGATIVE,
-            negative_start,
-            crate::isr_prof::now(),
-        );
-        #[cfg(feature = "isr-profiling")]
-        let positive_start = crate::isr_prof::now();
-        #[cfg(not(feature = "bench-iq-authority"))]
-        let iq_max = self.grant_torque_constrained(0.0, full, &constraints).1;
-        #[cfg(feature = "bench-iq-authority")]
-        let iq_max = self.grant_iq_authority(full, &constraints);
-        #[cfg(feature = "isr-profiling")]
-        crate::isr_prof::add(
-            &crate::isr_prof::AUTHORITY_POSITIVE,
-            positive_start,
-            crate::isr_prof::now(),
-        );
+        // Prepared bounds are at most two native cycles old. Anything else
+        // falls back to the same probes inline.
+        #[cfg(feature = "pi-bounds-ahead")]
+        let (iq_min, iq_max) = match self.velocity_schedule.take_authority(
+            self.torque_speed(),
+            self.bus_modulation_class(),
+            _now_ticks,
+        ) {
+            Some(bounds) => {
+                #[cfg(test)]
+                authority_audit::used(bounds, self.velocity_authority());
+                bounds
+            }
+            None => {
+                #[cfg(feature = "isr-work-events")]
+                crate::isr_work::mark(crate::isr_work::AUTHORITY_FALLBACK);
+                #[cfg(test)]
+                authority_audit::fallback();
+                let (iq_min, iq_max, _) = self.velocity_authority();
+                (iq_min, iq_max)
+            }
+        };
         voltage_clip.note_clip(self.controller.q_voltage_clip());
         blockage.merge(voltage_clip);
         let iq_max = if voltage_clip.positive() {

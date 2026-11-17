@@ -466,6 +466,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             self.tracker.startup_tracking = true;
         }
         if self.startup.is_active() {
+            #[cfg(feature = "isr-work-events")]
+            crate::isr_work::mark(crate::isr_work::STARTUP);
             let phase_before = self.startup.phase();
             if phase_before == StartupPhase::Deadshort {
                 // Flying-restart probe: the driver holds the bridge at zero

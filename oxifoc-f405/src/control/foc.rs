@@ -591,6 +591,8 @@ fn ADC() {
     #[cfg(feature = "bench-foc-deadline")]
     crate::diagnostics::pwm_deadline::begin();
     let isr_t0 = isr_timing_now();
+    #[cfg(feature = "bench-foc-work")]
+    oxifoc_core::isr_work::begin();
     #[cfg(feature = "bench-cycle-outliers")]
     let core_before = oxifoc_core::isr_prof::Snapshot::observe();
     #[cfg(feature = "bench-executor-trace")]
@@ -636,6 +638,10 @@ fn ADC() {
     // Preserve the 128-cycle thermal sampling cadence. Exact flash lookups
     // replace the two Beta-model logarithms that previously spiked this cycle.
     let convert_temp = *SEQ & 127 == 0;
+    #[cfg(feature = "bench-foc-work")]
+    if convert_temp {
+        oxifoc_core::isr_work::mark(oxifoc_core::isr_work::TEMPERATURE);
+    }
 
     // Read ADC1 injected data (phase A current + board temp)
     let mut phase_a = [0; 3];
@@ -864,15 +870,18 @@ fn ADC() {
         DWT_GENERATION.load(Ordering::Relaxed),
     );
     #[cfg(feature = "bench-cycle-outliers")]
+    let core_after = oxifoc_core::isr_prof::Snapshot::observe();
+    // Every recorder uses this same end point. Recorder/statistics work
+    // contributes to entry intervals, beyond the measured control body.
+    let isr_end = isr_timing_now();
+    #[cfg(feature = "bench-cycle-outliers")]
     {
-        let core_after = oxifoc_core::isr_prof::Snapshot::observe();
-        let body_end = isr_timing_now();
         CYCLE_OUTLIERS.observe(
             outlier_active,
             *SEQ,
             isr_t0,
             DWT_GENERATION.load(Ordering::Relaxed),
-            body_end.wrapping_sub(isr_t0),
+            isr_end.wrapping_sub(isr_t0),
             ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
             u32::from(convert_temp) | (u32::from(time_control_motion) << 1),
             outlier_velocity.to_bits(),
@@ -885,7 +894,6 @@ fn ADC() {
             core_after.increments_since(&core_before),
         );
     }
-    let isr_end = isr_timing_now();
     #[cfg(feature = "bench-foc-deadline")]
     crate::diagnostics::foc_distribution::observe_deadline_session(outlier_active);
     #[cfg(all(

@@ -138,6 +138,15 @@ fn check(driver: &GrantDriver, id: f32, iq: f32, omega: f32) -> (f32, f32) {
     let actual = driver.grant_torque(id, iq, omega);
     let constraints = driver.torque_constraints(omega);
     let constrained = driver.grant_torque_constrained(id, iq, &constraints);
+    #[cfg(feature = "iq-authority")]
+    if id == 0.0 {
+        let projected = driver.grant_iq_authority(iq, &constraints);
+        assert!(
+            projected.to_bits() == constrained.1.to_bits()
+                || (projected.is_nan() && constrained.1.is_nan()),
+            "q-only authority {projected:?} differs from {constrained:?} at iq={iq:?}, omega={omega:?}"
+        );
+    }
     let expected = legacy_grant(driver, id, iq, omega);
     assert_eq!(actual.0.to_bits(), constrained.0.to_bits());
     assert_eq!(actual.1.to_bits(), constrained.1.to_bits());

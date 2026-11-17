@@ -27,7 +27,10 @@ bench = false
 [features]
 # Current controller: MK5 with the C5 SPI bridge and fixed telemetry.
 # CF2 and diagnostic transports require an explicit feature selection.
-default = ["transport-spi", "board-vesc6-mk5", "ccm-telemetry"]
+default = [
+    "transport-spi", "board-vesc6-mk5", "ccm-telemetry",
+    "pi-bounds-ahead", "lean-angle", "observer-turn",
+]
 # Exactly one board feature must be enabled (compile_error in main.rs).
 # Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
 # amp gain 10 V/V.
@@ -60,6 +63,7 @@ isr-profiling = ["isr-timing", "oxifoc-core/isr-profiling"]
 isr-timing = []
 # Finite active-body/entry-gap histograms, exported after Stop over SWD.
 bench-foc-distribution = ["isr-timing"]
+bench-foc-work = ["bench-foc-distribution", "oxifoc-core/isr-work-events"]
 bench-foc-deadline = ["bench-foc-distribution"]
 # One complete steady active section window in RAM; no periodic reporter I/O.
 bench-foc-sections-ram = ["bench-foc-distribution"]
@@ -70,7 +74,16 @@ bench-ntc-check = []
 # Finite ADC-owned records of the first and longest over-budget cycles.
 bench-cycle-outliers = ["isr-profiling"]
 bench-dissipative-inline = ["oxifoc-core/bench-dissipative-inline"]
-bench-iq-authority = ["oxifoc-core/bench-iq-authority"]
+iq-authority = ["oxifoc-core/iq-authority"]
+service-slots = ["oxifoc-core/service-slots"]
+bench-hall-single-turn = ["oxifoc-core/bench-hall-single-turn"]
+bench-hall-bit-step = ["bench-hall-single-turn", "oxifoc-core/bench-hall-bit-step"]
+pi-bounds-ahead = ["service-slots", "iq-authority", "oxifoc-core/pi-bounds-ahead"]
+lean-angle = ["oxifoc-core/lean-angle"]
+observer-turn = ["oxifoc-core/observer-turn"]
+# Work classes indexed by PI/command/deadman/derating plus authority-ahead,
+# Hall seam, observer-error wrap and general angle wrap.
+bench-work-class-wraps = ["bench-foc-work"]
 bench-outline-circle = ["oxifoc-core/bench-outline-circle"]
 # A/B reproduction of the former periodic observer log inside ADC.
 bench-observer-logging = ["oxifoc-core/observer-logging"]

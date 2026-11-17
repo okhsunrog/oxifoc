@@ -2,7 +2,108 @@
 use super::dissipation_reference as reference;
 use super::dwt::{Stats, batch};
 use core::hint::black_box;
+use oxifoc_core::foc::{
+    controller::{Decoupling, FocController},
+    phase::{PhaseInput, PhaseOutput, PhaseProvider, RotorVelocityEstimate},
+    pwm::{PhasePwm, PhaseState, SvpwmModulator},
+    sensors::CurrentSensor,
+    trig::FastSinCos,
+};
 use oxifoc_core::motor::dissipation::{self, RegenBudget, WindingModel};
+use oxifoc_core::motor::foc_driver::CurrentLimits;
+use oxifoc_core::motor::{ControlMode, FocDriver};
+
+struct InertPwm;
+
+impl PhasePwm for InertPwm {
+    fn max_duty(&self) -> u16 {
+        5600
+    }
+    fn set_duties(&mut self, duties: [u16; 3]) {
+        black_box(duties);
+    }
+    fn set_phase_states(&mut self, states: [PhaseState; 3]) {
+        black_box(states);
+    }
+}
+
+struct ZeroCurrent;
+
+impl CurrentSensor for ZeroCurrent {
+    fn read_currents(&self) -> (f32, f32, f32) {
+        (0.0, 0.0, 0.0)
+    }
+    fn read_raw(&self) -> (u16, u16, u16) {
+        (2048, 2048, 2048)
+    }
+    fn is_calibrated(&self) -> bool {
+        true
+    }
+    fn get_offsets(&self) -> (f32, f32, f32) {
+        (2048.0, 2048.0, 2048.0)
+    }
+    fn set_offsets(&mut self, _: (f32, f32, f32)) {}
+}
+
+struct FixedRotor(f32);
+
+impl PhaseProvider for FixedRotor {
+    fn get(&self) -> PhaseOutput {
+        PhaseOutput {
+            angle: 0.0,
+            velocity: self.0,
+        }
+    }
+    fn update(&mut self, _: &PhaseInput, _: u64) {}
+    fn rotor_velocity(&self) -> Option<RotorVelocityEstimate> {
+        RotorVelocityEstimate::new(self.0)
+    }
+}
+
+#[inline(never)]
+fn driver_batch(seed: u32) -> u64 {
+    let heat = black_box(match seed >> 16 {
+        0 => 0.0,
+        1 => 0.05,
+        _ => 1.0,
+    });
+    let mut controller = FocController::<SvpwmModulator, FastSinCos>::from_motor_params(
+        black_box(0.064_200_59),
+        black_box(40.991_37e-6),
+        black_box(24.0),
+    );
+    controller.set_decoupling(Some(black_box(Decoupling {
+        ld_h: 31.216_663e-6,
+        lq_h: 50.766_08e-6,
+        flux_linkage_wb: 0.003_976_720_4,
+        resistance_ohm: 0.064_200_59,
+    })));
+    let mut driver = FocDriver::new(
+        controller,
+        InertPwm,
+        ZeroCurrent,
+        FixedRotor(black_box(450.0)),
+        1.0 / 20_000.0,
+    );
+    driver.set_current_limits(CurrentLimits {
+        bus_in_max_a: 5.0,
+        bus_regen_max_a: 0.0,
+        max_dissipation_w: heat,
+        ..CurrentLimits::from_max_current(30.0 / 1.3)
+    });
+    driver.set_mode(ControlMode::VelocityControl {
+        target_vel: black_box(450.0),
+    });
+    let mut checksum = 0u64;
+    for step in 1..=64 {
+        let output = black_box(&mut driver).step(step * 1000);
+        defmt::assert!(output.is_ok());
+        if let Ok(out) = output {
+            checksum = checksum.wrapping_add(u64::from(black_box(out.vq).to_bits()));
+        }
+    }
+    checksum
+}
 
 fn input(mode: u32, index: u32) -> (WindingModel, f32, f32, f32, f32) {
     let n = (index & 63) as f32;
@@ -101,6 +202,24 @@ fn q_only_batch(seed: u32) -> u64 {
 }
 
 pub fn run() {
+    for mode in 0..3 {
+        let mut driver_stats = Stats::new();
+        for round in 0..33 {
+            let cycles = batch(driver_batch, (mode << 16) | round);
+            if round > 0 {
+                driver_stats.record(cycles);
+            }
+        }
+        driver_stats.report(
+            [
+                "velocity-due-plain",
+                "velocity-due-heat005",
+                "velocity-due-heat1",
+            ][mode as usize],
+            32,
+            64,
+        );
+    }
     let mut stats = [[Stats::new(); 3]; 3];
     let functions: [fn(u32) -> u64; 3] = [reference_batch, full_batch, q_only_batch];
     for mode in 0..3 {

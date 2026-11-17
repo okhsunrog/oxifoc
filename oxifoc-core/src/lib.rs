@@ -106,6 +106,8 @@ pub mod timer;
 
 /// Per-section ISR cycle profiling (feature `isr-profiling`, device-only)
 pub mod isr_prof;
+#[cfg(feature = "isr-work-events")]
+pub mod isr_work;
 
 /// High-level motor driver combining FOC with sensors and PWM
 pub mod motor;
@@ -253,9 +255,47 @@ pub mod foc {
         wrap_angle_general(angle)
     }
 
+    /// One-turn steps decided on the bit pattern, without Flash literals or
+    /// FP compares. Every other input keeps the complete fallback below.
+    #[cfg(feature = "lean-angle")]
     #[cold]
     #[inline(never)]
     fn wrap_angle_general(angle: f32) -> f32 {
+        let bits = angle.to_bits();
+        let magnitude = bits & 0x7fff_ffff;
+        // [TAU, 2*TAU) loses one turn; [-TAU, -0) gains one. -0.0, exact
+        // 2*TAU, NaN and everything larger stay with the complete fallback.
+        let one_turn = if bits == magnitude {
+            bits >= TAU.to_bits() && bits < (2.0 * TAU).to_bits()
+        } else {
+            magnitude != 0 && magnitude <= TAU.to_bits()
+        };
+        if one_turn {
+            #[cfg(feature = "isr-work-events")]
+            crate::isr_work::mark(crate::isr_work::ANGLE_WRAP);
+            return angle - f32::from_bits(TAU.to_bits() | (bits & 0x8000_0000));
+        }
+        wrap_angle_complete(angle)
+    }
+
+    #[cfg(feature = "lean-angle")]
+    #[cold]
+    #[inline(never)]
+    fn wrap_angle_complete(angle: f32) -> f32 {
+        wrap_angle_complete_body(angle)
+    }
+
+    #[cfg(not(feature = "lean-angle"))]
+    #[cold]
+    #[inline(never)]
+    fn wrap_angle_general(angle: f32) -> f32 {
+        wrap_angle_complete_body(angle)
+    }
+
+    #[inline(always)]
+    fn wrap_angle_complete_body(angle: f32) -> f32 {
+        #[cfg(feature = "isr-work-events")]
+        crate::isr_work::mark(crate::isr_work::ANGLE_WRAP);
         let mut a = angle;
         // Keep exact 2*TAU cold: one subtraction would still leave TAU.
         if !(-TAU..2.0 * TAU).contains(&a) {
@@ -299,9 +339,109 @@ pub mod foc {
         angle_difference_general(diff)
     }
 
+    /// Bench policy retaining the exact general-path boundary conventions.
+    #[cfg(feature = "bench-hall-single-turn")]
+    #[inline(always)]
+    pub fn angle_difference_single_turn(a: f32, b: f32) -> f32 {
+        let diff = a - b;
+        let magnitude = diff.to_bits() & 0x7fff_ffff;
+        if magnitude < core::f32::consts::PI.to_bits() {
+            return diff;
+        }
+        let three_pi = TAU + core::f32::consts::PI;
+        #[cfg(feature = "bench-hall-bit-step")]
+        let single_turn = magnitude < three_pi.to_bits();
+        #[cfg(not(feature = "bench-hall-bit-step"))]
+        let single_turn = diff > -three_pi && diff <= three_pi;
+        if single_turn {
+            if diff.is_sign_negative() {
+                return diff + TAU;
+            }
+            if magnitude > core::f32::consts::PI.to_bits() {
+                return diff - TAU;
+            }
+            return diff;
+        }
+        angle_difference_general(diff)
+    }
+
+    #[cfg(feature = "bench-hall-single-turn")]
+    #[inline(always)]
+    pub fn wrap_angle_single_turn(angle: f32) -> f32 {
+        if angle.to_bits() < TAU.to_bits() {
+            return angle;
+        }
+        #[cfg(feature = "bench-hall-bit-step")]
+        let single_turn = if angle.is_sign_negative() {
+            angle.to_bits() & 0x7fff_ffff <= TAU.to_bits()
+        } else {
+            angle.to_bits() < (2.0 * TAU).to_bits()
+        };
+        #[cfg(not(feature = "bench-hall-bit-step"))]
+        let single_turn = (-TAU..2.0 * TAU).contains(&angle);
+        if single_turn {
+            #[cfg(feature = "isr-work-events")]
+            crate::isr_work::mark(crate::isr_work::ANGLE_WRAP);
+            if angle < 0.0 { return angle + TAU; }
+            if angle >= TAU { return angle - TAU; }
+            return angle;
+        }
+        wrap_angle_general(angle)
+    }
+
+    /// Signed atan2 angle minus a [0, 2*pi) angle: the difference lies in
+    /// (-3*pi, pi], so only the negative side ever needs a turn. That side
+    /// covers half of every revolution, hence the inline step. Results match
+    /// [`angle_difference`] bit for bit; other inputs keep the fallback.
+    #[cfg(feature = "observer-turn")]
+    #[inline(always)]
+    pub fn angle_difference_signed_minus_wrapped(a: f32, b: f32) -> f32 {
+        let diff = a - b;
+        let bits = diff.to_bits();
+        let magnitude = bits & 0x7fff_ffff;
+        if magnitude < core::f32::consts::PI.to_bits() {
+            return diff;
+        }
+        if bits != magnitude && magnitude < (TAU + core::f32::consts::PI).to_bits() {
+            return diff + TAU;
+        }
+        angle_difference_general(diff)
+    }
+
+    /// One-turn correction on the bit pattern. The complete fallback keeps
+    /// exact +/-3*pi, NaN and unwrapped inputs.
+    #[cfg(feature = "lean-angle")]
     #[cold]
     #[inline(never)]
-    fn angle_difference_general(mut diff: f32) -> f32 {
+    fn angle_difference_general(diff: f32) -> f32 {
+        let bits = diff.to_bits();
+        let magnitude = bits & 0x7fff_ffff;
+        if magnitude < (TAU + core::f32::consts::PI).to_bits() {
+            // (-pi, pi] is already the result; -pi itself moves to +pi.
+            if magnitude < core::f32::consts::PI.to_bits() || bits == core::f32::consts::PI.to_bits() {
+                return diff;
+            }
+            return diff - f32::from_bits(TAU.to_bits() | (bits & 0x8000_0000));
+        }
+        angle_difference_complete(diff)
+    }
+
+    #[cfg(feature = "lean-angle")]
+    #[cold]
+    #[inline(never)]
+    fn angle_difference_complete(diff: f32) -> f32 {
+        angle_difference_complete_body(diff)
+    }
+
+    #[cfg(not(feature = "lean-angle"))]
+    #[cold]
+    #[inline(never)]
+    fn angle_difference_general(diff: f32) -> f32 {
+        angle_difference_complete_body(diff)
+    }
+
+    #[inline(always)]
+    fn angle_difference_complete_body(mut diff: f32) -> f32 {
         let three_pi = TAU + core::f32::consts::PI;
         if diff <= -three_pi || diff > three_pi || diff.is_nan() {
             // Cold: inputs weren't wrapped angles.
@@ -415,6 +555,49 @@ pub mod foc {
                         "difference({a:?}, {other:?})"
                     );
                 }
+            }
+        }
+
+        #[cfg(feature = "observer-turn")]
+        #[test]
+        fn observer_turn_matches_frozen_boundaries_and_random_values() {
+            edge_values(|a| {
+                edge_values(|b| {
+                    assert!(same(angle_difference_signed_minus_wrapped(a, b), frozen_difference(a, b)));
+                });
+            });
+            let mut bits = 0x2545_f491_u32;
+            for _ in 0..2_000_000 {
+                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let a = f32::from_bits(bits);
+                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let b = f32::from_bits(bits);
+                assert!(same(angle_difference_signed_minus_wrapped(a, b), frozen_difference(a, b)));
+                // The observer's own domain: atan2 output against a wrapped PLL angle.
+                let a = (bits >> 8) as f32 / (1 << 24) as f32 * TAU - core::f32::consts::PI;
+                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let b = (bits >> 8) as f32 / (1 << 24) as f32 * TAU;
+                assert!(same(angle_difference_signed_minus_wrapped(a, b), frozen_difference(a, b)));
+            }
+        }
+
+        #[cfg(feature = "bench-hall-single-turn")]
+        #[test]
+        fn single_turn_paths_match_frozen_boundaries_and_random_values() {
+            edge_values(|a| {
+                assert!(same(wrap_angle_single_turn(a), frozen_wrap(a)));
+                edge_values(|b| {
+                    assert!(same(angle_difference_single_turn(a, b), frozen_difference(a, b)));
+                });
+            });
+            let mut bits = 0x9e37_79b9_u32;
+            for _ in 0..1_000_000 {
+                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let a = f32::from_bits(bits);
+                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let b = f32::from_bits(bits);
+                assert!(same(wrap_angle_single_turn(a), frozen_wrap(a)));
+                assert!(same(angle_difference_single_turn(a, b), frozen_difference(a, b)));
             }
         }
 

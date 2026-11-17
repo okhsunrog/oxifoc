@@ -1,44 +1,51 @@
 # STM32F405 ADC ISR optimization
 
-Updated 2026-11-16. This is the single record of accepted optimizations,
+Updated 2026-11-17. This is the single record of accepted optimizations,
 measured alternatives and rejected experiments. Motor tuning, Hall behavior
 and transport qualification remain in the [bench journal](foc-loop-research.md).
 Timings belong to specific MK5 images; gains from different series are not additive.
+Follow the [measurement workflow](../adc-isr-measurement.md) for new experiments.
 
 ## Accepted implementation
 
-Process commands every ISR. When fresh drive activity coincides with a due
-velocity PI update, postpone the PI by at most one ISR. Check deadman expiry
-using the existing protection counter `/16`. Inline the current-control helper
-and outline velocity startup/unavailable branches with `#[cold] #[inline(never)]`.
-Keep the ordinary target, frame pointers and configured PWM frequency; the
-experimental 20-kHz boot override is absent.
+Process commands every ISR. A shared native-cycle frame schedules the outer
+PI at approximately 1 kHz and prepares its scalar current-authority bounds one
+slot earlier. Fresh drive activity can postpone the PI by at most one ISR.
+Deadman expiry is polled once per frame and derating refreshes every eight
+frames. These approved paths are enabled by default through the regular
+`service-slots`, `pi-bounds-ahead`, `iq-authority`, `lean-angle` and
+`observer-turn` features. The last two retain bit-identical angle semantics.
+The implementation inlines the current-control helper and outlines velocity
+startup/unavailable branches with `#[cold] #[inline(never)]`. Firmware uses the
+ordinary target, frame pointers and the configured PWM frequency.
 
 | Work | Cadence and behavior |
 |---|---|
 | Current PI, phase estimation, observer, fast protection, PWM | Every ISR, normally 15 or 20 kHz |
 | Command FIFO, Stop, accepted drive/affirmation timestamp | Every ISR |
-| Velocity/position PI | Approximately 1 kHz, actual elapsed `dt`, original millisecond grid |
+| Velocity/position PI | Approximately 1 kHz, actual elapsed `dt`, slot frame with elapsed-time backstop |
 | PI postponement on drive activity | At most one ISR: 66.7 / 50 us at 15 / 20 kHz |
-| Deadman expiry polling | `/16`: approximately 938 / 1250 Hz; default timeout remains 150 ms |
-| Temperature conversion / derating refresh | Existing `/128` and `/256`; unchanged |
+| Deadman expiry polling | Once per frame, approximately 1 kHz; timeout 150 ms |
+| Temperature conversion | Every 128 ADC cycles |
+| Derating refresh | Every eight frames, approximately 8 ms |
+| PI authority bounds | Prepared one native cycle ahead, single-use, fresh fallback after invalidation |
 
-A postponed PI returns to its original grid: delay does not accumulate.
+A postponed PI returns to its slot frame with bounded delay.
 Actuator feedback continues accumulating every ISR, and command floods cannot
 starve the PI indefinitely. Postponing the first update holds a zero Iq request.
 Angle/speed trust gates and live current constraints still run every ISR.
 Velocity and position modes use the outer PI; current control uses the inner
 current PI every ISR.
 
-The tradeoff is one ISR of additional PI jitter and up to 1.07 / 0.8 ms before
+The tradeoff is one ISR of additional PI jitter and about 1 ms before
 detecting deadman expiry while the ISR runs. Link gating and execution of active
 faults remain native-rate. Decimated polling does not replace the independent
 watchdog if the ISR itself stops.
 
-Source: `motor/foc_driver/{velocity_schedule,protection,modes}.rs` and `state.rs`
-under `oxifoc-core/src/`. The selected implementation comes from measured
-commit `4b4986f`, excluding its temporary PWM override. Increased `.text` is
-accepted in exchange for the measured speed improvement.
+The implementation lives in `motor/foc_driver/{velocity_schedule,protection,modes}.rs`
+and `state.rs` under `oxifoc-core/src/`. The original bounded PI deferral came
+from measured commit `4b4986f`. The slot frame and pipelined bounds were approved
+on November 17. Increased `.text` is accepted for measured speed improvements.
 
 ## Measurement contract
 
@@ -1029,8 +1036,8 @@ Assembly shows 3292 → 1964 bytes in the outlined grant, with a separate
 two static divisions and three square roots relative to the full grant.
 Its plain paths add dispatch/tail calls into `grant_torque_constrained`.
 The cleaned whole-image ordinary mean worsens 37.606 → 37.718 us with this
-prototype. It remains experimental. A small inlined dispatcher with an
-outlined nonlinear q solver is a follow-up candidate.
+prototype. It remains experimental. The follow-up below evaluates this
+dispatcher, paired authority calculations and additional PI deferral.
 
 Early new profiling marks changed ordinary code generation even when their
 counter operations optimized away. Explicit `cfg(isr-profiling)` now excludes
@@ -1149,6 +1156,513 @@ report zero logger losses. The board is restored to the committed image at
 The F405 firmware uses this deferred RTT backend. Artifacts, exact image
 hashes and assembly audits are in
 `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-deferred-logging-2026-11-16/`.
+
+### Dissipative authority follow-up, November 16
+
+Control source `ecc4920`, nonincremental MK5 release builds. Each native
+window covers a 14-second, no-load +450-rad/s HallToObserver hold at 20 kHz.
+The authority scenario sets RAM-only `max_dissipation_w=0.05` and
+`bus_regen_max_a=0`. The ordinary hold retains zero dissipation. All captures
+require lossless Packed28 telemetry, acknowledged commands, Stop and unchanged
+fault generation. A fresh control build reproduces the original control ELF
+SHA-256 `e1609594…` byte for byte. The q-only image is `b972720f…`.
+
+| Candidate | Ordinary mean, us | Authority mean, us | Authority maximum, us | Bodies over period per 100k |
+|---|---:|---:|---:|---:|
+| Control | 38.288 | 38.538 | 53.237 | 83.4 |
+| q-only, compiler-selected function boundary | 38.303 | 38.469 | 51.675 | 10.7 |
+| Inlined dispatch, outlined q solver | 38.338 | 38.522 | 51.783 | 18.6 |
+| Fully inlined q path | 38.300 | 38.489 | 51.461 | 19.1 |
+| Paired linear bounds, full nonlinear fallback | 38.426 | 38.706 | 54.238 | 362.8 |
+| Paired bounds with q-only fallback | 38.302 | 38.523 | 52.343 | 42.8 |
+| Direct motoring bound and nonlinear q call | 38.307 | 38.506 | 50.972 | 10.7 |
+| Direct pair plus exact zero-root shortcut | 38.301 | 38.492 | 52.116 | 11.1 |
+| q-only plus outlined circle search | 38.393 | 38.570 | 51.175 | 16.1 |
+| Defer due PI after /256 derating refresh | 38.387 | 38.646 | 53.296 | 100.0 |
+| Same deferral plus q-only | 38.408 | 38.587 | 52.819 | 24.3 |
+| Defer due PI during a deadman poll | 38.489 | 38.738 | 53.755 | 70.3 |
+| Same deferral plus q-only | 38.498 | 38.655 | 52.170 | 11.8 |
+
+Control, q-only and the fully inlined q path each have two independent
+windows per mode. Means are weighted by native cycle count. Rates normalize
+the different repeat counts.
+Single-window differences of a few hundredths of a microsecond have limited
+ranking value. The measured period is approximately 49.989 us.
+
+The q-only variant reduces exceedances from 467/560191 to 60/560246 cycles,
+an 87% rate reduction. Those 60 events span approximately 28 seconds of
+active operation, about 2.1 events/s. This series retains aggregate counts.
+The November 17 tagged reproduction below records per-event combinations.
+The earlier detailed profiles exercise a different instrumented image.
+Its ordinary mean increases by 0.015 us. PI retains
+its 1-kHz grid, and the actual actuator grant computes both id and iq.
+The extra PI-deferral candidates add up to one native cycle of timing jitter
+while retaining the grid and actual elapsed integration interval. Their
+whole-image timing gives no benefit over the unforced q-only boundary.
+
+The existing F405 embedded benchmark now also measures a complete synthetic
+driver step with every outer update due. Fixed rotor/current providers and
+initialization amortized over 64 steps are included. With the real-motor
+coefficients, the dissipative fixture improves 3539.88 to 3297.86 cycles per
+step, approximately 1.44 us. Its ordinary fixture increases 2564.00 to
+2637.86 cycles. Full and projected q match bitwise on 30000 sampled MCU
+parameter sets, with maximum q difference 0 A.
+
+Linked assembly retains the 2404-byte outer-update caller at `0x0802d8bc`
+for the unforced q-only path. Its 2876-byte helper has five static VDIV and
+23 VSQRT instructions, compared with seven and 26 in the 3292-byte full grant.
+These counts include the unrolled rare search. Inlining the dispatcher grows
+the caller to 2672 bytes and increases static FP stack operations from seven
+to 13. Full q inlining grows it to 3140 bytes. Outlining the circle shrinks
+the q helper to 1524 bytes, with a slower ordinary whole-image mean.
+The unforced q-only image adds 2880 bytes of `.text`.
+
+Separate PCSR captures contain 79680/80384 driven samples. The control has
+420 samples in `grant_dissipative_brake`; the q-only image has 375 in
+`grant_iq_authority` and zero in the full dissipative grant. The mapped outer
+caller has 360/366 samples. These profiles establish exercised function paths;
+the DWT recordings and MCU fixtures provide cycle measurements.
+
+Separate PWM-deadline witness images record 280103/280101 enabled writes,
+zero late writes, and minimum margins of 10.367/11.809 us for control/q-only.
+ISR-body exceedances remain present in the minimal-timing captures.
+The q-only image's largest observed interval between ISR entries is 54.851 us.
+
+The q-only path remains opt-in through `bench-iq-authority`. New paired-bound,
+zero-root, dispatcher and PI-deferral implementations are removed after
+measurement. The benchmark and comparison coverage remain available for
+subsequent measurements. The bench finishes on the current integrated
+source's normal image `60b7e672…`, with active/saved PWM at 15 kHz,
+zero dissipation, Stopped, zero faults and phase enables off. Its final
+two-second velocity/Stop capture is lossless.
+Exact ELFs, linked assembly, source hashes, raw attempts, PC samples and
+acceptance receipts are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-brake-authority-2026-11-16/`.
+
+### Work-combination attribution and shared tooling, November 17
+
+The frozen q-only ELF `b972720f…` repeats the same 20-kHz +450-rad/s,
+HallToObserver, 0.05-W/zero-regen scenario. Two 14-second windows contain
+560281 body samples, mean 38.469563 us, maximum 51.764860 us and 36 period
+exceedances, approximately 1.29/s. This is an additional same-image control.
+
+`bench-foc-work` records work flags and a bounded list of over-budget cycles.
+All 225 tagged exceedances across two windows have complete records and
+the velocity-PI flag. Their disjoint families are listed below. Full masks
+also retain observer-error wrapping, angle normalization, Hall slew clipping
+and Hall motion-witness wrapping.
+
+| Work family | Events | Largest tagged body, us |
+|---|---:|---:|
+| PI + Hall slew/control-velocity angle wrapping | 93 | 52.426 |
+| PI + derating refresh | 89 | 51.360 |
+| PI + deadman poll | 42 | 50.841 |
+| PI + Hall angle wrapping + derating | 1 | 53.189 |
+
+The first family includes eight events with a deadman poll. Across the
+complete records, both Hall slew and Hall control-velocity differences take
+their general wrap paths in 94 exceedances. A new Hall witness edge/reference
+is recorded once. Command, temperature-conversion, sensorless-startup and
+current-circle-search flags each occur zero times in the recorded exceedances.
+The Hall wrap paths are in `HallSensor::sample_at_mut` and
+`HallControlMotion::observe`, where the angular representation crosses 0/2π.
+
+Instrumentation controls use one identical work ELF with runtime tags on/off.
+
+| Measurement group | Mean body, us | Maximum body, us | Exceedances / samples |
+|---|---:|---:|---:|
+| Frozen minimal q-only | 38.469563 | 51.764860 | 36 / 560281 |
+| Work ELF, tags off | 38.849884 | 52.116394 | 223 / 560225 |
+| Same work ELF, tags on | 38.874880 | 53.188870 | 225 / 560286 |
+
+Runtime event publication adds about 0.025 us to the mean in this pair.
+The complete work image adds about 0.405 us against minimal timing, including
+its changed code/data layout and diagnostic execution. Work-record maxima
+belong to that instrumented image. The untagged historical events retain
+their original aggregate evidence. Source-level combinations from this
+reproduction guide the next targeted scheduling/codegen experiments.
+
+A minimal rebuild with work diagnostics disabled has byte-identical `.text`,
+`.foc_hot`, `.data` and vector table against the frozen q-only image.
+The equal-sized `.rodata` changes contain source-line location records.
+The work image adds 17444 bytes of diagnostic `.bss`.
+
+The shared [measurement workflow](../adc-isr-measurement.md) now describes
+fixed-ELF runs, work masks, nested section attribution, PWM witnesses,
+CPU fixtures, PC sampling, artifact provenance and restoration. The existing
+FOC runner supports separate build, fixed-image capture and offline report
+operations. The active-drive PC sampler is maintained as a host example.
+Fresh hardware captures exercise the consolidated runner, runtime tag control,
+PC sampling and embedded brake fixtures. The capture/decoder verifies class
+counts and cycle sums against the body recorder, plus record completeness.
+The section-outlier recorder and distribution now use a shared body-end
+timestamp before diagnostic storage. A final hardware window verifies matching
+sample counts and identical maximum-cycle values in both exports. In its
+longest record, the nested outer update takes 9.211 us, its negative authority
+probe 4.445 us, sensor sampling 7.245 us and protection 3.533 us. These nested
+diagnostic values retain their own instrumentation scope.
+
+Artifacts are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-isr-workflow-2026-11-17/`, including
+`attribution.json`, fixed images, manifests and the allocated-section audit.
+
+### Service slots, wrap fallbacks and pipelined authority bounds, November 17
+
+Control source `ecc4920` plus the uncommitted instrumentation; during this series
+every variant was a default-off feature and the control build kept byte-identical `.text`,
+`.foc_hot`, `.data` and vector table across all source edits of this series.
+MK5 at 20 kHz, HallToObserver, +450 electrical rad/s. `velocity450` is the
+ordinary hold; `brake-authority` adds `max_dissipation_w=0.05` and
+`bus_regen_max_a=0`. Every image includes `bench-iq-authority`. Each row has
+two 14-second captures per scenario unless stated, about 560,000 cycles.
+The measured PWM period is 49.989 us.
+
+The full combination was subsequently approved for production. The accepted
+features lost their `bench-` prefix and are enabled by default. The historical
+feature names and frozen ELF metadata below identify the measured builds.
+
+| Feature | Change |
+|---|---|
+| `bench-service-slots` | Bounded frame counter of 20 / 15 native cycles. PI in slot 0, deferred PI in slot 1, deadman at length/4 every frame, derating at length/2 every eighth frame. Commands stay native-rate. |
+| `bench-hall-single-turn`, `bench-hall-bit-step` | Inline single-turn steps at the Hall slew and Hall control-velocity sites |
+| `bench-lean-angle` | Integer single-turn steps inside the cold `angle_difference_general` / `wrap_angle_general` bodies; the complete fallbacks move to separate cold functions |
+| `bench-observer-turn` | Inline one-sided turn at the observer PLL error |
+| `bench-pi-bounds-ahead` | Outer-PI authority bounds computed in the last slot of a frame, consumed by the PI in slot 0 or 1 |
+
+#### Repeatability and placement controls
+
+The same control ELF repeats its ordinary mean within 0.002 us and its
+brake-authority exceedance count within one event (65 and 64). Exceedance
+counts are image-specific: the identical control code relinked on a shared
+function-address map has the same mean and 38–48 exceedances.
+
+A source change moves other functions in the natural layout. The first
+inline Hall image shifts 352 of 586 functions by four bytes; the slot image
+changes 118 entry residues. `--link-reproduce` retains the linker inputs, and
+one shared map then places every function of every variant at one address
+with its control residue. Literal and read-only data addresses stay variable.
+
+| Variant | Natural mean, us | Fixed-map mean, us |
+|---|---:|---:|
+| Control | 38.305 | 38.303 |
+| Slots | 38.725 | 38.515 |
+| Inline Hall single-turn | 38.539 | 38.462 |
+| Slots + inline Hall | 38.672 | 38.662 |
+| First pipelined bounds | 38.618 | 38.470 |
+
+About half of the slot penalty and a third of the inline-Hall penalty belong
+to moved callees. The rest stays inside the changed functions.
+
+#### First series: slots and inline Hall steps
+
+`brake-authority`, natural layout / fixed map.
+
+| Variant | Mean, us | Maximum, us | Exceedances |
+|---|---:|---:|---:|
+| Control | 38.471 / 38.467 | 51.866 / 51.926 | 65 / 38 |
+| Slots | 38.886 / 38.688 | 51.264 / 51.217 | 55 / 21 |
+| Inline Hall single-turn | 38.719 / 38.621 | 52.146 / 51.443 | 134 / 70 |
+| Slots + inline Hall | 38.840 / 38.830 | 50.829 / 50.734 | 12 / 11 |
+| Inline Hall, bit-pattern checks (natural) | 38.547 | 52.599 | 50 |
+| Slots + bit-pattern Hall (natural) | 38.777 | 51.264 | 28 |
+
+The slot work image records exactly zero PI+deadman and PI+derating cycles.
+Its remaining exceedances are PI cycles alone or with wrap paths: the image's
+ordinary cycle is 0.38 us slower than control's, which moves the PI cycle's
+own tail across the period. Fifty-five consecutive PI cycles during the speed
+ramp, at about 390–410 electrical rad/s and still accelerating, account for
+nearly half of that image's records: PI cycles are about 2 us longer in that
+speed range than in the +450 hold. The inline Hall steps remove the Hall-seam family in the
+work image (47 to 10 records) and grow the phase function by 336 bytes; the
+slower ordinary cycle then turns PI+observer-wrap cycles into exceedances.
+Bit-pattern range checks recover most of that mean. Neither inline Hall
+variant is carried forward.
+
+#### Wrap fallbacks and the observer turn
+
+`angle_difference_general` shrinks from 528 to 74 bytes and
+`wrap_angle_general` from 116 to 68 bytes. The lean bodies use no Flash
+literal and no FP compare; hot callers are unchanged. The observer subtracts a
+[0, 2*pi) PLL angle from a signed atan2 result, so its difference needs a turn
+on half of every revolution. The inline one-sided step adds 28 bytes to the
+phase function. Frozen-reference tests compare all three helpers bit for bit
+over boundary values and one to two million random inputs.
+
+#### Pipelined authority bounds
+
+The outer update splits at its two authority probes. Stage A runs in the last
+slot of the frame and stores `iq_min`/`iq_max`; stage B takes the feedback,
+applies the fresh voltage-clip tightening and runs the PI in slot 0. The actual
+current grant stays fresh in every native cycle, and prepared bounds are
+single-use: they never outlive one update.
+
+- Fresh drive activity in the prepare slot moves both stages by one cycle.
+  Activity in slot 0 defers the update to slot 1, as before.
+- Prepared bounds are dropped by any dequeued command, velocity invalidation
+  or rearm, cleared requests (limit, derating, decoupling and velocity
+  configuration), external derating-scale updates, an age above 250 us, a
+  changed speed direction and a changed bus-modulation class. The update
+  then runs both probes inline, which is the previous behavior.
+- An elapsed-time backstop keeps the persistent one-period deadline of the
+  microsecond grid. A regular frame reaches it only in slot 0. After missed
+  native cycles or at a cold start it selects another slot; fresh drive
+  activity still waits one cycle. With it, the six scheduled-velocity tests
+  that encode the time grid pass again under both slot features.
+
+The eight-frame derating refresh period was approved on November 17. The
+cadence checks now cover both 15- and 20-kHz frames, retained scales between
+refreshes and frame-counter wrap. Temperature thresholds and sentinel handling
+retain their existing coverage.
+The lean, observer-turn and Hall single-turn helpers pass all 683 tests.
+An audit compares every prepared bound with same-cycle probes in five
+closed-loop scenarios (53,955 updates): the largest difference is 39 mA in the
+bus-clamp scenario and 5 mA in the dissipative descent, with 34 fallbacks from
+direction changes and an injected scale update. Slot simulations cover both
+rates, command floods and commands in either stage slot.
+
+#### Follow-up series on one shared address map
+
+All eight images share one function-address map (`fx5`).
+
+| Variant | Ordinary mean, us | Brake mean, us | Brake maximum, us | Exceedances |
+|---|---:|---:|---:|---:|
+| Control | 38.310 | 38.478 | 51.175 | 48 |
+| Lean fallbacks | 38.172 | 38.340 | 51.199 | 10 |
+| Observer turn | 37.845 | 38.015 | 50.728 | 25 |
+| Lean + observer turn | 37.821 | 37.983 | 51.145 | 5 |
+| Slots | 38.553 | 38.725 | 51.640 | 19 |
+| Slots + pipelined bounds | 38.531 | 38.704 | 49.221 | 0 |
+| Slots + bounds + lean | 38.395 | 38.572 | 48.887 | 0 |
+| Slots + bounds + lean + observer turn | 38.044 | 38.214 | 47.505 | 0 |
+
+The ordinary hold has zero exceedances in every image. The observer turn
+alone saves 0.46 us of ordinary mean, which establishes the cost of the
+out-of-line observer wrap. The pipelined bounds remove every exceedance in
+this scenario; the wrap changes add about 1.7 us of margin on top.
+The largest ISR entry gap stays between 54.5 and 54.9 us in every image,
+including those without body exceedances: it reflects entry latency.
+
+#### Cycle-function entry residue
+
+The same map with only the `run_foc_cycle` entry moved. Ordinary mean in us;
+residue 4 is the current `foc-hot.x` choice. Residues 0, 8 and 12 use one
+six-second capture per scenario.
+
+| Entry modulo 16 | Control | Slots | Full |
+|---|---:|---:|---:|
+| 0 | 38.177 | 38.435 | 38.078 |
+| 4 | 38.310 | 38.553 | 38.044 |
+| 8 | 38.460 | 38.593 | 37.986 |
+| 12 | 38.266 | 38.327 | 38.081 |
+| Best | 38.177 | 38.327 | 37.986 |
+
+The control code no longer prefers residue 4: residue 0 is 0.13 us faster.
+Compared at each image's best residue, slots cost 0.15 us and the full
+combination gains 0.19 us. Full has zero exceedances at every residue, with
+`brake-authority` maxima between 47.3 and 49.2 us.
+
+#### Phase-function entry residue
+
+The same map with only the `update_phase_with_applied_voltage` entry moved and
+the cycle function at residue 4. Ordinary mean in us; residue 12 is the current
+choice; the others use one six-second capture per scenario.
+
+| Entry modulo 16 | Control | Lean + observer turn | Full |
+|---|---:|---:|---:|
+| 0 | 38.032 | 37.790 | 38.012 |
+| 4 | 38.064 | 37.686 | 37.909 |
+| 8 | 38.136 | 37.885 | 38.109 |
+| 12 | 38.310 | 37.821 | 38.044 |
+| Best | 38.032 | 37.686 | 37.909 |
+
+Residue 12 is now the slowest phase-function entry for the control code:
+residue 0 is 0.28 us faster. The current hot-entry residues were tuned for
+earlier code, so the control itself has about 0.3 us of placement gain
+available. Compared at each image's best phase residue, the two wrap changes
+keep 0.35 us and the full combination 0.12 us against control. Full has zero
+exceedances at every phase residue. Cycle and phase residues were swept one
+at a time; their joint optimum is unmeasured.
+
+#### Work classes with the wrap class map
+
+One 14-second `brake-authority` capture per work image, `bench-work-class-wraps`.
+Class mean / maximum body in us. These images carry tag overhead; compare
+classes inside one image and adders between images.
+
+| Class | Control | Lean | Observer turn | Slots | Slots + bounds | Full |
+|---|---:|---:|---:|---:|---:|---:|
+| No tagged work | 38.34 / 41.99 | 38.28 / 40.64 | 38.02 / 40.95 | 38.55 / 41.50 | 38.36 / 41.84 | 38.09 / 40.99 |
+| Observer-error wrap | 38.85 / 41.82 | 38.60 / 40.89 | 38.21 / 40.83 | 39.11 / 41.65 | 38.94 / 41.61 | 38.32 / 40.65 |
+| Hall seam | 41.59 / 42.98 | 40.95 / 42.09 | 41.09 / 42.69 | 41.73 / 43.19 | 41.55 / 43.58 | 40.60 / 41.64 |
+| Deadman | 39.41 / 41.61 | 39.36 / 41.30 | 39.08 / 41.84 | 39.53 / 42.45 | 39.37 / 42.48 | 39.08 / 41.60 |
+| Derating | 40.78 / 42.39 | 40.70 / 42.39 | 40.42 / 42.48 | 41.04 / 43.55 | 40.84 / 43.97 | 40.54 / 42.13 |
+| Command | 42.44 / 47.06 | 42.23 / 46.94 | 42.01 / 46.89 | 42.61 / 47.40 | 42.39 / 43.97 | 42.17 / 47.06 |
+| PI | 47.87 / 50.70 | 47.81 / 49.72 | 47.50 / 50.12 | 47.74 / 50.07 | 42.41 / 45.53 | 42.13 / 44.01 |
+| PI + Hall seam | 51.15 / 52.58 | 50.45 / 51.49 | 50.75 / 52.13 | 50.90 / 52.52 | 45.56 / 46.74 | 44.70 / 45.64 |
+| Bounds stage | | | | | 45.30 / 48.57 | 45.01 / 46.81 |
+| Bounds stage + Hall seam | | | | | 48.55 / 49.81 | 47.54 / 48.68 |
+| Exceedances | 194 | 156 | 124 | 42 | 0 | 0 |
+
+Full is slots + bounds + lean + observer turn. The observer-error wrap is
+tagged in half of all cycles and costs 0.51 us there in the control image,
+0.31 us with the lean fallback and 0.19–0.23 us with the inline turn. The Hall
+seam costs 3.25 us in control and 2.5–2.7 us with the lean fallback. Every
+control-image exceedance with a PI is one of: PI + Hall seam, PI + deadman,
+PI + derating or the PI's own wrap tail.
+
+Structural counts in these captures: PI cycles sharing a deadman or derating
+cycle fall from 932 of 14,005 to zero in every slot image; PI cycles never
+share a command cycle in any image; the bounds stage never shares a cycle with
+a command, deadman or derating. All 42 slot-image exceedances are PI + Hall
+seam. The bounds stage costs 6.9 us and the update stage 4.0 us, against 9.5 us
+for the unsplit update: the split adds about 1.4 us of total work per frame
+and makes the bounds stage with a coinciding Hall seam the heaviest class.
+Inline fallbacks occur one to three times per capture, at the cold start.
+
+The observer-turn image is also 0.32 us faster in cycles without any wrap.
+Its normalized phase-function instructions match control except for the
+inserted step, so that part is a placement effect: about 190 instructions
+after the insertion move by 12 bytes. Only about 0.16 us of its 0.46-us mean
+gain is the removed excursion itself.
+
+#### Isolated single-turn costs
+
+`z_bench_hall_single_turn` in `tests/stm32f405`, gate driver off, three
+exact-image repeats agreeing within 0.003 cycles. Gross cycles per call in a
+warm loop, including loop and `black_box` overhead.
+
+| `angle_difference` input | Shipping fallback | Lean fallback | Inline single-turn |
+|---|---:|---:|---:|
+| Ordinary, no turn | 26.906 | 26.906 | 26.906 |
+| 0/2*pi seam, one turn | 65.688 | 56.219 | 46.359 |
+
+A warm out-of-line turn costs about 39 cycles, 29 with the lean body and 19
+inline. In the native ISR the same turn costs about 85 cycles at the observer
+and more at the Hall seam: cold Flash lines and literal loads dominate there,
+and the warm loop understates what the lean body saves.
+
+#### PWM deadline witnesses
+
+Separate deadline images, 20 kHz `brake-authority`, 14 seconds, about 280,100
+enabled writes each. Late, ambiguous and still-masked counts are zero in all.
+
+| Image | Minimum margin, us |
+|---|---:|
+| Control | 11.285 |
+| Lean fallbacks | 11.595 |
+| Inline Hall single-turn | 10.999 |
+| Slots (first series) | 12.965 |
+| Slots + inline Hall | 11.618 |
+| Slots + bounds | 14.002 |
+| Slots + bounds + lean | 14.931 |
+| Full | 14.896 |
+
+#### Natural layout, 15 kHz and transitions
+
+Natural layout is the ordinary `foc-hot.x` link without the shared map.
+
+| Image, 20 kHz natural layout | Ordinary mean, us | Brake mean, us | Brake maximum, us | Exceedances |
+|---|---:|---:|---:|---:|
+| Control, two series | 38.305 / 38.304 | 38.471 / 38.473 | 51.866 / 53.362 | 65 / 64 |
+| Lean fallbacks | 38.163 | 38.328 | 50.138 | 1 |
+| Full | 38.331 | 38.513 | 48.315 | 0 |
+
+Without any placement tuning the full combination is mean-neutral and keeps
+zero exceedances. One earlier lean capture is rejected for host-side raw
+telemetry loss while firmware builds loaded the host; its repeat is listed.
+
+At 15 kHz (measured 15,001.4 Hz, one 14-second capture per scenario) no body
+approaches the 66.7-us period. Control / full: ordinary mean 38.405 / 38.182 us,
+`brake-authority` maximum 51.985 / 48.232 us, minimum PWM margin
+28.480 / 31.650 us with zero late writes.
+
+`transitions` and `brake-transitions`, one capture each, about 206,000 cycles
+at 20 kHz:
+
+| Image | Transitions max, us | Brake-transitions mean / max, us | Exceedances | Minimum PWM margin, us |
+|---|---:|---:|---:|---:|
+| Control | 48.583 | 38.106 / 51.938 | 80 | 10.320 |
+| Full | 47.743 | 37.756 / 47.678 | 0 | 14.872 |
+
+The full image also completes both sequences at 15 kHz with maxima of 47.028
+and 47.552 us. In its 20-kHz work image the sequence has 9,505 PI updates,
+9,504 prepared bounds and five inline fallbacks, with no PI or bounds stage
+sharing a command, deadman or derating cycle; the largest tagged body is
+49.590 us, for a bounds stage with a Hall seam. The control work image has 164
+exceedances up to 54.720 us there.
+
+Across this artifact root, 158 of 159 capture runs are accepted with complete
+raw telemetry, acknowledged commands, terminal Stop and unchanged fault
+generation; every directory has its recovery receipt. They total 37.0 million
+timed cycles and 3.05 million witnessed PWM writes with zero late writes.
+
+#### Scope and adoption
+
+The full combination was approved and promoted to regular, default-enabled
+features. Measurements cover the unloaded MK5 in HallToObserver velocity
+control. Loaded operation,
+position mode on hardware, sensorless sources and other dissipation limits
+are unqualified. PI cycles are about 2 us longer near 400 electrical rad/s than
+at the +450 hold, so the authority probe's cost depends on the operating point
+and its worst case is not established. The approved slot frame polls deadman
+once per frame and refreshes derating every eight frames. Cadence coverage now
+checks both PWM rates and counter wrap.
+
+Artifacts, exact images, link inputs, address maps, job lists, logs and the
+rejected capture are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-slot-wrap-2026-11-17/`; its
+`analysis/README.md` explains the directory names. That series ended on the
+recovery image at 15 kHz, Stopped, zero faults and phase enables off.
+
+### Production defaults and joint entry-residue sweep, November 17
+
+The approved slot frame, pipelined bounds, scalar q-current authority and angle
+helpers now use regular feature names and are enabled by default. Derating
+coverage checks the approved eight-frame period at both PWM rates, including
+counter wrap. Its temperature-threshold and sentinel coverage is retained.
+
+One captured production-policy object supplies all placement trials. The natural
+compact layout is swept over all 16 cycle/phase combinations at residues
+0/4/8/12, with grant residue 4. Six further trials vary the grant residue for
+the two mean-time leaders. Each screen uses one four-second `brake-authority`
+capture, shuffled order and interleaved reference captures. All 22 screens
+have zero body-period exceedances. Hot input sections require four-byte
+alignment. Their bytes outside recorded relocations match across every ELF.
+
+The two finalists then run two 14-second captures per scenario, bracketed by
+reference captures. About 560,000 samples contribute to each scenario row.
+Both reference and selected source rebuilds reproduce their measured relinks
+in all file-backed allocated sections.
+
+| Cycle / phase / grant | Ordinary mean, us | Brake mean, us | Brake maximum, us | Exceedances |
+|---|---:|---:|---:|---:|
+| Previous 4/12/4 | 38.231 | 38.414 | 48.673 | 0 |
+| Alternative 4/4/8 | 37.995 | 38.174 | 48.512 | 0 |
+| Selected 8/4/0 | 37.986 | 38.163 | 47.529 | 0 |
+
+The selected layout favors mean cost and PWM write margin. Its ordinary-hold
+maximum increases from 46.510 to 47.165 us. In a separate 10.6-second braking
+transition sequence, maxima are 47.844 / 48.541 / 48.738 us for previous /
+alternative / selected placement, all with zero exceedances. These tails keep
+their scenario scope. The corresponding separate deadline witnesses show
+14.002 / 14.693 us minimum transition margin for alternative / selected.
+At the steady braking hold, margin improves from 13.525 to 15.170 us with the
+selected placement, versus 14.705 us for the alternative. All witnesses have
+zero late, ambiguous or still-masked writes.
+
+At 15 kHz, one six-second capture per scenario gives ordinary means of
+38.330 / 38.087 us and braking maxima of 47.600 / 47.386 us for previous /
+selected placement. The selected PWM witness retains 31.793 us minimum margin.
+Both ordinary and braking transition maneuvers complete at 20 kHz with zero
+exceedances. Measurements use the unloaded HallToObserver bench.
+
+`oxifoc-f405/foc-hot.x` selects residues 8/4/0. Exact images, shuffled job order,
+source-equivalence checks, relocation audit and recovery receipts are under
+`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hot-joint-2026-11-17/`.
+The final normal image completes a two-second +120-rad/s capture with complete
+telemetry and acknowledged Stop. It remains on the board at the saved 15-kHz
+PWM setting, Stopped, zero active faults and phase enables off. Its exact build
+and acceptance receipt are in `production-final/` under that artifact root.
 
 ### Further reading on instruction placement
 

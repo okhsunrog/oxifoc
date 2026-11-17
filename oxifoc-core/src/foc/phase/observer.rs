@@ -739,6 +739,16 @@ impl BackEmfObserver {
         // PLL tracking. The error must be the SIGNED shortest angular distance
         // (like VESC's foc_pll_run): wrapping to [0, 2π) would make the error
         // always non-negative and the velocity integrator could only grow.
+        #[cfg(feature = "isr-work-events")]
+        crate::isr_work::angle_difference(
+            crate::isr_work::OBSERVER_ERROR_WRAP,
+            phase_raw,
+            self.phase_pll,
+        );
+        #[cfg(feature = "observer-turn")]
+        let phase_error =
+            crate::foc::angle_difference_signed_minus_wrapped(phase_raw, self.phase_pll);
+        #[cfg(not(feature = "observer-turn"))]
         let phase_error = crate::foc::angle_difference(phase_raw, self.phase_pll);
         self.velocity_pll += self.pll_ki * phase_error * dt;
         // Physics acceleration prior (see set_accel_prior): |ω̂| is clamped

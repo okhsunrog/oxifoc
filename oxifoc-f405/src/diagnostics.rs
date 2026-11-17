@@ -3,6 +3,8 @@
 #[cfg(feature = "bench-foc-deadline")]
 pub mod pwm_deadline;
 
+#[cfg(feature = "bench-foc-work")]
+pub mod cycle_work;
 #[cfg(feature = "bench-foc-distribution")]
 pub mod foc_distribution;
 

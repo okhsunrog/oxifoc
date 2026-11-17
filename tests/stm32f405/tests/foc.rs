@@ -393,6 +393,47 @@ mod tests {
         super::support::schedule::run();
     }
 
+    #[cfg(feature = "bench-hall-single-turn")]
+    #[test]
+    fn z_bench_hall_single_turn(_state: TestState) {
+        use core::f32::consts::TAU;
+        fn shipping_difference(value: f32) -> f32 {
+            oxifoc_core::foc::angle_difference(value, 0.0)
+        }
+        fn inline_difference(value: f32) -> f32 {
+            oxifoc_core::foc::angle_difference_single_turn(value, 0.0)
+        }
+        let functions = core::hint::black_box([
+            shipping_wrap_angle as fn(f32) -> f32,
+            oxifoc_core::foc::wrap_angle_single_turn,
+            shipping_difference,
+            inline_difference,
+        ]);
+        for (label, inputs) in [
+            ("ordinary", [0.001, 0.01, 0.1, 0.5, -0.001, -0.01, -0.1, -0.5]),
+            ("seam", [TAU - 0.001, TAU + 0.001, -TAU - 0.001, -TAU + 0.001,
+                TAU - 0.01, TAU + 0.01, -TAU - 0.01, -TAU + 0.01]),
+        ] {
+            let inputs = core::hint::black_box(inputs);
+            let mut stats = [Stats::new(); 4];
+            for pair in [(0, 1), (2, 3)] {
+                for input in inputs {
+                    defmt::assert_eq!(functions[pair.0](input).to_bits(), functions[pair.1](input).to_bits());
+                }
+            }
+            for round in 0..WRAP_ROUNDS {
+                for offset in 0..4 {
+                    let index = (round + offset) as usize % 4;
+                    stats[index].record(measure_wrap_batch(functions[index], &inputs));
+                }
+            }
+            defmt::info!("wrap input: {}", label);
+            for (index, name) in ["shipping wrap", "inline wrap", "shipping difference", "inline difference"].iter().enumerate() {
+                stats[index].report(name, WRAP_ROUNDS, WRAP_BATCH_CALLS);
+            }
+        }
+    }
+
     // ========== Benchmark: full FOC step at 168MHz ==========
 
     fn bench_foc<S: SinCos>(label: &str) {

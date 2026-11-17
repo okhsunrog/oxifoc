@@ -20,6 +20,8 @@
 
 ## Bench and research
 
+- [ADC ISR measurement workflow](adc-isr-measurement.md) defines the tools,
+  reproducible commands, attribution method and required measurement evidence.
 - [Hall-to-observer tuning](notes/hall-observer-tuning.md) records the current
   thresholds, their baseline and how to revisit the estimator.
 - [ADC ISR optimization](notes/adc-isr-optimization.md) records the accepted

@@ -63,16 +63,32 @@ name = "oxifoc_core"
 path = "src/lib.rs"
 
 [features]
-default = ["algorithms", "detection", "offset-diagnostics"]
+default = [
+    "algorithms", "detection", "offset-diagnostics",
+    "service-slots", "pi-bounds-ahead", "lean-angle", "observer-turn",
+]
 
 # Explicit function sections used by the F405 compact FOC linker layout.
 compact-foc = []
 # Fused atan2 polynomial. no_std builds with this policy require nightly.
 atan2-fma = []
-# Bounded MCU experiments for optional dissipative torque authority.
+# Scalar hypothetical q-current bounds for the scheduled outer PI.
+iq-authority = []
+# Shared native-cycle frame for outer PI and maintenance work.
+service-slots = []
+# Authority bounds one slot before the outer PI; needs the slot frame.
+pi-bounds-ahead = ["service-slots", "iq-authority"]
+# Integer single-turn steps inside the cold angle fallbacks.
+lean-angle = []
+# Inline one-sided turn at the observer PLL error, taken on half of every revolution.
+observer-turn = []
+# Bounded MCU experiments for alternative dissipative and angle paths.
 bench-dissipative-inline = []
-bench-iq-authority = []
+bench-hall-single-turn = []
+bench-hall-bit-step = ["bench-hall-single-turn"]
 bench-outline-circle = []
+# ADC work tags, independent of nested DWT timers.
+isr-work-events = []
 
 # Runtime current-offset comparison (undriven / per-phase / all-phases).
 # Boot calibration remains unconditional; flash-tight devices can omit this

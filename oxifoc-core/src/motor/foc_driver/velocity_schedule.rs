@@ -1,4 +1,4 @@
-//! Cruise-loop scheduling in the driver's existing monotonic microsecond clock.
+//! Cruise-loop service slots with monotonic microsecond timing and feedback.
 //!
 //! Only the requested q current is held. Every native current-loop step still
 //! applies its current limits, fresh torque grant, trust gate and hard trip.
@@ -13,8 +13,77 @@ const PERIOD_US: u64 = 1_000;
 // handling remains separate.
 const MAX_GAP_US: u64 = PERIOD_US * 4;
 
+#[cfg(feature = "service-slots")]
+pub(super) struct ServiceSlots {
+    pub slot: u8,
+    frame: u8,
+    length: u8,
+}
+
+#[cfg(feature = "service-slots")]
+impl ServiceSlots {
+    pub fn new(dt: f32) -> Self {
+        let length = ((0.001 / dt + 0.5) as u8).max(2);
+        Self { slot: length - 1, frame: u8::MAX, length }
+    }
+
+    pub fn advance(&mut self) {
+        self.slot += 1;
+        if self.slot >= self.length {
+            self.slot = 0;
+            self.frame = self.frame.wrapping_add(1);
+        }
+    }
+
+    #[cfg(any(test, feature = "runtime"))]
+    pub fn deadman_due(&self) -> bool {
+        self.next_slot() == self.length / 4
+    }
+
+    #[cfg(any(test, feature = "runtime"))]
+    pub fn derating_due(&self) -> bool {
+        self.next_slot() == self.length / 2 && self.frame & 7 == 0
+    }
+
+    #[cfg(any(test, feature = "runtime"))]
+    fn next_slot(&self) -> u8 {
+        if self.slot + 1 >= self.length { 0 } else { self.slot + 1 }
+    }
+
+    #[cfg(feature = "pi-bounds-ahead")]
+    pub fn length(&self) -> u8 {
+        self.length
+    }
+}
+
+/// Two native cycles at 15 kHz plus entry jitter. Older bounds are recomputed.
+#[cfg(feature = "pi-bounds-ahead")]
+const MAX_AUTHORITY_AGE_US: u64 = 250;
+
+/// Anti-windup bounds sampled one slot before the outer update. The actual
+/// current grant remains fresh in every native cycle.
+#[cfg(feature = "pi-bounds-ahead")]
+#[derive(Clone, Copy)]
+struct PreparedAuthority {
+    iq_min: f32,
+    iq_max: f32,
+    /// Speed direction and bus-modulation class: both select which probe
+    /// is the braking or regenerating one, so the bounds jump when they change.
+    direction: i8,
+    bus_class: i8,
+    prepared_us: u64,
+}
+
+#[cfg(feature = "pi-bounds-ahead")]
+fn direction(omega: f32) -> i8 {
+    i8::from(omega > 0.0) - i8::from(omega < 0.0)
+}
+
 pub(super) enum VelocityTick {
     Hold,
+    /// Compute the authority bounds for the following outer update.
+    #[cfg(feature = "pi-bounds-ahead")]
+    Prepare,
     Update { dt: f32 },
     Reanchor,
 }
@@ -32,11 +101,21 @@ impl OuterClock {
         self.updated = None;
     }
 
+    /// Elapsed-time backstop for the slot frame: one period after the last
+    /// update or reanchor, surviving invalidation like the microsecond grid.
+    /// A regular frame reaches it only in the scheduled slot, so it selects
+    /// another slot only after missed native cycles.
+    #[cfg(feature = "service-slots")]
+    fn overdue(&self, now_us: u64) -> bool {
+        now_us.wrapping_sub(self.deadline) < 1 << 63
+    }
+
     #[cfg(test)]
     fn advance(&mut self, now_us: u64) -> (u32, VelocityTick) {
         self.advance_with_defer(now_us, false)
     }
 
+    #[cfg(any(test, not(feature = "service-slots")))]
     fn advance_with_defer(&mut self, now_us: u64, defer: bool) -> (u32, VelocityTick) {
         let Some(previous) = self.previous.replace(now_us) else {
             if defer {
@@ -142,12 +221,125 @@ pub(super) struct VelocitySchedule {
     epoch: Option<MotionReferenceEpoch>,
     requested_iq: f32,
     defer_requested: bool,
+    #[cfg(feature = "pi-bounds-ahead")]
+    authority: Option<PreparedAuthority>,
+    /// The prepare slot carried fresh drive activity; both stages move by one cycle.
+    #[cfg(feature = "pi-bounds-ahead")]
+    prepare_skipped: bool,
 }
 
 impl VelocitySchedule {
+    #[cfg(all(feature = "service-slots", any(test, not(feature = "pi-bounds-ahead"))))]
+    pub fn begin_slotted_cycle(&mut self, now_us: u64, due: bool) -> VelocityTick {
+        let elapsed = self.clock.previous.replace(now_us)
+            .map_or(0, |previous| now_us.wrapping_sub(previous));
+        if elapsed > MAX_GAP_US {
+            self.clock.postponed = false;
+            self.clock.deadline = now_us.wrapping_add(PERIOD_US);
+            self.invalidate();
+            return VelocityTick::Reanchor;
+        }
+        self.feedback.advance(elapsed as u32);
+        if !due && !self.clock.postponed && !self.clock.overdue(now_us) {
+            return VelocityTick::Hold;
+        }
+        if self.defer_requested && !self.clock.postponed {
+            self.clock.postponed = true;
+            return VelocityTick::Hold;
+        }
+        self.clock.postponed = false;
+        self.clock.deadline = now_us.wrapping_add(PERIOD_US);
+        let dt = self.clock.updated.replace(now_us)
+            .map_or(0.0, |last| u64_to_f32(now_us.wrapping_sub(last)) * 1e-6);
+        VelocityTick::Update { dt }
+    }
+
+    /// Slot frame with the authority bounds one native cycle ahead of the PI.
+    /// Fresh drive activity never shares a cycle with either stage, and the
+    /// update is never later than slot 1.
+    #[cfg(feature = "pi-bounds-ahead")]
+    pub fn begin_pipelined_cycle(&mut self, now_us: u64, slot: u8, length: u8) -> VelocityTick {
+        let elapsed = self.clock.previous.replace(now_us)
+            .map_or(0, |previous| now_us.wrapping_sub(previous));
+        if elapsed > MAX_GAP_US {
+            self.clock.postponed = false;
+            self.clock.deadline = now_us.wrapping_add(PERIOD_US);
+            self.invalidate();
+            return VelocityTick::Reanchor;
+        }
+        self.feedback.advance(elapsed as u32);
+        if !self.clock.postponed {
+            let overdue = slot != 0 && self.clock.overdue(now_us);
+            if slot != 0 && !overdue {
+                if slot + 1 == length {
+                    self.prepare_skipped = self.defer_requested;
+                    if !self.defer_requested {
+                        return VelocityTick::Prepare;
+                    }
+                }
+                return VelocityTick::Hold;
+            }
+            let prepare_skipped = core::mem::take(&mut self.prepare_skipped);
+            // Scheduled or overdue: fresh drive activity still waits one cycle.
+            if self.defer_requested {
+                self.clock.postponed = true;
+                return VelocityTick::Hold;
+            }
+            if !overdue && prepare_skipped && self.authority.is_none() {
+                // The prepare slot carried a command. Shift both stages by one
+                // cycle. Invalidated or cold bounds use the inline fallback.
+                self.clock.postponed = true;
+                return VelocityTick::Prepare;
+            }
+        }
+        self.clock.postponed = false;
+        self.clock.deadline = now_us.wrapping_add(PERIOD_US);
+        let dt = self.clock.updated.replace(now_us)
+            .map_or(0.0, |last| u64_to_f32(now_us.wrapping_sub(last)) * 1e-6);
+        VelocityTick::Update { dt }
+    }
+
+    #[cfg(feature = "pi-bounds-ahead")]
+    pub fn store_authority(
+        &mut self,
+        iq_min: f32,
+        iq_max: f32,
+        omega: f32,
+        bus_class: i8,
+        now_us: u64,
+    ) {
+        self.authority = Some(PreparedAuthority {
+            iq_min,
+            iq_max,
+            direction: direction(omega),
+            bus_class,
+            prepared_us: now_us,
+        });
+    }
+
+    /// Bounds are single-use. A changed speed direction or bus-modulation
+    /// class moves them discontinuously, so those bounds are recomputed.
+    #[cfg(feature = "pi-bounds-ahead")]
+    pub fn take_authority(&mut self, omega: f32, bus_class: i8, now_us: u64) -> Option<(f32, f32)> {
+        let prepared = self.authority.take()?;
+        (now_us.wrapping_sub(prepared.prepared_us) <= MAX_AUTHORITY_AGE_US
+            && prepared.direction == direction(omega)
+            && prepared.bus_class == bus_class)
+        .then_some((prepared.iq_min, prepared.iq_max))
+    }
+
+    #[cfg(feature = "pi-bounds-ahead")]
+    pub fn drop_authority(&mut self) {
+        self.authority = None;
+    }
+
     pub fn invalidate(&mut self) {
         self.epoch = None;
         self.requested_iq = 0.0;
+        #[cfg(feature = "pi-bounds-ahead")]
+        {
+            self.authority = None;
+        }
         self.feedback = ActuatorFeedback::default();
         // Do not move a live deadline: command/config floods cannot turn the
         // bounded outer controller back into a native-rate PI.
@@ -163,6 +355,7 @@ impl VelocitySchedule {
         self.epoch == Some(epoch)
     }
 
+    #[cfg(any(test, not(feature = "service-slots")))]
     pub fn begin_cycle(&mut self, now_us: u64) -> VelocityTick {
         let (elapsed, tick) = self.clock.advance_with_defer(now_us, self.defer_requested);
         if matches!(tick, VelocityTick::Reanchor) {
@@ -175,6 +368,10 @@ impl VelocitySchedule {
 
     pub fn clear_request(&mut self) {
         self.requested_iq = 0.0;
+        #[cfg(feature = "pi-bounds-ahead")]
+        {
+            self.authority = None;
+        }
     }
 
     pub fn defer_for_cycle(&mut self, requested: bool) {
@@ -206,3 +403,166 @@ impl VelocitySchedule {
 #[cfg(test)]
 #[path = "velocity_schedule_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "service-slots"))]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn maintenance_and_flood_deferred_pi_have_distinct_slots_across_wraps() {
+        let mut now = 0;
+        for hz in [15_000_u32, 20_000, 15_000] {
+            let mut slots = ServiceSlots::new(1.0 / hz as f32);
+            let mut schedule = VelocitySchedule::default();
+            let mut pi_count = 0;
+            for cycle in 0..1_000_000_u64 {
+                let deadman = slots.deadman_due();
+                let derating = slots.derating_due();
+                slots.advance();
+                now += 1;
+                let time_us = now * 1_000_000 / u64::from(hz);
+                schedule.defer_for_cycle(true);
+                let tick = schedule.begin_slotted_cycle(time_us, slots.slot == 0);
+                if matches!(tick, VelocityTick::Update { .. }) {
+                    assert_eq!(slots.slot, 1);
+                    assert!(!deadman && !derating);
+                    pi_count += 1;
+                }
+                assert!(!(deadman && derating));
+                assert!(slots.slot < slots.length, "cycle {cycle}");
+            }
+            assert!(pi_count >= 1_000_000 / u32::from(slots.length) - 1);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "pi-bounds-ahead"))]
+mod pipeline_tests {
+    use super::*;
+
+    /// Command patterns: none, every cycle, only the prepare slot, only slot 0,
+    /// both of them, and a pseudo-random 0.1 % stream.
+    #[test]
+    fn stages_never_share_a_cycle_with_commands_or_maintenance_and_updates_stay_bounded() {
+        for hz in [15_000_u32, 20_000] {
+            for pattern in 0..6 {
+                let mut slots = ServiceSlots::new(1.0 / hz as f32);
+                let mut schedule = VelocitySchedule::default();
+                let length = slots.length();
+                let (mut updates, mut fallbacks, mut prepares) = (0_u32, 0_u32, 0_u32);
+                let mut random = 0x1234_5678_u32;
+                let mut last_update = None;
+                for cycle in 0..400_000_u64 {
+                    let maintenance = slots.deadman_due() || slots.derating_due();
+                    slots.advance();
+                    let slot = slots.slot;
+                    random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let command = match pattern {
+                        0 => false,
+                        1 => true,
+                        2 => slot + 1 == length,
+                        3 => slot == 0,
+                        4 => slot == 0 || slot + 1 == length,
+                        _ => random >> 22 == 0,
+                    };
+                    if command {
+                        schedule.drop_authority();
+                    }
+                    schedule.defer_for_cycle(command);
+                    let now = (cycle + 1) * 1_000_000 / u64::from(hz);
+                    match schedule.begin_pipelined_cycle(now, slot, length) {
+                        VelocityTick::Hold => {}
+                        VelocityTick::Prepare => {
+                            assert!(!command && !maintenance, "pattern {pattern} cycle {cycle}");
+                            assert!(slot + 1 == length || slot == 0);
+                            schedule.store_authority(-1.0, 1.0, 1.0, 1, now);
+                            prepares += 1;
+                        }
+                        VelocityTick::Update { .. } => {
+                            assert!(slot <= 1 && !maintenance, "pattern {pattern} slot {slot}");
+                            // Only a second consecutive command may accompany the bounded update.
+                            assert!(!command || slot == 1);
+                            if schedule.take_authority(1.0, 1, now).is_none() {
+                                fallbacks += 1;
+                            }
+                            if let Some(previous) = last_update {
+                                let gap = cycle - previous;
+                                assert!((u64::from(length) - 1..=u64::from(length) + 1).contains(&gap));
+                            }
+                            last_update = Some(cycle);
+                            updates += 1;
+                        }
+                        VelocityTick::Reanchor => panic!("regular cadence"),
+                    }
+                }
+                assert!(updates >= 400_000 / u32::from(length) - 1);
+                match pattern {
+                    // Any command in slot 0 drops the prepared bounds: the
+                    // deferred update in slot 1 recomputes them inline.
+                    1 | 3 | 4 => assert_eq!(fallbacks, updates, "pattern {pattern}"),
+                    // The first frame starts cold.
+                    0 | 2 => assert!(fallbacks <= 1, "pattern {pattern}"),
+                    _ => assert!(fallbacks * 100 < updates, "{fallbacks} of {updates}"),
+                }
+                assert!(prepares + fallbacks >= updates);
+            }
+        }
+    }
+
+    #[test]
+    fn cold_or_overdue_updates_still_wait_one_cycle_for_fresh_drive_activity() {
+        for first_slot in [0_u8, 7, 19] {
+            let mut schedule = VelocitySchedule::default();
+            schedule.defer_for_cycle(true);
+            assert!(matches!(
+                schedule.begin_pipelined_cycle(1_000, first_slot, 20),
+                VelocityTick::Hold
+            ));
+            schedule.defer_for_cycle(true);
+            assert!(matches!(
+                schedule.begin_pipelined_cycle(1_050, (first_slot + 1) % 20, 20),
+                VelocityTick::Update { .. }
+            ));
+        }
+        // After three missed native cycles the backstop updates in slot 3.
+        let mut schedule = VelocitySchedule::default();
+        schedule.defer_for_cycle(false);
+        assert!(matches!(schedule.begin_pipelined_cycle(0, 0, 20), VelocityTick::Update { .. }));
+        for slot in 1..3 {
+            assert!(matches!(
+                schedule.begin_pipelined_cycle(u64::from(slot) * 50, slot, 20),
+                VelocityTick::Hold
+            ));
+        }
+        assert!(matches!(schedule.begin_pipelined_cycle(1_000, 3, 20), VelocityTick::Update { .. }));
+    }
+
+    #[test]
+    fn prepared_bounds_are_single_use_and_expire_by_age_direction_or_invalidation() {
+        let mut schedule = VelocitySchedule::default();
+        schedule.store_authority(-2.0, 3.0, 10.0, 1, 1_000);
+        assert_eq!(schedule.take_authority(11.0, 1, 1_100), Some((-2.0, 3.0)));
+        assert_eq!(schedule.take_authority(11.0, 1, 1_100), None);
+        schedule.store_authority(-2.0, 3.0, 10.0, 1, 1_000);
+        assert_eq!(schedule.take_authority(10.0, 1, 1_000 + MAX_AUTHORITY_AGE_US + 1), None);
+        for (prepared, used) in [(10.0, -10.0), (10.0, 0.0), (0.0, 1.0), (-1.0, 1.0)] {
+            schedule.store_authority(-2.0, 3.0, prepared, 1, 1_000);
+            assert_eq!(schedule.take_authority(used, 1, 1_050), None);
+        }
+        for (prepared, used) in [(1, -1), (1, 0), (0, 1), (-1, 1)] {
+            schedule.store_authority(-2.0, 3.0, 10.0, prepared, 1_000);
+            assert_eq!(schedule.take_authority(10.0, used, 1_050), None);
+        }
+        schedule.store_authority(-2.0, 3.0, 0.0, 0, 1_000);
+        assert_eq!(schedule.take_authority(-0.0, 0, 1_050), Some((-2.0, 3.0)));
+        for clear in 0..3 {
+            schedule.store_authority(-2.0, 3.0, 10.0, 1, 1_000);
+            match clear {
+                0 => schedule.invalidate(),
+                1 => schedule.clear_request(),
+                _ => schedule.drop_authority(),
+            }
+            assert_eq!(schedule.take_authority(10.0, 1, 1_050), None);
+        }
+    }
+}

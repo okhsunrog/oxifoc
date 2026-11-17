@@ -77,6 +77,8 @@ impl Recorder {
     ) {
         let control = FOC_DISTRIBUTION_CONTROL.load(Ordering::Relaxed);
         if control == 1 && !active {
+            #[cfg(feature = "bench-foc-work")]
+            super::cycle_work::arm();
             *self = Self::new();
             self.header[0] = 1; // schema
             self.header[1] = crate::config::CPU_HZ;
@@ -120,6 +122,8 @@ impl Recorder {
             self.header[11] = seq;
         }
         self.header[7] += u32::from(elapsed > budget);
+        #[cfg(feature = "bench-foc-work")]
+        super::cycle_work::observe(seq, elapsed, budget);
         if let Some((previous, old_generation)) = self.previous {
             if old_generation == generation {
                 let gap = start.wrapping_sub(previous);

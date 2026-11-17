@@ -3,15 +3,15 @@ SECTIONS
 {
   .foc_hot : ALIGN(16)
   {
-    . = ALIGN(16) + 4;
+    . = ALIGN(16) + 8;
     __foc_cycle_start = .;
     KEEP(*(.text.foc_cycle));
     __foc_cycle_end = .;
-    . = ALIGN(16) + 12;
+    . = ALIGN(16) + 4;
     __foc_phase_start = .;
     KEEP(*(.text.foc_phase));
     __foc_phase_end = .;
-    . = ALIGN(16) + 4;
+    . = ALIGN(16);
     __foc_grant_start = .;
     KEEP(*(.text.foc_grant));
     __foc_grant_end = .;

@@ -66,7 +66,8 @@ pub struct PreparedBoardConfig {
 
 /// Voltage thresholds and excursion constants are replaced as one value.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(not(any(feature = "storage", feature = "runtime")), allow(dead_code))]
+// Host storage tools prepare these values without running the protection loop.
+#[cfg_attr(not(feature = "runtime"), allow(dead_code))]
 pub struct PreparedVoltageLimits {
     min_mv: u32,
     #[cfg(feature = "storage")]
@@ -124,6 +125,7 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
         Ok(())
     }
 
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     pub(crate) fn reset_voltage_limits(&mut self) {
         self.protection.voltage = None;
     }
@@ -176,6 +178,8 @@ impl PreparedBoardConfig {
 
 /// Slow-sensor fault detection and derating, independent of PWM and modes.
 pub(super) struct ProtectionMonitor {
+    #[cfg(feature = "service-slots")]
+    pub(super) service_slots: super::velocity_schedule::ServiceSlots,
     board_voltage: Option<PreparedVoltageLimits>,
     voltage: Option<PreparedVoltageLimits>,
     config: DeratingConfig,
@@ -217,6 +221,8 @@ impl ProtectionMonitor {
 
     pub(super) fn new(dt: f32) -> Self {
         Self {
+            #[cfg(feature = "service-slots")]
+            service_slots: super::velocity_schedule::ServiceSlots::new(dt),
             board_voltage: None,
             voltage: None,
             config: DeratingConfig::default(),
@@ -242,6 +248,8 @@ impl ProtectionMonitor {
     }
 
     pub(super) fn set_control_period(&mut self, dt: f32) {
+        #[cfg(feature = "service-slots")]
+        { self.service_slots = super::velocity_schedule::ServiceSlots::new(dt); }
         self.voltage_decay = 1.0 - (dt / 0.005).min(1.0);
     }
 
@@ -365,7 +373,13 @@ impl ProtectionMonitor {
 
         // --- Graduated derating (decimated) ---
         self.protection_tick = self.protection_tick.wrapping_add(1);
-        if self.protection_tick.is_multiple_of(256) {
+        #[cfg(feature = "service-slots")]
+        let refresh_derating = self.service_slots.derating_due();
+        #[cfg(not(feature = "service-slots"))]
+        let refresh_derating = self.protection_tick.is_multiple_of(256);
+        if refresh_derating {
+            #[cfg(feature = "isr-work-events")]
+            crate::isr_work::mark(crate::isr_work::DERATING);
             let omega = sample.velocity;
             let temperature = self.config.thermal_scales(fet_c, motor_c);
             let bus_voltage = self.config.bus_voltage_scales(sample.vbus_v);
@@ -400,13 +414,19 @@ where
     Phase: PhaseProvider,
     S: SinCos,
 {
-    /// Poll command expiry every 16 native protection updates: about 938 Hz
-    /// at 15 kHz or 1250 Hz at 20 kHz. This adds at most one such interval
-    /// while the ISR runs. Link loss, command stamps and Stop stay native.
+    /// Poll command expiry once per service frame, approximately 1 kHz.
+    /// The legacy schedule uses 16 native protection updates per poll.
+    /// Detection takes up to one polling interval while the ISR runs.
+    /// Link loss, command stamps and Stop stay native-rate.
     #[cfg(feature = "runtime")]
     #[inline]
     pub fn deadman_check_due(&self) -> bool {
-        self.protection.protection_tick & 15 == 0
+        #[cfg(feature = "service-slots")]
+        {
+            self.protection.service_slots.deadman_due()
+        }
+        #[cfg(not(feature = "service-slots"))]
+        { self.protection.protection_tick & 15 == 0 }
     }
 
     /// Apply derating configuration (boot / live config write).
@@ -503,6 +523,8 @@ where
     /// Store freshly computed derating scales (protection update).
     pub fn set_derating_scales(&mut self, scales: DeratingScales) {
         self.protection.set_scales(scales);
+        #[cfg(feature = "pi-bounds-ahead")]
+        self.velocity_schedule.drop_authority();
     }
 
     /// Shared protection update, called by `run_foc_cycle` every cycle
@@ -750,7 +772,7 @@ where
         )
     }
 
-    #[cfg(feature = "bench-iq-authority")]
+    #[cfg(feature = "iq-authority")]
     pub(super) fn grant_iq_authority(
         &self,
         iq_target: f32,
@@ -879,6 +901,20 @@ where
         match self.bus_iq_bounds() {
             Some(bounds) => bounds.clamp(iq_target),
             None => iq_target,
+        }
+    }
+
+    /// Sign of the filtered q modulation outside the bus-bound dead band.
+    /// The bus bounds map to the opposite iq direction when it changes.
+    #[cfg(feature = "pi-bounds-ahead")]
+    pub(super) fn bus_modulation_class(&self) -> i8 {
+        let mod_q = self.bus_mod_q_filt;
+        if mod_q.abs() < 1e-3 {
+            0
+        } else if mod_q > 0.0 {
+            1
+        } else {
+            -1
         }
     }
 
@@ -1187,6 +1223,10 @@ mod tests {
                 for motor in readings {
                     let mut monitor = ProtectionMonitor::new(0.00005);
                     let registry = FaultRegistry::<StandardFault>::new();
+                    #[cfg(feature = "service-slots")]
+                    let first_refresh = 11;
+                    #[cfg(not(feature = "service-slots"))]
+                    let first_refresh = 256;
                     for cycle in 1..=256 {
                         monitor.update(
                             &registry,
@@ -1199,9 +1239,13 @@ mod tests {
                                 motor_temp_c_x10: motor,
                             },
                         );
-                        if cycle < 256 {
+                        if cycle < first_refresh {
                             assert_eq!(monitor.scales, DeratingScales::IDENTITY);
                         }
+                        // Protection precedes the driver step, which advances
+                        // the shared service frame once per native cycle.
+                        #[cfg(feature = "service-slots")]
+                        monitor.service_slots.advance();
                     }
                     let fet_c = fet.map(|t| f32::from(t) / 10.0);
                     let motor_c = motor.map(|t| f32::from(t) / 10.0);
@@ -1213,6 +1257,48 @@ mod tests {
                         DeratingConfig::default().compute(fet_c, motor_c, 24.0)
                     );
                 }
+            }
+        }
+    }
+
+    #[cfg(feature = "service-slots")]
+    #[test]
+    fn slotted_derating_refreshes_every_eight_frames_at_both_pwm_rates() {
+        let prepared = PreparedBoardConfig::new(board(60_000, 8_000));
+        for hz in [15_000_u32, 20_000] {
+            let frame_length = hz / 1_000;
+            let dt = 1.0 / hz as f32;
+            let mut monitor = ProtectionMonitor::new(dt);
+            let registry = FaultRegistry::<StandardFault>::new();
+            let retained = DeratingScales {
+                drive: 0.123,
+                brake: 0.234,
+                regen: 0.345,
+            };
+            let refreshed = DeratingConfig::default().compute(Some(100.0), None, 24.0);
+            assert_ne!(retained, refreshed);
+            // Include the eight-bit frame-counter wrap.
+            for cycle in 0..frame_length * 264 {
+                monitor.scales = retained;
+                monitor.update(
+                    &registry,
+                    &prepared,
+                    ProtectionSample {
+                        dt,
+                        vbus_v: 24.0,
+                        velocity: 0.0,
+                        fet_temp_c_x10: Some(1000),
+                        motor_temp_c_x10: None,
+                    },
+                );
+                let due = cycle % frame_length == frame_length / 2
+                    && (cycle / frame_length).is_multiple_of(8);
+                assert_eq!(
+                    monitor.scales,
+                    if due { refreshed } else { retained },
+                    "rate={hz}, cycle={cycle}"
+                );
+                monitor.service_slots.advance();
             }
         }
     }

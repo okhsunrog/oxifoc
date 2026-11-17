@@ -14,6 +14,11 @@ core_embassy_features := core_test_features + ",embassy"
 bench-probe-read *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example probe_read_bench -- "$@"
 
+# Active-drive-qualified PCSR records; attach/detach with the motor stopped.
+[positional-arguments]
+bench-probe-pc *ARGS:
+    cargo run --release --locked -p oxifoc-host-lib --example pc_sampler -- "$@"
+
 # Offline Hall estimation from a stopped capture; no motor or observer simulation.
 [positional-arguments]
 replay-hall *ARGS:
@@ -623,16 +628,16 @@ bench-mk5-foc-pc output maneuver="maneuvers/foc-profile-velocity40.json":
     wait "$profiler" || status=$?
     exit "$status"
 
-bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,velocity40,velocity120" logging="timing" velocity_debug="off":
+bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,velocity40,velocity120" logging="quiet" velocity_debug="off":
     uv run --no-project python -B scripts/bench_foc_profile.py {{quote(output)}} --detail {{quote(detail)}} --repeats {{repeats}} --cases {{quote(cases)}} --logging {{quote(logging)}} --recovery-elf {{quote(recovery)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}}
 
 # Current production transport and model; diagnostics differ only by section marks.
-build-mk5-foc-profile detail="minimal" logging="timing":
-    @test {{quote(detail)}} = minimal -o {{quote(detail)}} = sections -o {{quote(detail)}} = sections-ram -o {{quote(detail)}} = phase-ram -o {{quote(detail)}} = deadline
+build-mk5-foc-profile detail="minimal" logging="quiet":
+    @test {{quote(detail)}} = minimal -o {{quote(detail)}} = work -o {{quote(detail)}} = outliers -o {{quote(detail)}} = sections -o {{quote(detail)}} = sections-ram -o {{quote(detail)}} = phase-ram -o {{quote(detail)}} = deadline
     @test {{quote(logging)}} = timing -o {{quote(logging)}} = quiet
-    cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "sections" { ",isr-profiling" } else if detail == "sections-ram" { ",bench-foc-sections-ram,isr-profiling" } else if detail == "phase-ram" { ",bench-foc-phase-ram" } else if detail == "deadline" { ",bench-foc-deadline" } else { "" })}}
+    cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_release_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "work" { ",bench-foc-work" } else if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "sections" { ",isr-profiling" } else if detail == "sections-ram" { ",bench-foc-sections-ram,isr-profiling" } else if detail == "phase-ram" { ",bench-foc-phase-ram" } else if detail == "deadline" { ",bench-foc-deadline" } else { "" })}}
 
-flash-mk5-foc-profile detail="minimal" logging="timing": (build-mk5-foc-profile detail logging)
+flash-mk5-foc-profile detail="minimal" logging="quiet": (build-mk5-foc-profile detail logging)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
 
