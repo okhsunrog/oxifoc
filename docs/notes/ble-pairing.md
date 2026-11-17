@@ -7,9 +7,10 @@
 > screen. Verified on hardware: laptop pairing (Numeric Comparison), remote
 > pairing (passkey typed in the CLI), bonds across resets of both sides,
 > bonded reconnects, unbonded hosts rejected, bond removal on the bridge
-> followed by automatic re-pairing on the remote. Not yet: the
-> stopped-controller check for opening a window, the controller filter accept
-> list, wrong-code and timeout tests, a pairing button on the remote, GUI.
+> followed by automatic re-pairing on the remote, and the controller filter
+> accept list (an unbonded laptop cannot even connect outside a window).
+> Not yet: the stopped-controller check for opening a window, wrong-code and
+> timeout tests, a pairing button on the remote, GUI.
 
 The C5 bridge is the BLE peripheral and the trust anchor. The remote, phones
 and laptops are centrals. The design targets accidental pairing and
@@ -204,6 +205,13 @@ role (Remote or Host), name (≤ 24 bytes), added-by id.
   Measured time from connection to trusted: remote ≈80 ms, laptop
   330–490 ms. A passive unbonded central was dropped after 3 s; a laptop that
   lost its bond tried to pair and was dropped after 0.45 s.
+- **Filter accept list.** Outside a window the bridge advertises with
+  `FilterConn` and the bonded identity addresses in the list; the C5
+  resolving list (8 entries) maps private addresses to identities, so the
+  remote's RPA passes. Opening or closing a window and adding or removing a
+  bond restart advertising with the new filter; the short idle gap also lets
+  trouble update the resolving list. A stranger's connection request is
+  ignored by the controller (BlueZ reports `le-connection-abort-by-local`).
 - **Lingering BlueZ link.** After pairing from `bluetoothctl`, BlueZ keeps the
   link; with the remote in the other slot the bridge stops advertising, and
   the CLI scan finds nothing until `bluetoothctl disconnect`.

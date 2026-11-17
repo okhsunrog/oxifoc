@@ -66,6 +66,8 @@ pub struct PairingState {
     pub link_bond: [AtomicU8; BLE_LINKS],
     /// Ask a link slot to disconnect (its bond was removed).
     pub kick: [Signal<CriticalSectionRawMutex, ()>; BLE_LINKS],
+    /// The advertising filter is out of date (window or bonds changed).
+    pub adv_changed: Signal<CriticalSectionRawMutex, ()>,
 }
 
 impl Default for PairingState {
@@ -83,6 +85,7 @@ impl PairingState {
             changed: Signal::new(),
             link_bond: [const { AtomicU8::new(NO_BOND) }; BLE_LINKS],
             kick: [const { Signal::new() }; BLE_LINKS],
+            adv_changed: Signal::new(),
         }
     }
 
@@ -120,6 +123,7 @@ impl PairingState {
             Ok(attempt)
         })?;
         self.changed.signal(());
+        self.adv_changed.signal(());
         Ok((attempt, u32::from(seconds) * 1000))
     }
 
@@ -135,6 +139,7 @@ impl PairingState {
         });
         if closed.is_some() {
             self.changed.signal(());
+            self.adv_changed.signal(());
         }
         closed
     }

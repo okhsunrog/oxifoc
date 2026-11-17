@@ -62,7 +62,10 @@ pub async fn run(
     // Maximum TX power: the board is powered and the link carries the throttle.
     let radio_config = esp_radio::ble::Config::default()
         .with_default_tx_power(esp_radio::ble::TxPower::P20)
-        .with_max_connections(CONNECTIONS_MAX as u16);
+        .with_max_connections(CONNECTIONS_MAX as u16)
+        // One filter accept list and resolving list entry per bond.
+        .with_whitelist_size(MAX_BONDS as u8)
+        .with_ll_resolv_list_size(MAX_BONDS as u16);
     let bt_transport = BleConnector::new(bt, radio_config).expect("BLE connector init");
     crate::csprng::seed();
     let ble_controller = ExternalController::<_, CONNECTIONS_MAX>::new(bt_transport);
@@ -165,7 +168,33 @@ async fn link_slot<'v, C: Controller>(
     loop {
         let accepted = {
             let mut peripheral = peripheral.lock().await;
-            advertise(&mut peripheral, server).await
+            loop {
+                PAIRING.adv_changed.reset();
+                // Outside a pairing window only bonded devices may connect: the
+                // controller ignores everyone else, so strangers take no slot.
+                let filtered = !PAIRING.is_open();
+                if filtered {
+                    let addresses: heapless::Vec<Address, MAX_BONDS> = ctx
+                        .bonds
+                        .lock()
+                        .await
+                        .iter()
+                        .map(|(_, bond)| bond.identity().addr)
+                        .collect();
+                    set_filter_accept_list(&mut peripheral, &addresses).await;
+                }
+                match select(
+                    advertise(&mut peripheral, server, filtered),
+                    PAIRING.adv_changed.wait(),
+                )
+                .await
+                {
+                    Either::First(result) => break result,
+                    // Dropping the advertiser stops advertising; the short idle
+                    // gap also lets trouble update the resolving list.
+                    Either::Second(()) => Timer::after_millis(20).await,
+                }
+            }
         };
         match accepted {
             Ok(conn) => {
@@ -190,6 +219,20 @@ async fn link_slot<'v, C: Controller>(
     }
 }
 
+/// The controller refuses list changes while advertising is still stopping.
+async fn set_filter_accept_list<C: Controller>(
+    peripheral: &mut Peripheral<'_, C, DefaultPacketPool>,
+    addresses: &[Address],
+) {
+    for _ in 0..10 {
+        if peripheral.set_filter_accept_list(addresses).await.is_ok() {
+            return;
+        }
+        Timer::after_millis(10).await;
+    }
+    warn!("[ble] filter accept list not updated");
+}
+
 fn stack_inactive(stack: &'static transport::Stack, ident: u8) {
     stack.manage_profile(|router| {
         let _ = router.set_interface_state(ident, InterfaceState::Inactive);
@@ -210,6 +253,7 @@ async fn ble_runner<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) 
 async fn advertise<'v, 's, C: Controller>(
     peripheral: &mut Peripheral<'v, C, DefaultPacketPool>,
     server: &'s NusServer<'v>,
+    filtered: bool,
 ) -> Result<GattConnection<'v, 's, DefaultPacketPool>, BleHostError<C::Error>> {
     // Flags + the 128-bit service UUID take 21 of the 31 advertising bytes, so
     // the name goes in the scan response. Hosts filter scans by the UUID.
@@ -232,6 +276,11 @@ async fn advertise<'v, 's, C: Controller>(
     let params = AdvertisementParameters {
         interval_min: Duration::from_millis(20),
         interval_max: Duration::from_millis(30),
+        filter_policy: if filtered {
+            AdvFilterPolicy::FilterConn
+        } else {
+            AdvFilterPolicy::Unfiltered
+        },
         ..Default::default()
     };
     let advertiser = peripheral
@@ -244,7 +293,7 @@ async fn advertise<'v, 's, C: Controller>(
         )
         .await?;
 
-    debug!("[ble] advertising...");
+    debug!("[ble] advertising, filtered: {}", filtered);
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
     Ok(conn)
 }
@@ -549,6 +598,7 @@ async fn pairing_complete<C: Controller, P: PacketPool>(
             if let Some(entry) = bonds.entry(id) {
                 publish(ctx.stack, &PairingEvent::Bonded(entry));
             }
+            PAIRING.adv_changed.signal(());
             close_window(ctx.stack, a, WindowCloseReason::Bonded);
             info!("[ble{}] bonded as {}", link, id);
             Some(id)
@@ -645,6 +695,7 @@ async fn handle_request<C: Controller>(
                     }
                 }
                 publish(ctx.stack, &PairingEvent::BondRemoved { id: *id });
+                PAIRING.adv_changed.signal(());
                 info!("[pairing] bond {} removed", id);
             })
         }
