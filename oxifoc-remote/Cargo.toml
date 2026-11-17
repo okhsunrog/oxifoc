@@ -57,6 +57,7 @@ embedded-graphics = "0.8.2"
 ssd1306 = { version = "0.10.0", default-features = false, features = ["async", "graphics"] }
 trouble-host = { version = "0.8.0", default-features = false, features = ["central", "gatt", "default-packet-pool-mtu-512", "defmt"], git = "https://github.com/embassy-rs/trouble.git", rev = "da44b34f67e1ee8efe977a5a975804b8b21962d4" }
 embassy-sync = "0.8"
+sequential-storage = { version = "8.0", features = ["postcard", "defmt"] }
 
 [dev-dependencies]
 embedded-test = { version = "0.7.3", features = ["defmt", "embassy-010", "external-executor"] }

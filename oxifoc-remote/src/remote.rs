@@ -34,6 +34,8 @@ mod analog;
 mod battery;
 #[path = "display.rs"]
 mod display;
+#[path = "storage.rs"]
+mod storage;
 
 const CONNECTIONS_MAX: usize = 1;
 const LFCLK_ACCURACY_PPM: u16 = 50;
@@ -120,8 +122,10 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
 
     // ========== BLE setup ==========
     static MPSL: StaticCell<MultiprotocolServiceLayer<'static>> = StaticCell::new();
+    // One timeslot session for the flash driver (settings storage).
+    static MPSL_SESSIONS: StaticCell<mpsl::SessionMem<1>> = StaticCell::new();
     let mpsl = MPSL.init(
-        MultiprotocolServiceLayer::new(
+        MultiprotocolServiceLayer::with_timeslots(
             mpsl::Peripherals::new(p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31),
             Irqs,
             // The nice!nano has a 32.768 kHz crystal. 50 ppm is a conservative
@@ -133,10 +137,15 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
                 accuracy_ppm: LFCLK_ACCURACY_PPM,
                 skip_wait_lfclk_started: false,
             },
+            MPSL_SESSIONS.init_with(mpsl::SessionMem::new),
         )
         .expect("MPSL init"),
     );
     spawner.spawn(mpsl_task(mpsl).expect("allocate MPSL task"));
+    let settings =
+        embassy_sync::mutex::Mutex::<embassy_sync::blocking_mutex::raw::NoopRawMutex, _>::new(
+            storage::Settings::new(mpsl::Flash::take(mpsl, p.NVMC)),
+        );
 
     static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
     let rng = RNG.init(rng::Rng::new(p.RNG, Irqs));
@@ -216,6 +225,9 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
         async {
             let mut backoff = Duration::from_ticks(0);
             let mut failures = 0u32;
+            // Handles from the last discovery survive power cycles, so even the
+            // first connection after power-on skips characteristic discovery.
+            let gatt_cache = core::cell::Cell::new(settings.lock().await.bridge_handles().await);
             loop {
                 if backoff.as_ticks() > 0 {
                     Timer::after(backoff).await;
@@ -265,7 +277,7 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
                         let active = core::cell::Cell::new(false);
                         let _ = select3(
                             client.task(),
-                            nus_session(stack, &client, &conn, &active),
+                            nus_session(stack, &client, &gatt_cache, &settings, &active),
                             connection_events(&ble_stack, &conn),
                         )
                         .await;
@@ -337,62 +349,150 @@ async fn connection_events<C: Controller>(
     }
 }
 
-/// NUS session: discover service, subscribe, run bidirectional loop.
+/// Attribute handles of the bridge's OxiFOC service, kept across reconnects.
+///
+/// The bridge's attribute table is fixed per firmware build, so a reconnect
+/// skips characteristic and descriptor discovery. The service range is
+/// re-checked and the CCCD write is acknowledged; either failing drops the
+/// cache and falls back to full discovery.
+#[derive(Clone, Copy, PartialEq, Eq, defmt::Format, serde::Serialize, serde::Deserialize)]
+pub struct GattHandles {
+    service_start: u16,
+    service_end: u16,
+    rx: u16,
+    tx: u16,
+    tx_cccd: u16,
+}
+
+const CCCD_NOTIFY: [u8; 2] = [0x01, 0x00];
+
+type Settings<'d> = embassy_sync::mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::NoopRawMutex,
+    storage::Settings<'d>,
+>;
+
+/// Find the service range: one Find By Type Value exchange (plus the
+/// terminating one).
+async fn service_range<C: Controller>(
+    client: &GattClient<'_, C, DefaultPacketPool, 10>,
+) -> Option<(u16, u16)> {
+    let uuid = Uuid::from(oxifoc_core::ble::SERVICE_UUID);
+    match client.services_by_uuid(&uuid).await {
+        Ok(services) => services.first().map(|service| {
+            let range = service.handle_range();
+            (*range.start(), *range.end())
+        }),
+        Err(_e) => {
+            error!("[nus] service discovery failed");
+            None
+        }
+    }
+}
+
+/// Full discovery: service, both characteristics and the TX CCCD.
 #[allow(
     clippy::large_stack_frames,
-    reason = "async BLE NUS future holds Notification<512> + DefaultPacketPool \
-    buffers; it lives in embassy task storage, not the call stack."
+    reason = "discovery futures hold GATT response buffers; it lives in embassy task storage, not the call stack."
 )]
-async fn nus_session<C: Controller>(
-    stack: &'static transport::Stack,
+async fn discover_handles<C: Controller>(
     client: &GattClient<'_, C, DefaultPacketPool, 10>,
-    _conn: &Connection<'_, DefaultPacketPool>,
-    active: &core::cell::Cell<bool>,
-) {
-    let nus_uuid = Uuid::from(oxifoc_core::ble::SERVICE_UUID);
-    let rx_uuid = Uuid::from(oxifoc_core::ble::RX_UUID);
-    let tx_uuid = Uuid::from(oxifoc_core::ble::TX_UUID);
-
-    // Discover the OxiFOC transport service
-    let services = match client.services_by_uuid(&nus_uuid).await {
+) -> Option<GattHandles> {
+    let uuid = Uuid::from(oxifoc_core::ble::SERVICE_UUID);
+    let services = match client.services_by_uuid(&uuid).await {
         Ok(s) => s,
         Err(_e) => {
             error!("[nus] service discovery failed");
-            return;
+            return None;
         }
     };
     let Some(service) = services.first() else {
         error!("[nus] OxiFOC service not found");
+        return None;
+    };
+    let rx_uuid = Uuid::from(oxifoc_core::ble::RX_UUID);
+    let tx_uuid = Uuid::from(oxifoc_core::ble::TX_UUID);
+    let Ok(rx) = client
+        .characteristic_by_uuid::<[u8]>(service, &rx_uuid)
+        .await
+    else {
+        error!("[nus] RX characteristic not found");
+        return None;
+    };
+    let Ok(tx) = client
+        .characteristic_by_uuid::<[u8]>(service, &tx_uuid)
+        .await
+    else {
+        error!("[nus] TX characteristic not found");
+        return None;
+    };
+    let Some(tx_cccd) = tx.cccd_handle else {
+        error!("[nus] TX characteristic has no CCCD");
+        return None;
+    };
+    let range = service.handle_range();
+    Some(GattHandles {
+        service_start: *range.start(),
+        service_end: *range.end(),
+        rx: rx.handle,
+        tx: tx.handle,
+        tx_cccd,
+    })
+}
+
+/// Resolve the handles, from the cache when it still matches the bridge.
+async fn resolve_handles<C: Controller>(
+    client: &GattClient<'_, C, DefaultPacketPool, 10>,
+    cache: &core::cell::Cell<Option<GattHandles>>,
+    settings: &Settings<'_>,
+) -> Option<GattHandles> {
+    if let Some(cached) = cache.get() {
+        let range = service_range(client).await;
+        if range == Some((cached.service_start, cached.service_end))
+            && client
+                .write_handle(cached.tx_cccd, &CCCD_NOTIFY)
+                .await
+                .is_ok()
+        {
+            info!("[nus] using cached handles");
+            return Some(cached);
+        }
+        warn!("[nus] cached handles stale, rediscovering");
+        cache.set(None);
+    }
+    let handles = discover_handles(client).await?;
+    if client
+        .write_handle(handles.tx_cccd, &CCCD_NOTIFY)
+        .await
+        .is_err()
+    {
+        error!("[nus] subscribe failed");
+        return None;
+    }
+    info!("[nus] service discovered: {}", handles);
+    cache.set(Some(handles));
+    settings.lock().await.set_bridge_handles(&handles).await;
+    Some(handles)
+}
+
+/// NUS session: resolve handles, enable notifications, run bidirectional loop.
+#[allow(
+    clippy::large_stack_frames,
+    reason = "the session future holds Notification<512> and packet buffers; it lives in embassy task storage, not the call stack."
+)]
+async fn nus_session<C: Controller>(
+    stack: &'static transport::Stack,
+    client: &GattClient<'_, C, DefaultPacketPool, 10>,
+    cache: &core::cell::Cell<Option<GattHandles>>,
+    settings: &Settings<'_>,
+    active: &core::cell::Cell<bool>,
+) {
+    // Listen before enabling notifications so none is missed.
+    let Ok(mut listener) = client.listen_all() else {
+        error!("[nus] notification listener unavailable");
         return;
     };
-
-    // Find characteristics
-    let rx_char: Characteristic<[u8]> = match client.characteristic_by_uuid(service, &rx_uuid).await
-    {
-        Ok(c) => c,
-        Err(_e) => {
-            error!("[nus] RX characteristic not found");
-            return;
-        }
-    };
-    let tx_char: Characteristic<[u8]> = match client.characteristic_by_uuid(service, &tx_uuid).await
-    {
-        Ok(c) => c,
-        Err(_e) => {
-            error!("[nus] TX characteristic not found");
-            return;
-        }
-    };
-
-    info!("[nus] service discovered, subscribing to notifications");
-
-    // Subscribe to TX notifications (bridge → remote)
-    let mut listener = match client.subscribe(&tx_char, false).await {
-        Ok(l) => l,
-        Err(_e) => {
-            error!("[nus] subscribe failed");
-            return;
-        }
+    let Some(handles) = resolve_handles(client, cache, settings).await else {
+        return;
     };
 
     // Activate the ergot interface with link-local addressing: the real
@@ -411,32 +511,27 @@ async fn nus_session<C: Controller>(
     let mut processor = EdgeFrameProcessor::new();
     let consumer = transport::BLE_OUTQ.framed_consumer();
 
-    // Bidirectional loop
     loop {
-        let notification = listener.next();
-        let tx_frame = consumer.wait_read();
-
-        match select(notification, tx_frame).await {
-            // Incoming notification from bridge
+        match select(listener.next(), consumer.wait_read()).await {
+            // Incoming notification from the bridge's TX characteristic
             Either::First(notif) => {
-                let data = notif.as_ref();
-                let changed = processor.process_frame(data, &stack, ());
-                if changed {
+                if notif.handle() != handles.tx {
+                    continue;
+                }
+                if processor.process_frame(notif.as_ref(), &stack, ()) {
                     transport::STATE_NOTIFY.wake_all();
                 }
             }
-
-            // Outgoing ergot frame → write to bridge RX characteristic
+            // Outgoing ergot frame → write to the bridge's RX characteristic
             Either::Second(grant) => {
-                if let Err(_e) = client
-                    .write_characteristic_without_response(&rx_char, grant.as_ref())
-                    .await
-                {
+                let result = client
+                    .write_handle_without_response(handles.rx, grant.as_ref())
+                    .await;
+                grant.release();
+                if result.is_err() {
                     warn!("[nus] write error, disconnecting");
-                    grant.release();
                     break;
                 }
-                grant.release();
             }
         }
     }

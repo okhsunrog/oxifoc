@@ -122,12 +122,24 @@ compared.
 
 ### P1 — reconnect in tens of milliseconds
 
-8. **Cache GATT handles.** The bridge's attribute table is fixed per firmware
-   build. After the first discovery, use the cached handles
-   (`write_handle_without_response`, CCCD via `write_handle`,
-   `listen_all`) and fall back to discovery on error. trouble does not let
-   callers construct a `Characteristic`, so this needs the handle-based API.
-   The MTU exchange stays, since it is per connection.
+8. **[done] Cache GATT handles, persisted in flash.** After a discovery the
+   remote stores `{service range, RX, TX, TX CCCD}` in a `sequential-storage`
+   map in the two pages below the bootloader (`0xF2000..0xF4000`, memory.x
+   ends the firmware there; `build.rs` checks the overlap). Writes go through
+   the MPSL flash driver (one timeslot session), so the radio keeps its
+   timing. A cached connect re-checks the service range and enables
+   notifications with an acknowledged CCCD write; any mismatch drops the cache
+   and rediscovers. The fallback path is not yet exercised on hardware.
+   Measured: connection → session active 282 ms with discovery, 92–122 ms
+   cached; link loss → session active ≈140 ms; power-on → session active
+   ≈0.54 s.
+
+   **Fast remote restarts.** If the remote restarts within the bridge's 1 s
+   supervision timeout, the bridge still holds the dead link to the same
+   address, and the C5 ignores CONNECT_IND from that address: every attempt
+   fails with 0x3E until the old link times out (seen as two failed attempts,
+   ≈0.2 s). A random connection interval per attempt did not help. Revisit
+   with item 9: a fresh resolvable private address per boot may avoid it.
 9. **Bonding and privacy** (trouble `security` feature: LE Secure
    Connections, `BondInformation`, IRK). Needed anyway: the bridge accepts
    any central today. Once bonded, the bridge can restrict connections to the
@@ -140,6 +152,14 @@ compared.
 
 - **USB flashing and logging for the remote,** as in the Voyager firmware. The
   final remote exposes only USB, not SWD.
+- **Fast telemetry over BLE.** `monitor --fast-hz 100` breaks the BLE session
+  ("Telemetry acknowledgement does not match the stream state"); `--fast-hz 0`
+  works. Native-rate data stays on USB. Check whether 10 Hz works and whether a
+  frame exceeds the 505-byte BLE frame limit.
+- **Wi-Fi for closed-board telemetry** (future). Needs commands to switch Wi-Fi
+  on and off and an RF coexistence test against the throttle link. With two
+  motors there are two C5s: one can serve BLE and the other Wi-Fi, which
+  avoids coexistence on a single radio.
 
 11. **Link quality.** Track RSSI (`LeReadRssi`, Nordic average RSSI) and
     affirm round-trip time; drive the remote-design §10 haptic warning.
