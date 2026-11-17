@@ -1,7 +1,7 @@
 use core::fmt::Write;
 
 use defmt::{info, warn};
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use embassy_nrf::{gpio::Output, twim::Twim};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::Timer;
@@ -17,6 +17,8 @@ use ssd1306::{I2CDisplayInterface, Ssd1306Async, prelude::*};
 use super::battery;
 
 pub static BRIDGE_READY: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+/// Pairing passkey to show, `None` when no pairing is in progress.
+pub static PASSKEY: Signal<CriticalSectionRawMutex, Option<u32>> = Signal::new();
 
 #[embassy_executor::task]
 #[allow(
@@ -34,6 +36,7 @@ pub async fn run(i2c: Twim<'static>, _power: Output<'static>) {
 
     let mut bridge_ready = false;
     let mut battery_reading = None;
+    let mut passkey: Option<u32> = None;
     loop {
         if display.init().await.is_err() {
             warn!("OLED initialization failed");
@@ -43,6 +46,7 @@ pub async fn run(i2c: Twim<'static>, _power: Output<'static>) {
 
         loop {
             bridge_ready = BRIDGE_READY.try_take().unwrap_or(bridge_ready);
+            passkey = PASSKEY.try_take().unwrap_or(passkey);
             battery_reading = battery::READING.try_take().or(battery_reading);
             display.clear_buffer();
             let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
@@ -52,6 +56,14 @@ pub async fn run(i2c: Twim<'static>, _power: Output<'static>) {
                 "Looking for bridge"
             };
             let _ = Text::new("OxiFOC Remote", Point::new(4, 16), style).draw(&mut display);
+            let mut code_line = String::<20>::new();
+            let status = match passkey {
+                Some(code) => {
+                    let _ = write!(code_line, "Pair code {code:06}");
+                    code_line.as_str()
+                }
+                None => status,
+            };
             let _ = Text::new(status, Point::new(4, 36), style).draw(&mut display);
             let mut battery_line = String::<20>::new();
             if let Some(reading) = battery_reading {
@@ -77,9 +89,10 @@ pub async fn run(i2c: Twim<'static>, _power: Output<'static>) {
                 break;
             }
             info!("OLED updated: {} {}", status, battery_line.as_str());
-            match select(BRIDGE_READY.wait(), battery::READING.wait()).await {
-                Either::First(ready) => bridge_ready = ready,
-                Either::Second(reading) => battery_reading = Some(reading),
+            match select3(BRIDGE_READY.wait(), battery::READING.wait(), PASSKEY.wait()).await {
+                Either3::First(ready) => bridge_ready = ready,
+                Either3::Second(reading) => battery_reading = Some(reading),
+                Either3::Third(code) => passkey = code,
             }
         }
     }

@@ -38,9 +38,34 @@ const fn const_parse_u32(s: &str) -> u32 {
 enum Key {
     /// Attribute handles of the bridge's OxiFOC service.
     BridgeHandles = 1,
+    /// Our static random identity address and IRK, generated once.
+    OwnIdentity = 2,
+    /// Bond with the bridge (docs/notes/ble-pairing.md).
+    BridgeBond = 3,
 }
 
 impl PostcardValue<'_> for GattHandles {}
+
+/// The remote's BLE identity. The bridge stores it with the bond and resolves
+/// our private addresses with the IRK, so both must survive reboots.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct OwnIdentity {
+    pub address: [u8; 6],
+    pub irk: u128,
+}
+
+impl PostcardValue<'_> for OwnIdentity {}
+
+/// Bond with the bridge. Our own type, independent of trouble's.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct BridgeBond {
+    pub address: [u8; 6],
+    pub address_random: bool,
+    pub irk: Option<u128>,
+    pub ltk: u128,
+}
+
+impl PostcardValue<'_> for BridgeBond {}
 
 type Storage<'d> = MapStorage<
     u8,
@@ -82,6 +107,57 @@ impl<'d> Settings<'d> {
                 warn!("[storage] reading bridge handles failed: {:?}", e);
                 None
             }
+        }
+    }
+
+    pub async fn own_identity(&mut self) -> Option<OwnIdentity> {
+        self.fetch(Key::OwnIdentity).await
+    }
+
+    pub async fn set_own_identity(&mut self, identity: &OwnIdentity) {
+        self.store(Key::OwnIdentity, identity).await;
+    }
+
+    pub async fn bridge_bond(&mut self) -> Option<BridgeBond> {
+        self.fetch(Key::BridgeBond).await
+    }
+
+    pub async fn set_bridge_bond(&mut self, bond: &BridgeBond) {
+        self.store(Key::BridgeBond, bond).await;
+    }
+
+    pub async fn clear_bridge_bond(&mut self) {
+        if let Err(e) = self
+            .storage
+            .remove_item(&mut self.buf, &(Key::BridgeBond as u8))
+            .await
+        {
+            warn!("[storage] removing bridge bond failed: {:?}", e);
+        }
+    }
+
+    async fn fetch<V: for<'a> PostcardValue<'a>>(&mut self, key: Key) -> Option<V> {
+        match self
+            .storage
+            .fetch_item::<V>(&mut self.buf, &(key as u8))
+            .await
+        {
+            Ok(value) => value,
+            Err(e) => {
+                warn!("[storage] reading key {} failed: {:?}", key as u8, e);
+                None
+            }
+        }
+    }
+
+    async fn store<V: for<'a> PostcardValue<'a>>(&mut self, key: Key, value: &V) {
+        match self
+            .storage
+            .store_item(&mut self.buf, &(key as u8), value)
+            .await
+        {
+            Ok(()) => info!("[storage] key {} saved", key as u8),
+            Err(e) => warn!("[storage] saving key {} failed: {:?}", key as u8, e),
         }
     }
 

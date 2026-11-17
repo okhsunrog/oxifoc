@@ -1,14 +1,15 @@
 # BLE pairing for the skateboard
 
-> **STATUS: partly implemented (2026-11-18).** Done on the bridge: bond
-> storage in the NVS partition (8 slots), the BLE gate (only links encrypted
-> with a stored authenticated bond reach Ergot), pairing windows,
-> `cmd/pairing` and `events/pairing`, and `oxifoc-host-cli pairing`. Verified:
-> a laptop paired with Numeric Comparison through a USB-opened window, the
-> bond survived a reset, the bonded laptop reached the controller over BLE,
-> and an unbonded one did not. Not yet: bonding on the remote, the
+> **STATUS: partly implemented (2026-11-18).** Done: bond storage on the
+> bridge (NVS, 8 slots) and the remote (settings map), the BLE gate, pairing
+> windows, `cmd/pairing` / `events/pairing`, `oxifoc-host-cli pairing`, and
+> remote bonding with a resolvable private address and the passkey on its
+> screen. Verified on hardware: laptop pairing (Numeric Comparison), remote
+> pairing (passkey typed in the CLI), bonds across resets of both sides,
+> bonded reconnects, unbonded hosts rejected, bond removal on the bridge
+> followed by automatic re-pairing on the remote. Not yet: the
 > stopped-controller check for opening a window, the controller filter accept
-> list, removal and wrong-code tests, GUI support.
+> list, wrong-code and timeout tests, a pairing button on the remote, GUI.
 
 The C5 bridge is the BLE peripheral and the trust anchor. The remote, phones
 and laptops are centrals. The design targets accidental pairing and
@@ -183,6 +184,21 @@ role (Remote or Host), name (≤ 24 bytes), added-by id.
 - **Crypto backend.** trouble's Security Manager needs `embassy-crypto`
   drivers: `embassy-crypto-rustcrypto` (AES-CMAC, P-256) and a ChaCha12 RNG
   seeded from the hardware RNG after the radio is on.
+- **Remote crypto.** `embassy-crypto-rustcrypto`'s AES-CMAC state exceeds
+  embassy-crypto's 432-byte opaque context on Cortex-M, so the remote has its
+  own RFC 4493 CMAC over the rustcrypto AES-128-ECB driver, with a boot-time
+  self-test. trouble's security code also needs nrf-sdc's multirole library
+  (`peripheral` feature) for the LTK reply commands, and privacy needs
+  `support_le_privacy` and a larger SDC memory block.
+- **Resume event.** On the central, resuming encryption with a stored bond is
+  reported as `PairingComplete` without bond information.
+- **Remote pairing trigger.** Without buttons, the remote pairs on its own
+  whenever it has no bond; the bridge accepts only inside a window. When the
+  bridge no longer knows the remote (`PIN or Key Missing`, `BondLost`), the
+  remote drops its bond and pairs again.
+- **Fast restarts with RPA.** The bridge resolves the remote's fresh RPA to
+  the same identity, so a restart within the 1 s supervision timeout still
+  loses one attempt (≈0.1 s) to the stale link.
 - **Debug probe and USB.** On the C5 the debug probe and USB Serial/JTAG share
   one USB device; while probe-rs is attached the host cannot open the serial
   port.

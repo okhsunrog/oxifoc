@@ -141,7 +141,10 @@ fn publish(stack: &'static transport::Stack, event: &PairingEvent) {
 
 fn close_window(stack: &'static transport::Stack, attempt: u32, reason: WindowCloseReason) {
     if let Some(window) = PAIRING.close(attempt) {
-        if let Some(link) = window.stage.link() {
+        // A bonded candidate stays connected; any other end drops it.
+        if reason != WindowCloseReason::Bonded
+            && let Some(link) = window.stage.link()
+        {
             PAIRING.inputs[link].signal(Input::Cancel);
         }
         publish(stack, &PairingEvent::WindowClosed { attempt, reason });

@@ -15,7 +15,7 @@ use trouble_host::prelude::*;
 use embassy_executor::{Executor, Spawner};
 use embassy_futures::join::join4;
 use embassy_futures::select::{Either, select, select3};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer, with_deadline};
 
 use ergot::NetStack;
 use ergot::interface_manager::profiles::direct_edge::{DirectEdge, EdgeFrameProcessor};
@@ -32,12 +32,22 @@ use static_cell::StaticCell;
 mod analog;
 #[path = "battery.rs"]
 mod battery;
+#[path = "csprng.rs"]
+mod csprng;
 #[path = "display.rs"]
 mod display;
 #[path = "storage.rs"]
 mod storage;
 
+use embassy_crypto_rustcrypto as _;
+
 const CONNECTIONS_MAX: usize = 1;
+/// The remote bonds only with its bridge.
+const BONDS_MAX: usize = 1;
+/// Resuming encryption with the stored bond.
+const RESUME_TIMEOUT: Duration = Duration::from_secs(3);
+/// Pairing waits for the user to type the code on a trusted device.
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(70);
 const LFCLK_ACCURACY_PPM: u16 = 50;
 /// nRF52840 maximum. The link carries the throttle, so range wins over current.
 const TX_POWER_DBM: i8 = 8;
@@ -150,14 +160,14 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
     static RNG: StaticCell<rng::Rng<'static, embassy_nrf::mode::Async>> = StaticCell::new();
     let rng = RNG.init(rng::Rng::new(p.RNG, Irqs));
     let drive_session = boot_task.map(|_| rng.blocking_next_u64());
-    // Fresh static random address per boot. After a quick restart the bridge
-    // still holds the dead link to the previous address until its 1 s
-    // supervision timeout, and the C5 ignores CONNECT_IND from an address it is
-    // connected to. A new address connects at once. Bonding will replace this
-    // with a resolvable private address.
-    let mut addr_bytes = rng.blocking_next_u64().to_le_bytes();
-    addr_bytes[5] |= 0xc0;
-    static SDC_MEM: StaticCell<nrf_sdc::Mem<2904>> = StaticCell::new();
+    // Seed the pairing CSPRNG before the SoftDevice Controller takes the RNG.
+    let mut seed = [0u8; 32];
+    rng.blocking_fill_bytes(&mut seed);
+    csprng::seed(seed);
+    if !csprng::cmac::self_test() {
+        error!("[crypto] AES-CMAC self-test failed; pairing will fail");
+    }
+    static SDC_MEM: StaticCell<nrf_sdc::Mem<4904>> = StaticCell::new();
     // Controller ACL fragments are at most 251 bytes. Trouble reassembles
     // them into its 512-byte L2CAP packets used by the existing NUS transport.
     // No 2M PHY: the throttle needs little throughput, and 1M has the better
@@ -166,6 +176,9 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
         .expect("SDC init")
         .support_central()
         .support_dle_central()
+        // Resolvable private addresses: a fresh one per boot, resolved by the
+        // bonded bridge with our IRK (docs/notes/ble-pairing.md).
+        .support_le_privacy()
         .default_tx_power(TX_POWER_DBM)
         .expect("SDC TX power")
         .central_count(CONNECTIONS_MAX as u8)
@@ -183,21 +196,33 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
         )
         .expect("enable SDC");
     info!("BLE central ready");
-    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
+    let mut resources: HostResources<
+        DefaultPacketPool,
+        CONNECTIONS_MAX,
+        L2CAP_CHANNELS_MAX,
+        1,
+        BONDS_MAX,
+    > = HostResources::new();
 
-    let address = Address::random([
-        addr_bytes[0],
-        addr_bytes[1],
-        addr_bytes[2],
-        addr_bytes[3],
-        addr_bytes[4],
-        addr_bytes[5],
-    ]);
-    info!("[ble] own address {:?}", address);
+    let identity = own_identity(&settings).await;
+    let address = Address::random(identity.address);
+    info!("[ble] identity address {:?}", address);
+    // The remote has a screen and no keys: it shows the passkey and the user
+    // types it on a trusted device, which hands it to the bridge.
     let ble_stack = trouble_host::new(ble_controller, &mut resources)
         .set_random_address(address)
+        .enable_privacy(IdentityResolvingKey::new(identity.irk).expect("nonzero IRK"))
+        .set_io_capabilities(IoCapabilities::DisplayOnly)
         .build();
+    if let Some(bond) = settings.lock().await.bridge_bond().await {
+        info!("[ble] bonded with the bridge");
+        if ble_stack
+            .add_bond_information(bridge_bond_info(&bond))
+            .is_err()
+        {
+            warn!("[ble] bond table full");
+        }
+    }
     let mut central = ble_stack.central();
     let mut runner = ble_stack.runner();
 
@@ -270,6 +295,12 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
                 match central.connect(&connect_config).await {
                     Ok(conn) => {
                         info!("[ble] connected to bridge");
+                        if !secure_link(&ble_stack, &conn, &settings).await {
+                            warn!("[ble] link not secured, retrying");
+                            failures += 1;
+                            backoff = retry_backoff(failures, backoff);
+                            continue;
+                        }
 
                         // Create GATT client
                         let client =
@@ -329,6 +360,160 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
     .await;
 
     unreachable!()
+}
+
+/// Our identity address and IRK, generated on first boot and kept in flash.
+async fn own_identity(settings: &Settings<'_>) -> storage::OwnIdentity {
+    let mut settings = settings.lock().await;
+    if let Some(identity) = settings.own_identity().await {
+        return identity;
+    }
+    let mut address = [0u8; 6];
+    csprng::fill(&mut address);
+    address[5] |= 0xc0; // static random address
+    let mut irk = [0u8; 16];
+    csprng::fill(&mut irk);
+    let identity = storage::OwnIdentity {
+        address,
+        irk: u128::from_le_bytes(irk) | 1, // nonzero
+    };
+    settings.set_own_identity(&identity).await;
+    info!("[ble] new identity generated");
+    identity
+}
+
+fn bridge_bond_info(bond: &storage::BridgeBond) -> BondInformation {
+    BondInformation::new(
+        Identity {
+            addr: Address {
+                kind: if bond.address_random {
+                    AddrKind::RANDOM
+                } else {
+                    AddrKind::PUBLIC
+                },
+                addr: BdAddr::new(bond.address),
+            },
+            irk: bond.irk.and_then(IdentityResolvingKey::new),
+        },
+        LongTermKey(bond.ltk),
+        SecurityLevel::EncryptedAuthenticated,
+        true,
+    )
+}
+
+/// Encrypt the link with the stored bond, or pair when there is none.
+///
+/// Pairing starts on its own when the remote has no bond; the bridge accepts
+/// it only inside a window opened by a trusted channel. The remote shows the
+/// passkey on its screen.
+#[allow(
+    clippy::large_stack_frames,
+    reason = "the connection event future lives in embassy task storage"
+)]
+async fn secure_link<C: Controller>(
+    ble_stack: &Stack<'_, C, DefaultPacketPool>,
+    conn: &Connection<'_, DefaultPacketPool>,
+    settings: &Settings<'_>,
+) -> bool {
+    let mut bonded = settings.lock().await.bridge_bond().await.is_some();
+    let _ = conn.set_bondable(true);
+    if conn.request_security().is_err() {
+        warn!("[ble] security request refused");
+        return false;
+    }
+    let mut pairing = false;
+    let mut deadline = Instant::now()
+        + if bonded {
+            RESUME_TIMEOUT
+        } else {
+            PAIRING_TIMEOUT
+        };
+    let result = loop {
+        let Ok(event) = with_deadline(deadline, conn.next()).await else {
+            warn!("[ble] security timed out");
+            break false;
+        };
+        match event {
+            ConnectionEvent::Encrypted {
+                security_level,
+                bond: Some(_),
+            } if bonded && !pairing && security_level.authenticated() => {
+                info!("[ble] encrypted with the stored bond");
+                break true;
+            }
+            ConnectionEvent::PassKeyDisplay(key) => {
+                pairing = true;
+                info!("[ble] pairing code {=u32:06}", key.value());
+                display::PASSKEY.signal(Some(key.value()));
+            }
+            // Resuming with the stored bond: trouble reports the encryption
+            // change as a completed pairing without new bond information.
+            ConnectionEvent::PairingComplete {
+                security_level,
+                bond: None,
+            } if bonded && !pairing && security_level.authenticated() => {
+                info!("[ble] encrypted with the stored bond");
+                break true;
+            }
+            ConnectionEvent::PairingComplete {
+                security_level,
+                bond: Some(bond),
+            } if security_level.authenticated() => {
+                let mut address = [0u8; 6];
+                address.copy_from_slice(bond.identity.addr.addr.raw());
+                let stored = storage::BridgeBond {
+                    address,
+                    address_random: bond.identity.addr.kind == AddrKind::RANDOM,
+                    irk: bond.identity.irk.map(|irk| irk.0.get()),
+                    ltk: bond.ltk.0,
+                };
+                settings.lock().await.set_bridge_bond(&stored).await;
+                info!("[ble] bonded with the bridge");
+                break true;
+            }
+            ConnectionEvent::PairingComplete { .. } => {
+                warn!("[ble] pairing without MITM protection or bond, rejecting");
+                break false;
+            }
+            ConnectionEvent::PairingFailed(_e) => {
+                warn!("[ble] pairing failed");
+                break false;
+            }
+            ConnectionEvent::BondLost => {
+                warn!("[ble] the bridge lost our bond");
+                forget_bridge(ble_stack, settings).await;
+                // trouble pairs afresh on this link; give the user time.
+                bonded = false;
+                deadline = Instant::now() + PAIRING_TIMEOUT;
+            }
+            ConnectionEvent::Disconnected { reason } => {
+                warn!("[ble] disconnected during security: {:?}", reason);
+                if bonded
+                    && (reason == bt_hci::param::Status::PIN_OR_KEY_MISSING
+                        || reason == bt_hci::param::Status::AUTHENTICATION_FAILURE)
+                {
+                    // The bridge no longer knows us: pair again next time.
+                    forget_bridge(ble_stack, settings).await;
+                }
+                break false;
+            }
+            _ => {}
+        }
+    };
+    display::PASSKEY.signal(None);
+    result
+}
+
+async fn forget_bridge<C: Controller>(
+    ble_stack: &Stack<'_, C, DefaultPacketPool>,
+    settings: &Settings<'_>,
+) {
+    let mut settings = settings.lock().await;
+    if let Some(bond) = settings.bridge_bond().await {
+        let _ = ble_stack.remove_bond_information(bridge_bond_info(&bond).identity);
+        settings.clear_bridge_bond().await;
+        info!("[ble] bridge bond removed");
+    }
 }
 
 fn retry_backoff(failures: u32, current: Duration) -> Duration {
