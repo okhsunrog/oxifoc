@@ -9,6 +9,7 @@
 pub mod config;
 pub mod detect;
 pub mod fault;
+pub mod pairing;
 pub mod phase;
 pub mod telemetry;
 

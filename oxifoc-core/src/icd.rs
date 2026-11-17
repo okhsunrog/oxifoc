@@ -14,6 +14,7 @@
 //! |-------|---------|-------------|
 //! | `FastTelemetryTopic` | `FastTelemetryBatch` | High-frequency motor data (default 1kHz) |
 //! | `FaultTopic` | `FaultSnapshot` | Revisioned snapshot pushed on every registry change |
+//! | `PairingEventTopic` | `PairingEvent` | Pairing progress and bond changes (bridge) |
 //!
 //! # Endpoints (request/response)
 //!
@@ -26,6 +27,7 @@
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
 //! | `DetectEndpoint` | `MeasurementRequest` | `MeasurementReply` | Motor detection |
 //! | `ConfigEndpoint` | `ConfigRequest` | `ConfigResponse` | Revisioned config apply/persist (`storage` feature) |
+//! | `PairingEndpoint` | `PairingRequest` | `PairingResponse` | BLE pairing windows and bonds (served by the bridge) |
 
 use ergot::endpoint;
 
@@ -182,6 +184,17 @@ endpoint!(
     MeasurementReply,
     "cmd/detect"
 );
+
+// BLE pairing management, served by the bridge rather than the motor
+// controller. See docs/notes/ble-pairing.md.
+pub use crate::types::pairing::{PairingEvent, PairingRequest, PairingResponse};
+endpoint!(
+    PairingEndpoint,
+    PairingRequest,
+    PairingResponse,
+    "cmd/pairing"
+);
+ergot::topic!(PairingEventTopic, PairingEvent, "events/pairing");
 
 // Configuration endpoint (host → device)
 #[cfg(feature = "storage")]

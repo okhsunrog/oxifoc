@@ -1,26 +1,60 @@
-use crate::{ble_nus::NusServer, transport};
+//! BLE peripheral: two link slots, the pairing gate and pairing management.
+//!
+//! Only links encrypted with a stored, authenticated bond reach Ergot. Other
+//! links may only pair, and only inside a window opened by a trusted channel.
+//! See docs/notes/ble-pairing.md.
+
+use core::future::pending;
+use core::pin::pin;
+use core::sync::atomic::Ordering;
+
+use crate::{
+    ble_nus::NusServer,
+    bonds::{BondStore, StoredBond},
+    pairing::{Input, NO_BOND, PairingState, Stage},
+    transport,
+};
 use bt_hci::controller::ExternalController;
-use defmt::{error, info, warn};
+use defmt::{debug, error, info, warn};
 use embassy_futures::{
-    join::join3,
-    select::{Either, select},
+    join::join5,
+    select::{Either, Either4, select, select4},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use embassy_time::Timer;
+use embassy_time::{Duration, Instant, Timer};
 use ergot::interface_manager::{
     FrameProcessor, InterfaceState, Profile, profiles::router::RouterFrameProcessor,
 };
+use ergot::socket::HeaderMessage;
 use esp_radio::ble::controller::BleConnector;
+use oxifoc_core::icd::{PairingEndpoint, PairingEventTopic};
+use oxifoc_core::types::pairing::{
+    MAX_BONDS, PairingError, PairingEvent, PairingFailure, PairingRequest, PairingResponse,
+    WindowCloseReason,
+};
 use trouble_host::prelude::*;
+
 const CONNECTIONS_MAX: usize = transport::BLE_LINKS;
 // Signal + ATT per link.
 const L2CAP_CHANNELS_MAX: usize = 2 * CONNECTIONS_MAX;
+/// An untrusted link that neither encrypts with a bond nor pairs is dropped.
+const UNTRUSTED_TIMEOUT: Duration = Duration::from_secs(10);
 
+type Bonds = Mutex<NoopRawMutex, BondStore>;
+
+static PAIRING: PairingState = PairingState::new();
+
+#[allow(
+    clippy::large_futures,
+    reason = "the task future lives in static Embassy task storage; the partition \
+    table buffer and the link slot futures are awaited in place on purpose"
+)]
 #[embassy_executor::task]
 pub async fn run(
     stack: &'static transport::Stack,
     bt: esp_hal::peripherals::BT<'static>,
     ble_idents: [u8; transport::BLE_LINKS],
+    flash: esp_storage::FlashStorage<'static>,
 ) {
     // ========== BLE setup ==========
     // Maximum TX power: the board is powered and the link carries the throttle.
@@ -28,14 +62,31 @@ pub async fn run(
         .with_default_tx_power(esp_radio::ble::TxPower::P20)
         .with_max_connections(CONNECTIONS_MAX as u16);
     let bt_transport = BleConnector::new(bt, radio_config).expect("BLE connector init");
+    crate::csprng::seed();
     let ble_controller = ExternalController::<_, CONNECTIONS_MAX>::new(bt_transport);
-    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
+    let mut resources: HostResources<
+        DefaultPacketPool,
+        CONNECTIONS_MAX,
+        L2CAP_CHANNELS_MAX,
+        1,
+        MAX_BONDS,
+    > = HostResources::new();
 
     let address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
+    // The bridge's keyboard and display are a trusted device at the other end
+    // of Ergot, so every pairing method with MITM protection is available.
     let ble_stack = trouble_host::new(ble_controller, &mut resources)
         .set_random_address(address)
+        .set_io_capabilities(IoCapabilities::KeyboardDisplay)
         .build();
+
+    let bonds = Mutex::<NoopRawMutex, _>::new(BondStore::open(flash).await);
+    for (_, bond) in bonds.lock().await.iter() {
+        if ble_stack.add_bond_information(bond.to_trouble()).is_err() {
+            warn!("[bonds] trouble bond table full");
+        }
+    }
+
     let peripheral = Mutex::<NoopRawMutex, _>::new(ble_stack.peripheral());
     let runner = ble_stack.runner();
 
@@ -45,21 +96,62 @@ pub async fn run(
     }))
     .expect("NUS GATT server init");
 
+    let nets = ble_idents.map(|ident| {
+        stack
+            .manage_profile(|p| p.net_id_of(ident))
+            .expect("registered BLE segment")
+    });
+    let ctx = Ctx {
+        stack,
+        ble_stack: &ble_stack,
+        bonds: &bonds,
+    };
+
     // Each link slot advertises while it is free. The peripheral mutex lets
     // one free slot advertise at a time; a connected slot releases it, so the
     // bridge keeps advertising while any slot is free.
     let [ident_a, ident_b] = ble_idents;
-    join3(
+    join5(
         ble_runner(runner),
-        link_slot(stack, &peripheral, &nus_server, 0, ident_a),
-        link_slot(stack, &peripheral, &nus_server, 1, ident_b),
+        link_slot(&ctx, &peripheral, &nus_server, 0, ident_a),
+        link_slot(&ctx, &peripheral, &nus_server, 1, ident_b),
+        pairing_server(&ctx, nets),
+        window_timer(stack),
     )
     .await;
 }
 
+/// Shared handles for the link slots and the pairing server.
+struct Ctx<'a, 's, C: Controller> {
+    stack: &'static transport::Stack,
+    ble_stack: &'a Stack<'s, C, DefaultPacketPool>,
+    bonds: &'a Bonds,
+}
+
+fn publish(stack: &'static transport::Stack, event: &PairingEvent) {
+    info!("[pairing] event {:?}", event);
+    if stack
+        .topics()
+        .broadcast::<PairingEventTopic>(event, None)
+        .is_err()
+    {
+        warn!("[pairing] event not sent");
+    }
+}
+
+fn close_window(stack: &'static transport::Stack, attempt: u32, reason: WindowCloseReason) {
+    if let Some(window) = PAIRING.close(attempt) {
+        if let Some(link) = window.stage.link() {
+            PAIRING.inputs[link].signal(Input::Cancel);
+        }
+        publish(stack, &PairingEvent::WindowClosed { attempt, reason });
+        info!("[pairing] window {} closed: {:?}", attempt, reason);
+    }
+}
+
 #[allow(clippy::large_stack_frames)]
 async fn link_slot<'v, C: Controller>(
-    stack: &'static transport::Stack,
+    ctx: &Ctx<'_, '_, C>,
     peripheral: &Mutex<NoopRawMutex, Peripheral<'v, C, DefaultPacketPool>>,
     server: &NusServer<'v>,
     link: usize,
@@ -74,17 +166,16 @@ async fn link_slot<'v, C: Controller>(
             Ok(conn) => {
                 // The central chooses the PHY: the remote stays on 1M for
                 // sensitivity, host tools may request 2M for telemetry.
-                info!("[ble{}] connection established", link);
-                nus_connection_task(stack, server, &conn, link, ident).await;
-                stack.manage_profile(|router| {
-                    let _ = router.set_interface_state(ident, InterfaceState::Inactive);
-                });
+                debug!("[ble{}] connection established", link);
+                link_session(ctx, server, &conn, link, ident).await;
+                PAIRING.link_bond[link].store(NO_BOND, Ordering::Relaxed);
+                stack_inactive(ctx.stack, ident);
                 // Never send frames queued for the old central to the next one.
                 let consumer = transport::BLE_OUTQ[link].framed_consumer();
                 while let Ok(frame) = consumer.read() {
                     frame.release();
                 }
-                info!("[ble{}] disconnected, slot free", link);
+                debug!("[ble{}] disconnected, slot free", link);
             }
             Err(_e) => {
                 warn!("[ble{}] advertise error, retrying", link);
@@ -92,6 +183,12 @@ async fn link_slot<'v, C: Controller>(
             }
         }
     }
+}
+
+fn stack_inactive(stack: &'static transport::Stack, ident: u8) {
+    stack.manage_profile(|router| {
+        let _ = router.set_interface_state(ident, InterfaceState::Inactive);
+    });
 }
 
 async fn ble_runner<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
@@ -128,8 +225,8 @@ async fn advertise<'v, 's, C: Controller>(
     // Fast advertising: the bridge is board-powered and a reconnecting remote
     // should find it within one scan window.
     let params = AdvertisementParameters {
-        interval_min: embassy_time::Duration::from_millis(20),
-        interval_max: embassy_time::Duration::from_millis(30),
+        interval_min: Duration::from_millis(20),
+        interval_max: Duration::from_millis(30),
         ..Default::default()
     };
     let advertiser = peripheral
@@ -142,16 +239,16 @@ async fn advertise<'v, 's, C: Controller>(
         )
         .await?;
 
-    info!("[ble] advertising...");
+    debug!("[ble] advertising...");
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
     Ok(conn)
 }
 
-// ========== BLE NUS connection handler ==========
+// ========== Link session: gate, pairing and frame pump ==========
 
 #[allow(clippy::large_stack_frames)]
-async fn nus_connection_task<P: PacketPool>(
-    stack: &'static transport::Stack,
+async fn link_session<C: Controller, P: PacketPool>(
+    ctx: &Ctx<'_, '_, C>,
     server: &NusServer<'_>,
     conn: &GattConnection<'_, '_, P>,
     link: usize,
@@ -159,26 +256,153 @@ async fn nus_connection_task<P: PacketPool>(
 ) {
     let rx_handle = server.nus.rx.handle;
     let tx_char = &server.nus.tx;
+    let protected = |handle: u16| {
+        handle == rx_handle || handle == tx_char.handle || Some(handle) == tx_char.cccd_handle
+    };
     let consumer = transport::BLE_OUTQ[link].framed_consumer();
-    let net = stack
+    let net = ctx
+        .stack
         .manage_profile(|p| p.net_id_of(ble_ident))
         .expect("registered BLE segment");
     let mut processor = RouterFrameProcessor::new(net);
-    loop {
-        let gatt_event = conn.next();
-        let tx_frame = consumer.wait_read();
 
-        match select(gatt_event, tx_frame).await {
-            Either::First(event) => match event {
-                GattConnectionEvent::Disconnected { .. } => {
-                    break;
+    PAIRING.inputs[link].reset();
+    PAIRING.kick[link].reset();
+    // A bond can only be created while a window is open at connection time:
+    // the bonding flag is exchanged when pairing starts.
+    let _ = conn.raw().set_bondable(PAIRING.is_open());
+    let mut trusted: Option<u8> = None;
+    let mut attempt: Option<u32> = None;
+    let untrusted_deadline = Instant::now() + UNTRUSTED_TIMEOUT;
+
+    loop {
+        let frame = async {
+            if trusted.is_some() {
+                consumer.wait_read().await
+            } else {
+                pending().await
+            }
+        };
+        let deadline = async {
+            if trusted.is_some() || attempt.is_some() {
+                PAIRING.kick[link].wait().await;
+            } else {
+                match select(PAIRING.kick[link].wait(), Timer::at(untrusted_deadline)).await {
+                    Either::First(()) | Either::Second(()) => {}
+                }
+            }
+        };
+        match select4(conn.next(), frame, PAIRING.inputs[link].wait(), deadline).await {
+            Either4::First(event) => match event {
+                GattConnectionEvent::Disconnected { .. } => break,
+                GattConnectionEvent::Encrypted {
+                    security_level,
+                    bond: Some(bond),
+                } => {
+                    let id = ctx.bonds.lock().await.find(&bond.identity);
+                    if let Some(id) = id
+                        && security_level.authenticated()
+                    {
+                        trusted = Some(id);
+                        PAIRING.link_bond[link].store(id, Ordering::Relaxed);
+                        info!("[ble{}] trusted, bond {}", link, id);
+                    }
+                }
+                GattConnectionEvent::PassKeyDisplay(key) => {
+                    // The candidate types the code (it is KeyboardOnly).
+                    if let Some(a) = claim(ctx, conn, link, &mut attempt) {
+                        PAIRING.set_stage(a, Stage::Pairing { link });
+                        publish(
+                            ctx.stack,
+                            &PairingEvent::ShowPasskey {
+                                attempt: a,
+                                passkey: key.value(),
+                            },
+                        );
+                    } else {
+                        let _ = conn.raw().pass_key_cancel();
+                    }
+                }
+                GattConnectionEvent::PassKeyConfirm(key) => {
+                    if let Some(a) = claim(ctx, conn, link, &mut attempt) {
+                        PAIRING.set_stage(a, Stage::AwaitComparison { link });
+                        publish(
+                            ctx.stack,
+                            &PairingEvent::CompareNumber {
+                                attempt: a,
+                                number: key.value(),
+                            },
+                        );
+                    } else {
+                        let _ = conn.raw().pass_key_cancel();
+                    }
+                }
+                GattConnectionEvent::PassKeyInput => {
+                    if let Some(a) = claim(ctx, conn, link, &mut attempt) {
+                        PAIRING.set_stage(a, Stage::AwaitPasskey { link });
+                        publish(ctx.stack, &PairingEvent::EnterPasskey { attempt: a });
+                    } else {
+                        let _ = conn.raw().pass_key_cancel();
+                    }
+                }
+                GattConnectionEvent::PairingComplete { .. } if trusted.is_some() => {
+                    // trouble reports completion again with the encryption change.
+                    debug!("[ble{}] repeated pairing completion ignored", link);
+                }
+                GattConnectionEvent::PairingComplete {
+                    security_level,
+                    bond,
+                } => {
+                    match pairing_complete(ctx, conn, link, &mut attempt, security_level, bond)
+                        .await
+                    {
+                        Some(id) => {
+                            trusted = Some(id);
+                            PAIRING.link_bond[link].store(id, Ordering::Relaxed);
+                        }
+                        None => {
+                            conn.raw().disconnect();
+                        }
+                    }
+                }
+                GattConnectionEvent::PairingFailed(_e) => {
+                    warn!("[ble{}] pairing failed", link);
+                    if let Some(a) = attempt.take() {
+                        fail(ctx.stack, a, PairingFailure::Protocol);
+                    }
+                    conn.raw().disconnect();
+                }
+                GattConnectionEvent::Encrypted {
+                    security_level,
+                    bond: None,
+                } => {
+                    info!(
+                        "[ble{}] encrypted without a stored bond: {:?}",
+                        link, security_level
+                    );
+                }
+                GattConnectionEvent::BondLost => {
+                    warn!("[ble{}] peer lost its bond", link);
                 }
                 GattConnectionEvent::Gatt { event } => {
+                    let handle = match &event {
+                        GattEvent::Read(e) => Some(e.handle()),
+                        GattEvent::Write(e) => Some(e.handle()),
+                        _ => None,
+                    };
+                    if trusted.is_none() && handle.is_some_and(protected) {
+                        // Makes OS centrals start pairing; ours pair first.
+                        match event.reject(AttErrorCode::INSUFFICIENT_AUTHENTICATION) {
+                            Ok(reply) => reply.send().await,
+                            Err(_e) => warn!("[ble] error sending gatt reply"),
+                        }
+                        continue;
+                    }
                     if let GattEvent::Write(ref write_event) = event
                         && write_event.handle() == rx_handle
                     {
                         let changed = write_event.with_data(|offset, data| {
-                            offset == 0 && processor.process_frame(data, &stack, ble_ident)
+                            offset == 0 && processor.process_frame(data, &ctx.stack, ble_ident)
                         });
                         if changed {
                             transport::STATE_NOTIFY.wake_all();
@@ -191,16 +415,244 @@ async fn nus_connection_task<P: PacketPool>(
                 }
                 _ => {}
             },
-
-            Either::Second(grant) => {
+            Either4::Second(grant) => {
                 let payload: heapless::Vec<u8, { crate::ble_nus::NUS_MAX_PAYLOAD }> =
                     heapless::Vec::from_slice(&grant).unwrap_or_default();
-                if let Err(_e) = tx_char.notify(conn, &payload, false).await {
+                let result = tx_char.notify(conn, &payload, false).await;
+                grant.release();
+                if result.is_err() {
                     warn!("[ble] notify error, disconnecting");
-                    grant.release();
                     break;
                 }
-                grant.release();
+            }
+            Either4::Third(input) => match input {
+                Input::Passkey(passkey) => {
+                    if conn.raw().pass_key_input(passkey).is_err() {
+                        warn!("[ble{}] passkey input refused", link);
+                    }
+                }
+                Input::Comparison(true) => {
+                    if conn.raw().pass_key_confirm().is_err() {
+                        warn!("[ble{}] comparison confirm refused", link);
+                    }
+                }
+                Input::Comparison(false) | Input::Cancel => {
+                    let _ = conn.raw().pass_key_cancel();
+                    if let Some(a) = attempt.take() {
+                        fail(ctx.stack, a, PairingFailure::Rejected);
+                    }
+                    conn.raw().disconnect();
+                }
+            },
+            Either4::Fourth(()) => {
+                debug!("[ble{}] dropping link (untrusted or bond removed)", link);
+                conn.raw().disconnect();
+                break;
+            }
+        }
+    }
+
+    if let Some(a) = attempt {
+        fail(ctx.stack, a, PairingFailure::Disconnected);
+    }
+}
+
+/// Claim the open window for this link; on the first claim, report it.
+fn claim<C: Controller, P: PacketPool>(
+    ctx: &Ctx<'_, '_, C>,
+    conn: &GattConnection<'_, '_, P>,
+    link: usize,
+    attempt: &mut Option<u32>,
+) -> Option<u32> {
+    let claimed = PAIRING.claim(link)?;
+    if attempt.replace(claimed).is_none() {
+        let mut address = [0; 6];
+        address.copy_from_slice(conn.raw().peer_address().addr.raw());
+        publish(
+            ctx.stack,
+            &PairingEvent::CandidateConnected {
+                attempt: claimed,
+                address,
+            },
+        );
+        info!("[ble{}] pairing in window {}", link, claimed);
+    }
+    Some(claimed)
+}
+
+fn fail(stack: &'static transport::Stack, attempt: u32, reason: PairingFailure) {
+    warn!("[pairing] attempt {} failed: {:?}", attempt, reason);
+    publish(stack, &PairingEvent::Failed { attempt, reason });
+    close_window(stack, attempt, WindowCloseReason::Failed);
+}
+
+/// Accept the bond only inside the window and only with MITM protection.
+async fn pairing_complete<C: Controller, P: PacketPool>(
+    ctx: &Ctx<'_, '_, C>,
+    conn: &GattConnection<'_, '_, P>,
+    link: usize,
+    attempt: &mut Option<u32>,
+    security_level: SecurityLevel,
+    bond: Option<BondInformation>,
+) -> Option<u8> {
+    // Just Works raises no passkey event, so claim here as well.
+    let claimed = attempt.or_else(|| claim(ctx, conn, link, attempt));
+    // Drop a bond trouble added for this pairing, never one we store.
+    let forget = async |bond: &Option<BondInformation>| {
+        if let Some(bond) = bond
+            && ctx.bonds.lock().await.find(&bond.identity).is_none()
+        {
+            let _ = ctx.ble_stack.remove_bond_information(bond.identity);
+        }
+    };
+    let Some(a) = claimed else {
+        info!("[ble{}] pairing outside a window, dropping", link);
+        forget(&bond).await;
+        return None;
+    };
+    let failure = if !security_level.authenticated() {
+        Some(PairingFailure::NotAuthenticated)
+    } else if bond.is_none() {
+        Some(PairingFailure::NotBonded)
+    } else {
+        None
+    };
+    if let Some(reason) = failure {
+        forget(&bond).await;
+        attempt.take();
+        fail(ctx.stack, a, reason);
+        return None;
+    }
+    let bond = bond?;
+    let window = PAIRING.window().filter(|w| w.attempt == a)?;
+    let stored = StoredBond::from_trouble(&bond, window.role, window.name, window.added_by);
+    let mut bonds = ctx.bonds.lock().await;
+    match bonds.insert(stored).await {
+        Ok(id) => {
+            attempt.take();
+            if let Some(entry) = bonds.entry(id) {
+                publish(ctx.stack, &PairingEvent::Bonded(entry));
+            }
+            close_window(ctx.stack, a, WindowCloseReason::Bonded);
+            info!("[ble{}] bonded as {}", link, id);
+            Some(id)
+        }
+        Err(_e) => {
+            drop(bonds);
+            forget(&Some(bond)).await;
+            attempt.take();
+            fail(ctx.stack, a, PairingFailure::Storage);
+            None
+        }
+    }
+}
+
+// ========== Pairing management endpoint ==========
+
+#[allow(clippy::large_stack_frames)]
+async fn pairing_server<C: Controller>(ctx: &Ctx<'_, '_, C>, nets: [u16; transport::BLE_LINKS]) {
+    let server = ctx
+        .stack
+        .endpoints()
+        .bounded_server::<PairingEndpoint, 2>(None);
+    let server = pin!(server);
+    let mut hdl = server.attach();
+    info!("[pairing] server running");
+    loop {
+        let _ = hdl
+            .serve_full(async |msg: &HeaderMessage<PairingRequest>| {
+                handle_request(ctx, &nets, msg).await
+            })
+            .await;
+    }
+}
+
+async fn handle_request<C: Controller>(
+    ctx: &Ctx<'_, '_, C>,
+    nets: &[u16; transport::BLE_LINKS],
+    msg: &HeaderMessage<PairingRequest>,
+) -> PairingResponse {
+    let result = match &msg.t {
+        PairingRequest::OpenWindow {
+            role,
+            seconds,
+            name,
+        } => {
+            // TODO(ble-pairing invariant 3): also require a stopped controller.
+            if ctx.bonds.lock().await.is_full() {
+                return PairingResponse::Error(PairingError::TableFull);
+            }
+            let added_by = PAIRING.bond_on_net(nets, msg.hdr.src.network_id);
+            match PAIRING.open(*role, name.clone(), *seconds, added_by) {
+                Ok((attempt, expires_ms)) => {
+                    info!("[pairing] window {} open for {} ms", attempt, expires_ms);
+                    publish(
+                        ctx.stack,
+                        &PairingEvent::WindowOpened {
+                            attempt,
+                            role: *role,
+                            expires_ms,
+                        },
+                    );
+                    return PairingResponse::WindowOpened {
+                        attempt,
+                        expires_ms,
+                    };
+                }
+                Err(e) => Err(e),
+            }
+        }
+        PairingRequest::SubmitPasskey { attempt, passkey } => {
+            PAIRING.submit(*attempt, Input::Passkey(*passkey))
+        }
+        PairingRequest::ConfirmComparison { attempt, accept } => {
+            PAIRING.submit(*attempt, Input::Comparison(*accept))
+        }
+        PairingRequest::Cancel { attempt } => {
+            if PAIRING.window().is_some_and(|w| w.attempt == *attempt) {
+                close_window(ctx.stack, *attempt, WindowCloseReason::Cancelled);
+                Ok(())
+            } else {
+                Err(PairingError::NoSuchAttempt)
+            }
+        }
+        PairingRequest::ListBonds => {
+            return PairingResponse::Bonds(ctx.bonds.lock().await.entries());
+        }
+        PairingRequest::RemoveBond { id } => {
+            let removed = ctx.bonds.lock().await.remove(*id).await;
+            removed.map(|bond| {
+                let _ = ctx.ble_stack.remove_bond_information(bond.identity());
+                for (link, kick) in PAIRING.kick.iter().enumerate() {
+                    if PAIRING.link_bond[link].load(Ordering::Relaxed) == *id {
+                        kick.signal(());
+                    }
+                }
+                publish(ctx.stack, &PairingEvent::BondRemoved { id: *id });
+                info!("[pairing] bond {} removed", id);
+            })
+        }
+        PairingRequest::RenameBond { id, name } => {
+            ctx.bonds.lock().await.rename(*id, name.clone()).await
+        }
+    };
+    match result {
+        Ok(()) => PairingResponse::Ok,
+        Err(e) => PairingResponse::Error(e),
+    }
+}
+
+/// Close the window when it expires.
+async fn window_timer(stack: &'static transport::Stack) {
+    loop {
+        match PAIRING.window() {
+            None => PAIRING.changed.wait().await,
+            Some(window) => {
+                if let Either::First(()) =
+                    select(Timer::at(window.deadline), PAIRING.changed.wait()).await
+                {
+                    close_window(stack, window.attempt, WindowCloseReason::Timeout);
+                }
             }
         }
     }

@@ -412,8 +412,10 @@ build-bridge features="":
     cd oxifoc-bridge && cargo build --release --features {{quote(features)}}
 
 # Build and flash the C5 bridge without claiming the STM32 debug probe.
+# --restore-unwritten keeps the NVS partition (BLE bonds); probe-rs otherwise
+# erases it together with the bootloader block.
 flash-bridge features="": (build-bridge features)
-    probe-rs download --verify --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10 oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge
+    probe-rs download --verify --restore-unwritten --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10 oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge
     probe-rs reset --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10
 
 # Build nRF52840 remote firmware.

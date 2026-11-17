@@ -68,7 +68,12 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(transport::root_services(stack).expect("USB route task is spawned once"));
     #[cfg(feature = "ble")]
     {
-        esp_alloc::heap_allocator!(size: 65536);
+        // The BLE heap lives in the RAM the 2nd-stage bootloader frees
+        // (dram2_seg, 64 KiB), so it does not shrink the main stack. LESC
+        // pairing computes P-256 in software on that stack; with the heap in
+        // .bss the stack was ~16 KiB and pairing overflowed it into the BLE
+        // controller's state.
+        esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
         let ble_idents = core::array::from_fn(|link| {
             stack
                 .manage_profile(|p| {
@@ -80,8 +85,13 @@ async fn main(spawner: Spawner) -> ! {
                 .expect("BLE interface slots must be available at startup")
         });
         spawner.spawn(
-            oxifoc_bridge::ble_runtime::run(stack, p.BT, ble_idents)
-                .expect("BLE task is spawned once"),
+            oxifoc_bridge::ble_runtime::run(
+                stack,
+                p.BT,
+                ble_idents,
+                esp_storage::FlashStorage::new(p.FLASH),
+            )
+            .expect("BLE task is spawned once"),
         );
     }
     defmt::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");

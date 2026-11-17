@@ -9,3 +9,11 @@ pub mod transport;
 
 #[cfg(feature = "ble")]
 pub mod ble_runtime;
+#[cfg(feature = "ble")]
+pub mod bonds;
+#[cfg(feature = "ble")]
+mod csprng;
+#[cfg(feature = "ble")]
+use embassy_crypto_rustcrypto as _;
+#[cfg(feature = "ble")]
+pub mod pairing;

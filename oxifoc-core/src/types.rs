@@ -1489,3 +1489,6 @@ mod tests {
 pub mod commissioning;
 /// Session-scoped motor measurement commands.
 pub mod measurement;
+
+/// BLE pairing management served by the bridge.
+pub mod pairing;

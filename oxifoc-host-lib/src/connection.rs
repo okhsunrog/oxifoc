@@ -506,8 +506,31 @@ async fn resolve_device_addr<NS>(stack: &NS, timeout: Duration) -> AddrResolutio
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
-    use ergot::FrameKind;
     use ergot::traits::Endpoint as _;
+    resolve_key_addr(stack, MotorEndpoint::REQ_KEY.to_bytes(), timeout).await
+}
+
+/// The single node that serves the endpoint with this request key, if exactly
+/// one answers (e.g. the bridge's `PairingEndpoint`).
+pub(crate) async fn resolve_endpoint_addr<NS>(
+    stack: &NS,
+    key: [u8; 8],
+    timeout: Duration,
+) -> Option<Address>
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    match resolve_key_addr(stack, key, timeout).await {
+        AddrResolution::Resolved(addr) => Some(addr),
+        _ => None,
+    }
+}
+
+async fn resolve_key_addr<NS>(stack: &NS, key: [u8; 8], timeout: Duration) -> AddrResolution
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    use ergot::FrameKind;
     use ergot::well_known::{
         ErgotSocketQueryResponseTopic, ErgotSocketQueryTopic, NameRequirement, SocketQuery,
     };
@@ -523,7 +546,7 @@ where
     let port = hdl.port();
 
     let query = SocketQuery {
-        key: MotorEndpoint::REQ_KEY.to_bytes(),
+        key,
         nash_req: NameRequirement::Any,
         frame_kind: FrameKind::ENDPOINT_REQ,
         broadcast: false,

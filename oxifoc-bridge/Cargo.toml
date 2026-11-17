@@ -20,7 +20,16 @@ bench = false
 
 [features]
 default = []
-ble = ["dep:esp-radio"]
+ble = [
+  "dep:esp-radio",
+  "dep:esp-storage",
+  "dep:sequential-storage",
+  "dep:embassy-embedded-hal",
+  "dep:embassy-crypto",
+  "dep:embassy-crypto-rustcrypto",
+  "dep:rand_chacha",
+  "trouble-host/security",
+]
 # Fault injection for host discovery/reconnect qualification; never enabled normally.
 bench-delayed-upstream = []
 
@@ -41,8 +50,20 @@ embedded-io-async = { version = "0.7.0", features = ["defmt"] }
 esp-alloc = { features = ["defmt"], version = "0.11.0" }
 esp-radio = { features = ["ble", "defmt", "esp-alloc", "esp32c5", "unstable"], version = "1.0.0-beta.1", optional = true }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
+# Bond storage in the NVS partition (ble feature).
+esp-storage = { version = "0.10", features = ["esp32c5", "embedded-storage", "defmt"], optional = true }
+sequential-storage = { version = "8.0", features = ["postcard", "defmt"], optional = true }
+embassy-embedded-hal = { version = "0.6", optional = true }
+# Crypto backend for trouble's Security Manager (same embassy rev as trouble).
+embassy-crypto = { git = "https://github.com/embassy-rs/embassy.git", rev = "bd35bd7a7d19147c8bcae9c2eda99b25e597294c", optional = true }
+embassy-crypto-rustcrypto = { git = "https://github.com/embassy-rs/embassy.git", rev = "bd35bd7a7d19147c8bcae9c2eda99b25e597294c", optional = true, features = [
+  "embassy-crypto-aes128-ecb",
+  "embassy-crypto-aes128-cmac",
+  "embassy-crypto-p256-ecdh",
+] }
+rand_chacha = { version = "0.3", default-features = false, optional = true }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
-trouble-host = { features = ["gatt"], version = "0.8.0", git = "https://github.com/embassy-rs/trouble.git", rev = "da44b34f67e1ee8efe977a5a975804b8b21962d4" }
+trouble-host = { features = ["gatt", "defmt"], version = "0.8.0", git = "https://github.com/embassy-rs/trouble.git", rev = "da44b34f67e1ee8efe977a5a975804b8b21962d4" }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"

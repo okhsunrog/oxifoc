@@ -1,7 +1,14 @@
 # BLE pairing for the skateboard
 
-> **STATUS: design, not implemented (2026-11-17).** Today the bridge accepts
-> any central and forwards its Ergot traffic.
+> **STATUS: partly implemented (2026-11-18).** Done on the bridge: bond
+> storage in the NVS partition (8 slots), the BLE gate (only links encrypted
+> with a stored authenticated bond reach Ergot), pairing windows,
+> `cmd/pairing` and `events/pairing`, and `oxifoc-host-cli pairing`. Verified:
+> a laptop paired with Numeric Comparison through a USB-opened window, the
+> bond survived a reset, the bonded laptop reached the controller over BLE,
+> and an unbonded one did not. Not yet: bonding on the remote, the
+> stopped-controller check for opening a window, the controller filter accept
+> list, removal and wrong-code tests, GUI support.
 
 The C5 bridge is the BLE peripheral and the trust anchor. The remote, phones
 and laptops are centrals. The design targets accidental pairing and
@@ -162,6 +169,23 @@ role (Remote or Host), name (≤ 24 bytes), added-by id.
   address, fresh per boot, instead of today's fresh static random address.
 - The bridge's fixed address stays for now; with bonding the remote can find
   its bridge by identity instead.
+
+## Implementation findings
+
+- **Main stack.** LESC computes P-256 in software on the bridge's main stack.
+  With the 64 KiB BLE heap in `.bss` that stack was about 16 KiB, and pairing
+  overflowed it into the BLE controller's state (load fault in
+  `r_ble_phy_isr`). The heap now lives in the RAM the bootloader frees
+  (`dram2_seg`), so the stack is about 80 KiB.
+- **Reflashing.** `probe-rs download` erases the NVS partition with the
+  bootloader block; `just flash-bridge` passes `--restore-unwritten` so bonds
+  survive.
+- **Crypto backend.** trouble's Security Manager needs `embassy-crypto`
+  drivers: `embassy-crypto-rustcrypto` (AES-CMAC, P-256) and a ChaCha12 RNG
+  seeded from the hardware RNG after the radio is on.
+- **Debug probe and USB.** On the C5 the debug probe and USB Serial/JTAG share
+  one USB device; while probe-rs is attached the host cannot open the serial
+  port.
 
 ## Validation
 

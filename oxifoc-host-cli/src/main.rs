@@ -8,6 +8,7 @@
 
 mod detect;
 mod maneuver;
+mod pairing;
 mod watch;
 
 use oxifoc_core::types::MotorStatus;
@@ -299,6 +300,11 @@ enum Command {
     Info,
     /// One system-health snapshot (mode, state, vbus, temps, faults, source)
     Status,
+    /// BLE pairing windows and bonds on the bridge
+    Pairing {
+        #[command(subcommand)]
+        action: pairing::PairingAction,
+    },
     /// Query active faults; --clear / --clear-category to clear
     Faults {
         #[arg(long, help = "Clear all faults")]
@@ -744,6 +750,7 @@ fn main() -> Result<()> {
                 ),
             );
         }
+        Command::Pairing { action } => pairing::run(&runtime, action, json)?,
         Command::Faults {
             clear,
             clear_category,

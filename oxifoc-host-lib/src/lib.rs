@@ -303,6 +303,8 @@ pub fn motor_channel() -> (MotorResponseSender, MotorResponseReceiver) {
 
 /// Type alias for fault query/clear response oneshot channels
 pub type FaultResponseSender = tokio::sync::oneshot::Sender<Result<FaultResponse>>;
+pub type PairingResponseSender =
+    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::pairing::PairingResponse>>;
 pub type FaultResponseReceiver = tokio::sync::oneshot::Receiver<Result<FaultResponse>>;
 
 /// Create a oneshot channel pair for a fault request/response
@@ -355,6 +357,11 @@ pub enum HostCommand {
     ),
     /// Query or clear device faults (`FaultEndpoint`).
     Fault(FaultRequest, FaultResponseSender),
+    /// BLE pairing management on the bridge (`PairingEndpoint`).
+    Pairing(
+        oxifoc_core::types::pairing::PairingRequest,
+        PairingResponseSender,
+    ),
 }
 
 /// Sender half of the host→backend command channel. The `ops` helpers take
@@ -447,6 +454,8 @@ pub struct HostRuntime {
     /// Full fault snapshots from FaultTopic plus generation-based query
     /// reconciliation when a topic or host handoff was lost.
     pub fault_rx: Receiver<FaultSnapshot>,
+    /// Pairing progress and bond changes published by the bridge.
+    pub pairing_rx: Receiver<oxifoc_core::types::pairing::PairingEvent>,
     pub device_info_rx: Receiver<HardwareInfo>,
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
@@ -582,6 +591,7 @@ struct BackendCtx {
     fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
     fault_sink: FaultSnapshotSink,
+    pairing_tx: Sender<oxifoc_core::types::pairing::PairingEvent>,
     info_tx: Sender<HardwareInfo>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected: Arc<AtomicBool>,
@@ -648,6 +658,8 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
     let (fault_tx, fault_rx) = crossbeam_channel::bounded::<FaultSnapshot>(64);
+    let (pairing_tx, pairing_rx) =
+        crossbeam_channel::bounded::<oxifoc_core::types::pairing::PairingEvent>(32);
     let (info_tx, device_info_rx) = crossbeam_channel::bounded::<HardwareInfo>(4);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HostCommand>();
     let connected = Arc::new(AtomicBool::new(false));
@@ -667,6 +679,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         fast_tx,
         slow_tx,
         fault_sink: FaultSnapshotSink::new(fault_tx),
+        pairing_tx,
         info_tx,
         cmd_rx,
         connected: connected.clone(),
@@ -692,6 +705,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         fast_rx,
         slow_rx,
         fault_rx,
+        pairing_rx,
         device_info_rx,
         cmd_tx,
         connected,
@@ -913,6 +927,7 @@ where
         ctx.connected.clone(),
         ctx.cancel.clone(),
     );
+    spawn_pairing_event_subscriber(stack, ctx.pairing_tx.clone(), ctx.cancel.clone());
     spawn_slow_telemetry_poller(
         stack,
         ctx.slow_tx,
@@ -1107,6 +1122,39 @@ fn spawn_fast_telemetry_subscriber<NS>(
     });
 }
 
+/// Forward the bridge's pairing events. Pairing does not depend on the motor
+/// controller, so events are forwarded regardless of the handshake state.
+fn spawn_pairing_event_subscriber<NS>(
+    stack: &NS,
+    pairing_tx: Sender<oxifoc_core::types::pairing::PairingEvent>,
+    cancel: CancellationToken,
+) where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+    NS::Mutex: Send + Sync,
+    NS::Profile: Send,
+    NS::Target: Send,
+{
+    tokio::spawn({
+        let stack = stack.clone();
+        async move {
+            let ns = stack.stack();
+            let receiver = ns
+                .topics()
+                .heap_bounded_receiver::<oxifoc_core::icd::PairingEventTopic>(16, None);
+            let mut pinned = pin!(receiver);
+            let mut hdl = pinned.as_mut().subscribe();
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    msg = hdl.recv() => {
+                        let _ = pairing_tx.try_send(msg.t.clone());
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn spawn_fault_topic_subscriber<NS>(
     stack: &NS,
     fault_sink: FaultSnapshotSink,
@@ -1182,6 +1230,9 @@ fn reject_unverified_command(cmd: HostCommand) {
             let _ = reply.send(Err(error()));
         }
         HostCommand::Fault(_, reply) => {
+            let _ = reply.send(Err(error()));
+        }
+        HostCommand::Pairing(_, reply) => {
             let _ = reply.send(Err(error()));
         }
     }
@@ -1526,6 +1577,31 @@ async fn handle_non_motor_command<NS>(
                 )
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
+        }
+        HostCommand::Pairing(req, reply_tx) => {
+            // Not retried: OpenWindow is not idempotent (a retry would report
+            // WindowBusy for the window it just opened).
+            let result = async {
+                use ergot::traits::Endpoint as _;
+                let addr = connection::resolve_endpoint_addr(
+                    ns,
+                    oxifoc_core::icd::PairingEndpoint::REQ_KEY.to_bytes(),
+                    Duration::from_millis(500),
+                )
+                .await
+                .ok_or_else(|| anyhow::anyhow!("no bridge serves the pairing endpoint"))?;
+                tokio::time::timeout(
+                    Duration::from_secs(3),
+                    ns.stack()
+                        .endpoints()
+                        .request::<oxifoc_core::icd::PairingEndpoint>(addr, &req, None),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("pairing request timed out"))?
+                .map_err(|e| anyhow::anyhow!("pairing request failed: {e:?}"))
+            }
+            .await;
+            let _ = reply_tx.send(result);
         }
         HostCommand::Fault(req, reply_tx) => {
             tracing::info!("Fault request: {:?}", req);
