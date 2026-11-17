@@ -1,0 +1,253 @@
+import { OxiButton, OxiField } from "oxifoc-kit.slint";
+import { ControlSize, FieldAccess, KitThemeContext } from "@kit";
+
+export enum MotorEditAction { read, apply, save, revert }
+
+export struct MotorField {
+    label: string,
+    unit: string,
+    hint: string,
+    value: string,
+    error: string,
+    dirty: bool,
+}
+
+export struct MotorEditorView {
+    status: string,
+    error: string,
+    loaded: bool,
+    dirty: bool,
+    editable: bool,
+    can-read: bool,
+    can-apply: bool,
+    can-save: bool,
+}
+
+export global MotorEditorUi {
+    in property <[MotorField]> fields;
+    in property <MotorEditorView> state;
+    callback act(MotorEditAction);
+    callback edit(int, string);
+}
+
+component ParameterRow inherits VerticalLayout {
+    in property <int> index;
+    in property <bool> editable;
+    private property <MotorField> field: MotorEditorUi.fields[root.index];
+    private property <string> draft;
+    private property <color> error-color: #ff9b9b;
+    init => { root.draft = root.field.value; }
+    changed field => {
+        if root.draft != root.field.value {
+            root.draft = root.field.value;
+        }
+    }
+    spacing: 0px;
+    Rectangle { height: 1px; background: KitThemeContext.current.border-subtle; }
+    HorizontalLayout {
+        padding-top: 9px;
+        padding-bottom: 9px;
+        spacing: 10px;
+        cross-axis-alignment: start;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 3px;
+            Text {
+                text: root.field.label;
+                color: KitThemeContext.current.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            if root.field.error != "" || root.field.hint != "" : Text {
+                text: root.field.error != "" ? root.field.error : root.field.hint;
+                color: root.field.error != "" ? root.error-color : KitThemeContext.current.text-secondary;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+        }
+        Rectangle {
+            width: 116px;
+            min-height: field-editor.preferred-height;
+            border-width: root.field.dirty || root.field.error != "" ? 1px : 0px;
+            border-radius: 7px;
+            border-color: root.field.error != "" ? root.error-color : KitThemeContext.current.accent;
+            field-editor := OxiField {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: parent.height - 2px;
+                text <=> root.draft;
+                accessible-name: root.field.unit == "" ? root.field.label : root.field.label + " (" + root.field.unit + ")";
+                access: root.editable ? FieldAccess.editable : FieldAccess.read-only;
+                edited(value) => { MotorEditorUi.edit(root.index, value); }
+            }
+        }
+        Text {
+            width: 27px;
+            height: 34px;
+            vertical-alignment: center;
+            text: root.field.unit;
+            color: KitThemeContext.current.text-secondary;
+            font-size: 12px;
+        }
+    }
+}
+
+component ParameterGroup inherits VerticalLayout {
+    in property <string> title;
+    in property <int> first;
+    in property <int> count;
+    in property <bool> editable;
+    min-width: 0px;
+    preferred-width: 320px;
+    horizontal-stretch: 1;
+    padding: 16px;
+    spacing: 0px;
+    alignment: start;
+    Text {
+        text: root.title;
+        height: 26px;
+        color: KitThemeContext.current.text-primary;
+        font-size: 14px;
+        font-weight: 700;
+    }
+    for i in root.count : ParameterRow { index: root.first + i; editable: root.editable; }
+}
+
+export component MotorParameters inherits VerticalLayout {
+    in property <bool> running;
+    in property <bool> narrow;
+    private property <MotorEditorView> editor: MotorEditorUi.state;
+    private property <color> border: KitThemeContext.current.border-subtle;
+    private property <color> muted: KitThemeContext.current.text-secondary;
+    spacing: 12px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        cross-axis-alignment: center;
+        Text {
+            text: "Motor parameters";
+            horizontal-stretch: 1;
+            font-size: root.narrow ? 20px : 26px;
+            font-weight: 700;
+            color: KitThemeContext.current.text-primary;
+        }
+        OxiButton {
+            text: root.editor.dirty && root.editor.error != "" ? "Read & discard edits" : "Read controller";
+            enabled: root.editor.can-read;
+            clicked => { MotorEditorUi.act(MotorEditAction.read); }
+        }
+    }
+
+    Rectangle {
+        border-width: 1px;
+        border-color: root.border;
+        border-radius: 10px;
+        background: KitThemeContext.current.surface;
+        vertical-stretch: 0;
+        VerticalLayout {
+            spacing: 0px;
+            HorizontalLayout {
+                padding: 16px;
+                spacing: 8px;
+                Text {
+                    text: root.editor.status;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: root.muted;
+                }
+                if root.editor.dirty : Text {
+                    text: "Unapplied edits";
+                    font-size: 12px;
+                    color: #ffd49a;
+                }
+            }
+            if root.editor.error != "" : VerticalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-bottom: 12px;
+                Text {
+                    text: root.editor.error;
+                    color: #ff9b9b;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+            if root.editor.loaded : VerticalLayout {
+                spacing: 0px;
+                Rectangle { height: 1px; background: root.border; }
+                GridLayout {
+                    spacing: 0px;
+                    ParameterGroup {
+                        col: 0;
+                        row: 0;
+                        title: "Electrical model";
+                        first: 0;
+                        count: 5;
+                        editable: root.editor.editable;
+                    }
+                    Rectangle {
+                        col: 1;
+                        row: 0;
+                        width: root.narrow ? 0px : 1px;
+                        background: root.border;
+                    }
+                    ParameterGroup {
+                        col: root.narrow ? 0 : 2;
+                        row: root.narrow ? 1 : 0;
+                        title: "Thermal rating";
+                        first: 5;
+                        count: 2;
+                        editable: root.editor.editable;
+                    }
+                }
+                Rectangle { height: 1px; background: root.border; }
+                GridLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text {
+                        min-width: 0px;
+                        min-height: root.narrow ? 32px : 18px;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        col: 0;
+                        row: 0;
+                        text: root.running ? "Stop the drive before applying or saving parameters."
+                            : "Apply updates the running configuration. Save writes it to flash.";
+                        font-size: 12px;
+                        color: root.muted;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        col: root.narrow ? 0 : 1;
+                        row: root.narrow ? 1 : 0;
+                        spacing: 6px;
+                        alignment: end;
+                        OxiButton {
+                            text: "Revert edits";
+                            control-size: root.narrow ? ControlSize.compact : ControlSize.medium;
+                            enabled: root.editor.dirty && root.editor.editable;
+                            clicked => { MotorEditorUi.act(MotorEditAction.revert); }
+                        }
+                        OxiButton {
+                            text: "Apply to RAM";
+                            control-size: root.narrow ? ControlSize.compact : ControlSize.medium;
+                            primary: root.editor.can-apply;
+                            enabled: root.editor.can-apply;
+                            clicked => { MotorEditorUi.act(MotorEditAction.apply); }
+                        }
+                        OxiButton {
+                            text: "Save to flash";
+                            control-size: root.narrow ? ControlSize.compact : ControlSize.medium;
+                            primary: root.editor.can-save;
+                            enabled: root.editor.can-save;
+                            clicked => { MotorEditorUi.act(MotorEditAction.save); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

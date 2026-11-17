@@ -1,3 +1,5 @@
+import { MotorParameters } from "motor-parameters.slint";
+export { MotorEditorUi, MotorEditAction } from "motor-parameters.slint";
 import { VerticalBox, HorizontalBox, Button, ComboBox, Slider, CheckBox, SpinBox, TabWidget,
          StandardListView, LineEdit, GroupBox, ScrollView, GridBox, ListView, Palette } from "std-widgets.slint";
 import { PlotWidget } from "plot.slint";
@@ -29,9 +31,15 @@ component TelemetryValue inherits Rectangle {
     }
 }
 
+component ConfigGroupSelector inherits ComboBox {
+    model: ["Motor Params", "Current Limits", "Voltage Limits", "PI Gains", "Velocity Loop", "Failsafe"];
+    min-width: 160px;
+}
+
 export component App inherits Window {
     title: "OxiFOC · Slint Kit trial";
     default-font-family: "DejaVu Sans";
+    min-width: 360px;
     preferred-width: 1120px;
     preferred-height: 820px;
     property <bool> is-dark: Palette.background.to-hsv().value < 0.5;
@@ -249,16 +257,9 @@ export component App inherits Window {
 
     // ── Config editor ──
     in-out property <int> config-group: 0;
+    private property <bool> editing-motor: root.active-tab == 1 && root.config-group == 0;
     in property <string> config-status: "";
     // Motor params
-    in-out property <string> cfg-resistance: "";
-    in-out property <string> cfg-inductance-d: "";
-    in-out property <string> cfg-inductance-q: "";
-    in-out property <string> cfg-flux-linkage: "";
-    in-out property <string> cfg-pole-pairs: "";
-    in-out property <string> cfg-motor-rating: "";
-    in-out property <string> cfg-motor-power-loss: "";
-    // Current limits
     in-out property <string> cfg-max-iq: "";
     in-out property <string> cfg-max-brake: "";
     in-out property <string> cfg-max-phase-current: "";
@@ -692,27 +693,46 @@ export component App inherits Window {
         // The connection state and disconnect action stay visible on every tab.
         HorizontalLayout {
             min-height: 36px;
-            spacing: 12px;
+            spacing: root.editing-motor ? 8px : 12px;
             cross-axis-alignment: center;
-            Text { text: "Oxifoc"; font-size: 22px; font-weight: 700; vertical-alignment: center; }
-            Rectangle { width: 1px; background: root.panel-border; }
+            if root.editing-motor : Image {
+                source: @image-url("../../oxifoc-ui/assets/oxifoc-icon.svg");
+                width: 24px; height: 24px;
+            }
+            if !root.editing-motor : Text {
+                text: "Oxifoc"; font-size: 22px; font-weight: 700; vertical-alignment: center;
+            }
+            if !root.editing-motor : Rectangle { width: 1px; background: root.panel-border; }
             Rectangle { width: 9px; height: 9px; border-radius: 5px;
                 background: root.is-connected ? #239e75 : #d39a20; }
             Text {
                 text: root.is-connected ? (root.device-hw != "" ? root.device-hw : "Connected") : "Connecting…";
                 font-size: 12px; font-weight: 600; vertical-alignment: center;
+                overflow: elide;
             }
-            if root.device-sw != "" : Text {
+            if root.device-sw != "" && !root.editing-motor : Text {
                 text: root.device-sw; font-size: 11px; color: root.muted-text; vertical-alignment: center;
+            }
+            if root.editing-motor && root.is-connected : Text {
+                text: root.motor-state-text;
+                font-size: 12px;
+                color: root.muted-text;
+                vertical-alignment: center;
+                overflow: elide;
             }
             Rectangle { horizontal-stretch: 1; }
             if root.fault-text != "" : Text {
                 text: root.fault-text; color: #d94b4b; font-weight: 600; vertical-alignment: center;
             }
+            if root.editing-motor && root.is-connected : Button {
+                text: "Stop drive";
+                primary: root.motor-running;
+                clicked => { root.motor-stop(); }
+            }
             Button { text: "Disconnect"; clicked => { root.disconnect-device(); } }
         }
 
-        HorizontalLayout {
+        if !root.editing-motor : HorizontalLayout {
             spacing: 10px;
             min-height: 136px;
 
@@ -811,29 +831,33 @@ export component App inherits Window {
             HorizontalLayout {
                 padding: 7px;
                 spacing: 8px;
-                Text { text: "Stream"; color: root.muted-text; vertical-alignment: center; }
-                ComboBox {
-                    model: ["100 Hz", "500 Hz", "1000 Hz", "2000 Hz", "5000 Hz", "10000 Hz", "20000 Hz"];
-                    current-index <=> root.stream-rate-index;
-                    min-width: 94px;
+                if !root.editing-motor : HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Stream"; color: root.muted-text; vertical-alignment: center; }
+                    ComboBox {
+                        model: ["100 Hz", "500 Hz", "1000 Hz", "2000 Hz", "5000 Hz", "10000 Hz", "20000 Hz"];
+                        current-index <=> root.stream-rate-index;
+                        min-width: 94px;
+                    }
+                    Button { text: root.streaming ? "Stop" : "Start"; primary: !root.streaming;
+                        enabled: root.is-connected || root.streaming;
+                        clicked => { if root.streaming { root.stream-stop(); } else { root.stream-start(); } } }
+                    Text { text: "Source"; color: root.muted-text; vertical-alignment: center; }
+                    ComboBox {
+                        model: ["Hall", "Hall (no crossover)", "Sensorless", "HFI", "HFI→Observer", "HFI→Obs (V)"];
+                        current-index <=> root.phase-source-index;
+                        min-width: 124px;
+                        selected => { root.phase-source-changed(); }
+                    }
                 }
-                Button { text: root.streaming ? "Stop" : "Start"; primary: !root.streaming;
-                    enabled: root.is-connected || root.streaming;
-                    clicked => { if root.streaming { root.stream-stop(); } else { root.stream-start(); } } }
-                Text { text: "Source"; color: root.muted-text; vertical-alignment: center; }
-                ComboBox {
-                    model: ["Hall", "Hall (no crossover)", "Sensorless", "HFI", "HFI→Observer", "HFI→Obs (V)"];
-                    current-index <=> root.phase-source-index;
-                    min-width: 124px;
-                    selected => { root.phase-source-changed(); }
-                }
-                Rectangle { horizontal-stretch: 1; }
+                if !root.editing-motor : Rectangle { horizontal-stretch: 1; }
                 Button { text: "Monitor"; primary: root.active-tab == 0; clicked => { root.active-tab = 0; } }
                 Button { text: "Config"; primary: root.active-tab == 1; clicked => { root.active-tab = 1; } }
                 Button { text: "Detect"; primary: root.active-tab == 2; clicked => { root.active-tab = 2; } }
                 Button { text: "Faults"; primary: root.active-tab == 3;
                     clicked => { root.active-tab = 3; root.faults-refresh(); } }
                 Button { text: "Log"; primary: root.active-tab == 4; clicked => { root.active-tab = 4; } }
+                if root.editing-motor : Rectangle { horizontal-stretch: 1; }
             }
         }
         if root.rate-warning != "" : Text {
@@ -842,8 +866,8 @@ export component App inherits Window {
 
         Rectangle {
             vertical-stretch: 1;
-            background: root.panel-color;
-            border-width: 1px;
+            background: root.editing-motor ? transparent : root.panel-color;
+            border-width: root.editing-motor ? 0px : 1px;
             border-color: root.panel-border;
             border-radius: 9px;
 
@@ -1002,8 +1026,36 @@ export component App inherits Window {
                 }
             }
 
+            if root.editing-motor : ScrollView {
+                min-width: 0px;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, workspace.preferred-height);
+                workspace := VerticalLayout {
+                    y: 0px;
+                    x: (parent.width - self.width) / 2;
+                    width: min(parent.width, 1016px);
+                    height: self.preferred-height;
+                    padding: 8px;
+                    spacing: 14px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Config group";
+                            color: root.muted-text;
+                            vertical-alignment: center;
+                        }
+                        ConfigGroupSelector { width: 192px; current-index <=> root.config-group; }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    MotorParameters {
+                        running: root.motor-running;
+                        narrow: workspace.width < 720px;
+                    }
+                }
+            }
+
             // ── Config tab ──
-            if root.active-tab == 1 : VerticalLayout {
+            if root.active-tab == 1 && !root.editing-motor : VerticalLayout {
                 padding: 8px;
                 spacing: 8px;
 
@@ -1012,11 +1064,7 @@ export component App inherits Window {
                     alignment: start;
 
                     Text { text: "Config group:"; vertical-alignment: center; }
-                    ComboBox {
-                        model: ["Motor Params", "Current Limits", "Voltage Limits", "PI Gains", "Velocity Loop", "Failsafe"];
-                        current-index <=> root.config-group;
-                        min-width: 160px;
-                    }
+                    ConfigGroupSelector { current-index <=> root.config-group; }
                     OxiButton { text: "Read"; clicked => { root.config-read(); } }
                     OxiButton {
                         text: root.config-group == 2 ? "Read-only" : "Write";
@@ -1040,20 +1088,6 @@ export component App inherits Window {
                     }
                 }
 
-                if root.config-group == 0 : GridLayout {
-                    spacing: 6px;
-                    Row {
-                        Text { text: "Resistance (Ω):"; } OxiNumberField { accessible-name: "Resistance (Ω):"; text <=> root.cfg-resistance; min-width: 120px; }
-                        Text { text: "Inductance D (H):"; } OxiNumberField { accessible-name: "Inductance D (H):"; text <=> root.cfg-inductance-d; min-width: 120px; }
-                    }
-                    Row {
-                        Text { text: "Inductance Q (H):"; } OxiNumberField { accessible-name: "Inductance Q (H):"; text <=> root.cfg-inductance-q; min-width: 120px; }
-                        Text { text: "Flux linkage (Wb):"; } OxiNumberField { accessible-name: "Flux linkage (Wb):"; text <=> root.cfg-flux-linkage; min-width: 120px; }
-                    }
-                    Row { Text { text: "Pole pairs:"; } OxiNumberField { accessible-name: "Pole pairs:"; text <=> root.cfg-pole-pairs; min-width: 120px; } }
-                    Row { Text { text: "Rating limit (A, 0 = auto):"; } OxiNumberField { accessible-name: "Rating limit (A, 0 = auto):"; text <=> root.cfg-motor-rating; min-width: 120px; } }
-                    Row { Text { text: "Power class (W):"; } OxiNumberField { accessible-name: "Power class (W):"; text <=> root.cfg-motor-power-loss; min-width: 120px; } }
-                }
                 if root.config-group == 1 : GridLayout {
                     spacing: 6px;
                     Row {

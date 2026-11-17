@@ -6,7 +6,7 @@ use oxifoc_host_lib::{CommandSender, HostCommand, config_channel, ops};
 use slint::ComponentHandle;
 use slint::SharedString;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicU64},
     thread,
 };
 
@@ -14,21 +14,21 @@ use std::{
 /// in `ui/app.slint` — MUST stay in the same order as that ComboBox `model`
 /// (the write path's per-group forms are keyed by the same index). This
 /// const is the single Rust-side copy of that mapping.
-const GUI_CONFIG_GROUPS: [oxifoc_core::types::ConfigGroupId; 6] = {
+const GUI_CONFIG_GROUPS: [Option<oxifoc_core::types::ConfigGroupId>; 6] = {
     use oxifoc_core::types::ConfigGroupId as G;
     [
-        G::MotorParams,   // "Motor Params"
-        G::CurrentLimits, // "Current Limits"
-        G::VoltageLimits, // "Voltage Limits" (read-only)
-        G::PiGains,       // "PI Gains"
-        G::Velocity,      // "Velocity Loop"
-        G::Failsafe,      // "Failsafe"
+        None,                   // "Motor Params"
+        Some(G::CurrentLimits), // "Current Limits"
+        Some(G::VoltageLimits), // "Voltage Limits" (read-only)
+        Some(G::PiGains),       // "PI Gains"
+        Some(G::Velocity),      // "Velocity Loop"
+        Some(G::Failsafe),      // "Failsafe"
     ]
 };
 
-pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
+pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<AtomicU64>) {
     let form = Arc::new(Mutex::new(None::<(CommandSender, ConfigSnapshot)>));
-    let read_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let read_generation = Arc::new(AtomicU64::new(0));
     use std::sync::atomic::Ordering;
 
     // ── Config read ──────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
 
             let Some(group_id) = usize::try_from(group_idx)
                 .ok()
-                .and_then(|i| GUI_CONFIG_GROUPS.get(i).copied())
+                .and_then(|i| GUI_CONFIG_GROUPS.get(i).copied().flatten())
             else {
                 return;
             };
@@ -92,36 +92,6 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
                                 .or_else(|| snapshot.default.clone())
                                 .or_else(|| snapshot.effective.clone())
                             {
-                                Some(ConfigValue::MotorParams(p)) => {
-                                    app.set_cfg_resistance(SharedString::from(format!(
-                                        "{}",
-                                        p.resistance_ohm
-                                    )));
-                                    app.set_cfg_inductance_d(SharedString::from(format!(
-                                        "{}",
-                                        p.inductance_d_h
-                                    )));
-                                    app.set_cfg_inductance_q(SharedString::from(format!(
-                                        "{}",
-                                        p.inductance_q_h
-                                    )));
-                                    app.set_cfg_flux_linkage(SharedString::from(format!(
-                                        "{}",
-                                        p.flux_linkage_wb
-                                    )));
-                                    app.set_cfg_pole_pairs(SharedString::from(format!(
-                                        "{}",
-                                        p.pole_pairs
-                                    )));
-                                    app.set_cfg_motor_rating(SharedString::from(format!(
-                                        "{}",
-                                        p.max_current_a
-                                    )));
-                                    app.set_cfg_motor_power_loss(SharedString::from(format!(
-                                        "{}",
-                                        p.max_power_loss_w
-                                    )));
-                                }
                                 Some(ConfigValue::CurrentLimits(c)) => {
                                     app.set_cfg_max_iq(SharedString::from(format!(
                                         "{}",
@@ -266,28 +236,6 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
             let mut parse_err: Option<String> = None;
             let err = &mut parse_err;
             let write = match group_idx {
-                0 => {
-                    let r: f32 = parse_field("resistance", &app.get_cfg_resistance(), err);
-                    let ld: f32 = parse_field("inductance d", &app.get_cfg_inductance_d(), err);
-                    let lq: f32 = parse_field("inductance q", &app.get_cfg_inductance_q(), err);
-                    let fl: f32 = parse_field("flux linkage", &app.get_cfg_flux_linkage(), err);
-                    let pp: u8 = parse_field("pole pairs", &app.get_cfg_pole_pairs(), err);
-                    let rating: f32 = parse_field("motor rating", &app.get_cfg_motor_rating(), err);
-                    let ploss: f32 =
-                        parse_field("motor power loss", &app.get_cfg_motor_power_loss(), err);
-                    ConfigAction::Patch {
-                        group: ConfigGroupId::MotorParams,
-                        fields: vec![
-                            format!("resistance_ohm={r}"),
-                            format!("inductance_d_h={ld}"),
-                            format!("inductance_q_h={lq}"),
-                            format!("flux_linkage_wb={fl}"),
-                            format!("pole_pairs={pp}"),
-                            format!("max_current_a={rating}"),
-                            format!("max_power_loss_w={ploss}"),
-                        ],
-                    }
-                }
                 1 => {
                     let iq: f32 = parse_field("max iq", &app.get_cfg_max_iq(), err);
                     let brake: f32 = parse_field("max brake", &app.get_cfg_max_brake(), err);
@@ -447,8 +395,10 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime) {
             read_generation.fetch_add(1, Ordering::Relaxed);
             app.set_config_status(SharedString::from("Resetting..."));
             let weak = weak.clone();
+            let motor_config_generation = motor_config_generation.clone();
             thread::spawn(move || {
                 let result = ops::config::reset_all(&cmd_tx);
+                motor_config_generation.fetch_add(1, Ordering::Relaxed);
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     app.set_config_reset_confirm(false);
                     match result {

@@ -2,7 +2,7 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use oxifoc_core::drive_setup::DriveCurrent;
@@ -13,7 +13,7 @@ use slint::{ComponentHandle, SharedString};
 
 use super::{App, SharedRuntime, parse_field};
 
-pub fn bind(app: &App, runtime: &SharedRuntime) {
+pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<AtomicU64>) {
     let result = Arc::new(Mutex::new(
         None::<(CommandSender, DetectionPlan, DetectionOutcome)>,
     ));
@@ -213,10 +213,12 @@ pub fn bind(app: &App, runtime: &SharedRuntime) {
         app.set_detect_running(true);
         app.set_detect_status("Saving configuration".into());
         let weak = weak.clone();
+        let motor_config_generation = motor_config_generation.clone();
         std::thread::spawn(move || {
             let saved = out.setup(plan, current).and_then(|setup| {
                 let preview = detect::preview_setup(&cmd, setup, board_trip_a)?;
                 detect::apply_sequence(&cmd, &out, plan, current)?;
+                motor_config_generation.fetch_add(1, Ordering::Relaxed);
                 Ok(preview.limits().max_iq_a)
             });
             let _ = weak.upgrade_in_event_loop(move |app| {

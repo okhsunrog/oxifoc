@@ -14,6 +14,7 @@ mod detection;
 mod faults;
 mod logging;
 mod motor;
+mod motor_parameters;
 
 use faults::apply_faults;
 use logging::UiLogLayer;
@@ -244,6 +245,7 @@ pub fn main() {
         std::sync::Mutex<Option<crossbeam_channel::Receiver<oxifoc_core::types::SlowTelemetry>>>,
     > = Arc::new(std::sync::Mutex::new(None));
     let connected_flag: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let motor_config_generation = Arc::new(AtomicU64::new(0));
 
     #[cfg(feature = "desktop")]
     refresh_serial_ports(&app, &ports_list);
@@ -794,6 +796,7 @@ pub fn main() {
         let srx_slot = slow_rx_slot.clone();
         let conn_flag = connected_flag.clone();
         let esl_connect = enrich_slot.clone();
+        let config_generation = motor_config_generation.clone();
         let fhz = fast_hz.clone();
 
         app.on_connect_device(move || {
@@ -937,6 +940,7 @@ pub fn main() {
             }
 
             let host_runtime = start_host(config);
+            config_generation.fetch_add(1, Ordering::Relaxed);
             let fast_rx = host_runtime.fast_rx.clone();
             let slow_rx = host_runtime.slow_rx.clone();
             let info_rx = host_runtime.device_info_rx.clone();
@@ -996,10 +1000,12 @@ pub fn main() {
             let rt_info = rt.clone();
             let esl_info = esl_connect.clone();
             let stop_info = stop.clone();
+            let config_generation = config_generation.clone();
             thread::spawn(move || {
                 while !stop_info.load(Ordering::Relaxed) {
                     match info_rx.recv_timeout(Duration::from_millis(200)) {
                         Ok(info) => {
+                            config_generation.fetch_add(1, Ordering::Relaxed);
                             let cmd_tx = rt_info.lock().unwrap().as_ref().map(|r| r.cmd_tx.clone());
                             if let Some(cmd_tx) = cmd_tx
                                 && let Some(ctx) =
@@ -1105,8 +1111,9 @@ pub fn main() {
         &motor_request_generation,
         &motor_update_pending,
     );
-    configuration::bind(&app, &runtime);
-    detection::bind(&app, &runtime);
+    configuration::bind(&app, &runtime, motor_config_generation.clone());
+    detection::bind(&app, &runtime, motor_config_generation.clone());
+    let _motor_editor_timer = motor_parameters::bind(&app, &runtime, motor_config_generation);
     faults::bind(&app, &runtime);
 
     app.run().unwrap();

@@ -1,6 +1,7 @@
 pub mod config;
 mod connection;
 pub mod discovery;
+pub mod motor_editor;
 pub mod ops;
 pub mod raw_telemetry;
 pub mod transport;

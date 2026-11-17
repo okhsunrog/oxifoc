@@ -7,6 +7,12 @@ and telemetry are real; no demonstration values enter these screens.
 
 The remaining monitor, detection, fault and log screens retain their existing
 standard widgets. This is an adoption trial, not a complete visual redesign.
+
+In **Config → Motor Params**, the motor editor reads the current revision on
+entry and after reconnecting. **Apply to RAM** and **Save to flash** are separate
+actions. The Slint and Dioxus Native editors share validation, draft state and
+revision-aware controller operations in `oxifoc-host-lib`.
+
 Slint remains at 1.18.1. Slint Kit's runtime and build helper are pinned to the
 same 0.8.0 release; the helper uses experimental Slint module compilation.
 `slint_kit::install` registers the required per-window services.
