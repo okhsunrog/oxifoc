@@ -58,8 +58,11 @@ service (NUS-shaped, own UUIDs), for example
 `just cli --transport ble --ble-name "Oxifoc Bridge" --wait-secs 12 status`.
 For slow telemetry use `monitor --fast-hz 0`. Use USB Serial/JTAG for
 native-rate captures. The bridge accepts two BLE centrals at once, for
-example the remote and a laptop. The optional BLE service currently accepts
-unpaired clients, so enable it only on a controlled bench.
+example the remote and a laptop. Only bonded devices reach the controller
+over BLE. Pair a new device through a window opened from a trusted
+connection, for example over USB:
+`just cli-bridge pairing open --role host --name laptop`, then confirm the
+number on both sides. See [BLE pairing](docs/notes/ble-pairing.md).
 
 ## Develop
 
