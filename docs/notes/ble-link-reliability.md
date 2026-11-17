@@ -31,36 +31,74 @@ so timing over a long first interval may be off. nrf-sdc's
 `NordicCompatModeWindowOffsetSet` (avoids WinOffset = 0) asserted inside the
 SoftDevice Controller (`57:2031`) when sent, so it was not tested.
 
+### After the P0 changes
+
+Remote on the 32.768 kHz crystal, 1M PHY only, +8 dBm; bridge advertising
+every 20–30 ms at +20 dBm; immediate reconnect after a lost session.
+
+| Scenario | Result |
+|---|---|
+| Remote power-on (8 runs) | session active 0.74–1.03 s after boot, median 0.77 s |
+| Bridge reset (6 runs) | loss detected ≈1 s after reset; loss → session active 287–673 ms, median ≈320 ms |
+
+Remaining budget after a loss: 1 s supervision timeout, ≈0.7 s C5 boot when
+the bridge itself restarted, ≈0.28 s GATT discovery + MTU exchange, and
+≈0.1 s per failed establishment.
+
+### 0x3E investigation
+
+Failed establishment persists at roughly 30–50 % per attempt (power-on and
+reconnect alike, all intervals tried). The bridge logs nothing for failed
+attempts, even with `trouble_host=debug`, and keeps advertising, so the C5
+most likely never accepts the CONNECT_IND. Ruled out or not confirmed:
+
+- **C5 BLE low-power timer clock.** On the running bridge
+  `MODEM_LPCON.LP_TIMER_CONF = 0` and `CLK_CONF.clk_lp_timer_en = 0`:
+  esp-radio 1.0.0-beta.1 selects no source and leaves the clock off, while
+  telling the controller `rtc_freq = 32768`. ESP-IDF uses the 48 MHz XTAL
+  divided by 480 (100 kHz) with `rtc_freq = 100000`. A local esp-radio patch
+  doing the same (`LP_TIMER_CONF = 0x1df4`) did not change the failure rate.
+  Still worth reporting upstream.
+- **Advertising channel.** Single-channel runs first suggested channel 37
+  was clean (0/6), but a 10-run repeat on 37 gave 7 failures in 15 attempts.
+- **`ble_npl_callout_is_active`.** The "missing real implementation" debug
+  line is stale; the function is implemented.
+- **nrf-sdc `NordicCompatModeWindowOffsetSet`** asserts in the SoftDevice
+  Controller (`57:2031`), sent before or after host init. Untested.
+
+Next: compare with the laptop as central (BlueZ reports 0x3E as
+`le-connection-abort-by-local`), and capture CONNECT_IND with an nRF52840
+sniffer to see whether the C5 answers the first connection event.
+
 ## Plan
 
 ### P0 — cheap, large effect
 
-1. **Connection parameters** — done in `remote.rs`: 15–20 ms interval,
+1. **[done] Connection parameters** in `remote.rs`: 15–20 ms interval,
    latency 0, 1 s supervision timeout for every image. The 150 ms ISR
    deadman handles freshness separately. Tune the timeout under interference:
    shorter frees the slot and starts reconnecting sooner, longer rides out
    short fades without a reconnect.
-2. **Reconnect without the 2 s sleep.** Retry immediately after a loss and
-   back off only after repeated failures. `central.connect` has no timeout
+2. **[done] Reconnect without the 2 s sleep.** A lost session and the first
+   three failed attempts retry immediately; longer runs of failures back off
+   50 ms → 1 s. `central.connect` has no timeout
    of its own; it waits until the bridge advertises.
 3. **Two connections on the bridge.** With one slot a stale link, the laptop
    or the phone blocks the remote. esp-radio's C5 config defaults to
    `max_connections = 2`; trouble needs `CONNECTIONS_MAX = 2` and the bridge
    must keep advertising while one link is up. This is also required for
    remote + phone (remote-design §7).
-4. **Fast advertising on the bridge.** The default interval is 160 ms. The
+4. **[done] Fast advertising on the bridge.** The default interval is 160 ms. The
    bridge is board-powered, so use 20–30 ms whenever a remote slot is free.
-5. **Let only the central request 2M PHY,** and read connection events on the
-   remote (`PhyUpdated`, `ConnectionParamsUpdated`, failures). The remote
-   never polls `conn.next()`, so these events are dropped today. Consider
-   staying on 1M for the remote link: 1M has better receiver sensitivity,
-   and throttle traffic does not need 2M throughput.
-6. **TX power.** Remote: `nrf_sdc::Builder::default_tx_power` (+8 dBm max on
+5. **[done] 1M PHY for the remote.** The remote's controller is built without
+   2M support, and the bridge no longer requests a PHY (host tools may still
+   ask for 2M). The remote logs connection events and rejects parameter
+   requests from the peer.
+6. **[done] TX power.** Remote: `nrf_sdc::Builder::default_tx_power` (+8 dBm max on
    nRF52840). Bridge: esp-radio `Config::with_default_tx_power` (default
    +9 dBm). Legacy `advertise` ignores trouble's `tx_power`.
-7. **LF clock on the remote.** It runs on the RC oscillator declared as
-   250 ppm. If the clone has the nice!nano 32.768 kHz crystal, use XTAL with
-   its real accuracy: tighter timing and lower current.
+7. **[done] LF clock on the remote:** the 32.768 kHz crystal, declared as
+   50 ppm.
 
 ### P1 — reconnect in tens of milliseconds
 
@@ -79,6 +117,9 @@ SoftDevice Controller (`57:2031`) when sent, so it was not tested.
 10. **Pairing instead of the hard-coded bridge address** in `remote.rs`.
 
 ### P2 — monitoring and environment
+
+- **USB flashing and logging for the remote,** as in the Voyager firmware. The
+  final remote exposes only USB, not SWD.
 
 11. **Link quality.** Track RSSI (`LeReadRssi`, Nordic average RSSI) and
     affirm round-trip time; drive the remote-design §10 haptic warning.

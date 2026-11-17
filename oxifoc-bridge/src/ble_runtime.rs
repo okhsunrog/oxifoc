@@ -21,7 +21,10 @@ pub async fn run(
     ble_ident: u8,
 ) {
     // ========== BLE setup ==========
-    let bt_transport = BleConnector::new(bt, Default::default()).expect("BLE connector init");
+    // Maximum TX power: the board is powered and the link carries the throttle.
+    let radio_config =
+        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P20);
+    let bt_transport = BleConnector::new(bt, radio_config).expect("BLE connector init");
     let ble_controller = ExternalController::<_, CONNECTIONS_MAX>::new(bt_transport);
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
         HostResources::new();
@@ -43,14 +46,9 @@ pub async fn run(
         loop {
             match advertise(&mut peripheral, &nus_server).await {
                 Ok(conn) => {
+                    // The central chooses the PHY: the remote stays on 1M for
+                    // sensitivity, host tools may request 2M for telemetry.
                     info!("[ble] connection established");
-
-                    // Request 2M PHY for higher throughput
-                    if let Err(_e) = conn.raw().set_phy(&ble_stack, PhyKind::Le2M).await {
-                        warn!("[ble] failed to set 2M PHY, continuing with 1M");
-                    } else {
-                        info!("[ble] 2M PHY requested");
-                    }
 
                     nus_connection_task(stack, &nus_server, &conn, ble_ident).await;
                     stack.manage_profile(|router| {
@@ -99,9 +97,16 @@ async fn advertise<'v, 's, C: Controller>(
         &mut scan_data[..],
     )?;
 
+    // Fast advertising: the bridge is board-powered and a reconnecting remote
+    // should find it within one scan window.
+    let params = AdvertisementParameters {
+        interval_min: embassy_time::Duration::from_millis(20),
+        interval_max: embassy_time::Duration::from_millis(30),
+        ..Default::default()
+    };
     let advertiser = peripheral
         .advertise(
-            &Default::default(),
+            &params,
             Advertisement::ConnectableScannableUndirected {
                 adv_data: &adv_data[..len],
                 scan_data: &scan_data[..scan_len],

@@ -14,7 +14,7 @@ use trouble_host::prelude::*;
 
 use embassy_executor::{Executor, Spawner};
 use embassy_futures::join::join4;
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either, select, select3};
 use embassy_time::{Duration, Timer};
 
 use ergot::NetStack;
@@ -36,6 +36,15 @@ mod battery;
 mod display;
 
 const CONNECTIONS_MAX: usize = 1;
+const LFCLK_ACCURACY_PPM: u16 = 50;
+/// nRF52840 maximum. The link carries the throttle, so range wins over current.
+const TX_POWER_DBM: i8 = 8;
+/// A lost session reconnects immediately. About a third of attempts against the
+/// C5 fail to establish (0x3E) and the next one usually succeeds, so the first
+/// failures retry at once and only a longer run of failures backs off.
+const IMMEDIATE_RETRIES: u32 = 3;
+const RETRY_BACKOFF_MIN: Duration = Duration::from_millis(50);
+const RETRY_BACKOFF_MAX: Duration = Duration::from_millis(1000);
 const L2CAP_CHANNELS_MAX: usize = 3; // Signal + ATT + safety margin
 
 /// Address of the bridge peripheral (must match oxifoc-bridge)
@@ -115,11 +124,13 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
         MultiprotocolServiceLayer::new(
             mpsl::Peripherals::new(p.RTC0, p.TIMER0, p.TEMP, p.PPI_CH19, p.PPI_CH30, p.PPI_CH31),
             Irqs,
+            // The nice!nano has a 32.768 kHz crystal. 50 ppm is a conservative
+            // bound for a generic watch crystal; the peer widens its windows by it.
             mpsl::raw::mpsl_clock_lfclk_cfg_t {
-                source: mpsl::raw::MPSL_CLOCK_LF_SRC_RC as u8,
-                rc_ctiv: mpsl::raw::MPSL_RECOMMENDED_RC_CTIV as u8,
-                rc_temp_ctiv: mpsl::raw::MPSL_RECOMMENDED_RC_TEMP_CTIV as u8,
-                accuracy_ppm: mpsl::raw::MPSL_DEFAULT_CLOCK_ACCURACY_PPM as u16,
+                source: mpsl::raw::MPSL_CLOCK_LF_SRC_XTAL as u8,
+                rc_ctiv: 0,
+                rc_temp_ctiv: 0,
+                accuracy_ppm: LFCLK_ACCURACY_PPM,
                 skip_wait_lfclk_started: false,
             },
         )
@@ -133,12 +144,14 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
     static SDC_MEM: StaticCell<nrf_sdc::Mem<2904>> = StaticCell::new();
     // Controller ACL fragments are at most 251 bytes. Trouble reassembles
     // them into its 512-byte L2CAP packets used by the existing NUS transport.
+    // No 2M PHY: the throttle needs little throughput, and 1M has the better
+    // receiver sensitivity. Without the feature the link stays on 1M.
     let ble_controller = nrf_sdc::Builder::new()
         .expect("SDC init")
         .support_central()
-        .support_le_2m_phy()
-        .support_phy_update_central()
         .support_dle_central()
+        .default_tx_power(TX_POWER_DBM)
+        .expect("SDC TX power")
         .central_count(CONNECTIONS_MAX as u8)
         .expect("SDC connection count")
         .buffer_cfg(251, 251, 3, 3)
@@ -201,7 +214,12 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
             }),
         // Connect + application loop
         async {
+            let mut backoff = Duration::from_ticks(0);
+            let mut failures = 0u32;
             loop {
+                if backoff.as_ticks() > 0 {
+                    Timer::after(backoff).await;
+                }
                 display::BRIDGE_READY.signal(false);
                 info!("[ble] connecting to bridge...");
 
@@ -226,13 +244,6 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
                     Ok(conn) => {
                         info!("[ble] connected to bridge");
 
-                        // Request 2M PHY
-                        if let Err(_e) = conn.set_phy(&ble_stack, PhyKind::Le2M).await {
-                            warn!("[ble] failed to set 2M PHY");
-                        } else {
-                            info!("[ble] 2M PHY set");
-                        }
-
                         // Create GATT client
                         let client =
                             match GattClient::<_, DefaultPacketPool, 10>::new(&ble_stack, &conn)
@@ -240,7 +251,9 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
                             {
                                 Ok(c) => c,
                                 Err(_e) => {
-                                    error!("[ble] GATT client creation failed");
+                                    warn!("[ble] link not established, retrying");
+                                    failures += 1;
+                                    backoff = retry_backoff(failures, backoff);
                                     continue;
                                 }
                             };
@@ -249,10 +262,21 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
                         // select, not join: on disconnect `client.task()`
                         // returns but `nus_session` blocks forever (the
                         // notification listener never signals disconnect).
-                        let _ = select(client.task(), async {
-                            nus_session(stack, &client, &conn).await;
-                        })
+                        let active = core::cell::Cell::new(false);
+                        let _ = select3(
+                            client.task(),
+                            nus_session(stack, &client, &conn, &active),
+                            connection_events(&ble_stack, &conn),
+                        )
                         .await;
+                        // A session that came up proves the link; retry at once.
+                        if active.get() {
+                            failures = 0;
+                            backoff = Duration::from_ticks(0);
+                        } else {
+                            failures += 1;
+                            backoff = retry_backoff(failures, backoff);
+                        }
                         display::BRIDGE_READY.signal(false);
 
                         // Disconnected
@@ -268,16 +292,49 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
                     }
                     Err(_e) => {
                         warn!("[ble] connect failed, retrying");
+                        failures += 1;
+                        backoff = retry_backoff(failures, backoff);
                     }
                 }
-
-                Timer::after_secs(2).await;
             }
         },
     )
     .await;
 
     unreachable!()
+}
+
+fn retry_backoff(failures: u32, current: Duration) -> Duration {
+    if failures <= IMMEDIATE_RETRIES {
+        Duration::from_ticks(0)
+    } else if current.as_ticks() == 0 {
+        RETRY_BACKOFF_MIN
+    } else {
+        (current * 2).min(RETRY_BACKOFF_MAX)
+    }
+}
+
+/// Log link-layer events and answer parameter requests until the link drops.
+async fn connection_events<C: Controller>(
+    stack: &Stack<'_, C, DefaultPacketPool>,
+    conn: &Connection<'_, DefaultPacketPool>,
+) {
+    loop {
+        match conn.next().await {
+            ConnectionEvent::Disconnected { reason } => {
+                info!("[ble] link lost: {:?}", reason);
+                return;
+            }
+            ConnectionEvent::RequestConnectionParams(request) => {
+                // Keep the remote's short interval; the bridge has no reason to slow it.
+                warn!("[ble] peer requested connection parameters, rejecting");
+                if request.reject(stack).await.is_err() {
+                    warn!("[ble] parameter request reply failed");
+                }
+            }
+            event => info!("[ble] {:?}", event),
+        }
+    }
 }
 
 /// NUS session: discover service, subscribe, run bidirectional loop.
@@ -290,6 +347,7 @@ async fn nus_session<C: Controller>(
     stack: &'static transport::Stack,
     client: &GattClient<'_, C, DefaultPacketPool, 10>,
     _conn: &Connection<'_, DefaultPacketPool>,
+    active: &core::cell::Cell<bool>,
 ) {
     let nus_uuid = Uuid::from(oxifoc_core::ble::SERVICE_UUID);
     let rx_uuid = Uuid::from(oxifoc_core::ble::RX_UUID);
@@ -347,6 +405,7 @@ async fn nus_session<C: Controller>(
     transport::STATE_NOTIFY.wake_all();
 
     info!("[nus] active, running bidirectional loop");
+    active.set(true);
     display::BRIDGE_READY.signal(true);
 
     let mut processor = EdgeFrameProcessor::new();
