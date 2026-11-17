@@ -1,21 +1,26 @@
 # Handheld Remote — Design Notes
 
-The current `oxifoc-remote` prototype runs on nRF52840 with the Voyager
-SSD1306 wiring. It remains a BLE central for `oxifoc-bridge`. The ESP32-C6
-handheld hardware described below is from the original design.
+The current `oxifoc-remote` prototype runs on a nice!nano v2 clone
+(nRF52840) with the Voyager SSD1306 wiring. It is a BLE central for
+`oxifoc-bridge`, which runs on an ESP32-C5. The planned custom PCB keeps the
+nRF52840 and adds an AXP2101 PMIC and a vibration motor (§2–§3).
 
-> **STATUS: design (forward-looking), nothing implemented.** This is a
-> design doc, not a research note with an implementation status, so the
-> status is tracked per section via the markers below, not in this header.
+> **STATUS: design (forward-looking), partly implemented.** The BLE link
+> (remote central ↔ C5 peripheral, ergot over a NUS-shaped GATT service),
+> the C5 ↔ STM32 SPI link, and the controller's session/seq ownership,
+> affirm and ISR deadman exist. The remote does not send throttle yet; only
+> the `motor-test` bench image drives the motor. Per-section status uses the
+> markers below.
 
 Design decisions for the ESK8 throttle remote and its link to the motor
 controller, captured from the 2026-06-12 design session. Status markers:
 **[decided]** · **[open]** · **[bench]** (validate on hardware) · **[later]**
 (deferred, not v1).
 
-The remote is an ESP32-C6 handheld: a magnetic throttle, a PMIC, optional
+The remote is a handheld with a throttle trigger, a battery, optional
 display/haptics, talking to the board over a wireless link that routes through
-the `oxifoc-bridge` (ESP32-C6) into the motor controller. The whole network is
+the `oxifoc-bridge` (ESP32-C5) into the motor controller. The prototype is an
+nRF52840 with a potentiometer trigger read by the SAADC. The whole network is
 [ergot](https://github.com/jamesmunns/ergot), so transport choices are
 decoupled from the application/routing layer — any link can be swapped without
 app rework.
@@ -33,87 +38,79 @@ enclosure/throttle iterate with a 3D printer.
 Staging:
 - **Stage 0 (now):** laptop/phone are already ergot Edge nodes — command
   throttle from them with the board on a stand. Validates the full network path
-  (BLE → bridge → CAN → MC) + motor + failsafe **without a rider**. No remote
-  hardware needed; catches ~80% of issues.
-- **Stage 1 (first ride):** minimal handheld = ESP32-C6 + magnetic throttle +
-  LiPo + 3D-printed grip with a spring-return trigger (the mechanical deadman).
-  Reuse the `oxifoc-remote` firmware.
+  (BLE → C5 bridge → SPI → MC) + motor + failsafe **without a rider**. No
+  remote hardware needed; catches ~80% of issues.
+- **Stage 1 (first ride):** minimal handheld = nice!nano v2 clone
+  (nRF52840) + potentiometer trigger on the SAADC + LiPo + 3D-printed grip with a spring-return trigger
+  (the mechanical deadman). Reuse the `oxifoc-remote` firmware.
 - **Stage 2 (after rides):** custom PCB, designed to the *learned* ergonomics
   and throttle feel — not guessed. The electronics are all proven by then, so
   the spin is "integrate proven blocks," low risk; the prototype existed to fix
   *feel and layout*, not to prove the parts work.
 
 The deferral rationale is **ergonomics/feel unknowns**, not electronics risk —
-every block (AXP2101, magnetic encoder, C6) is already de-risked.
+every block (AXP2101, nRF52840, SAADC trigger) is already de-risked or
+running on the prototype.
 
 ---
 
 ## 2. Core module (SoM)
 
+**[decided] MCU: nRF52840** (revised 2026-11-17, replaces the ESP32-C6
+plan). Reasons: low power for a battery handheld, and a usable SAADC for
+the v1 potentiometer trigger (§4). The first iteration runs on a
+nice!nano v2 clone (§1, Stage 1). The custom PCB uses the same chip.
+
 **[decided]** A compact core module, sized to drop into "roughly any" remote
 enclosure. On-module = invariant; off-module = ergonomics-dependent.
 
-**On the module:** ESP32-C6-MINI-1U + AXP2101 + LiPo connector (JST) + charging
-+ power rails + USB-C. An **expansion interface** (board-to-board / FFC /
-header) breaks out: I2C (throttle encoder + PMIC + display share the bus), a few
-GPIO (buttons, vibration-motor gate via the PMIC's DLDO1), power-key, 3V3/GND.
+**On the module:** nRF52840 + AXP2101 + vibration motor driver (DLDO1) +
+LiPo connector (JST) + charging + power rails + USB-C. An **expansion
+interface** (board-to-board / FFC / header) breaks out: the trigger analog
+input, I2C (PMIC + display share the bus), a few GPIO (buttons),
+power-key, 3V3/GND.
 
-**Off the module** (iterate with the printer): the hall/magnet throttle and its
+**Off the module** (iterate with the printer): the trigger mechanism and its
 position, display, buttons, grip shape.
 
 Module also makes a reusable open-source artifact (like the crate stack —
-`drv8301-dd`, `axp2101-dd`, `ergot`): an "ESP32-C6 + AXP2101 core" is useful to
-anyone building a battery-powered C6 handheld.
+`drv8301-dd`, `axp2101-dd`, `ergot`): an "nRF52840 + AXP2101 core" is
+useful to anyone building a battery-powered BLE handheld.
 
 ### PCB
 
-- **[decided] 4-layer.** *Not* for RF (the C6-MINI is a shielded module with its
-  own antenna — RF is handled). The drivers are: (a) the AXP2101 is a switching
+- **[decided] 4-layer.** The drivers are: (a) the AXP2101 is a switching
   PMIC whose DCDC loops want a solid ground plane, and (b) the throttle is
-  safety-critical analog whose reference/return must stay clean of switcher
-  noise. At proto quantities the 4-layer cost delta is ~a few dollars; it turns
-  "carefully route returns under a switcher" into "drop a ground plane." Stack:
-  top sig / GND / PWR / bottom sig.
-- **[decided] Reflow assembly.** The AXP2101 QFN (thermal pad) mandates reflow
-  regardless of the module — so the MINI-1U's bottom pads cost nothing extra
-  (same stencil + paste + hotplate pass). Order PCB + stencil from JLCPCB
-  (~$7); hotplate is fine for this size. **Escape hatch:** JLCPCB PCBA assembles
-  it (both AXP2101 and the C6 module are standard parts) — removes the soldering
-  variable for the first spin.
-- **[decided] USB-C, dual purpose:** the C6's native USB (Serial/JTAG) for
-  flash/debug, and the same VBUS feeds the AXP2101 for charging.
+  safety-critical analog (a potentiometer on the SAADC in v1) whose
+  reference/return must stay clean of switcher noise. At proto quantities
+  the 4-layer cost delta is ~a few dollars; it turns "carefully route
+  returns under a switcher" into "drop a ground plane." Stack: top sig /
+  GND / PWR / bottom sig.
+- **[decided] Reflow assembly.** The AXP2101 QFN (thermal pad) mandates
+  reflow regardless of the radio part. Order PCB + stencil from JLCPCB
+  (~$7); hotplate is fine for this size. **Escape hatch:** JLCPCB PCBA.
+- **[decided] USB-C, dual purpose:** the nRF52840's native USB for
+  flashing (bootloader) and the same VBUS feeds the AXP2101 for charging.
+  Keep SWD pads for debug.
 - **[later] Qwiic/STEMMA I2C connector** for rapid prototype attach of
   display/sensor without soldering.
 - Reuse the **M5Core2 v1.1 schematic** (`Sch_Core2_v1.1`) as the proven AXP2101
   rail/charging reference — don't design the PMIC circuit from scratch.
 
-### Module selection: ESP32-C6-MINI-1U-N4
+### Radio part — **[open]**
 
-**[decided]** vs the alternatives:
+Bare nRF52840 vs a certified module is open. Criteria carried over from the
+ESP32-C6 module study:
 
-| | MINI-1U-N4 (chosen) | MINI-1-N4 | WROOM-1U-N4 |
-|---|---|---|---|
-| Size | ~13.2×13.2×2.4 | ~13.2×16.6×2.4 | ~18.0×19.2×3.2 (~2× area) |
-| Antenna | external (U.FL) | PCB | external (U.FL) |
-| Pads | bottom (reflow) | bottom (reflow) | castellated |
-| GPIO | enough for a remote | enough | more |
-
-- **External antenna (1U) is a real plus for a handheld:** the hand wraps the
-  grip and detunes a PCB antenna — the #1 RF failure mode of a handheld. U.FL
-  lets the radiator sit away from the hand (top of the remote). Cost: fragile
-  U.FL connector + coax + enclosure space. For a link where loss = throttle loss,
-  worth it. (If the enclosure naturally keeps a PCB antenna clear of the hand,
-  MINI-1 is simpler — but a hand-wrapped grip rarely does.)
-- **MINI-1U also has no antenna keepout** on the carrier → free placement,
-  smaller board.
-- **WROOM-1U is ~2× the area and thicker;** its only edge (castellated →
-  hand-solderable) is moot since the AXP2101 forces reflow anyway, and a remote
-  needs few GPIO. Reserve WROOM for the controller/bridge board if it needs more
-  pins or the 105 °C grade.
-- **N4 vs H4:** same 4 MB flash; N4 = −40…+85 °C (separate flash die), H4 = the
-  ESP32-C6FH4 (in-package flash), −40…+105 °C. A remote is hand-temperature →
-  **N4**; H4's extra range only matters near heat (e.g. a C6 on the controller
-  board by the power stage). Check JLC/Mouser stock either way.
+- **Antenna away from the hand.** A hand wrapped around the grip detunes a
+  PCB antenna — the #1 RF failure mode of a handheld. Prefer a module or
+  layout with an external (U.FL) antenna placed at the top of the remote,
+  unless the enclosure keeps a PCB/chip antenna clear of the hand. Loss of
+  this link = throttle loss.
+- **Size and pads.** Bottom-pad modules cost nothing extra, since the
+  AXP2101 forces reflow anyway.
+- **Certification.** A pre-certified module avoids RF layout and
+  certification work for a small run.
 
 ---
 
@@ -124,12 +121,13 @@ proven on M5Core2 v1.1. For a remote the AXP2101 earns its place (not bling):
 
 - **State-of-charge fuel gauge** — know the remote's battery % *before* a ride
   (a safety thing, not just UX).
-- **Vibration motor** via DLDO1 — haptic feedback (see §8 — link-degradation
+- **Vibration motor** via DLDO1 — haptic feedback (see §10 — link-degradation
   buzz is the high-value use).
 - **Separate power rails** (LDO/DCDC) for display, encoder, etc.
 - **Fast/efficient charging**, battery/vbus/vsys/temperature ADC — and crucially
-  the AXP2101 reads battery on **its own ADC**, keeping the C6 ADC out of the
-  battery path (see §4).
+  the AXP2101 reads battery on **its own ADC**, leaving the SAADC to the
+  trigger (see §4). The nice!nano prototype reads VDDH/5 on the SAADC
+  instead.
 
 Driver API notes (`axp2101-dd`, reviewed from `m5core2.../pmic.rs`):
 - **[good]** Two-tier: convenience methods (`set_ldo_voltage_mv`, etc.) + a
@@ -145,6 +143,16 @@ Driver API notes (`axp2101-dd`, reviewed from `m5core2.../pmic.rs`):
 ---
 
 ## 4. Throttle sensor — I2C magnetic encoder, not the C6 ADC
+
+**[decided] v1 (2026-11-17):** the first remote uses a potentiometer trigger
+on the nRF52840 SAADC. The nRF52840 SAADC is calibrated and supports
+oversampling, so the C6 ADC argument below does not carry over directly.
+**[open]** Make pot faults detectable: keep the usable travel away from both
+rails so an open wiper, open end or short reads out of range and becomes a
+throttle fault (send neutral, never a value). A magnetic encoder stays the
+option for a later revision.
+
+The original ESP32-C6 reasoning follows.
 
 **[decided]** The ESP32-C6 SAR ADC is mediocre (nonlinear, noisy,
 calibration-dependent). Don't put the safety-critical throttle on it. Use an
@@ -203,12 +211,15 @@ Other:
 
 ---
 
-## 6. Wireless link — BLE primary, ESP-NOW as a measured plan B
+## 6. Wireless link — BLE only
 
-The remote↔board control link. Both ends are ESP32-C6.
+The remote↔board control link. The remote is an nRF52840 and the bridge is an
+ESP32-C5.
 
-**[decided] BLE primary.** **[bench/later] ESP-NOW as plan B** — but framed as a
-*tradeoff*, not an upgrade:
+**[decided] BLE only.** **[later] ESP-NOW is deferred and not planned**
+(2026-11-17). It needs an Espressif chip at both ends, and the remote is an
+nRF52840. The comparison below is kept in case the decision is revisited. It
+is a *tradeoff*, not an upgrade:
 
 | Failure mode | Winner | Why |
 |---|---|---|
@@ -217,7 +228,7 @@ The remote↔board control link. Both ends are ESP32-C6.
 
 Because the failure modes are **independent**, dual-link (both, controller takes
 freshest, deadman handles staleness) is *complementary* redundancy — but on a
-**single C6 radio** the coexistence cost (time-sharing ESP-NOW + BLE) can degrade
+**single C5 radio** the coexistence cost (time-sharing ESP-NOW + BLE) can degrade
 both, so dual-link is **not** a free win.
 
 **[decided] Fix BLE first** rather than reach for ESP-NOW. You don't need a
@@ -233,8 +244,8 @@ perfect link — you need: rarely disconnect, reconnect fast, and the gap is saf
   hundreds of ms.
 - The deadman makes any reconnect gap a *graceful slowdown*, not a hazard.
 
-**[bench] ESP-NOW criterion:** move the throttle to ESP-NOW (off the BLE stack)
-only if the bench shows BLE can't hold the **throttle + phone** connections with
+**[bench] Revisit criterion:** reconsider a second radio link only if the
+bench shows BLE can't hold the **throttle + phone** connections with
 the throttle's timing under the phone's telemetry load. That's a measurable
 test, not a guess. (ESP-NOW would still need self-implemented encryption +
 sequence/replay protection + liveness; the deadman story is unchanged.)
@@ -278,8 +289,8 @@ bonding).
 - **Per-connection parameter control** (tight throttle vs relaxed phone) — verify
   the API exposes it.
 - The combo: trouble (host) + esp-hal/esp-radio BLE **controller** over HCI +
-  multi-connection + the throttle's timing under phone-stream load (this is the
-  measurable ESP-NOW-fallback criterion from §6).
+  multi-connection + the throttle's timing under phone-stream load (the
+  revisit criterion from §6).
 
 ---
 
@@ -411,21 +422,27 @@ as today. Two remotes of equal class = first-come, with indication.
 
 **Vehicle config (new append-only group #12, ICD v5 with the topics):**
 `position` (FL/FR/RL/RR/single), `torque_ratio`, `brake_bias`,
-`bus_share`, `upstream: None | Uart | Can` (root is CONFIG, see below).
-The sibling set is NOT config — sibling-deadman applies to whoever was
-alive at arm time.
+`bus_share`. The sibling set is NOT config — sibling-deadman applies to
+whoever was alive at arm time. Root/upstream selection is C5 config, not
+controller config (see Topology).
 
-**Topology: UART chain now, CAN-FD star with the ESP32-C5 as root when
-the second controller (FDCAN board) arrives.** Root-ness must be config
-on every node, because an ergot bridge-mode router cannot degrade to
-root when its upstream never appears (its downstream nets are leased
-from upstream). Design-ins that make the migration a flag flip rather
-than a rewrite: (1) `upstream` in vehicle config on controllers too;
-(2) the bridge's upstream lifecycle (discovery ping, lease
-acquire/refresh/release) as a reusable module — it moves from the C5 to
-the controllers under the star; (3) nothing master-centric or
-UART-specific in the bridge. With intent as a topic the application
-layer is topology-blind.
+**Topology (revised 2026-11-17): every controller is an SPI edge behind
+its own ESP32-C5. The C5s are the routers.** Single motor: one C5 is the
+root Router; the STM32 is its only SPI DirectEdge, with no USB or other
+ergot transport. Two or more motors: each controller keeps its own C5, and
+the C5s join one CAN FD bus through their on-chip TWAI-FD controllers. One
+C5 is root by config. The others run as bridge-mode routers with
+`upstream = Can`. Root-ness must be config, because an ergot bridge-mode
+router cannot degrade to root when its upstream never appears (its
+downstream nets are leased from upstream). The controller firmware is the
+same in both layouts. Only the C5 config changes. Design-ins: (1)
+`upstream: None | Can` in the C5 config; (2) the bridge's upstream
+lifecycle (discovery ping, lease acquire/refresh/release) as a reusable
+module in the bridge crate; (3) nothing master-centric in the bridge.
+With intent as a topic the application layer is topology-blind.
+**[open]** Which C5 carries the remote's BLE link, and whether each C5
+advertises separately. A dead root C5 is a sibling-loss event for the
+other controllers (see below).
 
 **Multi-motor failsafe — symmetric, always brake.** See
 [safety.md → Multi-motor vehicles](../safety.md#multi-motor-vehicles--symmetric-failsafe).
@@ -441,20 +458,36 @@ needed.
 
 ## 11. Wired bridge ↔ motor-controller link
 
-Where the bridge (ESP32-C6) meets the STM32 motor controller. Decided by
-physical integration + EMI, **not** bandwidth/latency (both negligible vs the
-BLE interval).
+Where the bridge (ESP32-C5) meets the STM32 motor controller.
 
-| | When | Cost |
-|---|---|---|
-| **[decided] UART** | first hardware; and production if the C6 is on-board the controller PCB | none (ergot COBS-stream transport exists) |
-| **[later] CAN FD peer** | bridge is a separate module on a cable in the vehicle | MCP2518FD on the C6 (its TWAI is classic-CAN only, can't join an FD backbone) + a driver crate |
-| Classic-CAN spur | want differential robustness without an extra IC, bridge behind one MC | not on the FD backbone (separate bus) |
-| **SPI — rejected** | — | master/slave fights ergot's symmetric model (needs a DATA_READY GPIO + handshake), slave role is fiddly, more single-ended lines (incl. clock) = worse on a noisy cable, and its bandwidth is wasted (BLE is the real bottleneck) |
+**[decided, implemented on MK5] SPI, STM32 as ergot DirectEdge and SPI
+master, C5 as root Router and SPI slave**, with a `ready` GPIO from the C5
+(`oxifoc-bridge/src/transport/spi.rs`; wiring in
+[vesc6-mk5.md](../hw/vesc6-mk5.md#c5-bridge-wiring-and-continuity-check)).
+This replaces the earlier UART choice. The reasons:
 
-**[decided]** Start UART. ergot decouples transport, so the production choice
-(UART if on-board; CAN FD if a separate cabled module) can be deferred until the
-physical layout is fixed — no firmware rework.
+- **Bandwidth for fast telemetry.** Native-rate Packed28 streams go from the
+  STM32 to the C5 and out over USB Serial/JTAG, later possibly Wi-Fi. BLE is
+  no longer the only consumer, so the link must carry the full stream, which
+  UART cannot.
+- **Less work on the motor MCU.** The STM32 has one ergot transport and runs
+  as an edge. It forwards nothing between nodes and has no USB stack in the
+  release image. Routing, USB, BLE and later Wi-Fi run on the C5.
+- **The old objections are handled.** The STM32 drives the clock and the
+  DMA schedule. The C5's `ready` line replaces the DATA_READY handshake. The
+  link is a short on-board or harness-internal connection, not a cable
+  through the vehicle.
+
+Cost: the C5 is now in the command path for every host and remote. A C5
+hang or reset looks like link loss to the controller, and the link gate and
+the ISR deadman cover it. Host USB connects to the C5, not the STM32. The
+STM32 keeps separate USB and RTT diagnostic build profiles for bench work.
+
+Inter-controller links use CAN FD between C5s, not between STM32s. The F405
+has only bxCAN (classic), while the C5 has two TWAI controllers that
+support FD frames. esp-hal already has the TWAI-FD driver for the C5
+(upstreamed by the project author). The ergot CAN transport on top of it
+is the remaining work. See Topology in §10.
 
 ---
 
@@ -464,8 +497,8 @@ physical layout is fixed — no firmware rework.
   ride: jam packets and confirm seq-drop + deadman give a *graceful slowdown*,
   not a stale-throttle surge.
 - **[bench]** trouble + esp-controller multi-connection: throttle + phone
-  simultaneously, throttle timing under phone telemetry load (the ESP-NOW-
-  fallback criterion).
+  simultaneously, throttle timing under phone telemetry load (the §6
+  revisit criterion).
 - **[bench]** BLE reconnect latency with bonding + cached handles + fast
   advertising (target tens-to-low-hundreds of ms).
 - **[bench]** Encoder magnet-fault detection → failsafe.
@@ -480,29 +513,31 @@ physical layout is fixed — no firmware rework.
 | Topic | Decision | Key reason |
 |---|---|---|
 | HW approach | SoM core now, custom PCB after rides | defer *ergonomics*, not electronics |
-| Module | ESP32-C6-MINI-1U-N4 | external antenna (hand-detuning), smallest, reflow OK |
+| Remote prototype | nice!nano v2 clone (nRF52840) | current `oxifoc-remote` |
+| Remote custom PCB | nRF52840 + AXP2101 + vibration motor | low power, usable SAADC; fuel gauge + haptics; radio part open |
 | PMIC | AXP2101 | own proven driver; SoC + haptic earn it on a remote |
-| Throttle | I2C magnetic encoder (AS5600 / MT6701) | bypass the mediocre C6 ADC; fault-detectable |
+| Throttle | v1: potentiometer on nRF52840 SAADC; later: magnetic encoder | simple first trigger; pot faults must read out of range |
 | PCB | 4-layer, reflow | PMIC switchers + safety analog (not RF); QFN forces reflow |
 | Send rate | 50 Hz periodic affirm, fire-and-forget | deadman heartbeat + loss self-heal |
-| Wireless | BLE primary; ESP-NOW plan B (measured) | fix BLE reconnect first; ESP-NOW is a tradeoff not upgrade |
+| Wireless | BLE only; ESP-NOW deferred, not planned | nRF52840 remote; fix BLE reconnect first |
 | BLE roles | board peripheral to both; remote+phone central | phone must be central; single role = simpler |
 | BLE stack | TrouBLE | pure-Rust embassy-native; pre-1.0 (validate multi-conn) |
 | ergot/BLE | GATT, custom 128-bit UUIDs (NUS structure) | Windows has no BLE L2CAP; desktop BLE is required |
 | Staleness | seq latest-wins + haptic warn + (later) TTL | kill late-stale surge; *tell the rider* it's laggy |
-| Bridge↔MC | UART now; CAN FD if separate cabled module | integration/EMI decides; SPI rejected |
+| Bridge↔MC | SPI, STM32 edge + master, C5 root router + slave | fast telemetry bandwidth; no routing or USB on the motor MCU |
 | Remote payload | vehicle intent, one signed channel | remote never knows motors; no throttle+brake conflict |
 | Intent transport | topic (flood), 50 Hz affirm | no address/discovery on the remote; topology-blind |
 | Intent→motor logic | replicated per controller, portable core module | no node in the torque path; coordinator later via correction topic |
 | Multi-motor link loss | symmetric failsafe via sibling-deadman + coast sync window; always brake | isolated node can't tell sibling-push from downhill |
-| Root | config (`upstream` field), C5 root under the CAN-FD star | bridge-mode can't self-promote; migration = flag flip |
+| Root | one C5 root by config; other C5s `upstream = Can` | bridge-mode can't self-promote; controllers stay SPI edges |
+| Multi-motor bus | CAN FD between per-controller C5s (on-chip TWAI-FD) | F405 has no CAN FD; controller firmware unchanged |
 
 ---
 
 ## Reference map
 
 - `oxifoc-remote/` — the remote firmware (nRF52840, `thumbv7em-none-eabihf`)
-- `oxifoc-bridge/` — the BLE↔wired bridge (ESP32-C6)
+- `oxifoc-bridge/` — the root router on ESP32-C5: SPI to the controller, USB Serial/JTAG, optional BLE
 - `axp2101-dd` (own, published) — PMIC driver
 - `~/code/rust/m5core2v1-1_esp-hal_demo/src/pmic.rs` — AXP2101 usage reference + M5Core2 v1.1 rail map
 - `trouble/` (`~/code/rust/trouble`) — BLE host: `HostResources<…CONNS…BONDS>`, central+peripheral features, L2CAP CoC

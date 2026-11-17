@@ -713,3 +713,22 @@ their section.
 - **2026-09-10 — source ownership by class.** `Remote > BenchHost >
   Phone`; an active setpoint wins if its class ≥ the current owner's,
   equal class keeps session/seq first-come, safe modes bypass.
+- **2026-11-17 — controller is an SPI edge; the ESP32-C5 is the router.**
+  Replaces the UART link and the controller-side `upstream` from the
+  2026-09-10 root entry. The STM32 has a single ergot transport (SPI
+  master, DirectEdge) and no USB in the release image. The C5 (SPI slave
+  with a `ready` line) is the root Router for USB Serial/JTAG, BLE and
+  later Wi-Fi. Reasons: fast-telemetry bandwidth beyond UART, and no
+  forwarding load on the motor MCU. Multi-motor: one C5 per controller,
+  C5s joined by CAN FD on the C5's on-chip TWAI-FD (the F405 has only
+  classic bxCAN). One C5 is root by config, the rest `upstream = Can`.
+  [notes/remote-design.md §10, §11]
+- **2026-11-17 — remote on nRF52840, v1 throttle is a potentiometer on
+  the SAADC.** Chosen for low power and the SAADC. First iteration on a
+  nice!nano v2 clone; the custom PCB adds an AXP2101 and a vibration
+  motor to the same chip. Replaces the ESP32-C6 plan; a magnetic encoder
+  stays a later-revision option. Pot faults must read out of range.
+  [notes/remote-design.md §2, §4]
+- **2026-11-17 — ESP-NOW deferred, not planned.** BLE is the only remote
+  link; the nRF52840 remote cannot speak ESP-NOW anyway.
+  [notes/remote-design.md §6]
