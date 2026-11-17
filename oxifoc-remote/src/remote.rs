@@ -7,7 +7,7 @@
 use embassy_nrf::{
     bind_interrupts,
     interrupt::{Priority, typelevel::Interrupt},
-    peripherals, rng, twim,
+    peripherals, rng, saadc, twim,
 };
 use nrf_mpsl::{self as mpsl, MultiprotocolServiceLayer};
 use trouble_host::prelude::*;
@@ -28,6 +28,10 @@ use oxifoc_remote::transport;
 use defmt::{error, info, warn};
 use static_cell::StaticCell;
 
+#[path = "analog.rs"]
+mod analog;
+#[path = "battery.rs"]
+mod battery;
 #[path = "display.rs"]
 mod display;
 
@@ -44,6 +48,7 @@ bind_interrupts!(struct Irqs {
     TIMER0 => mpsl::HighPrioInterruptHandler;
     RTC0 => mpsl::HighPrioInterruptHandler;
     RNG => rng::InterruptHandler<peripherals::RNG>;
+    SAADC => saadc::InterruptHandler;
     TWISPI0 => twim::InterruptHandler<peripherals::TWISPI0>;
 });
 
@@ -95,6 +100,14 @@ async fn run(spawner: Spawner, boot_task: Option<BootTask>) -> ! {
         TWIM_TX.init([0; 16]),
     );
     spawner.spawn(display::run(i2c, display_power).expect("allocate OLED task"));
+
+    if boot_task.is_none() {
+        embassy_nrf::interrupt::typelevel::SAADC::set_priority(Priority::P6);
+        let throttle = saadc::ChannelConfig::single_ended(p.P0_02);
+        let battery = saadc::ChannelConfig::single_ended(saadc::VddhDiv5Input);
+        let adc = saadc::Saadc::new(p.SAADC, Irqs, saadc::Config::default(), [throttle, battery]);
+        spawner.spawn(analog::sample(adc).expect("allocate ADC task"));
+    }
 
     // ========== BLE setup ==========
     static MPSL: StaticCell<MultiprotocolServiceLayer<'static>> = StaticCell::new();
