@@ -1,6 +1,6 @@
 # OxiFOC Slint frontend — component-library trial
 
-The connection page and configuration editor now use Slint Kit 0.8.0 through
+The connection page and configuration editor now use Slint Kit 0.9.0 through
 small product adapters in `ui/oxifoc-kit.slint`. They remain wired to the existing
 host runtime and configuration handlers. Discovery results, controller parameters
 and telemetry are real; no demonstration values enter these screens.
@@ -13,8 +13,8 @@ entry and after reconnecting. **Apply to RAM** and **Save to flash** are separat
 actions. The Slint and Dioxus Native editors share validation, draft state and
 revision-aware controller operations in `oxifoc-host-lib`.
 
-Slint remains at 1.18.1. Slint Kit's runtime and build helper are pinned to the
-same 0.8.0 release; the helper uses experimental Slint module compilation.
+Slint is pinned to 1.19.0. Slint Kit's runtime and build helper are pinned to the
+same 0.9.0 release; the helper uses experimental Slint module compilation.
 `slint_kit::install` registers the required per-window services.
 
 OxiFOC supplies a dark navy/turquoise `KitTheme` at startup, including text,

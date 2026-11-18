@@ -813,7 +813,11 @@ export component App inherits Window {
                             TelemetryValue { label: "Electrical RPM"; value: root.erpm-text; }
                             TelemetryValue { label: "RPM"; value: root.rpm-text; }
                             TelemetryValue { label: "FET temp"; value: root.temp-text; }
-                            TelemetryValue { label: "Angle source"; value: root.phase-source-text != "" ? root.phase-source-text : "—"; }
+                            TelemetryValue {
+                                label: "Angle source";
+                                value: root.phase-source-text != "" ? root.phase-source-text : "—";
+                                min-width: 152px;
+                            }
                             TelemetryValue { label: "Sequence"; value: root.seq-text; }
                         }
                     }
