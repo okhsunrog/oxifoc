@@ -13,7 +13,8 @@ entry and after reconnecting. **Apply to RAM** and **Save to flash** are separat
 actions. The Slint and Dioxus Native editors share validation, draft state and
 revision-aware controller operations in `oxifoc-host-lib`.
 
-Slint is pinned to 1.19.0. Slint Kit's runtime and build helper are pinned to the
+The frontend uses Slint 1.19.0 and language edition 1.19.
+Slint Kit's runtime and build helper are pinned to the
 same 0.9.0 release; the helper uses experimental Slint module compilation.
 `slint_kit::install` registers the required per-window services.
 
