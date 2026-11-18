@@ -334,7 +334,10 @@ export component PlotWidget inherits Rectangle {
                         y: 6px;
                         width: cursor-label.preferred-width + 12px;
                         height: cursor-label.preferred-height + 8px;
-                        background: root.is-dark ? #0f0f1ee0 : #fafafae0;
+                        backdrop-blur: root.paused ? 5px : 0px;
+                        background: root.paused
+                            ? (root.is-dark ? #0f0f1eb8 : #fafafab8)
+                            : (root.is-dark ? #0f0f1ee0 : #fafafae0);
                         border-radius: 3px;
                         border-width: 1px;
                         border-color: root.grid-color;

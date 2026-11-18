@@ -80,6 +80,9 @@ component ParameterRow inherits VerticalLayout {
                 accessible-name: root.field.unit == "" ? root.field.label : root.field.label + " (" + root.field.unit + ")";
                 access: root.editable ? FieldAccess.editable : FieldAccess.read-only;
                 edited(value) => { MotorEditorUi.edit(root.index, value); }
+                focus-observed(focused) => {
+                    if (focused) { root.ensure-visible(ScrollBehavior.instant); }
+                }
             }
         }
         Text {

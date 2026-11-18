@@ -248,6 +248,7 @@ export component App inherits Window {
 
     // ── Log panel ──
     in property <[LogMessage]> log-messages;
+    private property <bool> follow-log: true;
     callback clear-log();
 
     // ── Motor presets ──
@@ -1407,6 +1408,7 @@ export component App inherits Window {
 
                     Text { text: "Log"; font-size: 12px; font-weight: 600; vertical-alignment: center; }
                     Rectangle { horizontal-stretch: 1; }
+                    CheckBox { text: "Follow latest"; checked <=> root.follow-log; }
                     Button { text: "Clear"; clicked => { root.clear-log(); } }
                 }
 
@@ -1431,10 +1433,16 @@ export component App inherits Window {
                     }
                 }
 
-                property <int> scroll-trigger: root.log-messages.length;
-                changed scroll-trigger => {
-                    log-view.content-y = -100000px;
+                property <int> last-row: root.log-messages.length - 1;
+                property <bool> following: root.follow-log;
+                function follow-latest() {
+                    if (following && last-row >= 0) {
+                        log-view.ensure-row-visible(last-row, ScrollBehavior.instant);
+                    }
                 }
+                init => { follow-latest(); }
+                changed last-row => { follow-latest(); }
+                changed following => { follow-latest(); }
             }
 
         } // end content Rectangle
