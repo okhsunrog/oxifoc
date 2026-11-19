@@ -1,7 +1,8 @@
 //! Dynamic PMSM motor simulation.
 //!
-//! Port of VESC's `virtual_motor.c` (Maximiliano Cordoba) rewritten in safe
-//! Rust with corrected multi-pole-pair dq-frame equations.
+//! Written from the standard PMSM equations in the rotor-fixed dq frame, with
+//! multi-pole-pair handling. VESC's `virtual_motor.c` served as a reference
+//! for comparison; see `docs/notes/virtual-motor-fidelity.md`.
 //!
 //! The model integrates the standard surface/interior PMSM equations in the
 //! rotor-fixed dq frame using forward Euler at whatever `dt` you pass to
