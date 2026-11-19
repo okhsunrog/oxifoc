@@ -236,7 +236,7 @@ brake's job (it cancels); a remote with a display may also send
 
 ## 5. Vehicle logic — [proposed]
 
-A pure function per controller (replicated, remote-design.md Axis 3):
+A pure function per controller (replicated, remote-design.md §10 "Intent → motor mapping"):
 
 ```rust
 fn step(state: &mut VehicleState, intent: &DriveIntent, motor: &MotorStatus,

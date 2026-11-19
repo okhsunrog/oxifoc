@@ -164,7 +164,7 @@ compared.
   avoids coexistence on a single radio.
 
 11. **Link quality.** Track RSSI (`LeReadRssi`, Nordic average RSSI) and
-    affirm round-trip time; drive the remote-design §10 haptic warning.
+    affirm round-trip time; drive the remote-design §9 haptic warning.
 12. **Wi-Fi coexistence** once the C5 runs Wi-Fi: esp-radio coex callbacks are
     mostly stubs; measure throttle timing under Wi-Fi load.
 13. **Coded PHY** as a range fallback is not available as built: nrf-sdc
