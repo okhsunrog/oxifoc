@@ -86,12 +86,11 @@ fn driver_batch(seed: u32) -> u64 {
         FixedRotor(black_box(450.0)),
         seconds(1.0 / 20_000.0),
     );
-    driver.set_current_limits(CurrentLimits {
-        bus_in_max: amps(5.0),
-        bus_regen_max: amps(0.0),
-        max_dissipation: watts(heat),
-        ..CurrentLimits::from_max_current(amps(30.0 / 1.3))
-    });
+    driver.set_current_limits(
+        CurrentLimits::from_max_current(amps(30.0 / 1.3))
+            .with_bus_limits(Some(amps(5.0)), Some(amps(0.0)))
+            .with_dissipation(watts(heat)),
+    );
     driver.set_mode(ControlMode::VelocityControl {
         target_vel: erad_per_s(black_box(450.0)),
     });

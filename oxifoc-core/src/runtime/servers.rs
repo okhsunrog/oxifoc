@@ -382,12 +382,12 @@ fn resolved_config(
                 Some(rating),
             );
             Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                max_iq: Some(limits.max_current),
-                max_brake: Some(limits.max_brake),
-                max_phase_current: Some(limits.overcurrent_threshold),
-                bus_in_max: Some(limits.bus_in_max),
-                bus_regen_max: Some(limits.bus_regen_max),
-                max_dissipation: limits.max_dissipation,
+                max_iq: limits.max_current(),
+                max_brake: limits.max_brake(),
+                max_phase_current: limits.overcurrent_threshold(),
+                bus_in_max: limits.bus_in_max(),
+                bus_regen_max: limits.bus_regen_max(),
+                max_dissipation: limits.max_dissipation(),
             }))
         }
         ConfigGroupId::PiGains => {
@@ -1322,4 +1322,65 @@ pub async fn run_all_servers_with_config<NS, F, T>(
         ),
     )
     .await;
+}
+
+#[cfg(test)]
+#[cfg(feature = "storage")]
+mod tests {
+    use super::resolved_config;
+    use crate::foc::config::BoardConfig;
+    use crate::storage::{CurrentLimitsConfig, RuntimeConfig};
+    use crate::types::{BoardCalib, ConfigGroupId, ConfigValue, CurrentSenseTopology};
+    use crate::units::{amps, ohms};
+
+    fn board() -> BoardConfig {
+        BoardConfig {
+            current_sense_topology: CurrentSenseTopology::TwoShunt,
+            calib: BoardCalib {
+                shunt_ohms: ohms(0.0005),
+                amp_gain: 20.0,
+                adc_vref_mv: 3300,
+                adc_max_counts: 4095,
+                invert_current_sign: false,
+                vbus_divider_ratio: 21.0,
+            },
+            max_iq_target: amps(50.0),
+            max_phase_current: amps(70.0),
+            max_vbus_mv: 60_000,
+            min_vbus_mv: 8_000,
+            max_fet_temp_c: 85.0,
+            max_motor_temp_c: 0.0,
+            phase_sense: None,
+        }
+    }
+
+    fn effective_limits(stored: CurrentLimitsConfig) -> CurrentLimitsConfig {
+        let cfg = RuntimeConfig {
+            current_limits: Some(stored),
+            ..Default::default()
+        };
+        match resolved_config(&cfg, ConfigGroupId::CurrentLimits, &board()) {
+            Some(ConfigValue::CurrentLimits(limits)) => limits,
+            other => panic!("effective current limits missing: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effective_current_limits_report_unlimited_supply_as_none() {
+        let unset = effective_limits(CurrentLimitsConfig::AUTO);
+        assert_eq!((unset.bus_in_max, unset.bus_regen_max), (None, None));
+        assert_eq!(unset.max_phase_current, Some(amps(70.0)));
+        assert_eq!(unset.max_iq, Some(amps(70.0 / 1.3)));
+        let lab_supply = effective_limits(CurrentLimitsConfig {
+            bus_in_max: Some(amps(5.0)),
+            bus_regen_max: Some(amps(0.0)),
+            ..CurrentLimitsConfig::AUTO
+        });
+        assert_eq!(lab_supply.bus_in_max, Some(amps(5.0)));
+        assert_eq!(
+            lab_supply.bus_regen_max,
+            Some(amps(0.0)),
+            "zero regen is a real limit"
+        );
+    }
 }

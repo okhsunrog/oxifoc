@@ -1629,10 +1629,10 @@ mod tests {
         {
             use crate::motor::foc_driver::CurrentLimits;
             let effective = CurrentLimits::from_config_clamped(&limits, amps(70.0), Some(rating));
-            assert_eq!(effective.max_current, rating);
-            assert_eq!(effective.bus_in_max, amps(8.0));
-            assert_eq!(effective.bus_regen_max, amps(0.0));
-            assert_eq!(effective.overcurrent_threshold, amps(30.0));
+            assert_eq!(effective.max_current(), Some(rating));
+            assert_eq!(effective.bus_in_max(), Some(amps(8.0)));
+            assert_eq!(effective.bus_regen_max(), Some(amps(0.0)));
+            assert_eq!(effective.overcurrent_threshold(), Some(amps(30.0)));
         }
         assert!(!load_installed_drive(&mut legacy, &Err(()), amps(70.0)));
         assert!(legacy.motor_params.is_none() && legacy.current_limits.is_none());

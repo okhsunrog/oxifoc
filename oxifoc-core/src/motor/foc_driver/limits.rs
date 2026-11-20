@@ -7,7 +7,9 @@ use crate::storage::CurrentLimitsConfig;
 use crate::units::watts;
 use crate::units::{ConstZero, ElectricCurrent, Power, Scalar, Sign, amps};
 
-/// "Unlimited" for the bus-current limits, where zero is a real value.
+/// Internal encoding of an unlimited bus current, where zero is a real
+/// limit. Never leaves this type: [`CurrentLimits::bus_in_max`] and
+/// [`CurrentLimits::bus_regen_max`] report it as `None`.
 const UNLIMITED: ElectricCurrent = amps(-1.0);
 
 /// Explicit source capability for an energized commissioning session.
@@ -78,33 +80,36 @@ impl DqCurrentProtection {
 ///    FOC step. If it exceeds `overcurrent_threshold`, PWM is disabled and
 ///    an error is returned. This is the software equivalent of hardware
 ///    overcurrent protection for boards that lack it.
+///
+/// The fields keep the encoding the per-cycle driver code tests with one
+/// sign check (`0` = no phase limit, `< 0` = unlimited bus current). They
+/// are visible only inside `foc_driver`; everything else reads the
+/// `Option` accessors, so "no limit" never leaves as a number.
 #[derive(Clone, Copy, Debug)]
 pub struct CurrentLimits {
     /// Maximum current target magnitude. The PI controller will never
-    /// be asked to produce more than this. Set from BoardConfig or
-    /// CurrentLimitsConfig. 0 = no limit.
-    pub max_current: ElectricCurrent,
+    /// be asked to produce more than this. `0` = no limit.
+    pub(super) max_current: ElectricCurrent,
     /// Maximum braking q current: the limit whenever iq opposes the
-    /// rotation. At most `max_current`.
-    pub max_brake: ElectricCurrent,
+    /// rotation. At most `max_current`; `0` = no limit.
+    pub(super) max_brake: ElectricCurrent,
     /// Hard overcurrent threshold on measured current. If actual
     /// sqrt(id² + iq²) exceeds this, PWM is immediately disabled.
-    /// Typically set to 1.2-1.5× max_current. 0 = no limit.
-    pub overcurrent_threshold: ElectricCurrent,
-    /// Maximum supply (bus) current draw. `< 0` = unlimited.
-    /// Note the different "off" sentinel from the phase limits: here 0 is a
-    /// meaningful value (no draw allowed), so "unlimited" must be negative.
-    pub bus_in_max: ElectricCurrent,
+    /// Typically set to 1.2-1.5× max_current. `0` = no trip.
+    pub(super) overcurrent_threshold: ElectricCurrent,
+    /// Maximum supply (bus) current draw. `< 0` = unlimited; 0 is a real
+    /// limit (no draw allowed).
+    pub(super) bus_in_max: ElectricCurrent,
     /// Maximum regen (charge) current into the supply (positive
     /// magnitude). `< 0` = unlimited; **0 = no regen** (lab-PSU safe:
     /// current braking degrades to what winding losses absorb, the
     /// windings-short parking brake is unaffected — it never touches the
     /// bus).
-    pub bus_regen_max: ElectricCurrent,
+    pub(super) bus_regen_max: ElectricCurrent,
     /// Heat budget (`1.5·R·id²`) for burning refused regen in the
     /// windings (`motor::dissipation`); the d current it buys stays inside
-    /// the `max_current` circle. `0` = off.
-    pub max_dissipation: Power,
+    /// the `max_current` circle. A zero budget burns nothing.
+    pub(super) max_dissipation: Power,
 }
 
 impl Default for CurrentLimits {
@@ -127,6 +132,65 @@ impl Default for CurrentLimits {
 pub const OVERCURRENT_HEADROOM: f32 = 1.3;
 
 impl CurrentLimits {
+    /// Current target ceiling; `None` = no limit.
+    pub fn max_current(&self) -> Option<ElectricCurrent> {
+        Some(self.max_current).filter(Sign::is_positive)
+    }
+
+    /// Braking current ceiling; `None` = no limit.
+    pub fn max_brake(&self) -> Option<ElectricCurrent> {
+        Some(self.max_brake).filter(Sign::is_positive)
+    }
+
+    /// Measured-current trip; `None` = no software trip.
+    pub fn overcurrent_threshold(&self) -> Option<ElectricCurrent> {
+        Some(self.overcurrent_threshold).filter(Sign::is_positive)
+    }
+
+    /// Supply draw ceiling; `None` = unlimited.
+    pub fn bus_in_max(&self) -> Option<ElectricCurrent> {
+        Some(self.bus_in_max).filter(Sign::is_non_negative)
+    }
+
+    /// Regeneration ceiling; `None` = unlimited, zero = no regeneration.
+    pub fn bus_regen_max(&self) -> Option<ElectricCurrent> {
+        Some(self.bus_regen_max).filter(Sign::is_non_negative)
+    }
+
+    /// Heat budget for burning refused regeneration in the windings.
+    pub fn max_dissipation(&self) -> Power {
+        self.max_dissipation
+    }
+
+    /// The boundary check for a limits command: the ceilings and the supply
+    /// limits are finite. `max_brake` and `max_dissipation` are left out on
+    /// purpose: every constructor bounds them already, and the two extra
+    /// compares in `run_foc_cycle`'s command branch changed LLVM's inlining
+    /// of the control ISR (+920 B, an out-of-line angle difference).
+    pub fn is_finite(&self) -> bool {
+        self.max_current.is_finite()
+            && self.overcurrent_threshold.is_finite()
+            && self.bus_in_max.is_finite()
+            && self.bus_regen_max.is_finite()
+    }
+
+    /// Replace the supply limits; `None` = unlimited, zero is a real limit.
+    pub fn with_bus_limits(
+        mut self,
+        input: Option<ElectricCurrent>,
+        regen: Option<ElectricCurrent>,
+    ) -> Self {
+        self.bus_in_max = input.unwrap_or(UNLIMITED);
+        self.bus_regen_max = regen.unwrap_or(UNLIMITED);
+        self
+    }
+
+    /// Replace the winding heat budget for refused regeneration.
+    pub fn with_dissipation(mut self, budget: Power) -> Self {
+        self.max_dissipation = budget;
+        self
+    }
+
     /// Install an explicitly validated source capability without changing
     /// torque or inverter protection. Kept here as the adapter to the legacy
     /// flattened driver/config representation during the commissioning migration.

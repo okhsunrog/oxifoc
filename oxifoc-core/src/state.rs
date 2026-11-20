@@ -146,12 +146,7 @@ impl DriverCommand {
             Self::DetectionMode { mode, .. } => mode.is_finite(),
             Self::SetMode(mode) => mode.is_finite(),
             Self::Motor(request) => request.command.is_finite(),
-            Self::SetCurrentLimits(limits) => {
-                limits.max_current.is_finite()
-                    && limits.overcurrent_threshold.is_finite()
-                    && limits.bus_in_max.is_finite()
-                    && limits.bus_regen_max.is_finite()
-            }
+            Self::SetCurrentLimits(limits) => limits.is_finite(),
             Self::SetPiGains { kp, ki } => {
                 kp.is_finite() && ki.is_finite() && kp.is_positive() && ki.is_non_negative()
             }
