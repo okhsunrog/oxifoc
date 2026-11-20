@@ -57,7 +57,7 @@ use crate::motor::failsafe::{FailsafePolicy, FailsafeTerminal};
 use crate::state::CMD_CHANNEL;
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
-#[cfg(feature = "hfi")]
+#[cfg(all(feature = "hfi", any(feature = "runtime", feature = "virtual-motor")))]
 use crate::units::hertz;
 #[cfg(feature = "virtual-motor")]
 use crate::units::{Linear, amps_per_s, erad_per_s2, per_second};

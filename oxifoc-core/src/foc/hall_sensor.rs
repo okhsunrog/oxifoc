@@ -129,7 +129,7 @@ pub struct PreparedHallCalibration {
 }
 
 impl PreparedHallCalibration {
-    #[cfg(all(feature = "storage", any(feature = "runtime", test)))]
+    #[cfg(all(feature = "storage", feature = "runtime"))]
     pub(crate) fn nominal() -> Self {
         Self {
             calibration: HallCalibration::default(),

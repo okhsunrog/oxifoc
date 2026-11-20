@@ -73,7 +73,7 @@ impl PreparedPhaseModel {
         prepared
     }
 
-    #[cfg(any(feature = "runtime", test))]
+    #[cfg(all(feature = "runtime", feature = "storage"))]
     pub(crate) fn reset_hall_reference(&mut self) {
         self.reset_hall = Some(PreparedHallCalibration::nominal());
     }
