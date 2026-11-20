@@ -446,6 +446,7 @@ mod tests {
     use super::*;
     use oxifoc_core::storage::{MotorParamsConfig, VelocityLoopConfig, VoltageFeedforwardConfig};
     use oxifoc_core::types::VoltageFeedforwardMode;
+    use oxifoc_core::units::{erad, henries, ohms};
 
     #[test]
     fn hall_json_preserves_complete_optional_geometry_and_accepts_legacy_omission() {
@@ -472,7 +473,7 @@ mod tests {
                     tau / 2.0,
                     0.0,
                 ]
-                .map(oxifoc_core::units::erad),
+                .map(erad),
                 next_states: [0, 3, 6, 2, 5, 1, 4, 0],
             }),
             ..Default::default()
@@ -569,9 +570,9 @@ mod tests {
     #[test]
     fn field_patches_preserve_unmentioned_motor_and_velocity_values() {
         let motor = MotorParamsConfig {
-            resistance: oxifoc_core::units::ohms(0.1),
-            ld_fundamental: oxifoc_core::units::henries(81e-6),
-            lq_fundamental: oxifoc_core::units::henries(127e-6),
+            resistance: ohms(0.1),
+            ld_fundamental: henries(81e-6),
+            lq_fundamental: henries(127e-6),
             ..Default::default()
         };
         let (_, write) = patch_fields(

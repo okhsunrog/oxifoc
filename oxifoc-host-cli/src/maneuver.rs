@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::record::Capture;
+use oxifoc_core::units::{amps, erad, erad_per_s, volts};
 
 const SCHEDULE_TOLERANCE: Duration = Duration::from_millis(5);
 const COMMAND_ACK_TIMEOUT: Duration = Duration::from_millis(200);
@@ -184,11 +185,11 @@ impl Cmd {
     fn to_mode(&self) -> ControlMode {
         match *self {
             Self::Start { iq, id } => ControlMode::CurrentControl {
-                iq_target: oxifoc_core::units::amps(iq),
-                id_target: oxifoc_core::units::amps(id),
+                iq_target: amps(iq),
+                id_target: amps(id),
             },
             Self::Velocity { rad_s } => ControlMode::VelocityControl {
-                target_vel: oxifoc_core::units::erad_per_s(rad_s),
+                target_vel: erad_per_s(rad_s),
             },
             Self::Throttle { fraction } => ControlMode::Throttle { fraction },
             Self::Openloop {
@@ -197,15 +198,15 @@ impl Cmd {
                 angle,
                 pi_gains,
             } => ControlMode::OpenLoop {
-                angle: oxifoc_core::units::erad(angle),
-                current: oxifoc_core::units::amps(current),
-                velocity: oxifoc_core::units::erad_per_s(velocity),
+                angle: erad(angle),
+                current: amps(current),
+                velocity: erad_per_s(velocity),
                 pi_gains,
             },
             Self::Voltage { vd, vq, angle } => ControlMode::DirectVoltage {
-                vd: oxifoc_core::units::volts(vd),
-                vq: oxifoc_core::units::volts(vq),
-                angle: oxifoc_core::units::erad(angle),
+                vd: volts(vd),
+                vq: volts(vq),
+                angle: erad(angle),
             },
             Self::Stop {} => ControlMode::Stopped,
             Self::Coast {} => ControlMode::Coast,
@@ -526,6 +527,7 @@ pub fn summary_json(s: &ManeuverSummary) -> Value {
 mod tests {
     use super::*;
     use oxifoc_core::storage::CurrentLimitsConfig;
+    use oxifoc_core::units::amps;
     use parquet::file::reader::{FileReader, SerializedFileReader};
 
     #[test]
@@ -552,7 +554,7 @@ mod tests {
         .unwrap();
         let mut snapshot = ConfigSnapshot {
             effective: Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                max_iq: oxifoc_core::units::amps(3.0),
+                max_iq: amps(3.0),
                 ..CurrentLimitsConfig::AUTO
             })),
             default: None,

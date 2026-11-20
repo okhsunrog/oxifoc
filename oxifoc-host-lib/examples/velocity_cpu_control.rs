@@ -4,6 +4,7 @@
 
 use anyhow::{Result, bail, ensure};
 use oxifoc_core::types::{ControlMode, MotorStatus};
+use oxifoc_core::units::erad_per_s;
 use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, TransportType, motor_channel, start_host,
 };
@@ -62,7 +63,7 @@ fn main() -> Result<()> {
                 0..=25 => (
                     0.3 + f64::from(step) * 0.2,
                     ControlMode::VelocityControl {
-                        target_vel: oxifoc_core::units::erad_per_s(40.0),
+                        target_vel: erad_per_s(40.0),
                     },
                 ),
                 26 => (5.5, ControlMode::Coast),

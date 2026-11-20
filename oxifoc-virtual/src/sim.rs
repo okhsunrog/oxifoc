@@ -23,6 +23,7 @@ use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
 use oxifoc_core::state::{MotorControlState, run_foc_cycle};
 use oxifoc_core::storage::RuntimeConfig;
+use oxifoc_core::units::{erad, erad_per_s, seconds, volts};
 use oxifoc_core::virtual_motor::io::VirtualPwm;
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 use tracing::info;
@@ -133,10 +134,7 @@ pub async fn foc_loop(
         hall.apply_hall_tuning(tuning);
     }
     let phase = PhaseManager::with_hall(hall);
-    let controller = FocController::<SvpwmModulator>::from_runtime_config(
-        &config,
-        oxifoc_core::units::volts(vbus),
-    );
+    let controller = FocController::<SvpwmModulator>::from_runtime_config(&config, volts(vbus));
     let pwm = VirtualPwm {
         duties: [0; 3],
         enabled: false,
@@ -219,8 +217,8 @@ pub async fn foc_loop(
             )
             .unwrap_or_default();
             let hall = HallSnapshot {
-                angle: oxifoc_core::units::erad(sample.angle_rad),
-                velocity: oxifoc_core::units::erad_per_s(sample.omega_e),
+                angle: erad(sample.angle_rad),
+                velocity: erad_per_s(sample.omega_e),
                 direction: if sample.omega_e > 0.1 {
                     Direction::Clockwise
                 } else if sample.omega_e < -0.1 {
@@ -230,7 +228,7 @@ pub async fn foc_loop(
                 },
                 state: driver.phase().hall().logical_state(),
                 error_count: 0,
-                edge_age: oxifoc_core::units::seconds(
+                edge_age: seconds(
                     driver.phase().hall().time_since_edge(now).unwrap_or(0) as f32 * 1e-6,
                 ),
             };

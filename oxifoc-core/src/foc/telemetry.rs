@@ -289,8 +289,7 @@ pub struct RichSample {
 
 #[cfg(test)]
 mod tests {
-    use crate::units::erad;
-    use crate::units::{amps, ohms, seconds, volts};
+    use crate::units::{amps, erad, ohms, seconds, volts};
     #[test]
     fn hall_angle_has_explicit_absence_and_bounded_modular_error() {
         use crate::types::HallAngle;

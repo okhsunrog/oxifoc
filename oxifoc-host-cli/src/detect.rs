@@ -14,6 +14,7 @@ use serde_json::json;
 use crate::config_cli::{self, config_snapshot};
 use crate::record;
 use crate::{DetectStep, OffsetMethodArg, emit};
+use oxifoc_core::units::{amps, erpm, henries, ohms, watts};
 
 /// Stored motor-params as JSON (defaults when not stored).
 fn motor_params_value(runtime: &HostRuntime) -> Result<serde_json::Value> {
@@ -124,8 +125,8 @@ pub fn run_detect(
 
     let req = match step {
         DetectStep::Resistance => DetectRequest::MeasureResistance {
-            max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
-            current_limit: current_limit_a.map(oxifoc_core::units::amps),
+            max_power_loss: watts(max_power_loss_w),
+            current_limit: current_limit_a.map(amps),
         },
         DetectStep::Inductance => {
             if r <= 0.0 {
@@ -134,9 +135,9 @@ pub fn run_detect(
                 );
             }
             DetectRequest::MeasureInductance {
-                max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
-                current_limit: current_limit_a.map(oxifoc_core::units::amps),
-                resistance: oxifoc_core::units::ohms(r),
+                max_power_loss: watts(max_power_loss_w),
+                current_limit: current_limit_a.map(amps),
+                resistance: ohms(r),
             }
         }
         DetectStep::Flux => {
@@ -147,12 +148,12 @@ pub fn run_detect(
                 );
             }
             DetectRequest::MeasureFlux {
-                max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
-                current_limit: current_limit_a.map(oxifoc_core::units::amps),
-                resistance: oxifoc_core::units::ohms(r),
-                inductance: oxifoc_core::units::henries(l),
+                max_power_loss: watts(max_power_loss_w),
+                current_limit: current_limit_a.map(amps),
+                resistance: ohms(r),
+                inductance: henries(l),
                 pole_pairs: pp,
-                openloop_speed: oxifoc_core::units::erpm(flux_target_erpm),
+                openloop_speed: erpm(flux_target_erpm),
             }
         }
         DetectStep::Hall => {
@@ -164,9 +165,9 @@ pub fn run_detect(
                 );
             }
             DetectRequest::CalibrateHall {
-                max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
-                current_limit: current_limit_a.map(oxifoc_core::units::amps),
-                resistance: oxifoc_core::units::ohms(r),
+                max_power_loss: watts(max_power_loss_w),
+                current_limit: current_limit_a.map(amps),
+                resistance: ohms(r),
             }
         }
         DetectStep::Offsets => {
@@ -482,8 +483,8 @@ pub fn confirm_source(
             .context("invalid regenerative current")?,
     };
     let source = oxifoc_core::types::commissioning::SourceLimits {
-        input: oxifoc_core::units::amps(input_a),
-        regen: oxifoc_core::units::amps(regen_a),
+        input: amps(input_a),
+        regen: amps(regen_a),
     };
     anyhow::ensure!(
         source.is_valid(),
@@ -568,11 +569,9 @@ mod hardware_tests {
         let request = oxifoc_host_lib::new_detection(
             &runtime.cmd_tx,
             DetectRequest::MeasureInductance {
-                max_power_loss: oxifoc_core::units::watts(
-                    DetectionPlan::from(&detect::PRESETS[2]).max_power_loss_w,
-                ),
+                max_power_loss: watts(DetectionPlan::from(&detect::PRESETS[2]).max_power_loss_w),
                 current_limit: None,
-                resistance: oxifoc_core::units::ohms(resistance),
+                resistance: ohms(resistance),
             },
         )?;
         let mut capture = record::Capture::start(&runtime, 20000)?;
@@ -625,7 +624,7 @@ mod hardware_tests {
             let mut repeated = request.clone();
             if changed {
                 repeated.request = DetectRequest::MeasureResistance {
-                    max_power_loss: oxifoc_core::units::watts(120.0),
+                    max_power_loss: watts(120.0),
                     current_limit: None,
                 };
             }

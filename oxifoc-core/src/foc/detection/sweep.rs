@@ -934,6 +934,9 @@ pub async fn measure_inductance<H: DetectionHardware, T: Timer, S: SinCos>(
 }
 
 #[cfg(feature = "hfi-detect")]
+use crate::units::Inductance;
+
+#[cfg(feature = "hfi-detect")]
 async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     hw: &mut H,
     params: &InductanceParams,
@@ -1052,7 +1055,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     let voltage_limit = headroom.min(params.hfi_voltage_v);
     let mut v_run = (probe_v * 1.7).min(voltage_limit);
     let mut l_probe = 0.0;
-    let mut previous: Option<(crate::units::Inductance, crate::units::Inductance)> = None;
+    let mut previous: Option<(Inductance, Inductance)> = None;
     let mut qualified = false;
     let mut qualified_rms = 0.0;
     let pilot_params = InductanceParams {

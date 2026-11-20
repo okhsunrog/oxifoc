@@ -50,6 +50,7 @@ use oxifoc_core::state::MotorControlState;
 use oxifoc_core::storage::RuntimeConfig;
 
 use oxifoc_core::foc::fault::StandardFault;
+use oxifoc_core::units::amps;
 
 const ERGOT_MTU: u16 = 2048;
 
@@ -106,7 +107,7 @@ pub async fn run(
             mcu,
             uuid,
             foc_freq_hz,
-            max_current_a: oxifoc_core::units::amps(max_current_a),
+            max_current_a: amps(max_current_a),
             calib: crate::VIRTUAL_CALIB,
         }
     };

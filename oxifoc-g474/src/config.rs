@@ -5,6 +5,7 @@
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 use oxifoc_core::types::BoardCalib;
+use oxifoc_core::units::ohms;
 
 // ============================================================================
 // Board Hardware Configuration (X-NUCLEO-IHM08M1)
@@ -33,10 +34,10 @@ use oxifoc_core::types::BoardCalib;
 pub const BOARD: BoardConfig = BoardConfig {
     current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
-        shunt_ohms: oxifoc_core::units::ohms(0.01), // 0.010Ω 1W shunts (R43-45)
-        amp_gain: 5.18,                             // TSV994 diff amp on shield (verify vs JP2)
-        adc_vref_mv: 3300,                          // 3.3V
-        adc_max_counts: 4095,                       // 12-bit ADC
+        shunt_ohms: ohms(0.01),     // 0.010Ω 1W shunts (R43-45)
+        amp_gain: 5.18,             // TSV994 diff amp on shield (verify vs JP2)
+        adc_vref_mv: 3300,          // 3.3V
+        adc_max_counts: 4095,       // 12-bit ADC
         invert_current_sign: false, // Amp non-inverting (+5.18·Vshunt + 1.71 V); verify on bench
         vbus_divider_ratio: 19.15,  // (169k + 9.31k) / 9.31k
     },

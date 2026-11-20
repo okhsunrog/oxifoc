@@ -345,8 +345,7 @@ fn required_d(
 mod tests {
     use super::*;
     use crate::foc::fast_math::sqrtf;
-    use crate::units::volts;
-    use crate::units::{amps, erad_per_s, henries, ohms, watts, webers};
+    use crate::units::{amps, erad_per_s, henries, ohms, volts, watts, webers};
 
     // The numeric checks below are written in plain SI floats; these
     // wrappers shadow the typed API at the test boundary.

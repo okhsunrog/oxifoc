@@ -24,7 +24,7 @@ use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::failsafe::FailsafeController;
 
-use crate::units::{amps, erad_per_s, seconds, si, volts};
+use crate::units::{ConstZero, amps, erad_per_s, seconds, si, volts};
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -481,10 +481,7 @@ where
         {
             let velocity = self.phase.rotor_velocity();
             self.velocity_feedback_available = velocity.is_some();
-            let omega = velocity.map_or(
-                crate::units::ConstZero::ZERO,
-                RotorVelocityEstimate::velocity,
-            );
+            let omega = velocity.map_or(ConstZero::ZERO, RotorVelocityEstimate::velocity);
             self.velocity_loop.reset(omega);
             self.velocity_schedule
                 .rearm(self.phase.motion_reference_epoch());
@@ -563,10 +560,11 @@ where
         angle: f32,
         current: (f32, f32),
     ) {
+        use crate::units::erad;
         self.set_mode(ControlMode::DirectVoltage {
             vd: volts(vd),
             vq: volts(vq),
-            angle: crate::units::erad(angle),
+            angle: erad(angle),
         });
         self.detection_compensation_current = Some(current);
     }

@@ -6,9 +6,7 @@ use crate::foc::clamp_f32;
 use crate::foc::fast_math::sqrtf;
 use crate::foc::phase::{PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::motor::dissipation::{RegenBudget, WindingModel, dissipate_with_id};
-use crate::units::erad;
-use crate::units::volts;
-use crate::units::{amps, erad_per_s, henries, ohms, watts, webers};
+use crate::units::{amps, erad, erad_per_s, henries, ohms, volts, watts, webers};
 
 type GrantDriver = FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSensor>>;
 

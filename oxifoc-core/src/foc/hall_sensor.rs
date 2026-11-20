@@ -20,6 +20,8 @@ use super::sensors::{
     AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait, HallSnapshot,
 };
 use super::{angle_difference, wrap_angle};
+#[cfg(feature = "storage")]
+use crate::units::unit::electrical;
 use crate::units::{
     AngleRepr, ConstZero, ElectricalAngle, ElectricalAngularVelocity, Fraction, Frequency, Scalar,
     Sign, Time, erad, erad_per_s, hertz, seconds,
@@ -1397,11 +1399,7 @@ impl AngleSensor for HallSensor {
 
     #[cfg(feature = "storage")]
     fn apply_hall_tuning(&mut self, tuning: &crate::storage::HallTuningConfig) -> bool {
-        self.set_interp_min_erpm(
-            tuning
-                .interp_min_speed
-                .get::<crate::units::unit::electrical::erpm>(),
-        );
+        self.set_interp_min_erpm(tuning.interp_min_speed.get::<electrical::erpm>());
         self.set_rate_limit_factor(tuning.rate_limit_factor);
         true
     }
@@ -1546,8 +1544,7 @@ mod rotor_motion_tests;
 
 #[cfg(test)]
 mod tests {
-    use crate::units::ToBits;
-    use crate::units::{erad, erad_per_s, seconds};
+    use crate::units::{ToBits, erad, erad_per_s, seconds};
     #[cfg(feature = "storage")]
     #[test]
     fn prepared_reference_reanchors_raw_and_control_without_old_geometry() {

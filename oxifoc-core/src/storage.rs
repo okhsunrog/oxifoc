@@ -13,10 +13,10 @@ pub use crate::foc::velocity::VelocityLoopConfig;
 pub use crate::motor::{derating::DeratingConfig, drive::DriveConfig};
 use crate::types::ConfigValue;
 pub use crate::types::VoltageFeedforwardMode;
-use crate::units::Sign;
+use crate::units::unit::electrical;
 use crate::units::{
     AngularVelocity, CurrentRate, ElectricCurrent, ElectricalAngle, ElectricalAngularAcceleration,
-    ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux, Power, amps,
+    ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux, Power, Sign, amps,
     amps_per_s, erad, erad_per_s, erad_per_s2, erpm, rad_per_s, watts,
 };
 use sequential_storage::map::{Key, PostcardValue, SerializationError};
@@ -671,11 +671,8 @@ impl HallTuningConfig {
     /// limit that lets the angle keep up with the rotor (a factor below 1
     /// holds the commutation angle behind it at any steady speed).
     pub fn is_sane(&self) -> bool {
-        (0.0..=100_000.0).contains(
-            &self
-                .interp_min_speed
-                .get::<crate::units::unit::electrical::erpm>(),
-        ) && (1.0..=10.0).contains(&self.rate_limit_factor)
+        (0.0..=100_000.0).contains(&self.interp_min_speed.get::<electrical::erpm>())
+            && (1.0..=10.0).contains(&self.rate_limit_factor)
     }
 }
 

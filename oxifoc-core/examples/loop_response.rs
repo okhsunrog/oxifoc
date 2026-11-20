@@ -33,6 +33,7 @@ use oxifoc_core::foc::phase::PhaseSource;
 use oxifoc_core::motor::ControlMode;
 
 use common::{DT, FOC_HZ, Rig, RigConfig};
+use oxifoc_core::units::{amps, erad_per_s};
 
 fn arg<T: std::str::FromStr>(args: &HashMap<String, String>, key: &str, default: T) -> T {
     args.get(key)
@@ -112,8 +113,8 @@ fn main() -> std::io::Result<()> {
         let mut rig = Rig::new(&cfg);
         // Spin up on hall at 10 A against the viscous load, then hand over.
         rig.driver.set_mode(ControlMode::CurrentControl {
-            iq_target: oxifoc_core::units::amps(10.0),
-            id_target: oxifoc_core::units::amps(0.0),
+            iq_target: amps(10.0),
+            id_target: amps(0.0),
         });
         for _ in 0..FOC_HZ {
             rig.step();
@@ -124,7 +125,7 @@ fn main() -> std::io::Result<()> {
         let w0 = rig.out.omega_e;
         if lp == "velocity" {
             rig.driver.set_mode(ControlMode::VelocityControl {
-                target_vel: oxifoc_core::units::erad_per_s(w0),
+                target_vel: erad_per_s(w0),
             });
         }
         for _ in 0..FOC_HZ / 2 {
@@ -147,11 +148,11 @@ fn main() -> std::io::Result<()> {
             let s = (wf * t).sin();
             match lp.as_str() {
                 "current" => rig.driver.set_mode(ControlMode::CurrentControl {
-                    iq_target: oxifoc_core::units::amps(10.0 + 1.0 * s),
-                    id_target: oxifoc_core::units::amps(0.0),
+                    iq_target: amps(10.0 + 1.0 * s),
+                    id_target: amps(0.0),
                 }),
                 "velocity" => rig.driver.set_mode(ControlMode::VelocityControl {
-                    target_vel: oxifoc_core::units::erad_per_s(w0 + 30.0 * s),
+                    target_vel: erad_per_s(w0 + 30.0 * s),
                 }),
                 _ => rig.torque_disturbance = torque_amp * s,
             }

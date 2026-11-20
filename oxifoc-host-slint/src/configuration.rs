@@ -2,6 +2,7 @@
 
 use super::{App, SharedRuntime, parse_field};
 use oxifoc_core::types::{ConfigResponse, ConfigSnapshot, ConfigValue};
+use oxifoc_core::units::{amps, amps_per_s, erad_per_s, erad_per_s2, rad_per_s, watts};
 use oxifoc_host_lib::{CommandSender, HostCommand, config_channel, ops};
 use slint::ComponentHandle;
 use slint::SharedString;
@@ -247,12 +248,12 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                     let dissipation: f32 =
                         parse_field("dissipation max", &app.get_cfg_max_dissipation(), err);
                     ConfigAction::Replace(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                        max_iq: oxifoc_core::units::amps(iq),
-                        max_brake: oxifoc_core::units::amps(brake),
-                        max_phase_current: oxifoc_core::units::amps(ph),
-                        bus_in_max: oxifoc_core::units::amps(bus_in),
-                        bus_regen_max: oxifoc_core::units::amps(bus_regen),
-                        max_dissipation: oxifoc_core::units::watts(dissipation),
+                        max_iq: amps(iq),
+                        max_brake: amps(brake),
+                        max_phase_current: amps(ph),
+                        bus_in_max: amps(bus_in),
+                        bus_regen_max: amps(bus_regen),
+                        max_dissipation: watts(dissipation),
                     }))
                 }
                 2 => {
@@ -268,7 +269,7 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                     ConfigAction::Replace(ConfigValue::PiGains(PiGainsConfig {
                         kp,
                         ki,
-                        bandwidth: oxifoc_core::units::rad_per_s(bw),
+                        bandwidth: rad_per_s(bw),
                     }))
                 }
                 4 => {
@@ -297,10 +298,10 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                     ConfigAction::Replace(ConfigValue::Failsafe(FailsafeConfigStored {
                         staleness_timeout_ms: staleness,
                         policy,
-                        brake_current: oxifoc_core::units::amps(brake),
-                        slew: oxifoc_core::units::amps_per_s(slew),
-                        standstill: oxifoc_core::units::erad_per_s(standstill),
-                        decel: oxifoc_core::units::erad_per_s2(decel),
+                        brake_current: amps(brake),
+                        slew: amps_per_s(slew),
+                        standstill: erad_per_s(standstill),
+                        decel: erad_per_s2(decel),
                         terminal,
                     }))
                 }

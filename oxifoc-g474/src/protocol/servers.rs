@@ -19,6 +19,7 @@ use crate::transport::UART_OUTQ;
 use crate::transport::{AppDriver, Stack, UartRxWorkerType, UartWriter, UsbQueue, UsbRxWorkerType};
 use crate::{FAULT_REGISTRY, STATE};
 
+use oxifoc_core::units::amps;
 #[cfg(feature = "transport-rtt")]
 use {
     crate::transport::{RTT_OUTQ, RttRxWorkerType},
@@ -217,7 +218,7 @@ pub async fn protocol_servers(stack: &'static Stack, boot_epoch: u64) {
         mcu,
         uuid,
         foc_freq_hz: PWM_CONFIG.pwm_freq_hz,
-        max_current_a: oxifoc_core::units::amps(BOARD.max_phase_current_a),
+        max_current_a: amps(BOARD.max_phase_current_a),
         calib: BOARD.calib,
     };
 

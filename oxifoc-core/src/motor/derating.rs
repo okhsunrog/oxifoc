@@ -27,8 +27,7 @@
 //! ladder remain the backstops at the ramp ends.
 
 use crate::foc::clamp_f32;
-use crate::units::{ElectricPotential, ElectricalAngularVelocity, Linear, Sign};
-use crate::units::{erad_per_s, volts};
+use crate::units::{ElectricPotential, ElectricalAngularVelocity, Linear, Sign, erad_per_s, volts};
 use uom::ConstZero;
 
 /// Live derating factors (1.0 = no derate), applied by the driver's

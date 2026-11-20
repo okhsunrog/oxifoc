@@ -1,4 +1,5 @@
 use oxifoc_core::types::{ConfigGroupId, ControlMode};
+use oxifoc_core::units::amps;
 use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, TransportType, motor_channel, ops, start_host,
 };
@@ -237,8 +238,8 @@ pub fn verify_virtual() -> anyhow::Result<()> {
         let (tx, rx) = motor_channel();
         model.runtime.cmd_tx.send(HostCommand::MotorAck(
             ControlMode::CurrentControl {
-                iq_target: oxifoc_core::units::amps(1.),
-                id_target: oxifoc_core::units::amps(0.),
+                iq_target: amps(1.),
+                id_target: amps(0.),
             },
             tx,
         ))?;

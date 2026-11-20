@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 use dioxus_native::{CustomWidgetAttr, LogicalSize, WindowAttributes};
 use model::{CAPACITY, Model, Snapshot};
 use oxifoc_core::types::ControlMode;
+use oxifoc_core::units::amps;
 use std::{
     sync::{Arc, Mutex, atomic::Ordering},
     time::Duration,
@@ -204,7 +205,7 @@ fn Studio(
         div {class:"control-group",h3 {"Torque command"} label {r#for:"iq","Target Iq, A"} input {id:"iq",r#type:"text",value:"{current}",oninput:move |e|current.set(e.value())}
          p {"Id = 0 A. Apply sends current-control mode."}
          button {class:"button primary wide",disabled:!online||busy,onclick:move |_| {
-          match current().parse::<f32>() {Ok(iq) if iq.is_finite()&&iq.abs()<=10.=>{error.set(String::new());runmodel.motor(ControlMode::CurrentControl{iq_target: oxifoc_core::units::amps(iq),id_target: oxifoc_core::units::amps(0.)});},_=>error.set("Enter a finite current from −10 to 10 A.".into())}
+          match current().parse::<f32>() {Ok(iq) if iq.is_finite()&&iq.abs()<=10.=>{error.set(String::new());runmodel.motor(ControlMode::CurrentControl{iq_target: amps(iq),id_target: amps(0.)});},_=>error.set("Enter a finite current from −10 to 10 A.".into())}
          },if busy {"Waiting for acknowledgement…"} else {"Apply current"}}
          button {class:"button stop wide",disabled:!online,onclick:move |_|stopmodel.motor(ControlMode::Stopped),"Stop drive"}
          if !error().is_empty(){p {class:"error","{error}"}}

@@ -1,7 +1,7 @@
 //! Motor classes and immutable commissioning conditions shared by every client.
 use super::DetectRequest;
-use crate::units::Sign;
-use crate::units::{ElectricCurrent, ElectricalAngularVelocity};
+use crate::units::unit::electrical;
+use crate::units::{ElectricCurrent, ElectricalAngularVelocity, Sign};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
@@ -56,14 +56,8 @@ impl CommissioningPlan {
     pub fn is_valid(self) -> bool {
         self.source.is_valid()
             && self.pole_pairs > 0
-            && self
-                .flux_target_speed
-                .get::<crate::units::unit::electrical::erpm>()
-                .is_finite()
-            && self
-                .flux_target_speed
-                .get::<crate::units::unit::electrical::erpm>()
-                > 0.0
+            && self.flux_target_speed.get::<electrical::erpm>().is_finite()
+            && self.flux_target_speed.get::<electrical::erpm>() > 0.0
             && self
                 .current_limit
                 .is_none_or(|v| v.is_finite() && v.value >= 0.5)

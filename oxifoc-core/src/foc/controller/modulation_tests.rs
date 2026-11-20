@@ -1,8 +1,7 @@
 //! Differential oracle retaining the controller math before modulation preparation.
 use super::*;
 use crate::foc::trig::FastSinCos;
-use crate::units::{amps, seconds};
-use crate::units::{erad, erad_per_s, henries, ohms, rad_per_s, volts, webers};
+use crate::units::{amps, erad, erad_per_s, henries, ohms, rad_per_s, seconds, volts, webers};
 
 impl<M: Modulator, S: SinCos> FocController<M, S> {
     fn legacy_voltage_limit(&self) -> f32 {

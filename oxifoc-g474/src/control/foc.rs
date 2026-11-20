@@ -22,6 +22,7 @@ use crate::cordic::CordicSinCos;
 use crate::motor::MotorPwm;
 use crate::sensors::{G474CurrentSensor, G474CurrentSensorExt, HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
+use oxifoc_core::units::volts;
 
 const PREPARED_BOARD: PreparedBoardConfig = PreparedBoardConfig::new(BOARD);
 
@@ -87,9 +88,7 @@ pub async fn init(
     // Build FOC driver with dt from PWM config; controller and limits come
     // from the stored config (motor params → PI gains → defaults).
     let mut foc_driver = FocDriver::new(
-        FocController::<SvpwmModulator, CordicSinCos>::new(oxifoc_core::units::volts(
-            initial_vbus_v,
-        )),
+        FocController::<SvpwmModulator, CordicSinCos>::new(volts(initial_vbus_v)),
         motor_pwm,
         current_sensor,
         phase_manager,

@@ -7,6 +7,7 @@
 //! copies that could drift.
 
 use oxifoc_core::foc::phase::PhaseSource;
+use oxifoc_core::units::{erad_per_s, volts};
 
 /// Default crossover velocity for blended sources (electrical rad/s).
 pub const DEFAULT_SWITCH_VEL: f32 = 150.0;
@@ -60,17 +61,17 @@ pub fn preset(kind: PhaseSourceKind, switch_vel: f32, toggle_v: f32) -> PhaseSou
     match kind {
         PhaseSourceKind::HallWithoutCrossover => PhaseSource::Hall,
         PhaseSourceKind::Hall => PhaseSource::HallToObserver {
-            blend_low: oxifoc_core::units::erad_per_s(switch_vel),
-            blend_high: oxifoc_core::units::erad_per_s(switch_vel * 2.0),
+            blend_low: erad_per_s(switch_vel),
+            blend_high: erad_per_s(switch_vel * 2.0),
         },
         PhaseSourceKind::Observer => PhaseSource::Observer,
         PhaseSourceKind::Hfi => PhaseSource::Hfi,
         PhaseSourceKind::HfiObserver => PhaseSource::HfiToObserver {
-            min_vel: oxifoc_core::units::erad_per_s(switch_vel),
+            min_vel: erad_per_s(switch_vel),
             min_confidence: DEFAULT_MIN_CONFIDENCE,
         },
         PhaseSourceKind::HfiObserverVolts => PhaseSource::HfiToObserverVolts {
-            toggle: oxifoc_core::units::volts(toggle_v),
+            toggle: volts(toggle_v),
             min_confidence: DEFAULT_MIN_CONFIDENCE,
         },
     }

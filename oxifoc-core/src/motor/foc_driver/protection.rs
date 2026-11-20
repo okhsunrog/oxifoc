@@ -24,9 +24,9 @@ use crate::motor::dissipation::WindingModel;
 use crate::motor::dissipation::dissipate_with_id;
 use crate::motor::dissipation::heat_current_limit;
 use crate::motor::drive::DriveConfig;
-use crate::units::unit::ampere;
 use crate::units::{
-    ElectricPotential, Linear, Sign, amps, erad_per_s, henries, ohms, volts, watts, webers,
+    ElectricPotential, Linear, Sign, amps, erad_per_s, henries, ohms, unit::ampere, volts, watts,
+    webers,
 };
 
 struct BusIqBounds {

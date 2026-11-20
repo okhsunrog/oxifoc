@@ -3,8 +3,7 @@ use crate::foc::phase::{PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::{DeratingConfig, ModulationDerating, SpeedDerating};
 use crate::motor::drive::DriveConfig;
-use crate::units::erad;
-use crate::units::{amps, erad_per_s, erad_per_s2, henries, ohms, volts, webers};
+use crate::units::{amps, erad, erad_per_s, erad_per_s2, henries, ohms, volts, webers};
 
 struct SplitPhase {
     frame_velocity: f32,

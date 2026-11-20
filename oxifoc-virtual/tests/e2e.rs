@@ -28,6 +28,7 @@ use oxifoc_core::types::{
     CurrentOffsetMethod, DetectRequest, DetectResponse, FaultClear, FaultClearTarget, FaultRequest,
     FaultResponse, Keyed, MotorCommandOutcome, ReqId,
 };
+use oxifoc_core::units::{amps, amps_per_s, erad_per_s, erpm, watts};
 use oxifoc_host_lib::{
     HostCommand, HostConfig, ReconnectPolicy, TransportType, config_channel, fault_channel,
     motor_channel, start_host,
@@ -184,9 +185,9 @@ fn run_e2e(transport: TransportType) {
             .boot_epoch,
         0,
         ConfigValue::CurrentLimits(CurrentLimitsConfig {
-            max_iq: oxifoc_core::units::amps(1.0),
-            bus_in_max: oxifoc_core::units::amps(5.0),
-            bus_regen_max: oxifoc_core::units::amps(0.0),
+            max_iq: amps(1.0),
+            bus_in_max: amps(5.0),
+            bus_regen_max: amps(0.0),
             ..Default::default()
         }),
     )
@@ -195,8 +196,8 @@ fn run_e2e(transport: TransportType) {
     // 2) Motor at_least_once: command a current setpoint; the sim should spin.
     rt.cmd_tx
         .send(HostCommand::Motor(ControlMode::CurrentControl {
-            iq_target: oxifoc_core::units::amps(4.0),
-            id_target: oxifoc_core::units::amps(0.0),
+            iq_target: amps(4.0),
+            id_target: amps(0.0),
         }))
         .expect("send motor command");
     let spun = wait_until(Duration::from_secs(8), || {
@@ -249,7 +250,7 @@ fn run_e2e(transport: TransportType) {
     let resp = oxifoc_host_lib::ops::detect::run_step(
         &rt.cmd_tx,
         DetectRequest::MeasureResistance {
-            max_power_loss: oxifoc_core::units::watts(8.0),
+            max_power_loss: watts(8.0),
             current_limit: None,
         },
     )
@@ -287,8 +288,8 @@ fn run_e2e(transport: TransportType) {
     rt.cmd_tx
         .send(HostCommand::MotorAck(
             ControlMode::CurrentControl {
-                iq_target: oxifoc_core::units::amps(1.0),
-                id_target: oxifoc_core::units::amps(0.0),
+                iq_target: amps(1.0),
+                id_target: amps(0.0),
             },
             tx,
         ))
@@ -525,8 +526,8 @@ fn run_e2e(transport: TransportType) {
     rt.cmd_tx
         .send(HostCommand::MotorAck(
             ControlMode::CurrentControl {
-                iq_target: oxifoc_core::units::amps(1.0),
-                id_target: oxifoc_core::units::amps(0.0),
+                iq_target: amps(1.0),
+                id_target: amps(0.0),
             },
             tx,
         ))
@@ -542,8 +543,8 @@ fn run_e2e(transport: TransportType) {
         .cmd_tx
         .send(HostCommand::MotorAck(
             ControlMode::CurrentControl {
-                iq_target: oxifoc_core::units::amps(1.0),
-                id_target: oxifoc_core::units::amps(0.0),
+                iq_target: amps(1.0),
+                id_target: amps(0.0),
             },
             tx,
         ))
@@ -645,8 +646,8 @@ fn drive_config_applies_to_the_throttle_command() {
     };
     let derating = oxifoc_core::motor::derating::DeratingConfig {
         speed: oxifoc_core::motor::derating::SpeedDerating {
-            max_forward: oxifoc_core::units::erad_per_s(350.0),
-            max_reverse: oxifoc_core::units::erad_per_s(120.0),
+            max_forward: erad_per_s(350.0),
+            max_reverse: erad_per_s(120.0),
             ..Default::default()
         },
         ..Default::default()
@@ -731,14 +732,14 @@ fn partial_config_updates_use_device_defaults() {
     assert_eq!(
         read_group(&rt.cmd_tx, group).unwrap().value,
         Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-            bus_in_max: oxifoc_core::units::amps(5.0),
+            bus_in_max: amps(5.0),
             ..CurrentLimitsConfig::AUTO
         }))
     );
 
     let group = ConfigGroupId::HallTuning;
     let tuning = HallTuningConfig {
-        interp_min_speed: oxifoc_core::units::erpm(600.0),
+        interp_min_speed: erpm(600.0),
         ..Default::default()
     };
     let before = read_group(&rt.cmd_tx, group).unwrap();
@@ -780,7 +781,7 @@ fn invalid_loop_config_does_not_advance_the_revision() {
             ..Default::default()
         }),
         ConfigValue::Failsafe(FailsafeConfigStored {
-            slew: oxifoc_core::units::amps_per_s(0.0),
+            slew: amps_per_s(0.0),
             ..Default::default()
         }),
     ] {
@@ -962,8 +963,8 @@ fn board_calibration_e2e_tcp() {
     rt.cmd_tx
         .send(HostCommand::MotorAck(
             ControlMode::CurrentControl {
-                iq_target: oxifoc_core::units::amps(0.1),
-                id_target: oxifoc_core::units::amps(0.0),
+                iq_target: amps(0.1),
+                id_target: amps(0.0),
             },
             tx,
         ))
@@ -1030,8 +1031,8 @@ fn drive_setup_save_replays_exact_request_and_commits_all_groups() {
             .unwrap(),
     );
     plan.source = Some(SourceLimits {
-        input: oxifoc_core::units::amps(5.0),
-        regen: oxifoc_core::units::amps(0.0),
+        input: amps(5.0),
+        regen: amps(0.0),
     });
     plan.calibrate_hall = false;
     let outcome = detect::run_sequence(&rt.cmd_tx, plan, |_, request| {

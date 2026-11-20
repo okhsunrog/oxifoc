@@ -60,6 +60,7 @@ use oxifoc_core::motor::ControlMode;
 use oxifoc_core::storage::{CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConfig};
 
 use common::{DT, FOC_HZ, Rig, RigConfig};
+use oxifoc_core::units::{amps, erad, erad_per_s, erad_per_s2};
 
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -95,26 +96,26 @@ fn events(args: &HashMap<String, String>, key: &str) -> Vec<(u64, f32)> {
 fn mode_for(rig: &Rig, mode: &str, set: f32, pos0: f32) -> ControlMode {
     match mode {
         "rpm" => ControlMode::VelocityControl {
-            target_vel: oxifoc_core::units::erad_per_s(rig.rpm_to_el(set)),
+            target_vel: erad_per_s(rig.rpm_to_el(set)),
         },
         "pos" => ControlMode::PositionControl {
-            target_pos: oxifoc_core::units::erad(pos0 + set * TAU),
+            target_pos: erad(pos0 + set * TAU),
         },
         // The OpenLoop current rides the q axis of its frame: a frame a
         // quarter turn back puts the vector — and the rotor's rest — on
         // the angle read now.
         "lock" => ControlMode::OpenLoop {
-            angle: oxifoc_core::units::erad(wrap_angle(
-                (rig.driver.phase().get().angle - oxifoc_core::units::erad(FRAC_PI_2)).value,
+            angle: erad(wrap_angle(
+                (rig.driver.phase().get().angle - erad(FRAC_PI_2)).value,
             )),
-            current: oxifoc_core::units::amps(set),
-            velocity: oxifoc_core::units::erad_per_s(0.0),
+            current: amps(set),
+            velocity: erad_per_s(0.0),
             pi_gains: None,
         },
         "anchor" => ControlMode::Brake,
         _ => ControlMode::CurrentControl {
-            iq_target: oxifoc_core::units::amps(set),
-            id_target: oxifoc_core::units::amps(0.0),
+            iq_target: amps(set),
+            id_target: amps(0.0),
         },
     }
 }
@@ -163,11 +164,7 @@ fn main() -> std::io::Result<()> {
     rig.driver.set_velocity_config(VelocityLoopConfig {
         kp: arg(&args, "vkp", vel_default.kp),
         ki: arg(&args, "vki", vel_default.ki),
-        accel_limit: oxifoc_core::units::erad_per_s2(arg(
-            &args,
-            "accel",
-            vel_default.accel_limit.value,
-        )),
+        accel_limit: erad_per_s2(arg(&args, "accel", vel_default.accel_limit.value)),
         accel_ff: arg(&args, "ff", vel_default.accel_ff),
     });
     let pos_default = PositionLoopConfig::default();
@@ -222,11 +219,11 @@ fn main() -> std::io::Result<()> {
                 ControlMode::Brake
             } else {
                 ControlMode::CurrentControl {
-                    iq_target: oxifoc_core::units::amps(
+                    iq_target: amps(
                         -err.signum() * (set + anchor_kp * (err.abs() - anchor_db))
                             - anchor_kd * rig.driver.phase().get().velocity.value,
                     ),
-                    id_target: oxifoc_core::units::amps(0.0),
+                    id_target: amps(0.0),
                 }
             };
             // Re-entering Brake every cycle would restart it as the plain
@@ -287,8 +284,7 @@ fn main() -> std::io::Result<()> {
                 rec.frame_err(),
                 rec.sample.omega_e,
                 rec.telem.velocity.value,
-                obs.velocity()
-                    .unwrap_or(oxifoc_core::units::erad_per_s(f32::NAN)),
+                obs.velocity().unwrap_or(erad_per_s(f32::NAN)),
                 rec.telem.id.value,
                 rec.telem.iq.value,
                 rec.telem.vd.value,

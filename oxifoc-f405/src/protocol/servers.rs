@@ -36,6 +36,7 @@ use crate::config::{BOARD, PWM_CONFIG_LIMITS, measured_board};
 #[cfg(feature = "transport-usb")]
 use crate::config::{MAX_PACKET_SIZE, USB_OUT_QUEUE_SIZE};
 use crate::control::foc::measured_vbus_mv;
+use oxifoc_core::units::amps;
 
 // ========== Worker Tasks ==========
 
@@ -164,7 +165,7 @@ pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32, boot_epoc
         mcu,
         uuid,
         foc_freq_hz,
-        max_current_a: oxifoc_core::units::amps(BOARD.max_phase_current_a),
+        max_current_a: amps(BOARD.max_phase_current_a),
         calib: measured_board().calib,
     };
     #[cfg(feature = "board-vesc6-mk5")]

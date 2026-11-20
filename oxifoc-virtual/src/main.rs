@@ -19,6 +19,7 @@ impl Timer for TokioTimer {
 use clap::Parser;
 use oxifoc_core::storage::{CONFIG_LOADED, MotorParamsConfig, RuntimeConfig};
 use oxifoc_core::timer::Timer;
+use oxifoc_core::units::{amps, henries, ohms, watts, webers};
 use oxifoc_core::virtual_motor::MotorParams;
 use tracing_subscriber::EnvFilter;
 
@@ -32,7 +33,7 @@ pub const CURRENT_SENSE_TOPOLOGY: oxifoc_core::types::CurrentSenseTopology =
     oxifoc_core::types::CurrentSenseTopology::ThreeShunt;
 
 pub const VIRTUAL_CALIB: oxifoc_core::types::BoardCalib = oxifoc_core::types::BoardCalib {
-    shunt_ohms: oxifoc_core::units::ohms(0.003),
+    shunt_ohms: ohms(0.003),
     amp_gain: 64.0 / 7.0,
     adc_vref_mv: 3300,
     adc_max_counts: 4095,
@@ -103,13 +104,13 @@ struct Args {
 
 fn config_from_motor_params(params: MotorParams, max_current_a: f32) -> MotorParamsConfig {
     MotorParamsConfig {
-        resistance: oxifoc_core::units::ohms(params.r),
-        inductance_d: oxifoc_core::units::henries(params.ld),
-        inductance_q: oxifoc_core::units::henries(params.lq),
-        flux_linkage: oxifoc_core::units::webers(params.lambda),
+        resistance: ohms(params.r),
+        inductance_d: henries(params.ld),
+        inductance_q: henries(params.lq),
+        flux_linkage: webers(params.lambda),
         pole_pairs: params.pole_pairs,
-        max_current: oxifoc_core::units::amps(max_current_a),
-        max_power_loss: oxifoc_core::units::watts(0.0),
+        max_current: amps(max_current_a),
+        max_power_loss: watts(0.0),
         ..Default::default()
     }
 }

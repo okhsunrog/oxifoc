@@ -2,6 +2,7 @@
 
 use super::{App, SharedRuntime, parse_id_target};
 use oxifoc_core::types::{ControlMode, MotorState};
+use oxifoc_core::units::amps;
 use oxifoc_host_lib::{HostCommand, HostRuntime, motor_channel, ops};
 use slint::ComponentHandle;
 use slint::SharedString;
@@ -122,8 +123,8 @@ pub(super) fn bind(
                 &weak,
                 &generation,
                 ControlMode::CurrentControl {
-                    iq_target: oxifoc_core::units::amps(iq_target),
-                    id_target: oxifoc_core::units::amps(id_target),
+                    iq_target: amps(iq_target),
+                    id_target: amps(id_target),
                 },
                 "Starting...",
             );

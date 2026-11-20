@@ -19,6 +19,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use oxifoc_core::types::{ConfigGroupId, ControlMode, FaultCategory, FaultClearTarget};
+use oxifoc_core::units::{amps, erad, erad_per_s, volts};
 use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, TransportType, init_tracing, list_probes,
     list_serial_ports, motor_channel, start_host,
@@ -787,8 +788,8 @@ fn main() -> Result<()> {
             let status = send_motor_acked(
                 &runtime,
                 ControlMode::CurrentControl {
-                    iq_target: oxifoc_core::units::amps(iq),
-                    id_target: oxifoc_core::units::amps(id),
+                    iq_target: amps(iq),
+                    id_target: amps(id),
                 },
             )?;
             emit(
@@ -848,7 +849,7 @@ fn main() -> Result<()> {
             let status = send_motor_acked(
                 &runtime,
                 ControlMode::VelocityControl {
-                    target_vel: oxifoc_core::units::erad_per_s(rad_s),
+                    target_vel: erad_per_s(rad_s),
                 },
             )?;
             emit(
@@ -865,9 +866,9 @@ fn main() -> Result<()> {
             let status = send_motor_acked(
                 &runtime,
                 ControlMode::OpenLoop {
-                    angle: oxifoc_core::units::erad(angle),
-                    current: oxifoc_core::units::amps(current),
-                    velocity: oxifoc_core::units::erad_per_s(velocity),
+                    angle: erad(angle),
+                    current: amps(current),
+                    velocity: erad_per_s(velocity),
                     pi_gains: None,
                 },
             )?;
@@ -881,9 +882,9 @@ fn main() -> Result<()> {
             let status = send_motor_acked(
                 &runtime,
                 ControlMode::DirectVoltage {
-                    vd: oxifoc_core::units::volts(vd),
-                    vq: oxifoc_core::units::volts(vq),
-                    angle: oxifoc_core::units::erad(angle),
+                    vd: volts(vd),
+                    vq: volts(vq),
+                    angle: erad(angle),
                 },
             )?;
             emit(

@@ -1,6 +1,7 @@
 //! Framework-independent motor parameter form and revision-aware operations.
 
 use crate::{CommandSender, ops::config};
+use oxifoc_core::units::{amps, henries, ohms, watts, webers};
 use oxifoc_core::{
     storage::MotorParamsConfig,
     types::{ConfigGroupId, ConfigValue},
@@ -107,13 +108,13 @@ fn edited_motor(
     original: &MotorParamsConfig,
 ) -> Result<MotorParamsConfig, &'static str> {
     Ok(MotorParamsConfig {
-        resistance: oxifoc_core::units::ohms(decimal(&draft[0], true)?),
-        inductance_d: oxifoc_core::units::henries(decimal(&draft[1], true)?),
-        inductance_q: oxifoc_core::units::henries(decimal(&draft[2], true)?),
-        flux_linkage: oxifoc_core::units::webers(decimal(&draft[3], false)?),
+        resistance: ohms(decimal(&draft[0], true)?),
+        inductance_d: henries(decimal(&draft[1], true)?),
+        inductance_q: henries(decimal(&draft[2], true)?),
+        flux_linkage: webers(decimal(&draft[3], false)?),
         pole_pairs: pole_pairs(&draft[4])?,
-        max_current: oxifoc_core::units::amps(decimal(&draft[5], false)?),
-        max_power_loss: oxifoc_core::units::watts(decimal(&draft[6], false)?),
+        max_current: amps(decimal(&draft[5], false)?),
+        max_power_loss: watts(decimal(&draft[6], false)?),
         ..original.clone()
     })
 }
@@ -390,6 +391,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxifoc_core::units::{henries, ohms};
 
     #[test]
     fn reconnect_discards_the_previous_read_reply() {
@@ -418,12 +420,12 @@ mod tests {
     #[test]
     fn edits_preserve_fundamental_inductance_calibration() {
         let original = MotorParamsConfig {
-            resistance: oxifoc_core::units::ohms(0.5),
-            inductance_d: oxifoc_core::units::henries(0.00047),
-            inductance_q: oxifoc_core::units::henries(0.00049),
+            resistance: ohms(0.5),
+            inductance_d: henries(0.00047),
+            inductance_q: henries(0.00049),
             pole_pairs: 7,
-            ld_fundamental: oxifoc_core::units::henries(0.00081),
-            lq_fundamental: oxifoc_core::units::henries(0.00121),
+            ld_fundamental: henries(0.00081),
+            lq_fundamental: henries(0.00121),
             ..Default::default()
         };
         let mut draft = draft_from(&original);
@@ -432,7 +434,7 @@ mod tests {
         assert_eq!(
             edited,
             MotorParamsConfig {
-                resistance: oxifoc_core::units::ohms(0.6),
+                resistance: ohms(0.6),
                 ..original
             }
         );

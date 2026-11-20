@@ -12,6 +12,7 @@ use oxifoc_host_lib::ops::detect::{self, DetectionOutcome, DetectionPlan, PRESET
 use slint::{ComponentHandle, SharedString};
 
 use super::{App, SharedRuntime, parse_field};
+use oxifoc_core::units::amps;
 
 pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<AtomicU64>) {
     let result = Arc::new(Mutex::new(
@@ -268,13 +269,13 @@ fn show_result(app: &App, plan: DetectionPlan, out: DetectionOutcome) {
 
 fn source_limits(app: &App) -> Result<oxifoc_core::types::commissioning::SourceLimits, String> {
     let source = oxifoc_core::types::commissioning::SourceLimits {
-        input: oxifoc_core::units::amps(
+        input: amps(
             app.get_detect_source_input()
                 .trim()
                 .parse()
                 .map_err(|_| "Enter input current limit (A)")?,
         ),
-        regen: oxifoc_core::units::amps(
+        regen: amps(
             app.get_detect_source_regen()
                 .trim()
                 .parse()

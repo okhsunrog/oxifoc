@@ -7,8 +7,10 @@ use crate::foc::phase::provider::{PhaseInput, PhaseProvider};
 use crate::foc::phase::source::PhaseSourceError;
 use crate::foc::sensors::AngleSample;
 use crate::foc::wrap_angle;
-use crate::units::{ElectricalAngle, per_second, quantity};
-use crate::units::{amps, erad, erad_per_s, henries, ohms, seconds, volts, webers};
+use crate::units::{
+    ElectricalAngle, amps, erad, erad_per_s, henries, ohms, per_second, quantity, seconds, volts,
+    webers,
+};
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::VirtualMotorOutput;
 use core::f32::consts::TAU;

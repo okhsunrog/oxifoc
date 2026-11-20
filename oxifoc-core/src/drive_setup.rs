@@ -6,8 +6,7 @@ use crate::storage::{CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConf
 #[cfg(any(feature = "runtime", test))]
 use crate::storage::{MotorFeedbackConfig, MotorFeedbackMode};
 use crate::types::commissioning::SourceLimits;
-use crate::units::Sign;
-use crate::units::{amps, watts};
+use crate::units::{Sign, amps, watts};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,

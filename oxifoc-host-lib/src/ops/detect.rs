@@ -24,6 +24,7 @@ use serde_json::json;
 
 use super::config;
 use crate::{CommandSender, HostCommand, detect_channel, motor_channel};
+use oxifoc_core::units::{amps, erpm, watts, webers};
 
 mod presets;
 pub use presets::{MotorPreset, PRESETS};
@@ -97,13 +98,10 @@ impl DetectionOutcome {
                 resistance: ohms(self.resistance_ohm),
                 inductance_d: henries(self.inductance_d_h),
                 inductance_q: henries(self.inductance_q_h),
-                flux_linkage: oxifoc_core::units::webers(self.flux_linkage_wb),
+                flux_linkage: webers(self.flux_linkage_wb),
                 pole_pairs: plan.pole_pairs,
-                max_power_loss: oxifoc_core::units::watts(plan.max_power_loss_w),
-                max_current: oxifoc_core::units::amps(rating_from_loss(
-                    self.resistance_ohm,
-                    plan.max_power_loss_w,
-                )),
+                max_power_loss: watts(plan.max_power_loss_w),
+                max_current: amps(rating_from_loss(self.resistance_ohm, plan.max_power_loss_w)),
                 ..Default::default()
             },
             feedback: self.hall.map_or(Feedback::Sensorless, Feedback::Hall),
@@ -282,8 +280,8 @@ pub fn run_sequence(
         source: source.context("confirm input and regenerative current limits before detection")?,
         motor_class,
         pole_pairs,
-        flux_target_speed: oxifoc_core::units::erpm(flux_target_erpm),
-        current_limit: current_limit_a.map(oxifoc_core::units::amps),
+        flux_target_speed: erpm(flux_target_erpm),
+        current_limit: current_limit_a.map(amps),
         calibrate_hall,
     };
     let mut session = crate::DetectionSession::open(cmd, Some(confirmed))?;
@@ -297,8 +295,8 @@ pub fn run_sequence(
     match measure(
         "resistance",
         DetectRequest::MeasureResistance {
-            max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
-            current_limit: current_limit_a.map(oxifoc_core::units::amps),
+            max_power_loss: watts(max_power_loss_w),
+            current_limit: current_limit_a.map(amps),
         },
     )? {
         DetectResponse::Resistance { resistance } => out.resistance_ohm = resistance.value,
@@ -310,8 +308,8 @@ pub fn run_sequence(
     match measure(
         "inductance",
         DetectRequest::MeasureInductance {
-            max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
-            current_limit: current_limit_a.map(oxifoc_core::units::amps),
+            max_power_loss: watts(max_power_loss_w),
+            current_limit: current_limit_a.map(amps),
             resistance: ohms(out.resistance_ohm),
         },
     )? {
@@ -330,12 +328,12 @@ pub fn run_sequence(
     match measure(
         "flux",
         DetectRequest::MeasureFlux {
-            max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
-            current_limit: current_limit_a.map(oxifoc_core::units::amps),
+            max_power_loss: watts(max_power_loss_w),
+            current_limit: current_limit_a.map(amps),
             resistance: ohms(out.resistance_ohm),
             inductance: henries(out.l_avg()),
             pole_pairs,
-            openloop_speed: oxifoc_core::units::erpm(flux_target_erpm),
+            openloop_speed: erpm(flux_target_erpm),
         },
     )? {
         DetectResponse::FluxLinkage {
@@ -353,8 +351,8 @@ pub fn run_sequence(
         match measure(
             "hall",
             DetectRequest::CalibrateHall {
-                max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
-                current_limit: current_limit_a.map(oxifoc_core::units::amps),
+                max_power_loss: watts(max_power_loss_w),
+                current_limit: current_limit_a.map(amps),
                 resistance: ohms(out.resistance_ohm),
             },
         )? {

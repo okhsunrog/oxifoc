@@ -427,6 +427,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // normal images use telemetry and compile this entire block out.
         #[cfg(feature = "observer-logging")]
         {
+            use crate::units::erad_per_s;
             // Plain field, not an atomic: this runs only in the ISR, and a
             // static AtomicU32 here was a per-cycle LDREX/STREX pair (PC
             // sampling, tier-3 shave).
@@ -434,7 +435,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             if self.obs_trace_ticks.is_multiple_of(8192)
                 && OBSERVER_LOG_ENABLED.load(core::sync::atomic::Ordering::Relaxed)
                 && let Some(vel) = self.observer.velocity()
-                && vel.abs() > crate::units::erad_per_s(20.0)
+                && vel.abs() > erad_per_s(20.0)
             {
                 let (bemf_q, travel) = self
                     .observer

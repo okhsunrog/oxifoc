@@ -773,6 +773,7 @@ mod tests {
     use super::*;
     use oxifoc_core::storage::BoardCalibrationConfig;
     use oxifoc_core::types::{ConfigGroupId, ConfigSnapshot, ConfigValue};
+    use oxifoc_core::units::ohms;
     use parquet::file::reader::{FileReader, SerializedFileReader};
     use parquet::record::RowAccessor;
 
@@ -811,7 +812,7 @@ mod tests {
             capabilities: CurrentSenseTopology::ThreeShunt.capability_bits(),
             foc_freq_hz: 20_000,
             calib: BoardCalib {
-                shunt_ohms: oxifoc_core::units::ohms(0.002),
+                shunt_ohms: ohms(0.002),
                 amp_gain: 1.0,
                 adc_vref_mv: 1000,
                 adc_max_counts: 1000,

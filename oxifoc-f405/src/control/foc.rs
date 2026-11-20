@@ -44,6 +44,7 @@ use crate::{FAULT_REGISTRY, STATE};
 
 #[path = "profiling_window.rs"]
 pub(crate) mod profiling_window;
+use oxifoc_core::units::volts;
 use profiling_window::{DwtSample, DwtWindow};
 
 // ========== ADC Sample Storage (Global Atomics) ==========
@@ -422,8 +423,7 @@ pub async fn init(
 
     // Hardware/controller setup is independent of the electrical model.
     // Boot and live writes install the same prepared model below.
-    let mut foc_controller =
-        FocController::<_, FastSinCos>::new(oxifoc_core::units::volts(initial_vbus_v));
+    let mut foc_controller = FocController::<_, FastSinCos>::new(volts(initial_vbus_v));
 
     // Configure dead time compensation
     foc_controller

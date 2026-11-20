@@ -217,6 +217,7 @@ fn rust_literal(v: &Value) -> String {
 mod tests {
     use super::*;
     use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
+    use oxifoc_core::units::erad;
 
     #[test]
     fn baked_hall_geometry_is_a_rust_optional_struct() {
@@ -226,7 +227,7 @@ mod tests {
             "None"
         );
         let json = serde_json::to_value(oxifoc_core::storage::HallTransitionGeometryConfig {
-            entry_angles: [oxifoc_core::units::erad(0.0); 8],
+            entry_angles: [erad(0.0); 8],
             next_states: [0; 8],
         })
         .unwrap();

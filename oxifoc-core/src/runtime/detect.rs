@@ -30,8 +30,8 @@ use crate::state::DetectionActiveGuard;
 use crate::state::model::CONFIG_COORDINATOR;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse};
-use crate::units::amps;
-use crate::units::{henries, ohms, webers};
+use crate::units::unit::electrical;
+use crate::units::{amps, henries, ohms, webers};
 
 struct ReadySetup {
     session: crate::types::measurement::SessionId,
@@ -412,7 +412,7 @@ async fn measure_step<B: DetectionBackend>(
         } => {
             let (max_power_loss_w, r, inductance_h) =
                 (max_power_loss_w.value, r.value, inductance_h.value);
-            let openloop_erpm = openloop_erpm.get::<crate::units::unit::electrical::erpm>();
+            let openloop_erpm = openloop_erpm.get::<electrical::erpm>();
             // pole_pairs = 0 would turn openloop_erpm into an infinite
             // spin target via the erpm/pole_pairs division below.
             if !pos(max_power_loss_w)

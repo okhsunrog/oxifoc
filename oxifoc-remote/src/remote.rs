@@ -40,6 +40,7 @@ mod display;
 mod storage;
 
 use embassy_crypto_rustcrypto as _;
+use oxifoc_core::units::amps;
 
 const CONNECTIONS_MAX: usize = 1;
 /// The remote bonds only with its bridge.
@@ -755,7 +756,7 @@ async fn info_server(stack: &'static transport::Stack) {
         mcu: "nRF52840".try_into().unwrap_or_default(),
         uuid: heapless::String::new(),
         foc_freq_hz: 0,
-        max_current_a: oxifoc_core::units::amps(0.0),
+        max_current_a: amps(0.0),
         // No motor/current sensing on the remote — report default calibration.
         calib: oxifoc_core::types::BoardCalib::default(),
     };

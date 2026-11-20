@@ -55,6 +55,7 @@ use slint::{
 };
 mod graphics;
 use graphics::required_wgpu_settings;
+use oxifoc_core::units::amps;
 use oxifoc_plot::{PlotBuffer, PlotConfig, PlotRenderer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -443,8 +444,8 @@ pub fn main() {
                                     {
                                         let _ = rt.cmd_tx.send(HostCommand::Motor(
                                             ControlMode::CurrentControl {
-                                                iq_target: oxifoc_core::units::amps(iq_target),
-                                                id_target: oxifoc_core::units::amps(id_target),
+                                                iq_target: amps(iq_target),
+                                                id_target: amps(id_target),
                                             },
                                         ));
                                     }

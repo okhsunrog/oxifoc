@@ -1,7 +1,6 @@
 use super::*;
 use crate::foc::hall_calibration::HallTransitionGeometry;
-use crate::units::ToBits;
-use crate::units::{erad, erad_per_s, seconds};
+use crate::units::{ToBits, erad, erad_per_s, seconds};
 
 const RING: [u8; 6] = [3, 2, 6, 4, 5, 1];
 const ENTRIES_DEG: [f32; 8] = [0.0, 300.0, 70.0, 350.0, 200.0, 240.0, 110.0, 0.0];

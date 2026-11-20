@@ -455,9 +455,9 @@ where
                 .phase
                 .bench_hall_position(_now_ticks)
                 .map_or(0.0, |angle| {
-                    let doubled =
-                        wrap_angle(2.0 * (angle - crate::units::erad(47.0_f32.to_radians())));
-                    let (_, cos) = S::sin_cos(crate::units::AngleRepr::radians(doubled));
+                    use crate::units::AngleRepr;
+                    let doubled = wrap_angle(2.0 * (angle - erad(47.0_f32.to_radians())));
+                    let (_, cos) = S::sin_cos(doubled.radians());
                     position_feedforward * cos
                 });
             self.velocity_loop

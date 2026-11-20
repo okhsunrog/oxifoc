@@ -608,8 +608,7 @@ mod tests {
     use crate::foc::pi_controller::PIController;
     use crate::foc::pwm::SvpwmModulator;
     use crate::foc::{angle_difference, wrap_angle};
-    use crate::units::erad;
-    use crate::units::{amps, ohms, seconds, si, volts};
+    use crate::units::{amps, erad, ohms, seconds, si, volts};
 
     #[test]
     fn closed_loop_accelerates() {

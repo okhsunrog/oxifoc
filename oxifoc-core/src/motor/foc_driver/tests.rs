@@ -48,9 +48,9 @@ use crate::state::CMD_CHANNEL;
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
 use crate::units::{
-    amps, erad, erad_per_s, erad_per_s2, henries, ohms, seconds, volts, watts, webers,
+    Sign, amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, volts,
+    watts, webers,
 };
-use crate::units::{per_second, quantity};
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 #[cfg(feature = "virtual-motor")]
@@ -1769,7 +1769,7 @@ fn bus_limit_uses_final_pwm_when_deadtime_compensation_reverses_pi_voltage_sign(
             let duty_current = (a * ia + b * ib + c * ic) / 10_000.0;
             let mod_q = driver.controller.bus_mod_q();
             assert!((mod_q.coefficient() * amps(iq) - duty_current).abs() < amps(1e-6));
-            assert!(crate::units::Sign::is_positive(&duty_current));
+            assert!(duty_current.is_positive());
             driver.update_bus_mod_q(mod_q, 0.002);
             assert_eq!(
                 driver.clamp_iq_for_bus(iq),

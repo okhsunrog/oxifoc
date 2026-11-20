@@ -22,6 +22,7 @@ use oxifoc_core::storage::{
     CurrentLimitsConfig, HallCalibrationConfig, HallTransitionGeometryConfig, MotorParamsConfig,
     RuntimeConfig,
 };
+use oxifoc_core::units::{henries, ohms, per_second, volts, webers};
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
 pub const FOC_HZ: u32 = 20_000;
@@ -180,10 +181,10 @@ impl Rig {
         params.actuation_delay = cfg.delay;
         let config = RuntimeConfig {
             motor_params: Some(MotorParamsConfig {
-                resistance: oxifoc_core::units::ohms(params.r),
-                inductance_d: oxifoc_core::units::henries(params.ld),
-                inductance_q: oxifoc_core::units::henries(params.lq),
-                flux_linkage: oxifoc_core::units::webers(params.lambda),
+                resistance: ohms(params.r),
+                inductance_d: henries(params.ld),
+                inductance_q: henries(params.lq),
+                flux_linkage: webers(params.lambda),
                 pole_pairs: params.pole_pairs,
                 ..MotorParamsConfig::default()
             }),
@@ -204,12 +205,10 @@ impl Rig {
         }
         hall.update(out.hall_state, 0);
         let mut phase = PhaseManager::with_hall(hall);
-        phase.configure_observers_from_config(&config, oxifoc_core::units::volts(vbus));
-        phase.set_phase_tracker(oxifoc_core::units::per_second(cfg.tracker), 1.2);
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(
-            &config,
-            oxifoc_core::units::volts(vbus),
-        );
+        phase.configure_observers_from_config(&config, volts(vbus));
+        phase.set_phase_tracker(per_second(cfg.tracker), 1.2);
+        let foc =
+            FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(&config, volts(vbus));
         let pwm = Pwm {
             duties: [0; 3],
             enabled: false,

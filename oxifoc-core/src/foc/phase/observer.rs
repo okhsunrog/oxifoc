@@ -27,6 +27,8 @@ use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "hfi")]
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
+#[cfg(feature = "hfi")]
+use crate::units::hertz;
 use crate::units::{
     AngleRepr, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
     ElectricalAngularAcceleration, ElectricalAngularVelocity, ElectricalResistance, Fraction,
@@ -1295,7 +1297,7 @@ pub const HFI_READY_CONFIDENCE: f32 = 0.5;
 
 /// Default HFI carrier frequency when configuring from stored params.
 #[cfg(feature = "hfi")]
-pub const HFI_DEFAULT_FREQ: Frequency = crate::units::hertz(1000.0);
+pub const HFI_DEFAULT_FREQ: Frequency = hertz(1000.0);
 
 /// Default HFI carrier amplitude as a fraction of vbus (3 V at 24 V — the
 /// operating point validated in the closed-loop sims; bench-tune per motor).
@@ -1678,10 +1680,9 @@ impl<S: SinCos> HfiObserver<S> {
 mod tests {
     use super::*;
     use crate::foc::angle_difference;
-    use crate::units::si;
     use crate::units::{
-        amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, volts,
-        webers,
+        amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, si,
+        volts, webers,
     };
 
     // Reference coefficients are the former per-update expressions. Loading

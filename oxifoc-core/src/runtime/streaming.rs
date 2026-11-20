@@ -23,6 +23,7 @@ use crate::icd::FaultTopic;
 use crate::state::{MotorControlState, update_telemetry};
 use crate::timer::Timer;
 use crate::types::FastTelemetry;
+use crate::units::AngleRepr;
 
 /// Typed, lock-free fixed-record queue for ISR → async telemetry transfer.
 ///
@@ -316,9 +317,7 @@ pub fn build_fast_telemetry(
         ic: adc.ic,
         vbus: FastTelemetry::pack_vbus(adc.vbus_mv as f32 * 0.001),
         angle: FastTelemetry::pack_angle(foc.angle.value),
-        hall_angle: crate::types::HallAngle::from_radians(
-            hall.map(|h| crate::units::AngleRepr::radians(h.angle)),
-        ),
+        hall_angle: crate::types::HallAngle::from_radians(hall.map(|h| h.angle.radians())),
         vd: FastTelemetry::pack_volt(foc.vd.value),
         vq: FastTelemetry::pack_volt(foc.vq.value),
         rpm: FastTelemetry::pack_rpm(mech_rpm),

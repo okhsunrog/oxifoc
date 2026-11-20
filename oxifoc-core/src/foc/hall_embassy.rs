@@ -20,7 +20,9 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 use super::hall_sensor::{Direction, HallSensor, PreparedHallCalibration};
 use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSnapshot};
-use crate::units::{ElectricalAngle, ElectricalAngularVelocity};
+#[cfg(feature = "storage")]
+use crate::units::unit::electrical;
+use crate::units::{ConstZero, ElectricalAngle, ElectricalAngularVelocity};
 
 // ========== Hall Estimator (shared state) ==========
 
@@ -171,11 +173,7 @@ pub fn apply_stored_config(config: &RuntimeConfig) {
             if let Some(ref tuning) = config.hall_tuning
                 && tuning.is_sane()
             {
-                h.set_interp_min_erpm(
-                    tuning
-                        .interp_min_speed
-                        .get::<crate::units::unit::electrical::erpm>(),
-                );
+                h.set_interp_min_erpm(tuning.interp_min_speed.get::<electrical::erpm>());
                 h.set_rate_limit_factor(tuning.rate_limit_factor);
                 changed = true;
                 info!("Applied stored Hall tuning params");
@@ -287,7 +285,7 @@ impl AngleSensor for HallAngleProxy {
 
     fn read_angle(&self) -> ElectricalAngle {
         self.sample(hall_now_ticks())
-            .map_or(crate::units::ConstZero::ZERO, |s| s.angle)
+            .map_or(ElectricalAngle::ZERO, |s| s.angle)
     }
 
     fn read_direction(&self) -> Direction {

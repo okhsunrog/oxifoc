@@ -23,10 +23,9 @@
 use core::ops::Div;
 
 use crate::foc::pi_controller::{ClampedPI, PiUnits};
-use crate::units::erad_per_s2;
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricalAngularAcceleration, ElectricalAngularVelocity, Scalar,
-    Sign, Time, amps, seconds, si,
+    Sign, Time, amps, erad_per_s2, seconds, si,
 };
 
 /// How far (time of ramp) the reference may lead a rotor whose actuator is at

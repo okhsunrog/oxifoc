@@ -4,9 +4,7 @@ use crate::foc::hall_sensor::{Direction, HallSensor};
 use crate::foc::phase::provider::{PhaseInput, PhaseProvider, RotorVelocityEstimate};
 use crate::foc::sensors::{AngleSample, AngleSensor, ControlAngleSample};
 use crate::foc::wrap_angle;
-use crate::units::ToBits;
-use crate::units::erad_per_s;
-use crate::units::{erad, henries, ohms, seconds, volts, webers};
+use crate::units::{ToBits, erad, erad_per_s, henries, ohms, seconds, volts, webers};
 
 // The angle already represents the sensor's control sample. Its corrections
 // deliberately differ from the independent edge-period velocity.

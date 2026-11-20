@@ -20,12 +20,10 @@ use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "storage")]
 use crate::storage::MotorParamsConfig;
 use crate::types::VoltageFeedforwardMode;
-use crate::units::unit::electrical::radian;
-use crate::units::{AngularVelocity, MagneticFlux};
 use crate::units::{
-    ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
-    ElectricalResistance, Fraction, Inductance, Linear, Scalar, Sign, Time, erad, ohms, rad_per_s,
-    si, volts,
+    AngularVelocity, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
+    ElectricalAngularVelocity, ElectricalResistance, Fraction, Inductance, Linear, MagneticFlux,
+    Scalar, Sign, Time, erad, ohms, rad_per_s, si, unit::electrical::radian, volts,
 };
 
 /// Current PI proportional gain: V per A (an impedance).
