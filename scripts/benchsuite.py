@@ -400,6 +400,10 @@ def run_scenario(name: str, spec: dict, out_dir: Path) -> dict:
     except json.JSONDecodeError:
         return dict(scenario=name, ok=False, checks=[],
                     error=f"maneuver run exit={code}, unparseable summary: {body[:400]}")
+    if code != 0:
+        # The report is printed for failed runs too; its `errors` name the stages.
+        return dict(scenario=name, ok=False, checks=[],
+                    error=f"maneuver run exit={code}: {summary.get('errors')}")
 
     time.sleep(SETTLE_S)
     post_faults, fault_err = query_faults()

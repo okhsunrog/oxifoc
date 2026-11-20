@@ -655,8 +655,15 @@ fn generation_is_newer(candidate: u32, current: u32) -> bool {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
+/// Fast-telemetry samples buffered between the receive task and the
+/// consumer: about 1.6 s at the native 20 kHz. A desktop scheduler can
+/// stall a process for a few hundred milliseconds (a 229 ms stall at the
+/// former 4096 samples, 205 ms, dropped a block of a bench capture); at
+/// about 40 B per sample the buffer is about 1.3 MB.
+const FAST_TELEMETRY_BUFFER: usize = 32_768;
+
 pub fn start_host(cfg: HostConfig) -> HostRuntime {
-    let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(4096);
+    let (fast_tx, fast_rx) = crossbeam_channel::bounded::<FastTelemetry>(FAST_TELEMETRY_BUFFER);
     let (slow_tx, slow_rx) = crossbeam_channel::bounded::<SlowTelemetry>(64);
     let (fault_tx, fault_rx) = crossbeam_channel::bounded::<FaultSnapshot>(64);
     let (pairing_tx, pairing_rx) =

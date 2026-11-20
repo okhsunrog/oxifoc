@@ -350,6 +350,9 @@ pub struct ManeuverSummary {
     pub events: Vec<EventRecord>,
     pub terminal_ok: bool,
     pub record: RecordSummary,
+    /// Failed stages (`execution`, `terminal`, `terminal_capture`,
+    /// `stream_stop`, `capture`) with their messages; empty on success.
+    pub errors: serde_json::Map<String, Value>,
 }
 
 pub fn run(
@@ -465,8 +468,10 @@ pub fn run(
     )
 }
 
-/// Save evidence before propagating operational failures, including failures
+/// Save evidence before reporting operational failures, including failures
 /// after the timeline. A failed terminal command must not discard the capture.
+/// Once the file is written the summary is returned with the failed stages in
+/// `errors`; the caller reports it and then fails.
 fn finish_run(
     cap: &Capture,
     m: &Maneuver,
@@ -476,7 +481,7 @@ fn finish_run(
     outcomes: [(&str, Result<()>); 4],
 ) -> Result<ManeuverSummary> {
     let terminal_ok = outcomes[1].1.is_ok();
-    let errors: serde_json::Map<String, Value> = outcomes
+    let mut errors: serde_json::Map<String, Value> = outcomes
         .into_iter()
         .filter_map(|(stage, result)| {
             result
@@ -498,13 +503,13 @@ fn finish_run(
             json!(errors).to_string(),
         ),
     ];
-    let record = cap
-        .finish(out_path, config_snapshot, &extra_meta)
+    let (record, stream) = cap
+        .finish_checked(out_path, config_snapshot, &extra_meta)
         .with_context(|| {
             format!("save maneuver capture to {out_path}; operational errors: {errors:?}")
         })?;
-    if !errors.is_empty() {
-        bail!("maneuver failed: {errors:?}; capture saved to {out_path}");
+    if let Err(error) = stream {
+        errors.insert("capture".to_string(), json!(format!("{error:#}")));
     }
 
     Ok(ManeuverSummary {
@@ -512,6 +517,7 @@ fn finish_run(
         events,
         terminal_ok,
         record,
+        errors,
     })
 }
 
@@ -521,6 +527,7 @@ pub fn summary_json(s: &ManeuverSummary) -> Value {
         "events": s.events,
         "terminal_ok": s.terminal_ok,
         "record": s.record,
+        "errors": s.errors,
     })
 }
 
@@ -677,7 +684,7 @@ mod tests {
             "failed-maneuver-{}-{nonce}.parquet",
             std::process::id()
         ));
-        let error = finish_run(
+        let summary = finish_run(
             &cap,
             &m,
             path.to_str().unwrap(),
@@ -690,9 +697,14 @@ mod tests {
                 ("stream_stop", Err(anyhow::anyhow!("link disconnected"))),
             ],
         )
-        .err()
-        .unwrap();
-        assert!(error.to_string().contains("capture saved to"));
+        .expect("a written capture returns its summary with the failed stages");
+        assert!(!summary.terminal_ok);
+        let report = summary_json(&summary);
+        assert_eq!(report["errors"]["execution"], "command rejected");
+        assert_eq!(report["errors"]["terminal"], "stop timeout");
+        assert_eq!(report["errors"]["stream_stop"], "link disconnected");
+        assert!(report["errors"].get("terminal_capture").is_none());
+        assert_eq!(report["record"]["rows"], 1);
         let reader = SerializedFileReader::new(std::fs::File::open(&path).unwrap()).unwrap();
         assert_eq!(reader.metadata().file_metadata().num_rows(), 1);
         let meta = reader

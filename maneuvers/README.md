@@ -44,7 +44,9 @@ aborts. These are host scheduling bounds, not hard real-time guarantees.
 The terminal command gets a separate 2 s acknowledgement window; if it fails,
 an emergency stop is attempted after telemetry shutdown. The capture is saved
 before operational errors are returned, with all failed stages in
-`oxifoc.maneuver_errors`, including terminal/shutdown failures.
+`oxifoc.maneuver_errors`, including terminal/shutdown failures. With
+`--json`, the report is printed for a failed run as well, with the same
+stages under `errors`, and the command still exits with an error.
 
 `openloop` can also carry `"pi_gains": [0.01, 10.0]` to apply a runtime PI
 override, using the existing device control-mode field. Omitting it retains

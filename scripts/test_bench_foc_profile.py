@@ -48,11 +48,19 @@ class DistributionTests(unittest.TestCase):
         self.assertGreater(hi, 20000)
         self.assertLess(hi, 20100)
 
-    def test_recording_loss_is_not_an_ack_failure(self):
-        error = 'operational errors: {"stream_stop": String("raw capture failed: raw capture lost samples: producer=26, host=0")}'
-        self.assertTrue(bench.diagnostic_loss_only(error))
-        self.assertFalse(bench.diagnostic_loss_only(error[:-1] + ', "terminal": String("missed ACK")}'))
-        self.assertFalse(bench.diagnostic_loss_only('operational errors: {"execution": String("missed ACK")}'))
+    def test_only_host_side_capture_loss_keeps_a_timing_run(self):
+        def report(errors, producer=0, host=64):
+            return dict(errors=errors, record=dict(raw_telemetry=dict(producer_drops=producer, host_drops=host)))
+        overflow = "raw capture failed: host raw telemetry channel overflow"
+        self.assertTrue(bench.host_capture_loss_only(report({"stream_stop": overflow, "capture": overflow})))
+        lost = "raw capture failed: raw capture lost samples: producer=0, host=12"
+        self.assertTrue(bench.host_capture_loss_only(report({"stream_stop": lost}, host=12)))
+        self.assertFalse(bench.host_capture_loss_only(report({"stream_stop": overflow, "terminal": "missed ACK"})))
+        self.assertFalse(bench.host_capture_loss_only(report({"execution": "missed ACK"})))
+        self.assertFalse(bench.host_capture_loss_only(report({"stream_stop": overflow}, producer=26)))
+        device = "raw capture failed: raw capture lost samples: producer=26, host=0"
+        self.assertFalse(bench.host_capture_loss_only(report({"stream_stop": device}, producer=26, host=0)))
+        self.assertFalse(bench.host_capture_loss_only(report({})))
 
     def test_exact_mean_and_bounded_percentiles(self):
         d = bench.decode(self.fixture())

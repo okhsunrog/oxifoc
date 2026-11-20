@@ -982,6 +982,15 @@ fn main() -> Result<()> {
                         summary.record.samples_lost,
                     ),
                 );
+                // The report above already carries the failed stages, so a
+                // script can tell a host-side capture loss from a missed ACK.
+                if !summary.errors.is_empty() {
+                    bail!(
+                        "maneuver failed: {}; capture saved to {}",
+                        serde_json::Value::Object(summary.errors.clone()),
+                        summary.record.path
+                    );
+                }
                 if summary.record.samples_lost > 0 && !allow_gaps {
                     bail!(
                         "capture has {} dropped sample(s); rerun at a lower fast_hz or pass --allow-gaps",

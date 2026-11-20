@@ -110,8 +110,11 @@ the scenario and stores the effective configuration. Defaults are 14 seconds,
 native-rate capture, quiet logging and a 1-MHz SWD probe clock.
 
 The runner obtains actual per-thread RTKit policy for the host capture process
-and retains the result. Acceptance depends on the recorded ACKs and stream
-integrity. The last SWD setup is followed by 1.3 seconds in Stopped, allowing
+and retains the result. Acceptance depends on the recorded ACKs, the terminal
+Stop and the device side of the stream: a device-side telemetry drop rejects
+the run. A host-side drop (the host fell behind a stream the device delivered
+completely) is kept in the run as `host_capture_loss` and does not reject a
+timing run, because the timing comes from the MCU recorder. The last SWD setup is followed by 1.3 seconds in Stopped, allowing
 the DWT supervisor to repair debugger disconnect effects. Normal timing runs
 perform SWD setup before excitation and export after Stop.
 

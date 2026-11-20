@@ -348,13 +348,28 @@ impl Capture {
     }
 
     /// Write the capture and produce the summary. `extra_meta` lands in the
-    /// parquet key-value metadata (e.g. the maneuver event log).
+    /// parquet key-value metadata (e.g. the maneuver event log). Fails when
+    /// the raw stream was incomplete, after writing the file.
     pub fn finish(
         &self,
         out_path: &str,
         config_snapshot: &serde_json::Value,
         extra_meta: &[(String, String)],
     ) -> Result<RecordSummary> {
+        let (summary, stream) = self.finish_checked(out_path, config_snapshot, extra_meta)?;
+        stream?;
+        Ok(summary)
+    }
+
+    /// Like [`Self::finish`], but a written capture whose raw stream was
+    /// incomplete still returns its summary, with the stream check beside
+    /// it. The outer error means nothing usable was written.
+    pub fn finish_checked(
+        &self,
+        out_path: &str,
+        config_snapshot: &serde_json::Value,
+        extra_meta: &[(String, String)],
+    ) -> Result<(RecordSummary, Result<()>)> {
         if self.samples.is_empty() {
             bail!("no telemetry received — is the device connected and streaming?");
         }
@@ -418,7 +433,10 @@ impl Capture {
         )?;
         // Preserve failed captures as diagnostic artifacts, but never report
         // success from a prefix whose producer END/totals were not consumed.
-        if let Some(raw) = &self.raw_telemetry {
+        let stream = (|| -> Result<()> {
+            let Some(raw) = &self.raw_telemetry else {
+                return Ok(());
+            };
             let session = self
                 .raw_session
                 .context("raw capture has no owned session")?;
@@ -435,9 +453,9 @@ impl Capture {
                 )?;
             }
             raw.wait_end_for(session, Duration::ZERO)?
-                .validate_export(session, self.samples.len())?;
-        }
-        Ok(RecordSummary {
+                .validate_export(session, self.samples.len())
+        })();
+        let summary = RecordSummary {
             path: out_path.to_string(),
             rows: self.samples.len(),
             fast_hz_actual: self.fast_hz_actual,
@@ -452,7 +470,8 @@ impl Capture {
             fast_source,
             raw_telemetry: raw_report,
             velocity_debug_path,
-        })
+        };
+        Ok((summary, stream))
     }
 }
 

@@ -69,9 +69,27 @@ def host_cadence_bounds(events, cycles):
     return [cycles / longest, cycles / shortest]
 
 
-def diagnostic_loss_only(log):
-    # Match the complete operational-error map, excluding ACK/terminal failures.
-    return re.search(r'operational errors: \{"stream_stop": String\("raw capture failed: raw capture lost samples: producer=\d+, host=\d+"\)\}', log) is not None
+HOST_LOSS = re.compile(r"host raw telemetry channel overflow|raw capture lost samples: producer=0, host=[1-9]\d*")
+
+
+def host_capture_loss_only(report):
+    """Every failed stage is host-side capture loss and the device dropped nothing.
+
+    The timing comes from the MCU's DWT recorder, not from the host capture, so
+    such a run stays a valid timing measurement. Device-side drops, missed ACKs
+    and terminal failures still reject it.
+    """
+    errors = report.get("errors") or {}
+    raw = report["record"].get("raw_telemetry") or {}
+    return (bool(errors) and all(HOST_LOSS.search(str(message)) for message in errors.values())
+            and raw.get("producer_drops") == 0 and raw.get("host_drops", 0) > 0)
+
+
+def validate_timing_capture(meta):
+    """The capture checks a timing run needs once host-side loss is accepted."""
+    raw = meta["raw_telemetry"]
+    assert raw["producer_drops"] == 0, "device telemetry queue overflow"
+    assert raw["records_received"] >= raw["records_delivered"] == meta["rows"]
 
 
 WORK_NAMES = [
@@ -540,8 +558,15 @@ def main():
                             section_summary = row["section_outliers"]["raw_summary"]
                             assert section_summary[0] == row["distribution"]["n"]
                             assert section_summary[2] == row["distribution"]["raw_words"][5]
-                    assert process.returncode == 0 and report["terminal_ok"] and all(event["ok"] for event in report["events"])
-                    probe.validate_capture(report["record"])
+                    assert report["terminal_ok"] and all(event["ok"] for event in report["events"])
+                    if process.returncode == 0:
+                        probe.validate_capture(report["record"])
+                    else:
+                        assert host_capture_loss_only(report), f"maneuver failed: {report.get('errors')}"
+                        validate_timing_capture(report["record"])
+                        raw = report["record"]["raw_telemetry"]
+                        row["host_capture_loss"] = dict(errors=report["errors"], host_drops=raw["host_drops"],
+                                                        rows=report["record"]["rows"])
                     stopped(image)
                     assert row["before"]["fault_generation"] == row["after"]["fault_generation"]
                     if args.detail == "deadline":
