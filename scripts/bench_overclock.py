@@ -133,7 +133,7 @@ def main():
                 time.sleep(2)
                 started = time.monotonic()
                 command = ["just", "cli-bridge", "record", "--seconds", str(args.seconds),
-                           "--fast-hz", "20000", "--fast-source", "ergot-raw", "--fast-encoding", "packed28",
+                           "--fast-hz", "20000", "--fast-source", "ergot-raw",
                            "--out", str(folder / "capture.parquet")]
                 with (folder / "capture.json").open("w") as out, (folder / "capture.log").open("w") as err:
                     capture = subprocess.Popen(command, stdout=out, stderr=err, start_new_session=True)

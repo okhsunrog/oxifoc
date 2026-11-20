@@ -414,24 +414,6 @@ cli *ARGS:
 cli-usb *ARGS:
     @just cli --transport usb --wait-secs 8 --json "$@"
 
-# Raw data over a dedicated channel; commands still use the USB Ergot interface.
-record-raw-mk5 source encoding output seconds="4" hz="20000" elf=mk5_elf:
-    @test {{ quote(source) }} = usb -o {{ quote(source) }} = rtt
-    @test {{ quote(encoding) }} = raw34 -o {{ quote(encoding) }} = packed26
-    just cli --transport usb --fast-source {{ quote(source + "-raw") }} \
-        --fast-encoding {{ quote(encoding) }} --chip STM32F405RGTx --elf {{ quote(elf) }} \
-        --wait-secs 8 --json record --out {{ quote(output) }} --seconds {{ quote(seconds) }} --fast-hz {{ quote(hz) }}
-
-# Use the same native-rate maneuver/capture path for both raw transports.
-test-raw-current-mk5 source encoding capture maneuver elf=mk5_elf:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    trap 'just cli-usb stop >/dev/null' EXIT
-    RUST_LOG="${RUST_LOG:-warn,device=info}" just cli --transport usb \
-        --fast-source {{ quote(source + "-raw") }} --fast-encoding {{ quote(encoding) }} \
-        --chip STM32F405RGTx --elf {{ quote(elf) }} --wait-secs 8 --json \
-        maneuver run {{ quote(maneuver) }} --out {{ quote(capture) }}
-
 # MK5 RTT transport; opening it resets the controller before the handshake.
 [positional-arguments]
 cli-rtt *ARGS:
@@ -643,14 +625,14 @@ cli-bridge *ARGS:
 # Full motor commissioning, one native-rate Parquet capture per stage.
 [positional-arguments]
 detect-bridge output motor_class *ARGS:
-    @shift 2 && just cli-bridge --fast-source ergot-raw --fast-encoding packed28 detect all --motor-class {{quote(motor_class)}} --record {{quote(output)}} "$@"
+    @shift 2 && just cli-bridge --fast-source ergot-raw detect all --motor-class {{quote(motor_class)}} --record {{quote(output)}} "$@"
 
 # Finite maneuver, full native-rate stream, terminal Stop on success or failure.
-test-bridge capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="configured":
-    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(encoding)}} {{quote(velocity_debug)}} {{quote(phase_source)}}
+test-bridge capture maneuver source="ergot-raw" velocity_debug="off" phase_source="configured":
+    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(velocity_debug)}} {{quote(phase_source)}}
 
 # USB is a temporary A/B reference; bridge is the production route.
-test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_debug="off" phase_source="configured":
+test-link link capture maneuver source="ergot-raw" velocity_debug="off" phase_source="configured":
     #!/usr/bin/env bash
     set -euo pipefail
     test {{quote(link)}} = bridge -o {{quote(link)}} = usb
@@ -663,7 +645,7 @@ test-link link capture maneuver source="ergot-raw" encoding="packed28" velocity_
     else
         "${cli[@]}" source {{quote(phase_source)}} > {{quote(capture + ".source.json")}}
     fi
-    "${cli[@]}" --fast-source {{quote(source)}} --fast-encoding {{quote(encoding)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
+    "${cli[@]}" --fast-source {{quote(source)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
 
 # Matching bench-executor-trace firmware must already be flashed.
 profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" repeats="3":

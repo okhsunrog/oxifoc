@@ -121,7 +121,7 @@ def main():
                     probe.run(probe.device("write", "b32", address, str(COGGING_PROFILES[profile])))
                 capture = args.output/f"{name}.parquet"
                 cmd = ["just", "test-bridge", str(capture), str(maneuver)]
-                cmd += ["ergot-raw", "packed28", "on" if args.velocity_debug else "off", args.phase_source]
+                cmd += ["ergot-raw", "on" if args.velocity_debug else "off", args.phase_source]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
                 (args.output/f"{name}.driver.log").write_text(result.stdout+result.stderr)
                 row = dict(name=name, exit=result.returncode)

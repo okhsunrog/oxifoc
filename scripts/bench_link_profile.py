@@ -21,7 +21,6 @@ def main():
     parser.add_argument("out", type=Path)
     parser.add_argument("--elf", type=Path, default=Path("oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"))
     parser.add_argument("--source", default="ergot-raw")
-    parser.add_argument("--encoding", default="packed28")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--active-delay-ms", type=int, default=1200)
     parser.add_argument("--timer-hz", type=int, default=83917920)
@@ -37,7 +36,7 @@ def main():
     manifest = {
         "elf_sha256": hashlib.sha256(elf.read_bytes()).hexdigest(),
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-        "link": args.link, "source": args.source, "encoding": args.encoding,
+        "link": args.link, "source": args.source,
         "maneuver": json.loads(args.maneuver.read_text()), "repeats": [],
     }
     trace = [sys.executable, "-B", "scripts/bench_executor_trace.py"]
@@ -48,7 +47,7 @@ def main():
                                str(args.active_delay_ms)], check=True, timeout=15)
         # test-link has an independent terminal Stop, including failure paths.
         result = subprocess.run(["just", "test-link", args.link, str(capture),
-                                 str(args.maneuver), args.source, args.encoding], timeout=90)
+                                 str(args.maneuver), args.source], timeout=90)
         binary = args.out / f"run-{i}.trace.bin"
         exported = subprocess.run(trace + ["read", *common, "--out", str(binary),
                                           "--elf", str(elf), "--capture", str(capture),

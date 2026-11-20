@@ -163,7 +163,7 @@ Before the DirectEdge migration, the stopped-motor qualification received 600,21
 at 20,004 Hz over 30 s with no sequence gaps and 600/600 concurrent Stop ACKs
 (maximum 8.454 ms). The 5-kHz and disabled-stream checks each passed 200/200
 commands; 5 kHz received 50,016 samples without gaps. These use legacy Ergot
-delta telemetry, not Packed26. Ten STM32 and ten C5 resets all reconnected
+delta telemetry, not a raw session. Ten STM32 and ten C5 resets all reconnected
 within 4.022 s. The opt-in bridge `bench-delayed-upstream` feature delays route
 setup by 3 s; the corrected host reconnect/discovery path passed in 4.737 s.
 Normal bridge builds do not enable this injection. Idle traffic was 8 slots/s

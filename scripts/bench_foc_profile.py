@@ -495,7 +495,7 @@ def main():
                         time.sleep(1.3)
                     capture_path = args.output / f"{name}.parquet"
                     command = cli(image, *(["--velocity-debug"] if args.velocity_debug else []),
-                        "--fast-source", "ergot-raw", "--fast-encoding", "packed28", "maneuver", "run", plan_path, "--out", capture_path)
+                        "--fast-source", "ergot-raw", "maneuver", "run", plan_path, "--out", capture_path)
                     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                         env={**os.environ, "TOKIO_WORKER_THREADS": "6", "RUST_LOG": "warn,device=info"})
                     try:
