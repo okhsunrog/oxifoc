@@ -162,7 +162,12 @@ embassy-embedded-hal = { version = "0.6.0", features = ["defmt"], git = "https:/
 postcard = { version = "1.1", features = ["use-defmt"] }
 
 # Local crates
-oxifoc-core = { path = "../oxifoc-core", features = ["defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery", "hfi", "hfi-detect", "isr-speed"] }
+# Core features are listed in full: this crate's own features must decide
+# what the image contains, never oxifoc-core's defaults.
+oxifoc-core = { path = "../oxifoc-core", default-features = false, features = [
+    "algorithms", "detection", "offset-diagnostics",
+    "defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery", "hfi", "hfi-detect", "isr-speed",
+] }
 ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a", version = "0.12.0", default-features = false, features = [
     "embedded-io-async-v0_7",
     "embassy-time",
