@@ -141,10 +141,6 @@ bench-scheduler-priority = ["task-priority"]
 bench-scheduler-deadline = ["embassy-executor/scheduler-deadline", "bench-executor-trace"]
 # Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.
 bench-calibrated-clock = []
-# Observer-internals fast-frame mapping (erpm<-PLL, vd<-frame gap,
-# vq<-readiness err signed by trust; see oxifoc-core `obs-debug-telem`).
-# Debug builds only.
-obs-debug-telem = ["oxifoc-core/obs-debug-telem"]
 
 [dependencies]
 # Embassy + Cortex-M

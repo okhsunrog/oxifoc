@@ -6,8 +6,8 @@
 """replay_observer — offline flux-observer replay against a telemetry capture.
 
 Reconstructs v_alpha/v_beta from the recorded vd/vq/angle (the commanded
-frame — angle must be the ACTIVE source, i.e. a capture from a PLAIN
-firmware, NOT the obs-debug-telem mapping) and i_alpha/i_beta from the phase
+frame — angle must be the ACTIVE source, as every normal capture records
+it) and i_alpha/i_beta from the phase
 currents, then re-runs the MXLEMMING flux integrator + PLL over the record
 with arbitrary parameter variants (R, L_hf, eddy ladder dL/tau, lambda,
 PLL kp/ki).

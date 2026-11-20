@@ -9,11 +9,6 @@ use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
 use crate::units::{ConstZero, ElectricCurrent, ElectricPotential, Time};
-#[cfg(feature = "obs-debug-telem")]
-use crate::{
-    foc::angle_difference,
-    units::{AngleRepr, volts},
-};
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -86,39 +81,6 @@ where
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn stamp_step_telemetry(&mut self, out: &mut FocOutput) {
         out.velocity = self.phase.get().velocity;
-        // Debug fast-frame mapping (bench estimator forensics): repurpose
-        // four columns with observer internals — velocity/erpm ← PLL ω̂
-        // (ALWAYS the observer, not the active source), angle ← phase_pll,
-        // vd ← DRIVE-frame-vs-estimate gap `Δ(active_angle, phase_pll)`
-        // (2026-07-07 freq-led high-speed OC forensics: the offline flux
-        // replay aliases above ~2 k erpm at bench capture rates, so the
-        // standing load-angle question — does the commutation frame really
-        // ride 75–90° off the estimate/rotor — needs an on-device signal;
-        // the earlier vd ← PLL error is recoverable from an eddy-plant sim
-        // but this gap is not), vq ← trust-gate state
-        // `phase_err_filt × (angle_trustworthy ? +1 : −1)` (2026-07-07
-        // torque non-delivery forensics: |i| collapses in ms-scale windows
-        // with the commanded voltage collapsing FIRST — the signature of
-        // the iq gate, not of saturation — so the gate bit and the
-        // lock-quality signal it rides on must sit next to the current
-        // columns in one capture; |i_dq| is frame-invariant, so the
-        // magnitude stays honest even in this PLL-frame mapping).
-        // Currents/vbus stay honest. The wire format is untouched, so host
-        // decode/enrichment work unchanged — just read the capture knowing
-        // the mapping.
-        #[cfg(feature = "obs-debug-telem")]
-        if let Some((pll, _raw, vel, err_filt)) = self.phase.debug_observer() {
-            // The voltage columns carry angles here, in radians.
-            let drive_angle = out.angle;
-            out.velocity = vel;
-            out.angle = pll;
-            out.vd = volts(angle_difference(drive_angle, pll).radians());
-            out.vq = volts(if self.phase.angle_trustworthy() {
-                err_filt.radians()
-            } else {
-                -err_filt.radians()
-            });
-        }
     }
 
     #[cfg_attr(feature = "isr-speed", optimize(speed))]

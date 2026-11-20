@@ -311,7 +311,7 @@ pub struct BackEmfObserver {
     confidence: f32,                 // Confidence estimate (0-1)
     phase_err_filt: ElectricalAngle, // Low-passed |PLL phase error|, for readiness
     /// Last raw flux-vector angle (atan2 of the integrator, pre-PLL) —
-    /// debug telemetry (`obs-debug-telem`) and divergence forensics.
+    /// for diagnostics (`debug_observer`) and divergence forensics.
     phase_raw_last: ElectricalAngle,
 
     // External-validity state (see `is_ready`): low-passed back-EMF proxy

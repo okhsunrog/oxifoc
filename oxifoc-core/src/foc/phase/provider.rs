@@ -258,9 +258,9 @@ pub trait PhaseProvider {
     /// Default: no-op.
     fn note_torque_current(&mut self, _iq_abs: ElectricCurrent, _dt: Time) {}
 
-    /// Back-EMF observer internals for the `obs-debug-telem` fast-frame
-    /// mapping: `(phase_pll, phase_raw, velocity_pll, readiness_phase_err)`.
-    /// Default: none (providers without an observer). See `FocDriver::step`.
+    /// Back-EMF observer internals for diagnostics (the F405 Hall-edge
+    /// recorder): `(phase_pll, phase_raw, velocity_pll, readiness_phase_err)`.
+    /// Default: none (providers without an observer).
     fn debug_observer(
         &self,
     ) -> Option<(
