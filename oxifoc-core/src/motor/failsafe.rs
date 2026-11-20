@@ -176,10 +176,10 @@ pub struct FailsafeConfig {
     /// Command-staleness threshold (µs). Past this with no fresh setpoint and
     /// the motor running, the deadman arms the failsafe.
     pub staleness_timeout_us: u64,
-    /// Brake current of the stop (A); the general `max_brake` still
-    /// bounds it. `0` = the general brake limit alone. A harder brake the
-    /// rider had in progress is kept.
-    pub brake_current: ElectricCurrent,
+    /// Brake current of the stop; the general `max_brake` still bounds it.
+    /// `None` = the general brake limit alone. A harder brake the rider had
+    /// in progress is kept.
+    pub brake_current: Option<ElectricCurrent>,
     /// Rate (A/s) at which the stop changes the q current: building the
     /// brake, handing over from the last command, turning it around,
     /// fading it out. The force on the wheel moves at this rate — what the
@@ -203,7 +203,7 @@ impl Default for FailsafeConfig {
         Self {
             policy: FailsafePolicy::ControlledStop,
             staleness_timeout_us: 150_000, // ≈3× the 50 ms host affirmation
-            brake_current: amps(15.0),
+            brake_current: Some(amps(15.0)),
             slew: amps_per_s(150.0),
             standstill: erad_per_s(20.0),
             decel: erad_per_s2(1_000.0),
@@ -236,8 +236,9 @@ impl FailsafeConfig {
     pub fn is_sane(&self) -> bool {
         self.staleness_timeout_us > 0
             && self.staleness_timeout_us <= Self::MAX_STALENESS_TIMEOUT_US
-            && self.brake_current.is_finite()
-            && self.brake_current.is_non_negative()
+            && self
+                .brake_current
+                .is_none_or(|a| a.is_finite() && a.is_non_negative())
             && self.slew.is_finite()
             && self.slew.is_positive()
             && self.standstill.is_finite()
@@ -541,11 +542,10 @@ impl FailsafeController {
         } else {
             ElectricCurrent::INFINITY
         };
-        let configured = if cfg.brake_current.is_positive() {
-            cfg.brake_current
-        } else {
-            general
-        };
+        let configured = cfg
+            .brake_current
+            .filter(Sign::is_positive)
+            .unwrap_or(general);
         let cap = derate_for_ov(
             configured.max(self.takeover).min(general),
             vbus,
@@ -795,7 +795,7 @@ mod tests {
             "step {max_step} A"
         );
         assert!(
-            (last_iq + cfg.brake_current.value).abs() < 1e-3,
+            (last_iq + cfg.brake_current.unwrap().value).abs() < 1e-3,
             "settled at {last_iq}"
         );
     }
@@ -815,7 +815,7 @@ mod tests {
             last_iq = iq_of(a);
         });
         assert!(
-            (last_iq - cfg.brake_current.value).abs() < 1e-3,
+            (last_iq - cfg.brake_current.unwrap().value).abs() < 1e-3,
             "{last_iq}"
         );
     }
@@ -880,7 +880,7 @@ mod tests {
         let (omega, last) = ride(&mut c, &cfg, 40.0, 1_000.0, 8.7, 200.0, 20.0, |_, _| {});
         assert!(omega > 1_000.0, "the slope wins: {omega}");
         assert!(
-            (iq_of(last) + cfg.brake_current.value).abs() < 1e-3,
+            (iq_of(last) + cfg.brake_current.unwrap().value).abs() < 1e-3,
             "{last:?}"
         );
     }
@@ -889,7 +889,7 @@ mod tests {
     #[test]
     fn zero_stop_current_means_the_general_limit() {
         let cfg = FailsafeConfig {
-            brake_current: amps(0.0),
+            brake_current: None,
             ..cfg(FailsafePolicy::ControlledStop)
         };
         let mut c = FailsafeController::new();
@@ -983,7 +983,10 @@ mod tests {
             volts(0.0),
             true,
         ));
-        assert!(first > (-cfg.brake_current).value, "released: {first}");
+        assert!(
+            first > (-cfg.brake_current.unwrap()).value,
+            "released: {first}"
+        );
         let mut last = 0.0;
         for _ in 0..4_000 {
             last = iq_of(c.step(
@@ -996,7 +999,10 @@ mod tests {
                 true,
             ));
         }
-        assert!((last - cfg.brake_current.value).abs() < 1e-3, "{last}");
+        assert!(
+            (last - cfg.brake_current.unwrap().value).abs() < 1e-3,
+            "{last}"
+        );
     }
 
     /// One fast "reverse" reading mid-brake (an estimate glitch at speed)
@@ -1220,7 +1226,7 @@ mod tests {
         assert!(!bad.is_sane());
         // Zero stop current is meaningful (the general limit alone).
         let zero = FailsafeConfig {
-            brake_current: amps(0.0),
+            brake_current: None,
             ..FailsafeConfig::default()
         };
         assert!(zero.is_sane());

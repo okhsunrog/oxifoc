@@ -11,6 +11,7 @@
 //! oxifoc-core = { version = "0.1", default-features = false, features = ["types"] }
 //! ```
 
+use crate::foc::controller::{CurrentKi, CurrentKp};
 use crate::foc::phase::PhaseSource;
 use crate::units::{
     ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
@@ -130,7 +131,7 @@ pub enum ControlMode {
         /// Temporary PI gains (kp, ki) for detection. `None` retains the
         /// current bench tuning through OpenLoop/DirectVoltage steps; leaving
         /// that sequence restores the working d/q gains and clears PI state.
-        pi_gains: Option<(f32, f32)>,
+        pi_gains: Option<(CurrentKp, CurrentKi)>,
     },
     /// Direct voltage mode — apply dq voltages without PI control.
     ///
@@ -191,14 +192,14 @@ impl ControlMode {
             Self::Throttle { fraction } => (-1.0..=1.0).contains(&fraction),
             Self::PositionControl { target_pos } => target_pos.is_finite(),
             Self::OpenLoop {
-                angle: angle_rad,
+                angle,
                 current,
-                velocity: velocity_rad_s,
+                velocity,
                 pi_gains,
             } => {
-                angle_rad.is_finite()
+                angle.is_finite()
                     && current.is_finite()
-                    && velocity_rad_s.is_finite()
+                    && velocity.is_finite()
                     && pi_gains.is_none_or(|(kp, ki)| kp.is_finite() && ki.is_finite())
             }
             Self::DirectVoltage {
@@ -644,6 +645,11 @@ pub struct TelemetryConfigAck {
 /// change schema keys. Speeds formerly in eRPM (`openloop_erpm`,
 /// `flux_target_erpm`, `interp_min_erpm`) are now electrical rad/s. The
 /// frozen bootstrap (`HardwareInfo`, `BoardCalib`) keeps its field names.
+/// Config "unset" values are `Option`s instead of sentinels: current limits
+/// (`None` = inherit / unlimited, where `< 0` and `0` used to say so), the
+/// motor's manual current ceiling, power-loss class and fundamental
+/// inductances, and the failsafe brake current. PI gains (stored and the
+/// detection override in `ControlMode::OpenLoop`) are typed Ω and Ω/s.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.
@@ -916,8 +922,8 @@ pub enum DetectRequest {
         current_limit: Option<ElectricCurrent>,
         /// Previously measured resistance (Ω). GUI provides this.
         resistance: ElectricalResistance,
-        /// Previously measured average inductance (H), 0.0 = unknown.
-        /// Trims the ωL·i reactance term of the back-EMF-vector method.
+        /// Previously measured average inductance (H). Trims the ωL·i
+        /// reactance term of the back-EMF-vector method.
         inductance: Inductance,
         /// Number of pole pairs.
         pole_pairs: u8,

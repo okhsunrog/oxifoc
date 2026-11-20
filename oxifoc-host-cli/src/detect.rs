@@ -248,7 +248,7 @@ fn run_all(
         .context("controller hardware info unavailable")?;
     let preview = detect::preview_setup(&runtime.cmd_tx, setup.clone(), info.max_current_a.value)?;
     let thermal = preview.thermal_current().value;
-    let effective = preview.limits().max_iq.value;
+    let effective = preview.limits().max_iq.map_or(0.0, |a| a.value);
     let apply = if !apply && !json && std::io::stdin().is_terminal() {
         eprintln!(
             "R {:.3} mΩ · Ld/Lq {:.3}/{:.3} µH · Flux {:.3} mWb · {}",

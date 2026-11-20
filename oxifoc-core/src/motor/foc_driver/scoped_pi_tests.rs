@@ -21,12 +21,13 @@ fn driver() -> FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSe
     driver
 }
 
+/// Gains here are the plain (kp, ki) the assertions compare against.
 fn hold(pi_gains: Option<(f32, f32)>) -> ControlMode {
     ControlMode::OpenLoop {
         angle: erad(0.0),
         current: amps(1.0),
         velocity: erad_per_s(0.0),
-        pi_gains,
+        pi_gains: pi_gains.map(|(kp, ki)| (ohms(kp), si(ki))),
     }
 }
 

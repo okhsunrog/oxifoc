@@ -19,7 +19,7 @@ impl Timer for TokioTimer {
 use clap::Parser;
 use oxifoc_core::storage::{CONFIG_LOADED, MotorParamsConfig, RuntimeConfig};
 use oxifoc_core::timer::Timer;
-use oxifoc_core::units::{amps, ohms, watts};
+use oxifoc_core::units::{amps, ohms};
 use oxifoc_core::virtual_motor::MotorParams;
 use tracing_subscriber::EnvFilter;
 
@@ -109,8 +109,8 @@ fn config_from_motor_params(params: MotorParams, max_current_a: f32) -> MotorPar
         inductance_q: params.lq,
         flux_linkage: params.lambda,
         pole_pairs: params.pole_pairs,
-        max_current: amps(max_current_a),
-        max_power_loss: watts(0.0),
+        max_current: Some(amps(max_current_a)),
+        max_power_loss: None,
         ..Default::default()
     }
 }

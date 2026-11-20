@@ -962,8 +962,8 @@ fn process_commands_rejects_non_finite_payloads() {
     // NaN PI gains must not reach the controller.
     let gains_before = driver.controller().id_pi.gains();
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetPiGains {
-        kp: f32::NAN,
-        ki: 100.0,
+        kp: ohms(f32::NAN),
+        ki: quantity(100.0),
     });
     process_commands(&state, &mut driver, &registry);
     assert_eq!(
@@ -992,10 +992,13 @@ fn process_commands_rejects_non_finite_payloads() {
         angle: erad(0.0),
         current: amps(1.0),
         velocity: erad_per_s(0.0),
-        pi_gains: Some((0.01, 10.0)),
+        pi_gains: Some((ohms(0.01), quantity(10.0))),
     });
     CMD_CHANNEL
-        .try_send(DriverCommand::SetPiGains { kp: 0.7, ki: 70.0 })
+        .try_send(DriverCommand::SetPiGains {
+            kp: ohms(0.7),
+            ki: quantity(70.0),
+        })
         .unwrap();
     CMD_CHANNEL
         .try_send(DriverCommand::SetMode(ControlMode::Stopped))
@@ -1543,22 +1546,21 @@ fn brake_speed_gated_and_survives_link_loss() {
 #[test]
 #[cfg(feature = "storage")]
 fn config_limits_clamp_to_hardware_ceiling() {
-    use CurrentLimitsConfig;
     // Stored config must never raise limits above the board's hardware
     // ceiling, and zero/negative config values (= "not set") fall back
     // to the board defaults instead of disabling protection.
     let hw_max = 10.0;
     let cfg = |iq: f32, ph: f32, bus_in: f32, bus_regen: f32| CurrentLimitsConfig {
-        max_iq: amps(iq),
-        max_brake: amps(0.0),
-        max_phase_current: amps(ph),
-        bus_in_max: amps(bus_in),
-        bus_regen_max: amps(bus_regen),
+        max_iq: Some(amps(iq)),
+        max_brake: None,
+        max_phase_current: Some(amps(ph)),
+        bus_in_max: Some(amps(bus_in)),
+        bus_regen_max: Some(amps(bus_regen)),
         max_dissipation: watts(0.0),
     };
 
     // Normal config below the ceiling: passes through.
-    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, -1.0, -1.0), amps(hw_max), amps(0.0));
+    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, -1.0, -1.0), amps(hw_max), None);
     assert_eq!(l.max_current, amps(5.0));
     assert_eq!(l.overcurrent_threshold, amps(8.0));
     assert_eq!(l.bus_in_max, amps(-1.0));
@@ -1568,26 +1570,22 @@ fn config_limits_clamp_to_hardware_ceiling() {
     // value is the ABS trip line; the iq ceiling keeps the headroom
     // below it (NOT hw_max itself — that put full throttle exactly on
     // the per-phase Kill line).
-    let l =
-        CurrentLimits::from_config_clamped(&cfg(50.0, 100.0, -1.0, -1.0), amps(hw_max), amps(0.0));
+    let l = CurrentLimits::from_config_clamped(&cfg(50.0, 100.0, -1.0, -1.0), amps(hw_max), None);
     assert_eq!(l.max_current, amps(hw_max / OVERCURRENT_HEADROOM));
     assert_eq!(l.overcurrent_threshold, amps(hw_max));
 
     // Zeroed config: board defaults, NOT disabled protection.
-    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0, -1.0, -1.0), amps(hw_max), amps(0.0));
+    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0, -1.0, -1.0), amps(hw_max), None);
     assert_eq!(l.max_current, amps(hw_max / OVERCURRENT_HEADROOM));
     assert_eq!(l.overcurrent_threshold, amps(hw_max));
 
     // Bus limits pass through (no board ceiling — they protect the
     // supply); zero is meaningful (no regen), NaN → unlimited.
-    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, 20.0, 0.0), amps(hw_max), amps(0.0));
+    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, 20.0, 0.0), amps(hw_max), None);
     assert_eq!(l.bus_in_max, amps(20.0));
     assert_eq!(l.bus_regen_max, amps(0.0));
-    let l = CurrentLimits::from_config_clamped(
-        &cfg(5.0, 8.0, f32::NAN, f32::NAN),
-        amps(hw_max),
-        amps(0.0),
-    );
+    let l =
+        CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, f32::NAN, f32::NAN), amps(hw_max), None);
     assert_eq!(l.bus_in_max, amps(-1.0));
     assert_eq!(l.bus_regen_max, amps(-1.0));
 
@@ -1598,7 +1596,7 @@ fn config_limits_clamp_to_hardware_ceiling() {
             max_dissipation: watts(v),
             ..cfg(5.0, 8.0, -1.0, -1.0)
         };
-        CurrentLimits::from_config_clamped(&c, amps(hw_max), amps(0.0)).max_dissipation
+        CurrentLimits::from_config_clamped(&c, amps(hw_max), None).max_dissipation
     };
     assert_eq!(dissipation(80.0), watts(80.0));
     assert_eq!(dissipation(0.0), watts(0.0));
@@ -1615,20 +1613,19 @@ fn config_limits_clamp_to_hardware_ceiling() {
 #[test]
 #[cfg(feature = "storage")]
 fn cross_field_headroom_enforced() {
-    use CurrentLimitsConfig;
     // Board ABS line far above so it is not the binding constraint.
     let hw_max = 80.0;
     let l = CurrentLimits::from_config_clamped(
         &CurrentLimitsConfig {
-            max_iq: amps(40.0),
-            max_brake: amps(0.0),
-            max_phase_current: amps(40.0),
-            bus_in_max: amps(-1.0),
-            bus_regen_max: amps(-1.0),
+            max_iq: Some(amps(40.0)),
+            max_brake: None,
+            max_phase_current: Some(amps(40.0)),
+            bus_in_max: None,
+            bus_regen_max: None,
             max_dissipation: watts(0.0),
         },
         amps(hw_max),
-        amps(0.0),
+        None,
     );
     assert_eq!(l.overcurrent_threshold, amps(40.0), "trip is never raised");
     assert_eq!(
@@ -1649,41 +1646,42 @@ fn cross_field_headroom_enforced() {
 fn rating_caps_operational_limits() {
     let hw_max = 30.0;
     let cfg = |iq: f32, phase: f32| CurrentLimitsConfig {
-        max_iq: amps(iq),
-        max_brake: amps(0.0),
-        max_phase_current: amps(phase),
-        bus_in_max: amps(-1.0),
-        bus_regen_max: amps(-1.0),
+        max_iq: Some(amps(iq)),
+        max_brake: None,
+        max_phase_current: Some(amps(phase)),
+        bus_in_max: None,
+        bus_regen_max: None,
         max_dissipation: watts(0.0),
     };
     let rating = 10.0;
 
     // Operational asks for more than the motor tolerates: rating wins.
-    let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), amps(hw_max), amps(rating));
+    let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), amps(hw_max), Some(amps(rating)));
     assert_eq!(l.max_current, amps(rating));
     assert_eq!(l.overcurrent_threshold, amps(28.0));
 
     // Operational below the rating: passes through untouched.
-    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0), amps(hw_max), amps(rating));
+    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0), amps(hw_max), Some(amps(rating)));
     assert_eq!(l.max_current, amps(5.0));
     assert_eq!(l.overcurrent_threshold, amps(8.0));
 
     // Unset operational: the rating IS the default (VESC applies
     // l_current_max = i_max the same way).
-    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), amps(hw_max), amps(rating));
+    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), amps(hw_max), Some(amps(rating)));
     assert_eq!(l.max_current, amps(rating));
     assert_eq!(l.overcurrent_threshold, amps(1.5 * rating));
 
     // Board hardware still caps a huge rating: trip at the board ABS
     // line, iq one headroom factor below it.
-    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), amps(hw_max), amps(500.0));
+    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), amps(hw_max), Some(amps(500.0)));
     assert_eq!(l.max_current, amps(hw_max / OVERCURRENT_HEADROOM));
     assert_eq!(l.overcurrent_threshold, amps(hw_max));
 
     // NaN / zero rating: no rating clamp (pre-rating config blobs).
     // 25/28 is an incoherent pair (28 < 1.3·25): the cross-field clamp
     // lowers iq to trip/headroom on top of the board iq ceiling.
-    let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), amps(hw_max), amps(f32::NAN));
+    let l =
+        CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), amps(hw_max), Some(amps(f32::NAN)));
     assert_eq!(
         l.max_current,
         amps((28.0 / OVERCURRENT_HEADROOM).min(hw_max / OVERCURRENT_HEADROOM))
@@ -1691,7 +1689,7 @@ fn rating_caps_operational_limits() {
     assert_eq!(l.overcurrent_threshold, amps(28.0));
 
     // No limits group stored at all: rating still holds at boot.
-    let l = CurrentLimits::from_stored(None, amps(hw_max), amps(rating));
+    let l = CurrentLimits::from_stored(None, amps(hw_max), Some(amps(rating)));
     assert_eq!(l.max_current, amps(rating));
     assert_eq!(l.overcurrent_threshold, amps(1.5 * rating));
     // …and bus limits stay off (boot default).
@@ -1701,7 +1699,7 @@ fn rating_caps_operational_limits() {
     // A fresh board: no limits group AND no motor rating. The iq budget
     // must still sit one headroom factor below the board's kill line —
     // it used to BE the kill line, with the dq trip 1.3× above it.
-    let l = CurrentLimits::from_stored(None, amps(hw_max), amps(0.0));
+    let l = CurrentLimits::from_stored(None, amps(hw_max), None);
     assert_eq!(l.max_current, amps(hw_max / OVERCURRENT_HEADROOM));
     assert_eq!(l.overcurrent_threshold, amps(hw_max));
 }
@@ -3490,7 +3488,7 @@ fn controlled_stop_run(
     driver.set_failsafe(FailsafeConfig {
         policy,
         staleness_timeout_us: 5_000,
-        brake_current: amps(20.0),
+        brake_current: Some(amps(20.0)),
         slew: amps_per_s(1_000.0),
         standstill: erad_per_s(20.0),
         decel: erad_per_s2(decel),
@@ -6047,9 +6045,9 @@ fn model_config() -> RuntimeConfig {
             inductance_q: henries(28e-6),
             flux_linkage: webers(0.0032),
             pole_pairs: 7,
-            max_current: amps(2.0),
-            ld_fundamental: henries(35e-6),
-            lq_fundamental: henries(50e-6),
+            max_current: Some(amps(2.0)),
+            ld_fundamental: Some(henries(35e-6)),
+            lq_fundamental: Some(henries(50e-6)),
             ..MotorParamsConfig::default()
         }),
         ..RuntimeConfig::default()
@@ -6062,8 +6060,8 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
     use crate::storage::PiGainsConfig;
     let mut config = model_config();
     config.pi_gains = Some(PiGainsConfig {
-        kp: 0.017,
-        ki: 29.0,
+        kp: ohms(0.017),
+        ki: quantity(29.0),
         ..PiGainsConfig::default()
     });
     let mut boot = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);

@@ -220,7 +220,7 @@ impl Rig {
         let mut driver = FocDriver::new(foc, pwm, Currents((0.0, 0.0, 0.0)), phase, seconds(DT));
         let limits = cfg.current_limits.as_ref().map_or_else(
             || CurrentLimits::from_max_current(amps(i_max)),
-            |limits| CurrentLimits::from_config_clamped(limits, amps(i_max), amps(0.0)),
+            |limits| CurrentLimits::from_config_clamped(limits, amps(i_max), None),
         );
         driver.set_current_limits(limits);
         driver.set_actuation_delay(cfg.delay);

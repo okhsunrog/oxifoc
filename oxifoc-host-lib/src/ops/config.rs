@@ -571,8 +571,8 @@ mod tests {
     fn field_patches_preserve_unmentioned_motor_and_velocity_values() {
         let motor = MotorParamsConfig {
             resistance: ohms(0.1),
-            ld_fundamental: henries(81e-6),
-            lq_fundamental: henries(127e-6),
+            ld_fundamental: Some(henries(81e-6)),
+            lq_fundamental: Some(henries(127e-6)),
             ..Default::default()
         };
         let (_, write) = patch_fields(
@@ -585,8 +585,8 @@ mod tests {
             panic!("wrong write variant");
         };
         assert_eq!(patched.resistance.value, 0.2);
-        assert_eq!(patched.ld_fundamental.value, 81e-6);
-        assert_eq!(patched.lq_fundamental.value, 127e-6);
+        assert_eq!(patched.ld_fundamental, Some(henries(81e-6)));
+        assert_eq!(patched.lq_fundamental, Some(henries(127e-6)));
 
         let velocity = VelocityLoopConfig {
             accel_ff: 0.75,

@@ -176,45 +176,38 @@ impl CurrentLimits {
     /// # Arguments
     /// * `cfg` - the host-written limits config
     /// * `hw_max` - board hardware phase-current ABS trip
-    /// * `rating` - motor continuous-current rating; `<= 0`/NaN = unknown
-    ///   (no rating clamp)
+    /// * `rating` - motor continuous-current rating, when known (a
+    ///   non-finite or non-positive value counts as unknown)
     #[cfg(feature = "storage")]
     pub fn from_config_clamped(
         cfg: &CurrentLimitsConfig,
         hw_max: ElectricCurrent,
-        rating: ElectricCurrent,
+        rating: Option<ElectricCurrent>,
     ) -> Self {
-        let rating_ok = rating.is_finite() && rating.is_positive();
+        let rating = rating.filter(|r| r.is_finite() && r.is_positive());
         let iq_ceiling_board = hw_max / OVERCURRENT_HEADROOM;
-        let iq_ceiling = if rating_ok {
-            iq_ceiling_board.min(rating)
-        } else {
-            iq_ceiling_board
-        };
+        let iq_ceiling = rating.map_or(iq_ceiling_board, |r| iq_ceiling_board.min(r));
+        // A set limit counts when positive; NaN and non-positive values
+        // fall back to the inherited ceiling (the boundary check rejects
+        // them, this is boot-path defense).
+        let set = |v: Option<ElectricCurrent>| v.filter(Sign::is_positive);
         // Bus limits have no board ceiling (they protect the supply, not
-        // the board); NaN → unlimited (the boundary sanity check rejects
-        // NaN commands, this is boot-path defense).
-        let bus = |v: ElectricCurrent| if v.is_finite() { v } else { UNLIMITED };
-        let trip = if cfg.max_phase_current.is_positive() {
-            cfg.max_phase_current.min(hw_max)
-        } else if rating_ok {
-            hw_max.min(1.5 * rating)
-        } else {
-            hw_max
+        // the board); unset, negative or NaN → unlimited, zero is a real
+        // limit.
+        let bus = |v: Option<ElectricCurrent>| {
+            v.filter(|a| a.is_finite() && a.is_non_negative())
+                .unwrap_or(UNLIMITED)
         };
-        let iq = if cfg.max_iq.is_positive() {
-            cfg.max_iq.min(iq_ceiling)
-        } else {
-            iq_ceiling
+        let trip = match (set(cfg.max_phase_current), rating) {
+            (Some(trip), _) => trip.min(hw_max),
+            (None, Some(rating)) => hw_max.min(1.5 * rating),
+            (None, None) => hw_max,
         };
+        let iq = set(cfg.max_iq).map_or(iq_ceiling, |iq| iq.min(iq_ceiling));
         let max_current = iq.min(trip / OVERCURRENT_HEADROOM);
         Self {
             max_current,
-            max_brake: if cfg.max_brake.is_positive() {
-                cfg.max_brake.min(max_current)
-            } else {
-                max_current
-            },
+            max_brake: set(cfg.max_brake).map_or(max_current, |brake| brake.min(max_current)),
             overcurrent_threshold: trip,
             bus_in_max: bus(cfg.bus_in_max),
             bus_regen_max: bus(cfg.bus_regen_max),
@@ -231,13 +224,13 @@ impl CurrentLimits {
     /// Limits for boot: the stored config (clamped) when present, board
     /// defaults otherwise. `rating` as in
     /// [`from_config_clamped`](Self::from_config_clamped) — pass the
-    /// stored motor rating (or zero when absent) so a detected motor's
-    /// thermal ceiling holds even with no limits group written.
+    /// stored motor rating so a detected motor's thermal ceiling holds
+    /// even with no limits group written.
     #[cfg(feature = "storage")]
     pub fn from_stored(
         cfg: Option<&CurrentLimitsConfig>,
         hw_max: ElectricCurrent,
-        rating: ElectricCurrent,
+        rating: Option<ElectricCurrent>,
     ) -> Self {
         match cfg {
             Some(c) => Self::from_config_clamped(c, hw_max, rating),

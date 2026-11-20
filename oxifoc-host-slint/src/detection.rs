@@ -130,7 +130,7 @@ pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<Ato
                 .and_then(|out| {
                     let setup = out.setup(plan, DriveCurrent::Auto)?;
                     let preview = detect::preview_setup(&cmd, setup, board_trip_a)?;
-                    Ok((out, preview.limits().max_iq.value))
+                    Ok((out, preview.limits().max_iq.map_or(0.0, |a| a.value)))
                 });
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     app.set_detect_running(false);
@@ -220,7 +220,7 @@ pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<Ato
                 let preview = detect::preview_setup(&cmd, setup, board_trip_a)?;
                 detect::apply_sequence(&cmd, &out, plan, current)?;
                 motor_config_generation.fetch_add(1, Ordering::Relaxed);
-                Ok(preview.limits().max_iq.value)
+                Ok(preview.limits().max_iq.map_or(0.0, |a| a.value))
             });
             let _ = weak.upgrade_in_event_loop(move |app| {
                 app.set_detect_running(false);

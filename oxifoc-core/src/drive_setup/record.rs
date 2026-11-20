@@ -6,8 +6,7 @@ use super::{DriveCurrent, DriveSetup, Feedback, SetupError, ValidatedDriveSetup}
 use crate::storage::{HallCalibrationConfig, HallTransitionGeometryConfig, MotorParamsConfig};
 use crate::types::commissioning::SourceLimits;
 use crate::units::{
-    ConstZero, ElectricCurrent, ElectricalAngle, ElectricalResistance, Inductance, MagneticFlux,
-    Power,
+    ElectricCurrent, ElectricalAngle, ElectricalResistance, Inductance, MagneticFlux, Power,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,9 +23,9 @@ pub struct SetupV1 {
     lq: Inductance,
     flux: MagneticFlux,
     pole_pairs: u8,
-    power_loss: Power,
-    ld_fundamental: Inductance,
-    lq_fundamental: Inductance,
+    power_loss: Option<Power>,
+    ld_fundamental: Option<Inductance>,
+    lq_fundamental: Option<Inductance>,
     feedback: FeedbackV1,
     input: ElectricCurrent,
     regen: ElectricCurrent,
@@ -90,7 +89,7 @@ impl SetupRecord {
     pub fn validate(
         self,
         board_trip: ElectricCurrent,
-        configured_trip: ElectricCurrent,
+        configured_trip: Option<ElectricCurrent>,
     ) -> Result<ValidatedDriveSetup, SetupError> {
         let Self::V1(v) = self;
         DriveSetup {
@@ -104,7 +103,7 @@ impl SetupRecord {
                 ld_fundamental: v.ld_fundamental,
                 lq_fundamental: v.lq_fundamental,
                 // Derived by validation, not stored twice.
-                max_current: ElectricCurrent::ZERO,
+                max_current: None,
             },
             feedback: match v.feedback {
                 FeedbackV1::Sensorless => Feedback::Sensorless,
@@ -164,7 +163,7 @@ mod tests {
                 inductance_q: henries(51e-6),
                 flux_linkage: webers(0.004),
                 pole_pairs: 7,
-                max_power_loss: watts(120.0),
+                max_power_loss: Some(watts(120.0)),
                 ..Default::default()
             },
             feedback: Feedback::Hall(HallCalibrationConfig::default()),
@@ -174,7 +173,7 @@ mod tests {
                 regen: amps(0.0),
             },
         }
-        .validate(amps(70.0), amps(30.0))
+        .validate(amps(70.0), Some(amps(30.0)))
         .unwrap();
         let mut next = old.setup().clone();
         next.feedback = Feedback::Sensorless;
@@ -183,7 +182,7 @@ mod tests {
             input: amps(12.0),
             regen: amps(2.0),
         };
-        let next = next.validate(amps(70.0), amps(30.0)).unwrap();
+        let next = next.validate(amps(70.0), Some(amps(30.0))).unwrap();
         let mut store = MapStorage::<ConfigKey, _, _>::new(
             Flash::new(WriteCountCheck::TwiceWithZero, None, true),
             MapConfig::new(Flash::FULL_FLASH_RANGE),
@@ -249,7 +248,7 @@ mod tests {
                         inductance_q: henries(51e-6),
                         flux_linkage: webers(0.004),
                         pole_pairs: 7,
-                        max_power_loss: watts(120.0),
+                        max_power_loss: Some(watts(120.0)),
                         ..Default::default()
                     },
                     feedback: feedback.clone(),
@@ -259,7 +258,7 @@ mod tests {
                         regen: amps(0.0),
                     },
                 }
-                .validate(amps(70.0), amps(30.0))
+                .validate(amps(70.0), Some(amps(30.0)))
                 .unwrap();
                 let mut buf = [0; 256];
                 let bytes = postcard::to_slice(&SetupRecord::from(&setup), &mut buf).unwrap();
@@ -268,14 +267,16 @@ mod tests {
                 assert_eq!(
                     loaded
                         .clone()
-                        .validate(amps(70.0), amps(30.0))
+                        .validate(amps(70.0), Some(amps(30.0)))
                         .unwrap()
                         .setup(),
                     setup.setup()
                 );
-                let lowered = loaded.validate(amps(70.0), amps(13.0));
+                let lowered = loaded.validate(amps(70.0), Some(amps(13.0)));
                 match current {
-                    DriveCurrent::Auto => assert_eq!(lowered.unwrap().limits().max_iq.value, 10.0),
+                    DriveCurrent::Auto => {
+                        assert_eq!(lowered.unwrap().limits().max_iq, Some(amps(10.0)));
+                    }
                     DriveCurrent::Override(_) => {
                         assert!(matches!(lowered, Err(SetupError::Current)));
                     }

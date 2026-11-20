@@ -12,7 +12,7 @@ use crate::motor::ControlMode;
 use crate::storage::HallCalibrationConfig;
 use crate::storage::{MotorParamsConfig, RuntimeConfig};
 use crate::types::VoltageFeedforwardMode;
-use crate::units::{ConstZero, ElectricCurrent, ElectricPotential};
+use crate::units::{ElectricCurrent, ElectricPotential};
 
 /// Model construction can evaluate filter coefficients; installing this value
 /// only replaces prepared state and scalar settings. Keep it out of ISR queues.
@@ -57,9 +57,7 @@ impl PreparedMotorModel {
             limits: CurrentLimits::from_stored(
                 config.current_limits.as_ref(),
                 board_max_current,
-                motor
-                    .and_then(MotorParamsConfig::rating_current)
-                    .unwrap_or(ElectricCurrent::ZERO),
+                motor.and_then(MotorParamsConfig::rating_current),
             ),
             pole_pairs: motor.map_or(0, |mp| mp.pole_pairs),
         }

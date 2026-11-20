@@ -21,7 +21,7 @@ use crate::velocity_telemetry::VelocityDebugFrame;
 
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
-    Fraction, Sign, Time, seconds, si,
+    Fraction, Sign, Time, seconds,
 };
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
@@ -508,8 +508,8 @@ where
                     q: self.controller.iq_pi.gains(),
                 });
             }
-            self.controller.id_pi.set_gains(si(kp), si(ki));
-            self.controller.iq_pi.set_gains(si(kp), si(ki));
+            self.controller.id_pi.set_gains(kp, ki);
+            self.controller.iq_pi.set_gains(kp, ki);
             self.controller.reset();
         }
 

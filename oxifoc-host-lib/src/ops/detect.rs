@@ -100,8 +100,12 @@ impl DetectionOutcome {
                 inductance_q: henries(self.inductance_q_h),
                 flux_linkage: webers(self.flux_linkage_wb),
                 pole_pairs: plan.pole_pairs,
-                max_power_loss: watts(plan.max_power_loss_w),
-                max_current: amps(rating_from_loss(self.resistance_ohm, plan.max_power_loss_w)),
+                max_power_loss: Some(watts(plan.max_power_loss_w)),
+                max_current: Some(amps(rating_from_loss(
+                    self.resistance_ohm,
+                    plan.max_power_loss_w,
+                )))
+                .filter(|a| a.value > 0.0),
                 ..Default::default()
             },
             feedback: self.hall.map_or(Feedback::Sensorless, Feedback::Hall),
@@ -379,14 +383,12 @@ pub fn preview_setup(
 ) -> Result<oxifoc_core::drive_setup::ValidatedDriveSetup> {
     let limits = config::read_group(cmd, ConfigGroupId::CurrentLimits)?;
     let trip = match limits.value {
-        Some(oxifoc_core::types::ConfigValue::CurrentLimits(value)) => {
-            value.max_phase_current.value
-        }
-        None => 0.0,
+        Some(oxifoc_core::types::ConfigValue::CurrentLimits(value)) => value.max_phase_current,
+        None => None,
         _ => bail!("controller returned an unexpected current-limits value"),
     };
     setup
-        .validate(amps(board_trip_a), amps(trip))
+        .validate(amps(board_trip_a), trip)
         .map_err(|e| anyhow::anyhow!("invalid drive setup: {e:?}"))
 }
 

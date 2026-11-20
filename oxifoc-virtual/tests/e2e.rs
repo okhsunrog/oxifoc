@@ -185,9 +185,9 @@ fn run_e2e(transport: TransportType) {
             .boot_epoch,
         0,
         ConfigValue::CurrentLimits(CurrentLimitsConfig {
-            max_iq: amps(1.0),
-            bus_in_max: amps(5.0),
-            bus_regen_max: amps(0.0),
+            max_iq: Some(amps(1.0)),
+            bus_in_max: Some(amps(5.0)),
+            bus_regen_max: Some(amps(0.0)),
             ..Default::default()
         }),
     )
@@ -732,7 +732,7 @@ fn partial_config_updates_use_device_defaults() {
     assert_eq!(
         read_group(&rt.cmd_tx, group).unwrap().value,
         Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-            bus_in_max: amps(5.0),
+            bus_in_max: Some(amps(5.0)),
             ..CurrentLimitsConfig::AUTO
         }))
     );
@@ -1073,9 +1073,9 @@ fn drive_setup_save_replays_exact_request_and_commits_all_groups() {
     let Some(ConfigValue::CurrentLimits(limits)) = limits.value else {
         panic!("missing limits")
     };
-    assert_eq!(limits.max_iq.value, 10.0);
-    assert_eq!(limits.bus_in_max.value, 5.0);
-    assert_eq!(limits.bus_regen_max.value, 0.0);
+    assert_eq!(limits.max_iq, Some(amps(10.0)));
+    assert_eq!(limits.bus_in_max, Some(amps(5.0)));
+    assert_eq!(limits.bus_regen_max, Some(amps(0.0)));
     let hall = read_group(&rt.cmd_tx, ConfigGroupId::HallCalibration).unwrap();
     assert!(hall.persisted && hall.revision == 1 && hall.value.is_none());
     let motor = read_group(&rt.cmd_tx, ConfigGroupId::MotorParams).unwrap();

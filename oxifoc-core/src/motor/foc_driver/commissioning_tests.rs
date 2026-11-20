@@ -1,4 +1,5 @@
 use super::*;
+use crate::units::quantity;
 use crate::units::{amps, erad, erad_per_s, ohms, si, volts};
 
 fn prepared(input: f32, regen: f32) -> PreparedCommissioning {
@@ -16,7 +17,7 @@ fn hold() -> ControlMode {
         angle: erad(0.0),
         current: amps(10.0),
         velocity: erad_per_s(0.0),
-        pi_gains: Some((0.01, 10.0)),
+        pi_gains: Some((ohms(0.01), quantity(10.0))),
     }
 }
 

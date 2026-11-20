@@ -1,5 +1,6 @@
 use super::*;
 use crate::foc;
+use crate::foc::controller::{CurrentKi, CurrentKp};
 use crate::foc::sensors::PhaseCurrents;
 use crate::units::{amps, erad};
 use core::cell::{Cell, RefCell};
@@ -79,7 +80,7 @@ impl HallReader for Reader {
     }
 }
 
-fn open_loop(angle_rad: f32, current: f32, pi_gains: Option<(f32, f32)>) -> Event {
+fn open_loop(angle_rad: f32, current: f32, pi_gains: Option<(CurrentKp, CurrentKi)>) -> Event {
     Event::Command(ControlMode::OpenLoop {
         angle: erad(angle_rad),
         current: amps(current),

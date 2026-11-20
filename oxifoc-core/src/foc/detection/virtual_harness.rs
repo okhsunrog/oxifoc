@@ -38,7 +38,7 @@ use crate::foc::wrap_angle;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
 use crate::types::CurrentSenseTopology;
-use crate::units::{amps, erad, ohms, per_second, seconds, si, volts};
+use crate::units::{amps, erad, per_second, seconds, volts};
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
 const DT: f32 = 1.0 / 20_000.0;
@@ -235,8 +235,8 @@ impl DetectionHardware for VirtualHardware {
                 } => {
                     // Apply PI gains override if provided
                     if let Some((kp, ki)) = pi_gains {
-                        sim.foc.id_pi.set_gains(ohms(kp), si(ki));
-                        sim.foc.iq_pi.set_gains(ohms(kp), si(ki));
+                        sim.foc.id_pi.set_gains(kp, ki);
+                        sim.foc.iq_pi.set_gains(kp, ki);
                     }
                     // Mirror FocDriver::step_open_loop exactly: with a
                     // velocity the angle keeps integrating from wherever it

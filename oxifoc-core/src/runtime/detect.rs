@@ -38,8 +38,8 @@ use crate::state::model::CONFIG_COORDINATOR;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse};
 use crate::units::{
-    ConstZero, ElectricCurrent, ElectricPotential, Electrical, ElectricalResistance, Frequency,
-    Inductance, MagneticFlux, Sign, amps,
+    ElectricCurrent, ElectricPotential, Electrical, ElectricalResistance, Frequency, Inductance,
+    MagneticFlux, Sign, amps,
 };
 use uom::si::{Dimension, Quantity, Units};
 
@@ -57,7 +57,7 @@ pub(super) fn setup_is_current(request: &SaveDriveSetup) -> bool {
         ready.as_ref().is_some_and(|ready| {
             let mut offered = request.setup.clone();
             offered.current = DriveCurrent::Auto;
-            offered.motor.max_current.value = 0.0;
+            offered.motor.max_current = None;
             ready.session == request.session
                 && offered == ready.setup
                 && ready.revisions == *CONFIG_COORDINATOR.revisions.borrow(cs).borrow()
@@ -542,9 +542,11 @@ fn prepare_commissioning(
     let limits = config.and_then(|c| c.current_limits.as_ref());
     let source = source
         .or_else(|| {
-            limits.map(|limits| SourceLimits {
-                input: limits.bus_in_max,
-                regen: limits.bus_regen_max,
+            limits.and_then(|limits| {
+                Some(SourceLimits {
+                    input: limits.bus_in_max?,
+                    regen: limits.bus_regen_max?,
+                })
             })
         })
         .ok_or(DetectError::Unsafe)?;
@@ -552,15 +554,11 @@ fn prepare_commissioning(
         PowerSourceLimits::new(source.input, source.regen).map_err(|_| DetectError::Unsafe)?;
     // A fresh board has no user override. Its independent platform trip still
     // applies; an explicitly stored stricter protection always survives.
-    let configured_trip = limits.map_or(ElectricCurrent::ZERO, |limits| limits.max_phase_current);
-    if !configured_trip.is_finite() || configured_trip.is_negative() {
+    let configured_trip = limits.and_then(|limits| limits.max_phase_current);
+    if configured_trip.is_some_and(|trip| !trip.is_finite() || trip.is_non_positive()) {
         return Err(DetectError::Unsafe);
     }
-    let trip = if configured_trip == ElectricCurrent::ZERO {
-        platform_max
-    } else {
-        configured_trip
-    };
+    let trip = configured_trip.unwrap_or(platform_max);
     let prepared = PreparedCommissioning::new(platform_max, trip, source, test_ceiling)
         .map_err(|_| DetectError::Unsafe)?;
     if prepared.current_ceiling() < amps(0.5) {
@@ -612,14 +610,14 @@ mod tests {
         let mut cfg = RuntimeConfig::default();
         assert!(prepare_commissioning(amps(70.0), None, None, None).is_err());
         cfg.current_limits = Some(CurrentLimitsConfig {
-            max_iq: amps(3.0),
-            max_phase_current: amps(30.0),
-            bus_in_max: amps(5.0),
-            bus_regen_max: amps(0.0),
+            max_iq: Some(amps(3.0)),
+            max_phase_current: Some(amps(30.0)),
+            bus_in_max: Some(amps(5.0)),
+            bus_regen_max: Some(amps(0.0)),
             ..Default::default()
         });
         cfg.motor_params = Some(MotorParamsConfig {
-            max_current: amps(2.0),
+            max_current: Some(amps(2.0)),
             ..Default::default()
         });
         assert_eq!(
@@ -635,7 +633,7 @@ mod tests {
             amps(4.0),
         );
         assert!(prepare_commissioning(amps(70.0), Some(&cfg), Some(amps(f32::NAN)), None).is_err());
-        cfg.current_limits.as_mut().unwrap().bus_regen_max.value = -1.0;
+        cfg.current_limits.as_mut().unwrap().bus_regen_max = None;
         assert!(prepare_commissioning(amps(70.0), Some(&cfg), None, None).is_err());
         let confirmed = SourceLimits {
             input: amps(5.0),

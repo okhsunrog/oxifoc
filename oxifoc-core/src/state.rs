@@ -14,7 +14,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::foc::controller::{Decoupling, FocOutput};
+use crate::foc::controller::{CurrentKi, CurrentKp, Decoupling, FocOutput};
 #[cfg(feature = "offset-diagnostics")]
 use crate::foc::current_offset::CurrentOffsetRequest;
 use crate::foc::current_offset::{CurrentOffsetError, CurrentOffsetReport};
@@ -55,7 +55,7 @@ use crate::types::{
 };
 #[cfg(feature = "detection")]
 use crate::units::{ConstZero, ElectricalAngularVelocity};
-use crate::units::{ElectricPotential, si};
+use crate::units::{ElectricPotential, Sign};
 
 // ============================================================================
 // Global Communication Channels
@@ -112,7 +112,7 @@ pub enum DriverCommand {
     /// Apply current limits (already clamped to the board ceiling)
     SetCurrentLimits(CurrentLimits),
     /// Apply current-loop PI gains (post-detection tune, config write)
-    SetPiGains { kp: f32, ki: f32 },
+    SetPiGains { kp: CurrentKp, ki: CurrentKi },
     /// Apply dq-decoupling/back-EMF feedforward params (post-detection)
     SetDecoupling(Decoupling),
     /// Small token referencing the single-flight prepared-model mailbox.
@@ -153,7 +153,7 @@ impl DriverCommand {
                     && limits.bus_regen_max.is_finite()
             }
             Self::SetPiGains { kp, ki } => {
-                kp.is_finite() && ki.is_finite() && kp > 0.0 && ki >= 0.0
+                kp.is_finite() && ki.is_finite() && kp.is_positive() && ki.is_non_negative()
             }
             Self::SetDecoupling(d) => d.is_valid(),
             #[cfg(feature = "storage")]
@@ -1037,7 +1037,7 @@ where
                 continue;
             }
             DriverCommand::SetPiGains { kp, ki } => {
-                foc.set_current_pi_gains(si(kp), si(ki));
+                foc.set_current_pi_gains(kp, ki);
                 continue;
             }
             DriverCommand::SetDecoupling(d) => {

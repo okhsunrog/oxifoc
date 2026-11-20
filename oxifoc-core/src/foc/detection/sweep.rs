@@ -47,7 +47,7 @@ use super::types::{
 use super::voltage_pulse::VoltagePulseMeasurement;
 #[cfg(feature = "hfi-detect")]
 use crate::foc::clamp_f32;
-use crate::foc::controller::FocOutput;
+use crate::foc::controller::{CurrentKi, CurrentKp, FocOutput};
 use crate::foc::fast_math::sqrtf;
 use crate::foc::sensors::PhaseCurrents;
 use crate::foc::trig::{FastSinCos, SinCos};
@@ -60,7 +60,7 @@ use crate::units::{
     AngleRepr, AngularVelocity, ConstZero, ElectricCurrent, ElectricPotential, Electrical,
     ElectricalAngle, ElectricalAngularVelocity, ElectricalResistance, Frequency, Inductance,
     Linear, MagneticFlux, Mechanical, Power, Scalar, Sign, Time, amps, erad_per_s, erpm, hertz,
-    volts, watts,
+    ohms, quantity, volts, watts,
 };
 #[cfg(feature = "hfi-detect")]
 use crate::units::{CurrentSquared, sqrt_current};
@@ -68,8 +68,8 @@ use crate::units::{CurrentSquared, sqrt_current};
 /// Conservative PI gains for detection (VESC-style).
 /// Motor parameters are unknown at detection time, so these must be safe
 /// for any motor. Kp=0.01, Ki=10.0 (scaled for 20kHz loop).
-pub const DETECTION_PI_KP: f32 = 0.01;
-pub const DETECTION_PI_KI: f32 = 10.0;
+pub const DETECTION_PI_KP: CurrentKp = ohms(0.01);
+pub const DETECTION_PI_KI: CurrentKi = quantity(10.0);
 
 // ============================================================================
 // Hardware Abstraction Trait

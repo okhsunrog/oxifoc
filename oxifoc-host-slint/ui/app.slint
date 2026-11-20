@@ -1096,15 +1096,15 @@ export component App inherits Window {
                 if root.config-group == 1 : GridLayout {
                     spacing: 6px;
                     Row {
-                        Text { text: "Max Iq (A):"; } OxiNumberField { accessible-name: "Max Iq (A):"; text <=> root.cfg-max-iq; min-width: 120px; }
-                        Text { text: "Max brake (A, 0 = Max Iq):"; } OxiNumberField { accessible-name: "Max brake (A, 0 = Max Iq):"; text <=> root.cfg-max-brake; min-width: 120px; }
+                        Text { text: "Max Iq (A, empty = auto):"; } OxiNumberField { accessible-name: "Max Iq (A, empty = auto):"; text <=> root.cfg-max-iq; min-width: 120px; }
+                        Text { text: "Max brake (A, empty = Max Iq):"; } OxiNumberField { accessible-name: "Max brake (A, empty = Max Iq):"; text <=> root.cfg-max-brake; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Max phase current (A):"; } OxiNumberField { accessible-name: "Max phase current (A):"; text <=> root.cfg-max-phase-current; min-width: 120px; }
-                        Text { text: "Bus in max (A, <0 = off):"; } OxiNumberField { accessible-name: "Bus in max (A, <0 = off):"; text <=> root.cfg-bus-in-max; min-width: 120px; }
+                        Text { text: "Max phase current (A, empty = board):"; } OxiNumberField { accessible-name: "Max phase current (A, empty = board):"; text <=> root.cfg-max-phase-current; min-width: 120px; }
+                        Text { text: "Bus in max (A, empty = unlimited):"; } OxiNumberField { accessible-name: "Bus in max (A, empty = unlimited):"; text <=> root.cfg-bus-in-max; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Bus regen max (A, 0 = none):"; } OxiNumberField { accessible-name: "Bus regen max (A, 0 = none):"; text <=> root.cfg-bus-regen-max; min-width: 120px; }
+                        Text { text: "Bus regen max (A, empty = unlimited, 0 = none):"; } OxiNumberField { accessible-name: "Bus regen max (A, empty = unlimited, 0 = none):"; text <=> root.cfg-bus-regen-max; min-width: 120px; }
                         Text { text: "Dissipation max (W, 0 = off):"; } OxiNumberField { accessible-name: "Dissipation max (W, 0 = off):"; text <=> root.cfg-max-dissipation; min-width: 120px; }
                     }
                 }
@@ -1143,7 +1143,7 @@ export component App inherits Window {
                         Text { text: "Policy (0=coast 1=ramp 2=stop):"; } OxiNumberField { accessible-name: "Policy (0=coast 1=ramp 2=stop):"; text <=> root.cfg-fs-policy; min-width: 120px; }
                     }
                     Row {
-                        Text { text: "Brake current (A, 0 = max brake):"; } OxiNumberField { accessible-name: "Brake current (A, 0 = max brake):"; text <=> root.cfg-fs-brake-current; min-width: 120px; }
+                        Text { text: "Brake current (A, empty = max brake):"; } OxiNumberField { accessible-name: "Brake current (A, empty = max brake):"; text <=> root.cfg-fs-brake-current; min-width: 120px; }
                         Text { text: "Slew (A/s):"; } OxiNumberField { accessible-name: "Slew (A/s):"; text <=> root.cfg-fs-slew; min-width: 120px; }
                     }
                     Row {

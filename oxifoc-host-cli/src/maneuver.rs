@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::record::Capture;
-use oxifoc_core::units::{amps, erad, erad_per_s, volts};
+use oxifoc_core::units::{amps, erad, erad_per_s, ohms, si, volts};
 
 const SCHEDULE_TOLERANCE: Duration = Duration::from_millis(5);
 const COMMAND_ACK_TIMEOUT: Duration = Duration::from_millis(200);
@@ -201,7 +201,7 @@ impl Cmd {
                 angle: erad(angle),
                 current: amps(current),
                 velocity: erad_per_s(velocity),
-                pi_gains,
+                pi_gains: pi_gains.map(|(kp, ki)| (ohms(kp), si(ki))),
             },
             Self::Voltage { vd, vq, angle } => ControlMode::DirectVoltage {
                 vd: volts(vd),
@@ -306,7 +306,7 @@ fn check_effective_limits(snapshot: &ConfigSnapshot, m: &Maneuver) -> Result<()>
     let Some(ConfigValue::CurrentLimits(limits)) = &snapshot.effective else {
         bail!("controller did not report effective current limits");
     };
-    let max_iq = limits.max_iq.value;
+    let max_iq = limits.max_iq.map_or(0.0, |a| a.value);
     if !snapshot.valid || !max_iq.is_finite() || max_iq <= 0.0 {
         bail!("controller reported invalid effective current limits");
     }
@@ -554,7 +554,7 @@ mod tests {
         .unwrap();
         let mut snapshot = ConfigSnapshot {
             effective: Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                max_iq: amps(3.0),
+                max_iq: Some(amps(3.0)),
                 ..CurrentLimitsConfig::AUTO
             })),
             default: None,
@@ -734,7 +734,7 @@ mod tests {
             panic!("wrong control mode");
         };
         assert_eq!(current.value, 0.6);
-        assert_eq!(pi_gains, Some((0.01, 10.0)));
+        assert_eq!(pi_gains, Some((ohms(0.01), si(10.0))));
         let invalid = Cmd::Openloop {
             current: 0.6,
             velocity: 0.0,

@@ -107,6 +107,20 @@ fn cursor_readout(
 
 /// Parse a config/detection field, preserving the first error. Callers abort
 /// the write when an error is set, so the fallback never reaches the device.
+/// An optional numeric field: empty leaves the value unset.
+fn parse_optional<T: std::str::FromStr + Default>(
+    name: &str,
+    value: &SharedString,
+    err: &mut Option<String>,
+) -> Option<T> {
+    (!value.trim().is_empty()).then(|| parse_field(name, value, err))
+}
+
+/// Display an optional value; unset shows as an empty field.
+fn optional_text(value: Option<f32>) -> SharedString {
+    value.map_or_else(SharedString::new, |v| SharedString::from(format!("{v}")))
+}
+
 fn parse_field<T: std::str::FromStr + Default>(
     name: &str,
     value: &SharedString,

@@ -25,7 +25,7 @@ use crate::storage::{
     HallTuningConfig, MotorFeedbackConfig, PiGainsConfig, VoltageLimitsConfig,
 };
 use crate::timer::Timer;
-use crate::units::{ConstZero, ElectricCurrent, si};
+use crate::units::{ConstZero, ElectricCurrent};
 use crate::{
     motor::foc_driver::PreparedMotorModel,
     storage::{HallCalibrationConfig, MotorParamsConfig, RuntimeConfig, VoltageFeedforwardConfig},
@@ -707,10 +707,10 @@ pub(super) fn apply<P, C, Ph, S>(
                         foc.set_current_limits(CurrentLimits::from_config_clamped(
                             v,
                             *board_trip,
-                            *rating,
+                            Some(*rating),
                         ));
                     }
-                    TuningUpdate::PiGains(v) => foc.set_current_pi_gains(si(v.kp), si(v.ki)),
+                    TuningUpdate::PiGains(v) => foc.set_current_pi_gains(v.kp, v.ki),
                     TuningUpdate::HallTuning(_) => {}
                     TuningUpdate::DcOffsets(v) => {
                         foc.set_current_offsets((v.phase_a, v.phase_b, v.phase_c));

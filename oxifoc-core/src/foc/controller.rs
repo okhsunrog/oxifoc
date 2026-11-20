@@ -471,11 +471,11 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             if let Some(ref pg) = config.pi_gains
                 && pg.is_sane()
             {
-                foc.id_pi.set_gains(si(pg.kp), si(pg.ki));
-                foc.iq_pi.set_gains(si(pg.kp), si(pg.ki));
+                foc.id_pi.set_gains(pg.kp, pg.ki);
+                foc.iq_pi.set_gains(pg.kp, pg.ki);
                 #[cfg(feature = "defmt")]
                 defmt::info!(
-                    "PI gains overridden by stored config: kp={=f32}, ki={=f32}",
+                    "PI gains overridden by stored config: kp={}, ki={}",
                     pg.kp,
                     pg.ki
                 );
@@ -488,10 +488,10 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             // Same sanity gate as above: NaN or negative stored gains would
             // otherwise run the current loop as-is.
             let mut foc = Self::new(vbus);
-            foc.id_pi.set_gains(si(pg.kp), si(pg.ki));
-            foc.iq_pi.set_gains(si(pg.kp), si(pg.ki));
+            foc.id_pi.set_gains(pg.kp, pg.ki);
+            foc.iq_pi.set_gains(pg.kp, pg.ki);
             #[cfg(feature = "defmt")]
-            defmt::info!("Using stored PI gains: kp={=f32}, ki={=f32}", pg.kp, pg.ki);
+            defmt::info!("Using stored PI gains: kp={}, ki={}", pg.kp, pg.ki);
             foc
         } else {
             Self::new(vbus)

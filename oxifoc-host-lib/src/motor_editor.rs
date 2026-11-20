@@ -45,12 +45,12 @@ pub const FIELDS: [Field; 7] = [
     Field {
         label: "Continuous current ceiling",
         unit: "A",
-        hint: "0 derives the ceiling when the loss budget is known",
+        hint: "Empty derives the ceiling when the loss budget is known",
     },
     Field {
         label: "Copper loss budget",
         unit: "W",
-        hint: "0 leaves the budget unspecified",
+        hint: "Empty leaves the budget unspecified",
     },
 ];
 
@@ -63,8 +63,12 @@ fn draft_from(motor: &MotorParamsConfig) -> Draft {
         motor.inductance_q.value.to_string(),
         motor.flux_linkage.value.to_string(),
         motor.pole_pairs.to_string(),
-        motor.max_current.value.to_string(),
-        motor.max_power_loss.value.to_string(),
+        motor
+            .max_current
+            .map_or_else(String::new, |a| a.value.to_string()),
+        motor
+            .max_power_loss
+            .map_or_else(String::new, |w| w.value.to_string()),
     ]
 }
 
@@ -87,6 +91,17 @@ fn decimal(text: &str, positive: bool) -> Result<f32, &'static str> {
         })
 }
 
+/// An optional positive value: empty leaves it unset.
+fn optional(text: &str) -> Result<Option<f32>, &'static str> {
+    if text.trim().is_empty() {
+        Ok(None)
+    } else {
+        decimal(text, true)
+            .map(Some)
+            .map_err(|_| "Enter a finite number greater than zero, or leave it empty.")
+    }
+}
+
 fn pole_pairs(text: &str) -> Result<u8, &'static str> {
     text.trim()
         .parse::<u8>()
@@ -98,6 +113,8 @@ fn pole_pairs(text: &str) -> Result<u8, &'static str> {
 fn field_error(index: usize, text: &str) -> Option<&'static str> {
     if index == 4 {
         pole_pairs(text).err()
+    } else if index >= 5 {
+        optional(text).err()
     } else {
         decimal(text, index < 3).err()
     }
@@ -113,8 +130,8 @@ fn edited_motor(
         inductance_q: henries(decimal(&draft[2], true)?),
         flux_linkage: webers(decimal(&draft[3], false)?),
         pole_pairs: pole_pairs(&draft[4])?,
-        max_current: amps(decimal(&draft[5], false)?),
-        max_power_loss: watts(decimal(&draft[6], false)?),
+        max_current: optional(&draft[5])?.map(amps),
+        max_power_loss: optional(&draft[6])?.map(watts),
         ..original.clone()
     })
 }
@@ -424,8 +441,8 @@ mod tests {
             inductance_d: henries(0.00047),
             inductance_q: henries(0.00049),
             pole_pairs: 7,
-            ld_fundamental: henries(0.00081),
-            lq_fundamental: henries(0.00121),
+            ld_fundamental: Some(henries(0.00081)),
+            lq_fundamental: Some(henries(0.00121)),
             ..Default::default()
         };
         let mut draft = draft_from(&original);

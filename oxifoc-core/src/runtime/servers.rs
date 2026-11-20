@@ -361,7 +361,7 @@ fn resolved_config(
     use crate::types::{ConfigGroupId, ConfigValue};
     match group {
         ConfigGroupId::MotorParams => cfg.motor_params.clone().map(|mut motor| {
-            motor.max_current = motor.rating_current().unwrap_or(ElectricCurrent::ZERO);
+            motor.max_current = Some(motor.rating_current().unwrap_or(ElectricCurrent::ZERO));
             ConfigValue::MotorParams(motor)
         }),
         ConfigGroupId::VoltageLimits => Some(ConfigValue::VoltageLimits(
@@ -379,14 +379,14 @@ fn resolved_config(
             let limits = CurrentLimits::from_stored(
                 cfg.current_limits.as_ref(),
                 board.max_phase_current,
-                rating,
+                Some(rating),
             );
             Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                max_iq: limits.max_current,
-                max_brake: limits.max_brake,
-                max_phase_current: limits.overcurrent_threshold,
-                bus_in_max: limits.bus_in_max,
-                bus_regen_max: limits.bus_regen_max,
+                max_iq: Some(limits.max_current),
+                max_brake: Some(limits.max_brake),
+                max_phase_current: Some(limits.overcurrent_threshold),
+                bus_in_max: Some(limits.bus_in_max),
+                bus_regen_max: Some(limits.bus_regen_max),
                 max_dissipation: limits.max_dissipation,
             }))
         }
@@ -394,7 +394,6 @@ fn resolved_config(
             let controller =
                 FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(cfg, volts(24.0));
             let (kp, ki) = controller.id_pi.gains();
-            let (kp, ki) = (kp.value, ki.value);
             Some(ConfigValue::PiGains(PiGainsConfig {
                 kp,
                 ki,
@@ -1050,7 +1049,7 @@ async fn save_drive_setup<T: Timer>(
     let trip = config
         .current_limits
         .as_ref()
-        .map_or(ElectricCurrent::ZERO, |limits| limits.max_phase_current);
+        .and_then(|limits| limits.max_phase_current);
     let Ok(setup) = request.inner.setup.clone().validate(board_trip, trip) else {
         return ConfigResponse::Invalid;
     };

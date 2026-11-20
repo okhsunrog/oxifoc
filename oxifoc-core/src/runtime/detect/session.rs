@@ -262,7 +262,7 @@ impl Session {
                     inductance_q: henries(inductance_q_h),
                     flux_linkage: webers(flux_linkage_wb),
                     pole_pairs: plan.pole_pairs,
-                    max_power_loss: plan.motor_class.preset().max_power_loss,
+                    max_power_loss: Some(plan.motor_class.preset().max_power_loss),
                     ..Default::default()
                 },
                 feedback,
