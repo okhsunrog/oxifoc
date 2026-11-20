@@ -220,12 +220,18 @@ pub fn f32_to_q31(val_f32: f32) -> i32 {
 /// - `-1.0` (q31) = −π rad
 /// - `+1.0` (q31) = +π rad
 ///
-/// This function maps an arbitrary radian angle to that range.
+/// This function maps an arbitrary radian angle to that range. Angles within
+/// [-3π, 3π] take one correction step; others go through the cold
+/// [`wrap_angle`](crate::foc::wrap_angle) path instead of saturating at ±π.
 #[inline(always)]
 pub fn angle_to_cordic_q31(angle_rad: f32) -> i32 {
     // Map radians → [-1, 1] where ±1 = ±π
     let normalized = angle_rad * core::f32::consts::FRAC_1_PI;
-    // Wrap to [-1.0, 1.0): angles typically in [0, 2π] → [0, 2] → subtract 2 if > 1
+    // Written so NaN fails the range test and takes the cold path.
+    if !(-3.0..=3.0).contains(&normalized) {
+        return cordic_q31_unbounded(angle_rad);
+    }
+    // FOC angles are in [0, 2π] → [0, 2]: one step of 2 wraps them.
     let wrapped = if normalized > 1.0 {
         normalized - 2.0
     } else if normalized < -1.0 {
@@ -234,6 +240,18 @@ pub fn angle_to_cordic_q31(angle_rad: f32) -> i32 {
         normalized
     };
     f32_to_q31(wrapped)
+}
+
+#[cold]
+#[inline(never)]
+fn cordic_q31_unbounded(angle_rad: f32) -> i32 {
+    // [0, 2π) after wrapping; NaN stays NaN and converts to 0 (sin 0, cos 1).
+    let normalized = crate::foc::wrap_angle(angle_rad) * core::f32::consts::FRAC_1_PI;
+    f32_to_q31(if normalized > 1.0 {
+        normalized - 2.0
+    } else {
+        normalized
+    })
 }
 
 // ============================================================================
@@ -738,6 +756,22 @@ mod tests {
         let q31 = angle_to_cordic_q31(PI);
         let f = q31_to_f32(q31);
         assert!((f - 1.0).abs() < 0.01 || (f - (-1.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn angle_to_cordic_q31_beyond_three_pi() {
+        // Every angle must land on its own direction, not saturate at ±π.
+        for turns in [-1000.0f32, -7.0, -2.0, 2.0, 3.0, 7.0, 1000.0] {
+            for base in [0.3f32, FRAC_PI_2, -2.5] {
+                let angle = base + turns * TAU;
+                let got = q31_to_f32(angle_to_cordic_q31(angle)) * PI;
+                let want = q31_to_f32(angle_to_cordic_q31(base)) * PI;
+                let diff = (got - want).abs();
+                let diff = diff.min(TAU - diff);
+                assert!(diff < 2e-3, "angle {angle}: got {got}, want {want}");
+            }
+        }
+        assert_eq!(angle_to_cordic_q31(f32::NAN), 0);
     }
 
     #[test]
