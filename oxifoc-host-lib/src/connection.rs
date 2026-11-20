@@ -124,61 +124,68 @@ where
     let mut connect_attempts: u32 = 0;
     let mut expected_device_uuid: Option<String> = None;
     let mut verified_peer = None;
+    // True to verify the controller again on the current link instead of
+    // reopening it, after the link recovered.
+    let mut reuse_link = false;
+    let mut defmt_reader: DefmtReader = None;
 
     loop {
-        let reg_result = tokio::select! {
-            r = register_fn() => r,
-            _ = cancel.cancelled() => break,
-        };
+        if !reuse_link {
+            let reg_result = tokio::select! {
+                r = register_fn() => r,
+                _ = cancel.cancelled() => break,
+            };
 
-        let defmt_reader = match reg_result {
-            Ok(reader) => reader,
-            Err(e) => {
+            defmt_reader = match reg_result {
+                Ok(reader) => reader,
+                Err(e) => {
+                    connected.store(false, Ordering::Relaxed);
+                    stack
+                        .stack()
+                        .manage_profile(ergot::prelude::DirectEdge::teardown);
+                    tokio::task::yield_now().await;
+                    let retry = may_retry(policy, &mut connect_attempts);
+                    tracing::warn!(
+                        "Transport registration failed (attempt {}): {:?}",
+                        connect_attempts,
+                        e
+                    );
+                    if !retry {
+                        info!("Reconnect policy exhausted — giving up");
+                        break;
+                    }
+
+                    tokio::select! {
+                        _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
+                        _ = cancel.cancelled() => break,
+                    }
+                }
+            };
+            // Wait for the interface to become Active — bounded like the
+            // recovery path: a half-open link that registered but never goes
+            // Active would otherwise pin the connect path until cancel.
+            let became_active = tokio::select! {
+                r = tokio::time::timeout(RECOVERY_TIMEOUT, wait_for_active(&state_notify, &stack)) => matches!(r, Ok(true)),
+                _ = cancel.cancelled() => break,
+            };
+            if !became_active {
+                tracing::warn!("Interface not Active within {RECOVERY_TIMEOUT:?}, reconnecting...");
                 connected.store(false, Ordering::Relaxed);
                 stack
                     .stack()
                     .manage_profile(ergot::prelude::DirectEdge::teardown);
                 tokio::task::yield_now().await;
-                let retry = may_retry(policy, &mut connect_attempts);
-                tracing::warn!(
-                    "Transport registration failed (attempt {}): {:?}",
-                    connect_attempts,
-                    e
-                );
-                if !retry {
-                    info!("Reconnect policy exhausted — giving up");
+                if !may_retry(policy, &mut connect_attempts) {
+                    info!("Reconnect policy exhausted after interface activation failure");
                     break;
                 }
-
                 tokio::select! {
                     _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
                     _ = cancel.cancelled() => break,
                 }
             }
-        };
-        // Wait for the interface to become Active — bounded like the
-        // recovery path: a half-open link that registered but never goes
-        // Active would otherwise pin the connect path until cancel.
-        let became_active = tokio::select! {
-            r = tokio::time::timeout(RECOVERY_TIMEOUT, wait_for_active(&state_notify, &stack)) => matches!(r, Ok(true)),
-            _ = cancel.cancelled() => break,
-        };
-        if !became_active {
-            tracing::warn!("Interface not Active within {RECOVERY_TIMEOUT:?}, reconnecting...");
-            connected.store(false, Ordering::Relaxed);
-            stack
-                .stack()
-                .manage_profile(ergot::prelude::DirectEdge::teardown);
-            tokio::task::yield_now().await;
-            if !may_retry(policy, &mut connect_attempts) {
-                info!("Reconnect policy exhausted after interface activation failure");
-                break;
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
-                _ = cancel.cancelled() => break,
-            }
         }
+        reuse_link = false;
 
         // Resolve the controller's address before the handshake: through a
         // bridge the link peer is the bridge, not the motor controller, so
@@ -303,7 +310,7 @@ where
         // to the persistent stack and must be started only once.
         let transport_scoped_defmt = defmt_reader.is_some();
         if should_start_defmt(cfg.stream_defmt(), defmt_started, transport_scoped_defmt) {
-            match start_defmt_decoder(cfg, &stack, defmt_reader) {
+            match start_defmt_decoder(cfg, &stack, defmt_reader.take()) {
                 Ok(()) => defmt_started = true,
                 Err(e) => {
                     tracing::warn!("defmt decoder unavailable, continuing without it: {e:#}");
@@ -312,17 +319,23 @@ where
         }
 
         // Monitor interface state with recovery
-        let disconnected =
-            monitor_state_with_recovery(&state_notify, &stack, &connected, &cancel).await;
+        let link = monitor_state_with_recovery(&state_notify, &stack, &connected, &cancel).await;
 
-        if !disconnected {
-            // Cancelled
+        if link == LinkOutcome::Cancelled {
             break;
         }
         if let Some(raw) = &raw {
             raw.control_lost();
         }
         verified_peer = None;
+        if link == LinkOutcome::Recovered {
+            // The link came back, but whoever answers now (a restarted
+            // bridge, a different controller) is unverified until the
+            // handshake has checked it again.
+            info!("Link recovered; verifying the controller again");
+            reuse_link = true;
+            continue;
+        }
 
         if !may_retry(policy, &mut connect_attempts) {
             info!("Reconnect policy exhausted after connection loss");
@@ -396,58 +409,63 @@ where
 
 // ── State monitoring ─────────────────────────────────────────────────────────
 
-/// Monitor interface state with recovery support.
-/// Returns `true` if disconnected (needs reconnect), `false` if cancelled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkOutcome {
+    Cancelled,
+    /// The link is down; reopen it.
+    Down,
+    /// The link went inactive and came back. `connected` stays false: the
+    /// caller must verify the controller again.
+    Recovered,
+}
+
+/// Wait for the verified link to leave Active, then for it to recover.
 async fn monitor_state_with_recovery<NS>(
     state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
     stack: &NS,
     connected: &Arc<AtomicBool>,
     cancel: &CancellationToken,
-) -> bool
+) -> LinkOutcome
 where
     NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>>,
 {
-    loop {
-        tokio::select! {
-            observed = state_notify.wait_for_value(|| {
-                let state = stack.stack().manage_profile(|im| im.interface_state(()));
-                let is_active = interface_is_active(state);
-                (is_active != connected.load(Ordering::Relaxed)).then_some(state)
-            }) => {
-                let Ok(state) = observed else {
-                    connected.store(false, Ordering::Relaxed);
-                    return true;
-                };
-                if interface_is_active(state) {
-                    connected.store(true, Ordering::Relaxed);
-                    info!("Interface active — device connected");
-                    continue;
-                }
+    let observed = tokio::select! {
+        observed = state_notify.wait_for_value(|| {
+            let state = stack.stack().manage_profile(|im| im.interface_state(()));
+            let is_active = interface_is_active(state);
+            (is_active != connected.load(Ordering::Relaxed)).then_some(state)
+        }) => observed,
+        _ = cancel.cancelled() => return LinkOutcome::Cancelled,
+    };
+    let Ok(state) = observed else {
+        connected.store(false, Ordering::Relaxed);
+        return LinkOutcome::Down;
+    };
+    if interface_is_active(state) {
+        // Active while not connected: only the handshake may set `connected`.
+        return LinkOutcome::Recovered;
+    }
 
-                connected.store(false, Ordering::Relaxed);
-                if matches!(state, Some(InterfaceState::Down) | None) {
-                    tracing::warn!("Interface down, reconnecting transport...");
-                    return true;
-                }
+    connected.store(false, Ordering::Relaxed);
+    if matches!(state, Some(InterfaceState::Down) | None) {
+        tracing::warn!("Interface down, reconnecting transport...");
+        return LinkOutcome::Down;
+    }
 
-                tracing::warn!("Interface inactive, waiting for recovery...");
-                let recovered = tokio::select! {
-                    result = tokio::time::timeout(
-                        RECOVERY_TIMEOUT,
-                        wait_for_active(state_notify, stack),
-                    ) => matches!(result, Ok(true)),
-                    _ = cancel.cancelled() => return false,
-                };
-                if recovered {
-                    info!("Connection recovered");
-                    connected.store(true, Ordering::Relaxed);
-                } else {
-                    tracing::warn!("Recovery failed or timed out, reconnecting transport...");
-                    return true;
-                }
-            }
-            _ = cancel.cancelled() => return false,
-        }
+    tracing::warn!("Interface inactive, waiting for recovery...");
+    let recovered = tokio::select! {
+        result = tokio::time::timeout(
+            RECOVERY_TIMEOUT,
+            wait_for_active(state_notify, stack),
+        ) => matches!(result, Ok(true)),
+        _ = cancel.cancelled() => return LinkOutcome::Cancelled,
+    };
+    if recovered {
+        info!("Interface active again");
+        LinkOutcome::Recovered
+    } else {
+        tracing::warn!("Recovery failed or timed out, reconnecting transport...");
+        LinkOutcome::Down
     }
 }
 
