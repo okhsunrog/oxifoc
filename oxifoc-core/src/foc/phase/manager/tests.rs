@@ -9,7 +9,7 @@ use crate::foc::{angle_difference, wrap_angle};
 use crate::units::Linear;
 #[cfg(feature = "hfi")]
 use crate::units::hertz;
-#[cfg(feature = "storage")]
+#[cfg(any(feature = "storage", all(feature = "hfi", feature = "virtual-motor")))]
 use crate::units::quantity;
 #[cfg(any(feature = "hfi", feature = "storage", feature = "virtual-motor"))]
 use crate::units::volts;
