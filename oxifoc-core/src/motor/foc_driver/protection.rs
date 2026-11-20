@@ -629,12 +629,7 @@ where
     /// - The bus-current clamp last — except for a brake the dissipation
     ///   already shaped: its bus estimate ignores the d current.
     #[cfg_attr(
-        all(
-            feature = "compact-foc",
-            target_arch = "arm",
-            target_os = "none",
-            not(feature = "ram-foc")
-        ),
+        all(feature = "compact-foc", target_arch = "arm", target_os = "none",),
         unsafe(link_section = ".text.foc_grant")
     )]
     pub(super) fn grant_torque(

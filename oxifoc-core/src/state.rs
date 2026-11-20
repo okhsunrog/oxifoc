@@ -715,9 +715,8 @@ impl Default for MotorControlState {
 /// Optional attributes apply only to STATE, for platform-specific memory placement.
 #[macro_export]
 macro_rules! define_platform_state {
-    ($fault_type:ty $(, #[$state_attr:meta])*) => {
+    ($fault_type:ty) => {
         /// Global motor state
-        $(#[$state_attr])*
         pub static STATE: ::critical_section::Mutex<
             ::core::cell::RefCell<$crate::state::MotorControlState>,
         > = ::critical_section::Mutex::new(::core::cell::RefCell::new(
@@ -1310,16 +1309,7 @@ where
 // `from_hall_kind` — no per-category value parameters.
 #[cfg_attr(feature = "isr-speed", optimize(speed))]
 #[cfg_attr(
-    all(feature = "ram-foc", target_arch = "arm", target_os = "none"),
-    unsafe(link_section = ".data.ram_foc")
-)]
-#[cfg_attr(
-    all(
-        feature = "compact-foc",
-        target_arch = "arm",
-        target_os = "none",
-        not(feature = "ram-foc")
-    ),
+    all(feature = "compact-foc", target_arch = "arm", target_os = "none",),
     unsafe(link_section = ".text.foc_cycle")
 )]
 pub fn run_foc_cycle<P, C, Ph, S, F>(

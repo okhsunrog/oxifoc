@@ -96,8 +96,6 @@ detection = ["algorithms", "dep:embassy-futures"]
 # machine-outlines the ISR into cross-calls and adds struct-return copies.
 # See tier-3 PC sampling, 2026-07-07. Device crates enable this feature.
 isr-speed = []
-# Embedded-only SRAM placement; cortex-m-rt copies .data.ram_foc at startup.
-ram-foc = []
 
 # Opt-in observer text logging from the control ISR. Can exceed its deadline;
 # production images should consume telemetry instead.

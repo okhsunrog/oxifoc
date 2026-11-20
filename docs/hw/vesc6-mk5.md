@@ -177,18 +177,11 @@ fast telemetry queue in `.ccm_bss` (NOLOAD). Startup clears the queue before
 use. The queue does not add a 48 KiB payload to the flash image, and the
 SPI DMA buffers stay in ordinary SRAM.
 
-The separate experimental feature `ccm` moves `STATE` and `FOC_DRIVER` to
-CPU-only CCM; code, DMA buffers and stack stay in their usual regions.
-An assembly `__pre_init` enables CCM and copies its initialized FLASH image.
-The linker section precedes `.data` so cortex-m-rt's `__edata` remains in
-SRAM; a linker assertion guards that startup boundary.
-
-`just flash-mk5-profile sram` / `ccm` select otherwise matching finite-trace
-builds. Three native 20-kHz L captures per placement were complete. In those
-roughly 36-ms windows, ADC ISR median was 32.198 us in SRAM versus 31.960 us
-in CCM (less than 1%); these are instrumented observations, not worst-case
-timing guarantees. CCM remains off in the normal MK5 recipes. Exact ELFs,
-traces and captures: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-ccm-2026-11-09/`.
+An assembly `__pre_init` enables CCM, copies `.ccm_data` from flash and
+clears `.ccm_bss` before Rust code runs. The linker section precedes `.data`
+so cortex-m-rt's `__edata` remains in SRAM; a linker assertion guards that
+startup boundary. `STATE`, `FOC_DRIVER`, code, DMA buffers and the stack stay
+in their usual regions.
 
 ## Analog scaling
 

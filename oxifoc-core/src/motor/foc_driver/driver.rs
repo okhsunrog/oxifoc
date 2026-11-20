@@ -177,16 +177,7 @@ where
     #[allow(clippy::too_many_arguments)] // per-cycle scalars, same as the step fns
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     #[cfg_attr(
-        all(feature = "ram-foc", target_arch = "arm", target_os = "none"),
-        unsafe(link_section = ".data.ram_foc")
-    )]
-    #[cfg_attr(
-        all(
-            feature = "compact-foc",
-            target_arch = "arm",
-            target_os = "none",
-            not(feature = "ram-foc")
-        ),
+        all(feature = "compact-foc", target_arch = "arm", target_os = "none",),
         unsafe(link_section = ".text.foc_phase")
     )]
     pub(super) fn update_phase_with_applied_voltage(

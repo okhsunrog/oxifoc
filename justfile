@@ -62,16 +62,15 @@ flash-mk5-spi: build-mk5-spi
     probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
 
 # No motor outputs at any experimental clock; normal flash-mk5-spi restores stock.
-build-mk5-overclock mhz="168" load="stress" memory="flash":
+build-mk5-overclock mhz="168" load="stress":
     #!/usr/bin/env bash
     set -euo pipefail
     test {{quote(load)}} = stress -o {{quote(load)}} = light
-    case {{quote(memory)}} in flash) placement="";; ccm) placement=",ccm";; sram) placement=",ram-foc";; sram-ccm) placement=",ram-foc,ccm";; *) exit 2;; esac
     config=$(uv run --no-project python -B scripts/bench_prepare_embassy.py)
     cd oxifoc-f405
-    OXIFOC_BENCH_CPU_MHZ={{quote(mhz)}} DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo -Z lockfile-path --config "$config" build --offline --release --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + if load == "light" { ",bench-overclock-light" } else { ",bench-overclock" })}}"$placement" --bin oxifoc-f405
+    OXIFOC_BENCH_CPU_MHZ={{quote(mhz)}} DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo -Z lockfile-path --config "$config" build --offline --release --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + if load == "light" { ",bench-overclock-light" } else { ",bench-overclock" })}} --bin oxifoc-f405
 
-flash-mk5-overclock mhz="168" load="stress" memory="flash": (build-mk5-overclock mhz load memory)
+flash-mk5-overclock mhz="168" load="stress": (build-mk5-overclock mhz load)
     probe-rs download --verify --connect-under-reset --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
 
@@ -85,17 +84,6 @@ bench-mk5-overclock-step output mhz recovery seconds="20":
 # Virtual current control only: phase outputs stay inhibited in every image.
 bench-mk5-overclock-current output recovery seconds="10":
     uv run --no-project python -B scripts/bench_overclock.py {{quote(output)}} --steps 168 204 216 240 --load light --current-maneuver maneuvers/mk5-hall-hold-check.json --recovery-elf {{quote(recovery)}} --seconds {{seconds}}
-
-# Four placements at an identical clock/load, two inhibited current runs each.
-bench-mk5-memory output recovery mhz="168":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for memory in flash ccm sram sram-ccm; do
-        uv run --no-project python -B scripts/bench_overclock.py {{quote(output)}}/"$memory" --steps {{mhz}} --load light --memory "$memory" --current-maneuver maneuvers/mk5-hall-hold-check.json --recovery-elf {{quote(recovery)}} --seconds 10
-    done
-
-bench-mk5-memory-step output recovery mhz memory:
-    uv run --no-project python -B scripts/bench_overclock.py {{quote(output)}} --steps {{mhz}} --load light --memory {{quote(memory)}} --current-maneuver maneuvers/mk5-hall-hold-check.json --recovery-elf {{quote(recovery)}} --seconds 10
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -238,14 +226,13 @@ flash-mk5-usb-metrics: build-mk5-usb-metrics
     probe-rs reset --chip STM32F405RGTx
 
 # Hall bring-up logging at 50 Hz, correlated with the 20-kHz raw ADC stream.
-build-mk5-hall profiling="off" memory="sram" transport="usb":
+build-mk5-hall profiling="off" transport="usb":
     @test {{ quote(profiling) }} = off -o {{ quote(profiling) }} = on -o {{ quote(profiling) }} = timing
-    @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm
     @test {{ quote(transport) }} = usb -o {{ quote(transport) }} = rtt
     cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else if profiling == "timing" { ",isr-timing" } else { "" }) + (if memory == "ccm" { ",ccm" } else { "" }) + (if transport == "rtt" { ",transport-rtt" } else { "" })) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else if profiling == "timing" { ",isr-timing" } else { "" }) + (if transport == "rtt" { ",transport-rtt" } else { "" })) }}
 
-flash-mk5-hall profiling="off" memory="sram" transport="usb": (build-mk5-hall profiling memory transport)
+flash-mk5-hall profiling="off" transport="usb": (build-mk5-hall profiling transport)
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
 
@@ -303,12 +290,11 @@ profile-mk5 output seconds="8":
         > {{ quote(output) }} 2>&1
 
 # Same trace instrumentation for both placements; independent of motor PWM.
-build-mk5-profile memory="sram":
-    @test {{ quote(memory) }} = sram -o {{ quote(memory) }} = ccm
+build-mk5-profile:
     cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_profile_features + if memory == "ccm" { ",ccm" } else { "" }) }}
+        --features {{ quote(mk5_profile_features) }}
 
-flash-mk5-profile memory="sram": (build-mk5-profile memory)
+flash-mk5-profile: build-mk5-profile
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
 

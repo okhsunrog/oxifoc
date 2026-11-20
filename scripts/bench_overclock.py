@@ -72,7 +72,7 @@ def validate_capture(meta):
     assert raw["records_received"] == raw["records_delivered"] == raw["end_total_records"] == meta["rows"]
 
 
-def placement(image, memory, folder):
+def placement(image, folder):
     symbols = run(["rust-nm", "--print-size", "--demangle", str(image)]).stdout
     (folder / "symbols.txt").write_text(symbols)
     result = {}
@@ -86,11 +86,9 @@ def placement(image, memory, folder):
     assert len(result) == 4, "missing placement symbols"
     for name, symbol in result.items():
         if name == "ADC" or "run_foc_cycle::<" in name:
-            origin = 0x20000000 if memory.startswith("sram") else 0x08000000
-            length = 128 * 1024 if memory.startswith("sram") else 768 * 1024
+            origin, length = 0x08000000, 768 * 1024
         else:
-            origin = 0x10000000 if "ccm" in memory else 0x20000000
-            length = 64 * 1024 if "ccm" in memory else 128 * 1024
+            origin, length = 0x20000000, 128 * 1024
         assert origin <= symbol["address"] < origin + length, f"unexpected placement: {name}"
     return result
 
@@ -103,7 +101,6 @@ def main():
     parser.add_argument("--recovery-elf", type=Path, help="reuse the known normal recovery ELF from an earlier sweep")
     parser.add_argument("--load", choices=["stress", "light"], default="stress")
     parser.add_argument("--current-maneuver", type=Path, help="run two inhibited-output current maneuvers after recording")
-    parser.add_argument("--memory", choices=["flash", "ccm", "sram", "sram-ccm"], default="flash")
     args = parser.parse_args()
     assert 10 <= args.seconds <= 60
     assert args.steps == sorted(set(args.steps)) and all(x in [168, 180, 192, 204, 216, 228, 240, 252, 260] for x in args.steps)
@@ -111,7 +108,7 @@ def main():
     stock = (args.output / "recovery.elf").resolve()
     shutil.copyfile(args.recovery_elf or ELF, stock)  # normal recipe builds stock first
     (args.output / "source.patch").write_text(run(["git", "diff", "HEAD"]).stdout)
-    summary = dict(recovery_sha256=hashlib.sha256(stock.read_bytes()).hexdigest(), load=args.load, memory=args.memory, stages=[])
+    summary = dict(recovery_sha256=hashlib.sha256(stock.read_bytes()).hexdigest(), load=args.load, stages=[])
     logger = None
     try:
         clocks()  # Verify probe access/command syntax before any flash mutation.
@@ -121,12 +118,12 @@ def main():
             folder = args.output / str(mhz)
             folder.mkdir()
             with (folder / "flash.log").open("w") as log:
-                subprocess.run(["just", "flash-mk5-overclock", str(mhz), args.load, args.memory], stdout=log,
+                subprocess.run(["just", "flash-mk5-overclock", str(mhz), args.load], stdout=log,
                                stderr=subprocess.STDOUT, timeout=600, check=True)
             image = (folder / "firmware.elf").resolve()
             shutil.copyfile(ELF, image)
             stage["elf_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
-            stage["placement"] = placement(image, args.memory, folder)
+            stage["placement"] = placement(image, folder)
             stage["clocks"] = clocks()
             info = json.loads(run(["just", "cli-bridge", "info"]).stdout)
             assert info["uuid"] == "2B002C001047343031363330" and "+outputs-inhibited" in info["sw"]

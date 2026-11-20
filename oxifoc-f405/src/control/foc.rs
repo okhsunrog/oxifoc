@@ -241,7 +241,6 @@ fn publish_velocity_debug(
     }
     velocity_debug::push(frame);
 }
-#[cfg_attr(feature = "ccm", unsafe(link_section = ".ccm.bss"))]
 static FOC_DRIVER: static_cell::StaticCell<FocDriverType> = static_cell::StaticCell::new();
 static FOC_HANDOFF: CriticalSectionMutex<RefCell<Option<&'static mut FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
@@ -573,7 +572,6 @@ fn isr_timing_now() -> u32 {
 /// Triggered by ADC3 JEOC (end of injected conversion sequence).
 /// ADC1, ADC2, ADC3 all start conversion simultaneously on TIM1_CC4.
 #[interrupt]
-#[cfg_attr(feature = "ram-foc", unsafe(link_section = ".data.ram_foc"))]
 fn ADC() {
     static mut ADCS: Option<AdcHandles> = None;
     static mut DRIVER: Option<&'static mut FocDriverType> = None;

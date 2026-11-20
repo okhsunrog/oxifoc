@@ -36,9 +36,7 @@ fn main() {
 
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rerun-if-changed=foc-hot.x");
-    if std::env::var_os("CARGO_FEATURE_BOARD_VESC6_MK5").is_some()
-        && std::env::var_os("CARGO_FEATURE_RAM_FOC").is_none()
-    {
+    if std::env::var_os("CARGO_FEATURE_BOARD_VESC6_MK5").is_some() {
         std::fs::copy(
             "foc-hot.x",
             std::path::Path::new(&out_dir).join("foc-hot.x"),
@@ -47,9 +45,7 @@ fn main() {
         println!("cargo:rustc-link-arg-bin=oxifoc-f405=-Tfoc-hot.x");
     }
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
-    if std::env::var_os("CARGO_FEATURE_CCM").is_some()
-        || std::env::var_os("CARGO_FEATURE_CCM_TELEMETRY").is_some()
-    {
+    if std::env::var_os("CARGO_FEATURE_CCM_TELEMETRY").is_some() {
         std::fs::copy("ccm.x", std::path::Path::new(&out_dir).join("ccm.x")).unwrap();
         println!("cargo:rustc-link-arg-bins=-Tccm.x");
     }

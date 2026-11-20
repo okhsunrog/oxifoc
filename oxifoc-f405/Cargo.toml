@@ -45,12 +45,8 @@ bench-bridge-pins = []
 bench-bridge-pins-rx = ["bench-bridge-pins"]
 bench-bridge-spi = []
 bench-spi-cs-request = ["bench-bridge-spi"]
-# CPU-only FOC state in 64-KiB CCM. DMA buffers and the stack remain in SRAM.
-ccm = []
 # 48-KiB CPU-owned telemetry queue in zero-initialized CCM.
 ccm-telemetry = ["fast-telemetry", "oxifoc-core/ccm-telemetry"]
-# A/B placement of the ADC handler and major FOC callees in initialized SRAM.
-ram-foc = ["oxifoc-core/ram-foc"]
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
 transport-usb = ["dep:embassy-usb", "ergot/embassy-usb-v0_6-preview", "ergot/nostd-seed-router"]
 transport-spi = ["oxifoc-core/spi-link"]
