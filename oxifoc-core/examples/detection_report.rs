@@ -225,7 +225,7 @@ fn det_params(def: &MotorDef) -> DetectionParams {
         max_power_loss: def.motor_size.max_power_loss(),
         pwm_freq: hertz(20_000.0),
         vbus: volts(def.vbus),
-        openloop_speed: erpm(def.openloop_erpm),
+        openloop_speed: Some(erpm(def.openloop_erpm)),
     }
 }
 
@@ -386,7 +386,7 @@ fn main() {
                         resistance: r_val,
                         hold_current: amps(hold),
                         hfi_frequency: hertz(freq),
-                        vbus: volts(def.vbus),
+                        vbus: Some(volts(def.vbus)),
                         ..Default::default()
                     };
                     block_on(measure_inductance::<
@@ -428,10 +428,10 @@ fn main() {
         let flux_params = FluxLinkageParams {
             motor_size: def.motor_size,
             resistance: p.r,
-            inductance: (p.ld + p.lq) / 2.0,
+            inductance: Some((p.ld + p.lq) / 2.0),
             pole_pairs: p.pole_pairs,
             spin_speed: erpm(def.openloop_erpm).to_mechanical(p.pole_pairs),
-            v_target: volts(0.2 * def.vbus),
+            v_target: Some(volts(0.2 * def.vbus)),
             ..Default::default()
         };
 

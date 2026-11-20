@@ -276,9 +276,9 @@ pub struct DetectionParams {
     /// DC bus voltage — used for voltage pulse fallback
     pub vbus: ElectricPotential,
     /// Open-loop electrical speed for flux linkage spin-up, divided by the
-    /// pole pairs into the mechanical spin cap. Zero uses the motor_size
+    /// pole pairs into the mechanical spin cap. `None` uses the motor_size
     /// default.
-    pub openloop_speed: ElectricalAngularVelocity,
+    pub openloop_speed: Option<ElectricalAngularVelocity>,
 }
 
 impl Default for DetectionParams {
@@ -290,7 +290,7 @@ impl Default for DetectionParams {
             max_power_loss: watts(120.0),
             pwm_freq: hertz(20000.0),
             vbus: volts(24.0),
-            openloop_speed: ElectricalAngularVelocity::ZERO,
+            openloop_speed: None,
         }
     }
 }
@@ -968,8 +968,9 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
         || params.hold_current >= params.max_current
         || params.hfi_frequency >= pwm_freq * 0.5
         || params.num_cycles == 0
-        || !params.vbus.is_finite()
-        || params.vbus.is_negative()
+        || params
+            .vbus
+            .is_some_and(|vbus| !vbus.is_finite() || !vbus.is_positive())
     {
         return Err(DetectionError::OutOfRange);
     }
@@ -1003,11 +1004,9 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // Voltage headroom above the holding voltage (when vbus is known):
     // commanding beyond this saturates against the bus mid-carrier and
     // distorts the injection waveform.
-    let headroom = if params.vbus.is_positive() {
-        ((params.vbus * 0.577 - voltage.magnitude()) * 0.9).max(ElectricPotential::ZERO)
-    } else {
-        ElectricPotential::INFINITY
-    };
+    let headroom = params.vbus.map_or(ElectricPotential::INFINITY, |vbus| {
+        ((vbus * 0.577 - voltage.magnitude()) * 0.9).max(ElectricPotential::ZERO)
+    });
 
     // ── Current-budgeted injection ──────────────────────────────────────
     // A fixed amplitude gives a ripple V/(ω·L) spanning two orders of magnitude
@@ -1039,7 +1038,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // lag it yields the latency-immune |Z| magnitude estimate of L
     // (pairing rotations preserve the response norm) that guards the
     // phase-sensitive demod below — an override must not silently disable
-    // that safety net. `pipeline_lag ≥ 1` overrides the lag value only.
+    // that safety net. A set `pipeline_lag` overrides the lag value only.
     let (probed_lag, _) = probe_hfi_pipeline_lag::<H, T, S>(
         hw,
         &mut injector,
@@ -1051,11 +1050,9 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     )
     .await?;
     injector.reset();
-    let mut lag = if params.pipeline_lag >= 1 {
-        params.pipeline_lag as u32
-    } else {
-        probed_lag
-    };
+    let mut lag = params
+        .pipeline_lag
+        .map_or(probed_lag, |lag| u32::from(lag.get()));
 
     // Grow only by a bounded factor from the current-limited first probe.
     // A noise-dominated impedance estimate must not size the next packet.
@@ -1088,7 +1085,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
             Some(params.max_current),
         )
         .await?;
-        if params.pipeline_lag < 1 {
+        if params.pipeline_lag.is_none() {
             lag = refined_lag;
         }
         l_probe = refined_l;
@@ -1689,11 +1686,9 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
     let voltage = settled_hold_voltage::<H, T>(hw, params.resistance, params.hold_current).await?;
 
     // Voltage headroom above the hold (so the injection never saturates the bus).
-    let headroom = if params.vbus.is_positive() {
-        ((params.vbus * 0.577 - voltage.magnitude()) * 0.9).max(volts(0.1))
-    } else {
-        ElectricPotential::INFINITY
-    };
+    let headroom = params.vbus.map_or(ElectricPotential::INFINITY, |vbus| {
+        ((vbus * 0.577 - voltage.magnitude()) * 0.9).max(volts(0.1))
+    });
 
     // Probe the command→apply pipeline lag (and a seed |Z|→L) once at the
     // default carrier. The lag is the FOC-cycle pipeline depth — frequency
@@ -1820,11 +1815,10 @@ pub async fn measure_inductance_auto<H: DetectionHardware, T: Timer, S: SinCos>(
         return Err(DetectionError::OutOfRange);
     }
     let v_hold = params.resistance * lock_current;
-    let pulse_ceiling = if params.vbus.is_positive() {
-        (params.vbus * 0.577 - v_hold).max(volts(0.5))
-    } else {
+    let pulse_ceiling = match params.vbus {
+        Some(vbus) => (vbus * 0.577 - v_hold).max(volts(0.5)),
         // Bus voltage unknown — keep the conservative default step.
-        VoltagePulseParams::default().pulse_voltage
+        None => VoltagePulseParams::default().pulse_voltage,
     };
     let pulse_params = VoltagePulseParams {
         hold_current: lock_current,
@@ -1963,7 +1957,10 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
 
         // Back-EMF rise above the resistive baseline reached the target —
         // fast enough for the flux formulas.
-        if params.v_target.is_positive() && v_filt - v_baseline >= params.v_target {
+        if params
+            .v_target
+            .is_some_and(|target| v_filt - v_baseline >= target)
+        {
             break;
         }
     }
@@ -2103,8 +2100,12 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
         return Err(DetectionError::MissingPrerequisite);
     }
 
-    let mut measurement =
-        MagnitudeFluxMeasurement::new(params.resistance, params.inductance, params.num_samples);
+    // An unknown inductance drops the small `ωL·i` trim (see the field).
+    let mut measurement = MagnitudeFluxMeasurement::new(
+        params.resistance,
+        params.inductance.unwrap_or(Inductance::ZERO),
+        params.num_samples,
+    );
 
     let omega_e = spin_up_open_loop::<H, T>(hw, params).await?;
     settle_open_loop::<H, T>(hw, params, omega_e).await?;
@@ -2363,11 +2364,10 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     // Step 3: Measure flux linkage — try spin-down (R-independent) first,
     // fall back to driven method if the motor decelerates too quickly.
     // openloop_speed sets the spin speed, falling back to the motor_size default
-    let openloop_speed = if params.openloop_speed.is_positive() {
-        params.openloop_speed
-    } else {
-        params.motor_size.suggested_open_loop_speed()
-    };
+    let openloop_speed = params
+        .openloop_speed
+        .filter(Sign::is_positive)
+        .unwrap_or_else(|| params.motor_size.suggested_open_loop_speed());
     let flux_currents = DetectionCurrents::new(
         params.max_power_loss,
         result.params.resistance,
@@ -2380,10 +2380,10 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
         pole_pairs: params.pole_pairs,
         spin_speed: openloop_speed.to_mechanical(params.pole_pairs),
         current: flux_currents.flux,
-        inductance: result.params.inductance_avg,
+        inductance: Some(result.params.inductance_avg),
         // Ramp until the phase voltage reaches ~20% of vbus (VESC spins its
         // flux wizard to duty 0.3 ≈ the same), so back-EMF dominates R·I.
-        v_target: 0.2 * params.vbus,
+        v_target: Some(0.2 * params.vbus),
         ..Default::default()
     };
     info!("Step 3/4: Flux linkage measurement");

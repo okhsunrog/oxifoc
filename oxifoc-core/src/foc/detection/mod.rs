@@ -380,7 +380,7 @@ mod integration_tests {
             max_power_loss: watts(50.0),
             pwm_freq: hertz(20_000.0),
             vbus: volts(24.0),
-            openloop_speed: erpm(1400.0),
+            openloop_speed: Some(erpm(1400.0)),
         };
 
         let result = run_detection(motor_params, 24.0, det_params)
@@ -431,7 +431,7 @@ mod integration_tests {
             max_power_loss: watts(50.0),
             pwm_freq: hertz(20_000.0),
             vbus: volts(24.0),
-            openloop_speed: erpm(1400.0),
+            openloop_speed: Some(erpm(1400.0)),
         };
         let params = || DetectionParams { ..det_params };
         let libm =
@@ -509,7 +509,7 @@ mod integration_tests {
             max_power_loss: watts(20.0),
             pwm_freq: hertz(20_000.0),
             vbus: volts(12.0),
-            openloop_speed: erpm(1400.0),
+            openloop_speed: Some(erpm(1400.0)),
         };
 
         let result = run_detection(motor_params, 12.0, det_params)
@@ -572,7 +572,7 @@ mod integration_tests {
             max_power_loss: MotorSize::Medium.max_power_loss(),
             pwm_freq: hertz(20_000.0),
             vbus: volts(VBUS),
-            openloop_speed: erpm(700.0),
+            openloop_speed: Some(erpm(700.0)),
         };
 
         let result = run_detection(motor_params, VBUS, det_params)
@@ -635,7 +635,7 @@ mod integration_tests {
             max_power_loss: MotorSize::Medium.max_power_loss(),
             pwm_freq: hertz(20_000.0),
             vbus: volts(VBUS),
-            openloop_speed: erpm(700.0),
+            openloop_speed: Some(erpm(700.0)),
         };
 
         let result = run_detection(motor_params, VBUS, det_params)
@@ -839,6 +839,8 @@ mod integration_tests {
     #[test]
     #[cfg(feature = "hfi-detect")]
     fn hfi_mispairing_caught_by_magnitude_cross_check() {
+        use core::num::NonZeroU8;
+
         use super::sweep::measure_inductance;
         use super::virtual_harness::{VirtualHardware, VirtualTimer, block_on, with_sim};
         use crate::foc::trig::LibmSinCos;
@@ -856,13 +858,13 @@ mod integration_tests {
             actuation_delay: 1.0, // harness depth becomes 2 cycles
             ..MotorParams::default()
         };
-        let run = |pipeline_lag: i8| {
+        let run = |pipeline_lag: Option<NonZeroU8>| {
             with_sim(plant, VBUS, |hw| {
                 let ip = InductanceParams {
                     resistance: plant.r,
                     hold_current: amps(8.0),
                     max_current: amps(12.0),
-                    vbus: volts(VBUS),
+                    vbus: Some(volts(VBUS)),
                     pipeline_lag,
                     ..Default::default()
                 };
@@ -874,13 +876,13 @@ mod integration_tests {
             })
         };
 
-        let auto = run(-1).expect("auto-probed lag must measure accurately");
+        let auto = run(None).expect("auto-probed lag must measure accurately");
         let l_err = ((auto.0 + auto.1) / 2.0 - plant.ld)
             .abs()
             .ratio_to(plant.ld);
         assert!(l_err < 0.10, "auto-lag L error {:.1}%", l_err * 100.0);
 
-        let forced_wrong = run(1);
+        let forced_wrong = run(NonZeroU8::new(1));
         assert!(
             forced_wrong.is_err(),
             "a mispaired demod must not return a plausible-looking L: {forced_wrong:?}"

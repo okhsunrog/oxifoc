@@ -3,6 +3,8 @@
 //! Provides motor size classification, detected parameter storage,
 //! and error types used across all detection algorithms.
 
+use core::num::NonZeroU8;
+
 #[cfg(feature = "detection")]
 use crate::foc::detection::flux_linkage;
 use crate::foc::fast_math::sqrtf;
@@ -309,21 +311,21 @@ pub struct InductanceParams {
     /// limit its first probe before inductance is known.
     pub resistance: ElectricalResistance,
 
-    /// DC bus voltage, zero = unknown.
+    /// DC bus voltage, `None` = unknown.
     ///
     /// When known, the injection amplitude is clamped to the voltage
     /// headroom left above the holding voltage (`vbus·0.577 − R·I_hold`),
     /// so the commanded vector never saturates against the bus mid-window.
-    pub vbus: ElectricPotential,
+    pub vbus: Option<ElectricPotential>,
 
-    /// Command→apply pipeline depth in FOC cycles. `< 0` (default) =
+    /// Command→apply pipeline depth in FOC cycles. `None` (default) =
     /// measure it in place with a correlation probe before the HFI run
-    /// (see `probe_hfi_pipeline_lag`); `≥ 1` = use this value (tests,
+    /// (see `probe_hfi_pipeline_lag`); `Some` = use this value (tests,
     /// platforms with a known pipeline). One mispaired cycle rotates the
     /// demod carrier reference by `ω_c·T_pwm` — 90° at the default
     /// 5 kHz/20 kHz — which corrupts the inductance estimate entirely,
     /// so this must match the real latency, not be guessed.
-    pub pipeline_lag: i8,
+    pub pipeline_lag: Option<NonZeroU8>,
 }
 
 impl Default for InductanceParams {
@@ -338,8 +340,8 @@ impl Default for InductanceParams {
             num_cycles: 100,
             settle_time_ms: 200,
             resistance: ElectricalResistance::ZERO,
-            vbus: ElectricPotential::ZERO,
-            pipeline_lag: -1,
+            vbus: None,
+            pipeline_lag: None,
         }
     }
 }
@@ -362,7 +364,7 @@ impl InductanceParams {
         Ok(Self {
             motor_size,
             resistance,
-            vbus,
+            vbus: Some(vbus),
             hold_current,
             hfi_current,
             max_current: currents.inductance_peak,
@@ -382,13 +384,13 @@ pub struct FluxLinkageParams {
     /// ignored by spin-down method.
     pub resistance: ElectricalResistance,
 
-    /// Previously measured average inductance, zero = unknown.
+    /// Previously measured average inductance, `None` = unknown.
     ///
     /// Used by the driven back-EMF-vector method for the `ωL·i` reactance
-    /// term. With zero the method still works (load-angle invariance does
+    /// term. Without it the method still works (load-angle invariance does
     /// not depend on it); the term only trims a small residual that grows
     /// with `L·I/λ`. Ignored by the q-axis and spin-down methods.
-    pub inductance: Inductance,
+    pub inductance: Option<Inductance>,
 
     /// Maximum mechanical speed for the spin-up ramp. With a positive
     /// `v_target` the ramp usually stops earlier (see below); this is the
@@ -398,7 +400,8 @@ pub struct FluxLinkageParams {
     /// Open-loop current during spin-up
     pub current: ElectricCurrent,
 
-    /// Voltage-magnitude target for the spin-up ramp, zero = disabled.
+    /// Voltage-magnitude target for the spin-up ramp; `None` ramps to
+    /// `spin_speed`.
     ///
     /// The driven flux methods degrade when the resistive drop R·I is
     /// comparable to the back-EMF ω·λ, so instead of spinning to a fixed
@@ -406,7 +409,7 @@ pub struct FluxLinkageParams {
     /// idea as VESC ramping its open loop to duty 0.3 (≈ 0.2·vbus of
     /// phase voltage, conf_general.c) rather than to a speed. Callers
     /// that know vbus should set ≈ `0.2 × vbus`.
-    pub v_target: ElectricPotential,
+    pub v_target: Option<ElectricPotential>,
 
     /// Time to ramp up to target RPM (milliseconds)
     pub ramp_time_ms: u32,
@@ -431,12 +434,12 @@ impl Default for FluxLinkageParams {
         Self {
             motor_size: MotorSize::Medium,
             resistance: ElectricalResistance::ZERO,
-            inductance: Inductance::ZERO,
+            inductance: None,
             // Generous cap: with v_target set, the voltage target normally
             // ends the ramp well before this speed is reached.
             spin_speed: rpm(1500.0),
             current: amps(2.0),
-            v_target: ElectricPotential::ZERO,
+            v_target: None,
             ramp_time_ms: 2000,
             // In open-loop drive the rotor hunts around the synchronous
             // point with a decay time of ~2J/b — seconds for high-inertia

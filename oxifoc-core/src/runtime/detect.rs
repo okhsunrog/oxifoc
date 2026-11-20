@@ -439,13 +439,13 @@ async fn measure_step<B: DetectionBackend>(
             let params = FluxLinkageParams {
                 motor_size: MotorSize::Custom(max_power_loss),
                 resistance,
-                inductance,
+                inductance: Some(inductance),
                 pole_pairs,
                 spin_speed: openloop_speed.to_mechanical(pole_pairs),
                 current: currents.flux,
                 // Ramp until back-EMF dominates R·I (VESC's duty-0.3 idea);
                 // spin_speed above remains the hard speed cap.
-                v_target: 0.2 * backend.vbus(),
+                v_target: Some(0.2 * backend.vbus()),
                 ..Default::default()
             };
             match backend.measure_flux(&params).await {
