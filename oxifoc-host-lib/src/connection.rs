@@ -118,6 +118,11 @@ where
     // Protocol tasks are spawned once — they operate on the stack, not the
     // per-connection interface.
     let commands = spawn_protocol_tasks(&stack, ctx);
+    let keepalive = tokio::spawn(bridge_keepalive(
+        stack.clone(),
+        connected.clone(),
+        cancel.clone(),
+    ));
 
     let mut defmt_started = false;
     let policy = cfg.reconnect_policy();
@@ -125,9 +130,11 @@ where
     let mut expected_device_uuid: Option<String> = None;
     let mut verified_peer = None;
     // True to verify the controller again on the current link instead of
-    // reopening it, after the link recovered.
+    // reopening it: after the link recovered, or while a bridge waits for its
+    // controller.
     let mut reuse_link = false;
     let mut defmt_reader: DefmtReader = None;
+    let mut waiting_for_controller = false;
 
     loop {
         if !reuse_link {
@@ -202,6 +209,31 @@ where
                 );
                 (addr, 10)
             }
+            AddrResolution::NoAnswer if bridge_reachable(&stack).await => {
+                // A bridge without a (booted) controller. Keep the link: the
+                // bridge serves pairing on its own. Look again later.
+                if !waiting_for_controller {
+                    info!("Bridge reachable, no motor controller behind it yet; keeping the link");
+                    waiting_for_controller = true;
+                }
+                match stay_on_link(&state_notify, &stack, &cancel, RECONNECT_DELAY).await {
+                    None => break,
+                    Some(true) => {
+                        reuse_link = true;
+                        continue;
+                    }
+                    Some(false) => {
+                        stack
+                            .stack()
+                            .manage_profile(ergot::prelude::DirectEdge::teardown);
+                        tokio::task::yield_now().await;
+                        if !may_retry(policy, &mut connect_attempts) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
             AddrResolution::NoAnswer => {
                 // A direct legacy peer can still answer this probe. Through a
                 // bridge it is the router, not the controller; do not spend the
@@ -219,6 +251,7 @@ where
                 break;
             }
         };
+        waiting_for_controller = false;
         device_addr.store(pack_addr(resolved), Ordering::Relaxed);
 
         // HardwareInfo handshake on each (re)connection
@@ -241,6 +274,12 @@ where
             HandshakeOutcome::FatalMismatch => {
                 tracing::error!("Fatal handshake mismatch — refusing to reconnect");
                 connected.store(false, Ordering::Relaxed);
+                if bridge_reachable(&stack).await {
+                    // Controller commands stay refused, but the bridge's own
+                    // services (pairing) remain usable until the link drops.
+                    tracing::warn!("Keeping the bridge link for bridge services");
+                    hold_link(&state_notify, &stack, &cancel).await;
+                }
                 stack
                     .stack()
                     .manage_profile(ergot::prelude::DirectEdge::teardown);
@@ -359,6 +398,7 @@ where
     // must not re-enable the stream after our stop was acknowledged.
     commands.abort();
     let _ = commands.await;
+    keepalive.abort();
 
     // Cancellation stops the command task too. Send directly while the
     // transport is still alive, rather than enqueueing a best-effort command
@@ -467,6 +507,90 @@ where
         tracing::warn!("Recovery failed or timed out, reconnecting transport...");
         LinkOutcome::Down
     }
+}
+
+/// Keep a bridge link alive while no controller is verified. The liveness
+/// watchdog counts received frames only, and with the controller absent
+/// nothing else answers us. A bridge answers the query; a directly attached
+/// controller ignores it, which costs one small frame per period.
+async fn bridge_keepalive<NS>(stack: NS, connected: Arc<AtomicBool>, cancel: CancellationToken)
+where
+    NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>> + Clone + Send + Sync + 'static,
+{
+    const PERIOD: Duration = Duration::from_millis(300);
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(PERIOD) => {}
+            _ = cancel.cancelled() => return,
+        }
+        let active = interface_is_active(stack.stack().manage_profile(|im| im.interface_state(())));
+        if active && !connected.load(Ordering::Relaxed) {
+            bridge_reachable(&stack).await;
+        }
+    }
+}
+
+/// True when a bridge on the link serves its own pairing endpoint.
+async fn bridge_reachable<NS>(stack: &NS) -> bool
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    use ergot::traits::Endpoint as _;
+    resolve_endpoint_addr(
+        stack,
+        oxifoc_core::icd::PairingEndpoint::REQ_KEY.to_bytes(),
+        RESOLVE_TIMEOUT,
+    )
+    .await
+    .is_some()
+}
+
+/// Wait `delay` on the current link. `Some(true)` if it is still Active,
+/// `Some(false)` if it dropped, `None` if cancelled.
+async fn stay_on_link<NS>(
+    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
+    stack: &NS,
+    cancel: &CancellationToken,
+    delay: Duration,
+) -> Option<bool>
+where
+    NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>>,
+{
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => {
+            Some(interface_is_active(stack.stack().manage_profile(|im| im.interface_state(()))))
+        }
+        _ = wait_for_inactive(state_notify, stack) => Some(false),
+        _ = cancel.cancelled() => None,
+    }
+}
+
+/// Keep the link until it stops being Active or the backend is cancelled.
+async fn hold_link<NS>(
+    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
+    stack: &NS,
+    cancel: &CancellationToken,
+) where
+    NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>>,
+{
+    tokio::select! {
+        _ = wait_for_inactive(state_notify, stack) => {}
+        _ = cancel.cancelled() => {}
+    }
+}
+
+async fn wait_for_inactive<NS>(
+    state_notify: &Arc<ergot::toolkits::tokio_stream::WaitQueue>,
+    stack: &NS,
+) where
+    NS: NetStackHandle<Profile: Profile<InterfaceIdent = ()>>,
+{
+    let _ = state_notify
+        .wait_for_value(|| {
+            let state = stack.stack().manage_profile(|im| im.interface_state(()));
+            (!interface_is_active(state)).then_some(())
+        })
+        .await;
 }
 
 /// Wait until the interface is Active.

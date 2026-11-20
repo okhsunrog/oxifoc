@@ -692,7 +692,12 @@ fn main() -> Result<()> {
     let runtime = start_host(cfg);
 
     let wait = Duration::from_secs(cli.wait_secs);
-    if cli.wait_secs > 0 && !runtime.wait_for_connection(wait) {
+    // The bridge serves pairing itself: wait for the bridge, not for the
+    // motor controller, which may be absent or on another protocol version.
+    let pairing = matches!(cli.command, Command::Pairing { .. });
+    if pairing && cli.wait_secs > 0 {
+        oxifoc_host_lib::ops::pairing::wait_for_bridge(&runtime.cmd_tx, wait)?;
+    } else if cli.wait_secs > 0 && !runtime.wait_for_connection(wait) {
         if let Some(raw) = &runtime.raw_telemetry {
             raw.check()?;
         }

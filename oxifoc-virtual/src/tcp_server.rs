@@ -63,7 +63,7 @@ const _: () = assert!(
 /// so the pool never exhausts. No downstream seed routes.
 const ROUTER_SLOTS: usize = 4;
 const ROUTER_SEEDS: usize = 0;
-type RouterStack = ArcNetStack<
+pub(crate) type RouterStack = ArcNetStack<
     CriticalSectionRawMutex,
     Router<TokioStreamInterface, StdRng, ROUTER_SLOTS, ROUTER_SEEDS>,
 >;
@@ -118,40 +118,49 @@ pub async fn run(
     // the heart of the fix: the HardwareInfo (and every other) endpoint exists
     // before any frame is ever delivered, so the host's first request can never
     // race endpoint registration.
-    tokio::spawn({
-        let endpoints = stack.endpoints();
-        async move {
-            // Box::pin: ~5 KB future; the 2 KB large_futures threshold is tuned
-            // for firmware, on the host we just heap it.
-            Box::pin(run_all_servers_with_config::<_, _, crate::TokioTimer>(
-                endpoints,
-                device_info,
-                state_mutex,
-                fault_registry,
-                runtime_config,
-                foc_freq_hz,
-                oxifoc_core::types::ControlTiming::from_hz(foc_freq_hz),
-                &crate::sim::board(max_current_a),
-                rand::random::<u64>(),
-                true,
-                None,
-            ))
-            .await;
-        }
-    });
-    tokio::spawn({
-        let endpoints = stack.endpoints();
-        async move {
-            Box::pin(detect_server(
-                endpoints,
-                vbus,
-                max_current_a,
-                foc_freq_hz,
-                motor_params,
-            ))
-            .await;
-        }
-    });
+    if crate::SIMULATE_PAIRING.load(std::sync::atomic::Ordering::Relaxed) {
+        tokio::spawn(crate::pairing::serve(stack.clone()));
+    }
+    let controller = !crate::NO_CONTROLLER.load(std::sync::atomic::Ordering::Relaxed);
+    if !controller {
+        warn!("--no-controller: serving no motor endpoints or telemetry");
+    }
+    if controller {
+        tokio::spawn({
+            let endpoints = stack.endpoints();
+            async move {
+                // Box::pin: ~5 KB future; the 2 KB large_futures threshold is tuned
+                // for firmware, on the host we just heap it.
+                Box::pin(run_all_servers_with_config::<_, _, crate::TokioTimer>(
+                    endpoints,
+                    device_info,
+                    state_mutex,
+                    fault_registry,
+                    runtime_config,
+                    foc_freq_hz,
+                    oxifoc_core::types::ControlTiming::from_hz(foc_freq_hz),
+                    &crate::sim::board(max_current_a),
+                    rand::random::<u64>(),
+                    true,
+                    None,
+                ))
+                .await;
+            }
+        });
+        tokio::spawn({
+            let endpoints = stack.endpoints();
+            async move {
+                Box::pin(detect_server(
+                    endpoints,
+                    vbus,
+                    max_current_a,
+                    foc_freq_hz,
+                    motor_params,
+                ))
+                .await;
+            }
+        });
+    }
     // Well-known socket-query handler: answers the host's connect-time
     // address resolution (same service the firmware runs).
     tokio::spawn({
@@ -249,6 +258,9 @@ pub async fn run(
             }
         });
 
+        if !controller {
+            continue;
+        }
         // Per-connection telemetry broadcasts (outbound; only while a client is
         // attached, so they don't spam NoRoute when idle). Slow telemetry is
         // poll-based, served by the persistent `slow_telemetry_server`.

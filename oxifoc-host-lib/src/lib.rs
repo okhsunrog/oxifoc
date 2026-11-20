@@ -989,6 +989,12 @@ where
                     _ = cancel.cancelled() => break,
                     cmd = cmd_rx.recv() => {
                         let Some(cmd) = cmd else { break };
+                        // The bridge serves and authorizes pairing itself, so
+                        // it needs only the link, not a verified controller.
+                        if let HostCommand::Pairing(req, reply) = cmd {
+                            let _ = reply.send(pairing_request(&stack, &req).await);
+                            continue;
+                        }
                         if !connected.load(Ordering::Relaxed) {
                             *active_setpoint.lock().unwrap() = None;
                             reject_unverified_command(cmd);
@@ -1196,6 +1202,35 @@ fn spawn_fault_topic_subscriber<NS>(
             }
         }
     });
+}
+
+/// One request to the bridge's pairing endpoint. Not retried: OpenWindow is
+/// not idempotent (a retry would report WindowBusy for the window it just
+/// opened).
+async fn pairing_request<NS>(
+    ns: &NS,
+    req: &oxifoc_core::types::pairing::PairingRequest,
+) -> Result<oxifoc_core::types::pairing::PairingResponse>
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    use ergot::traits::Endpoint as _;
+    let addr = connection::resolve_endpoint_addr(
+        ns,
+        oxifoc_core::icd::PairingEndpoint::REQ_KEY.to_bytes(),
+        Duration::from_millis(500),
+    )
+    .await
+    .ok_or(ops::pairing::NoBridge)?;
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        ns.stack()
+            .endpoints()
+            .request::<oxifoc_core::icd::PairingEndpoint>(addr, req, None),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("pairing request timed out"))?
+    .map_err(|e| anyhow::anyhow!("pairing request failed: {e:?}"))
 }
 
 /// Refuse every externally visible command until HardwareInfo has passed the
@@ -1599,29 +1634,7 @@ async fn handle_non_motor_command<NS>(
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
         HostCommand::Pairing(req, reply_tx) => {
-            // Not retried: OpenWindow is not idempotent (a retry would report
-            // WindowBusy for the window it just opened).
-            let result = async {
-                use ergot::traits::Endpoint as _;
-                let addr = connection::resolve_endpoint_addr(
-                    ns,
-                    oxifoc_core::icd::PairingEndpoint::REQ_KEY.to_bytes(),
-                    Duration::from_millis(500),
-                )
-                .await
-                .ok_or_else(|| anyhow::anyhow!("no bridge serves the pairing endpoint"))?;
-                tokio::time::timeout(
-                    Duration::from_secs(3),
-                    ns.stack()
-                        .endpoints()
-                        .request::<oxifoc_core::icd::PairingEndpoint>(addr, &req, None),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("pairing request timed out"))?
-                .map_err(|e| anyhow::anyhow!("pairing request failed: {e:?}"))
-            }
-            .await;
-            let _ = reply_tx.send(result);
+            let _ = reply_tx.send(pairing_request(ns, &req).await);
         }
         HostCommand::Fault(req, reply_tx) => {
             tracing::info!("Fault request: {:?}", req);

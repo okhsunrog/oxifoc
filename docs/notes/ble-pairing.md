@@ -11,7 +11,11 @@
 > accept list (an unbonded laptop cannot even connect outside a window).
 > Also verified: window timeout with and without a candidate, wrong passkey,
 > rejected Numeric Comparison, and an unbonded remote not taking a Host
-> window. Not yet: the stopped-controller check for opening a window, a
+> window. The host sends pairing requests without the controller handshake
+> and keeps a bridge link while no controller answers, so pairing also works
+> without the STM32. Verified on the bench with the STM32 halted: the USB
+> link held, bonds listed, and the host picked up the controller once it
+> ran again. Not yet: the stopped-controller check for opening a window, a
 > pairing button on the remote, GUI.
 
 The C5 bridge is the BLE peripheral and the trust anchor. The remote, phones

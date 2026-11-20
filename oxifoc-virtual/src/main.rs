@@ -1,4 +1,5 @@
 mod detect;
+mod pairing;
 mod sim;
 mod storage;
 mod tcp_server;
@@ -100,7 +101,21 @@ struct Args {
     /// Load torque in N·m (opposes rotation, creates steady-state speed)
     #[arg(long, default_value_t = 0.0)]
     load: f32,
+    /// Also serve a simulated bridge pairing service (TCP only), for GUI and
+    /// CLI tests without hardware. The simulated device's code is printed here.
+    #[arg(long)]
+    simulate_pairing: bool,
+    /// Serve only the simulated pairing service, like a bridge whose motor
+    /// controller is absent or not yet booted.
+    #[arg(long, requires = "simulate_pairing")]
+    no_controller: bool,
 }
+
+/// Set from `--simulate-pairing`.
+pub static SIMULATE_PAIRING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Set from `--no-controller`.
+pub static NO_CONTROLLER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn config_from_motor_params(params: MotorParams, max_current_a: f32) -> MotorParamsConfig {
     MotorParamsConfig {
@@ -128,6 +143,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+    SIMULATE_PAIRING.store(args.simulate_pairing, std::sync::atomic::Ordering::Relaxed);
+    NO_CONTROLLER.store(args.no_controller, std::sync::atomic::Ordering::Relaxed);
     tracing::info!(
         "oxifoc-virtual: {:?} port={}, foc={}Hz, batch={}, vbus={}V, pp={}, max_i={}A",
         args.transport,

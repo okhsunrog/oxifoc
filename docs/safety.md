@@ -65,7 +65,9 @@ only after exact protocol bootstrap/version checks and per-runtime UUID pinning.
 This prevents the reconnect window from sending queued control/config traffic
 to a different USB controller before the mismatch is discovered. A link that
 goes Inactive and comes back counts as a reconnect: the gate stays closed until
-the handshake has run again.
+the handshake has run again. Pairing requests are the one exception. The bridge
+serves them and decides itself who may send them (`docs/notes/ble-pairing.md`),
+so they need the link but not a verified controller.
 
 ### Layer 2 — ISR command-staleness deadman (implemented 2026-06-11)
 

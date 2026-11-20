@@ -8,6 +8,33 @@ use oxifoc_core::types::pairing::{
 
 use crate::{CommandSender, HostCommand};
 
+/// No node on the link serves the pairing endpoint (no bridge, or the link
+/// is not up yet). Nothing was sent, so the request may be retried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoBridge;
+
+impl std::fmt::Display for NoBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no bridge serves the pairing endpoint")
+    }
+}
+
+impl std::error::Error for NoBridge {}
+
+/// Wait until a bridge answers pairing requests, up to `wait`.
+pub fn wait_for_bridge(cmd: &CommandSender, wait: std::time::Duration) -> Result<()> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match request(cmd, PairingRequest::ListBonds) {
+            Ok(_) => return Ok(()),
+            Err(e) if e.is::<NoBridge>() && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Send one pairing request and return the bridge's answer. Bridge-reported
 /// errors are returned as `Err`.
 pub fn request(cmd: &CommandSender, request: PairingRequest) -> Result<PairingResponse> {
