@@ -38,6 +38,7 @@ use anyhow::{Context, Result, bail};
 use oxifoc_core::types::{
     ConfigGroupId, ConfigSnapshot, ConfigValue, ControlMode, FastTelemetry, MotorStatus,
 };
+use oxifoc_host_lib::ops::json_text;
 use oxifoc_host_lib::{HostCommand, HostRuntime, MotorResponseReceiver, motor_channel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -420,7 +421,7 @@ pub fn run(
                 response,
             });
             res.map(|_| ())
-                .with_context(|| format!("step {i} ({:?}) failed", step.cmd))?;
+                .with_context(|| format!("step {i} ({}) failed", json_text(&step.cmd)))?;
         }
         // Tail capture after the last command.
         let tail_end = t0

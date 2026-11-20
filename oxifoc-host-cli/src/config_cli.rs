@@ -49,13 +49,14 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
         for (g, resp) in &read {
             match &resp.value {
                 Some(value) => println!(
-                    "{g:?} (revision {}, {}): {value:?}",
+                    "{g:?} (revision {}, {}): {}",
                     resp.revision,
                     if resp.persisted {
                         "persisted"
                     } else {
                         "volatile"
-                    }
+                    },
+                    group_value(value).map_or_else(|| format!("{value:?}"), |v| v.to_string())
                 ),
                 None => println!("{g:?} (revision {}): (not configured)", resp.revision),
             }

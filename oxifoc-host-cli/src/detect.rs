@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use oxifoc_core::drive_setup::DriveCurrent;
 use oxifoc_core::types::{ConfigGroupId, DetectRequest, DetectResponse, HardwareInfo};
 use oxifoc_host_lib::ops::detect::{self, DetectionPlan};
+use oxifoc_host_lib::ops::json_text;
 use oxifoc_host_lib::{HostCommand, HostRuntime};
 use serde_json::json;
 
@@ -188,7 +189,7 @@ pub fn run_detect(
     };
 
     if !json {
-        println!("Detection started: {req:?}");
+        println!("Detection started: {}", json_text(&req));
     }
     let (resp, capture) = measure(runtime, req, record_out.as_deref(), record_hz, &mut None)?;
     let applied = if apply {

@@ -1200,19 +1200,28 @@ fn reject_unverified_command(cmd: HostCommand) {
     let error = || anyhow::anyhow!("device is not connected and identity-verified");
     match cmd {
         HostCommand::Motor(mode) => {
-            tracing::warn!("Dropping motor command before verified handshake: {mode:?}");
+            tracing::warn!(
+                "Dropping motor command before verified handshake: {}",
+                ops::json_text(&mode)
+            );
         }
         HostCommand::MotorAck(_, reply) | HostCommand::EmergencyStop(reply) => {
             let _ = reply.send(Err(error()));
         }
         HostCommand::SetPhaseSource(source, reply) => {
-            tracing::warn!("Dropping phase-source command before verified handshake: {source:?}");
+            tracing::warn!(
+                "Dropping phase-source command before verified handshake: {}",
+                ops::json_text(&source)
+            );
             if let Some(reply) = reply {
                 let _ = reply.send(Err(error()));
             }
         }
         HostCommand::SetTelemetryConfig(config, reply) => {
-            tracing::warn!("Dropping telemetry config before verified handshake: {config:?}");
+            tracing::warn!(
+                "Dropping telemetry config before verified handshake: {}",
+                ops::json_text(&config)
+            );
             if let Some(reply) = reply {
                 let _ = reply.send(Err(error()));
             }
@@ -1475,7 +1484,7 @@ async fn handle_non_motor_command<NS>(
                 }
                 return;
             }
-            tracing::info!("Setting telemetry config: {:?}", cfg);
+            tracing::info!("Setting telemetry config: {}", ops::json_text(&cfg));
             // Remember the *requested* rate as the reconnect intent — the
             // reconnect path re-applies it instead of the static config
             // value (which used to silently kill a capture's stream after
@@ -1521,7 +1530,10 @@ async fn handle_non_motor_command<NS>(
         }
         HostCommand::ConfigApply(request, reply_tx) => {
             use oxifoc_core::types::ConfigRequest;
-            tracing::info!("Applying volatile config: {:?}", request.inner.write);
+            tracing::info!(
+                "Applying volatile config: {}",
+                ops::json_text(&request.inner.write)
+            );
             let req = ConfigRequest::Apply(request);
             let res = client
                 .at_least_once::<ConfigEndpoint>(
