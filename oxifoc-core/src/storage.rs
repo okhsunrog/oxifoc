@@ -110,8 +110,9 @@ config_keys! {
     /// Superseded failsafe config with a zero "general limit" brake current.
     /// Never read; see [`Self::Reserved1`].
     Reserved9 = 9,
-    /// Cruise velocity-loop tuning
-    Velocity = 10,
+    /// Superseded velocity tuning with a zero/negative "no ramp" sentinel.
+    /// Never read; see [`Self::Reserved1`].
+    Reserved10 = 10,
     /// Reserved key tag. Keep it recognizable during flash compaction.
     Reserved11 = 11,
     /// Per-device analog measurement corrections (versioned payload).
@@ -139,6 +140,8 @@ config_keys! {
     /// Command-staleness deadman + failsafe policy
     Failsafe = 25,
     InstalledDrive = 26,
+    /// Cruise velocity-loop tuning (`accel_limit: None` = no ramp)
+    Velocity = 27,
 }
 
 impl Key for ConfigKey {
@@ -1842,7 +1845,7 @@ mod tests {
             assert_eq!(key.serialize_into(&mut stored), Ok(1));
             assert_eq!(ConfigKey::deserialize_from(&stored), Ok((key, 1)));
             let known = !matches!(key, ConfigKey::Unknown(_));
-            assert_eq!(known, (1..=26).contains(&tag), "tag {tag}");
+            assert_eq!(known, (1..=27).contains(&tag), "tag {tag}");
         }
     }
 

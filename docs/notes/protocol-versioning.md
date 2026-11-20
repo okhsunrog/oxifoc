@@ -56,12 +56,13 @@ ICD v24 types every physical field as a `uom` quantity in SI base units and
 drops the unit suffixes (`max_iq_a` → `max_iq`, `resistance_ohm` →
 `resistance`). Speeds that were eRPM are electrical rad/s. Values that used a
 number to mean "not set" are `Option`s: current limits, the motor's manual
-current ceiling, power-loss class and fundamental inductances, and the
-failsafe brake current (`null` in `config set`, e.g. `bus_in_max=null` for an
-unlimited supply). PI gains are Ω and Ω/s. Motor parameters, current limits,
-failsafe and the installed drive move to new flash keys: after updating, the
-device starts those groups from defaults and the motor must be commissioned
-again. Settings that a commissioned v23 device kept inside its installed-drive
+current ceiling, power-loss class and fundamental inductances, the
+failsafe brake current and the velocity ramp limit (`null` in `config set`,
+e.g. `bus_in_max=null` for an unlimited supply, `accel_limit=null` for no
+ramp). PI gains are Ω and Ω/s. Motor parameters, current limits, failsafe,
+velocity tuning and the installed drive move to new flash keys: after
+updating, the device starts those groups from defaults and the motor must be
+commissioned again. Settings that a commissioned v23 device kept inside its installed-drive
 record, such as the Hall calibration and the feedback mode, start from defaults
 as well. The pre-geometry Hall record (key 2) is no longer read. Board
 calibration and a Hall calibration saved on its own (key 14) are kept.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::foc::phase::{MotionReferenceEpoch, PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::foc::velocity::VelocityLoopConfig;
-use crate::units::{amps, erad, erad_per_s, erad_per_s2, ohms, seconds, si, volts};
+use crate::units::{amps, erad, erad_per_s, ohms, seconds, si, volts};
 
 struct ScheduledPhase {
     angle: f32,
@@ -63,7 +63,7 @@ fn scheduled_driver() -> FocDriver<MockPwm, MockCurrentSensor, ScheduledPhase> {
     driver.set_velocity_config(VelocityLoopConfig {
         kp: 1.0,
         ki: 1.0,
-        accel_limit: erad_per_s2(0.0),
+        accel_limit: None,
         accel_ff: 0.0,
     });
     driver.set_mode(ControlMode::VelocityControl {

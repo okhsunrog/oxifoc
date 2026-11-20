@@ -95,20 +95,28 @@ impl VelocityBlockage {
 
 /// Slew-rate limiter: a value that moves toward a target at a bounded rate.
 ///
-/// Used as the velocity-reference ramp (accel/decel limit). `rate <= 0` or
-/// non-finite disables limiting (the value jumps straight to the target).
+/// Used as the velocity-reference ramp (accel/decel limit). A `None` rate
+/// (or a non-finite one) disables limiting: the value jumps straight to the
+/// target.
 #[derive(Debug)]
 pub struct SlewLimiter {
     value: ElectricalAngularVelocity,
-    /// Max |d(value)/dt|.
+    /// Max |d(value)/dt|; zero encodes "unlimited" for the per-cycle test.
     rate: ElectricalAngularAcceleration,
 }
 
 impl SlewLimiter {
-    pub const fn new(rate: ElectricalAngularAcceleration) -> Self {
+    pub const fn new(rate: Option<ElectricalAngularAcceleration>) -> Self {
         Self {
             value: ElectricalAngularVelocity::ZERO,
-            rate,
+            rate: Self::encode(rate),
+        }
+    }
+
+    const fn encode(rate: Option<ElectricalAngularAcceleration>) -> ElectricalAngularAcceleration {
+        match rate {
+            Some(rate) => rate,
+            None => ElectricalAngularAcceleration::ZERO,
         }
     }
 
@@ -122,8 +130,8 @@ impl SlewLimiter {
         self.value
     }
 
-    pub fn set_rate(&mut self, rate: ElectricalAngularAcceleration) {
-        self.rate = rate;
+    pub fn set_rate(&mut self, rate: Option<ElectricalAngularAcceleration>) {
+        self.rate = Self::encode(rate);
     }
 
     /// Advance one cycle toward `target`, moving at most `rate * dt`.
@@ -161,9 +169,9 @@ pub struct VelocityLoopConfig {
     pub kp: f32,
     /// Integral gain, A per (electrical rad/s · s) of accumulated error.
     pub ki: f32,
-    /// Reference ramp limit, electrical rad/s² (both accel and decel).
-    /// `<= 0` disables the ramp (step targets go straight to the PI).
-    pub accel_limit: ElectricalAngularAcceleration,
+    /// Reference ramp limit (both accel and decel); `None` disables the
+    /// ramp, so step targets go straight to the PI.
+    pub accel_limit: Option<ElectricalAngularAcceleration>,
     /// Acceleration feedforward, A per (electrical rad/s²) of REFERENCE
     /// slew — the motor's measured accel-per-amp inverted (`1/8100` for
     /// the ZD2808). The ramp's torque is then delivered open-loop and the
@@ -186,15 +194,56 @@ impl Default for VelocityLoopConfig {
         Self {
             kp: 0.01,
             ki: 0.2,
-            accel_limit: erad_per_s2(500.0),
+            accel_limit: Some(erad_per_s2(500.0)),
             accel_ff: 0.0,
         }
     }
 }
 
 impl VelocityLoopConfig {
-    /// All fields finite, gains non-negative, at least one gain positive.
+    /// All fields finite, gains non-negative, at least one gain positive, a
+    /// set ramp limit positive.
     pub fn is_sane(&self) -> bool {
+        self.kp.is_finite()
+            && self.ki.is_finite()
+            && self
+                .accel_limit
+                .is_none_or(|limit| limit.is_finite() && limit.is_positive())
+            && self.accel_ff.is_finite()
+            && self.kp >= 0.0
+            && self.ki >= 0.0
+            && self.accel_ff >= 0.0
+            && (self.kp > 0.0 || self.ki > 0.0)
+    }
+}
+
+/// [`VelocityLoopConfig`] as the control ISR reads it: the ramp limit
+/// encoded as zero = no ramp, in the layout and with the checks the
+/// configuration had before the limit became an `Option`. A live update is
+/// converted on the task side; handling the `Option` inside the ISR's
+/// update path made LLVM stop inlining `angle_difference_general` into
+/// `run_foc_cycle` (+154 instructions).
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedVelocityConfig {
+    kp: f32,
+    ki: f32,
+    accel_limit: ElectricalAngularAcceleration,
+    accel_ff: f32,
+}
+
+impl PreparedVelocityConfig {
+    pub(crate) const fn new(cfg: VelocityLoopConfig) -> Self {
+        Self {
+            kp: cfg.kp,
+            ki: cfg.ki,
+            accel_limit: SlewLimiter::encode(cfg.accel_limit),
+            accel_ff: cfg.accel_ff,
+        }
+    }
+
+    /// The checks of [`VelocityLoopConfig::is_sane`] over the encoding; the
+    /// ramp limit was validated before it was encoded.
+    pub(crate) fn is_sane(&self) -> bool {
         self.kp.is_finite()
             && self.ki.is_finite()
             && self.accel_limit.is_finite()
@@ -203,6 +252,15 @@ impl VelocityLoopConfig {
             && self.ki >= 0.0
             && self.accel_ff >= 0.0
             && (self.kp > 0.0 || self.ki > 0.0)
+    }
+
+    fn config(self) -> VelocityLoopConfig {
+        VelocityLoopConfig {
+            kp: self.kp,
+            ki: self.ki,
+            accel_limit: Some(self.accel_limit).filter(Sign::is_positive),
+            accel_ff: self.accel_ff,
+        }
     }
 }
 
@@ -215,7 +273,7 @@ impl VelocityLoopConfig {
 pub struct VelocityLoop {
     pi: ClampedPI<VelocityPi>,
     ramp: SlewLimiter,
-    cfg: VelocityLoopConfig,
+    cfg: PreparedVelocityConfig,
     /// Last commanded iq — lets the failsafe arm bumpless from this loop.
     last_iq: ElectricCurrent,
     /// Which bound the last output sat at (+1 max, −1 min, 0 neither).
@@ -232,7 +290,7 @@ impl VelocityLoop {
                 ElectricCurrent::ZERO,
             ),
             ramp: SlewLimiter::new(cfg.accel_limit),
-            cfg,
+            cfg: PreparedVelocityConfig::new(cfg),
             last_iq: ElectricCurrent::ZERO,
             saturated: 0.0,
         }
@@ -241,14 +299,27 @@ impl VelocityLoop {
     /// Apply new tuning (sane values only) without disturbing the state.
     pub fn set_config(&mut self, cfg: VelocityLoopConfig) {
         if cfg.is_sane() {
+            self.set_prepared(PreparedVelocityConfig::new(cfg));
+        }
+    }
+
+    /// [`Self::set_config`] for a configuration converted outside the ISR.
+    pub(crate) fn set_prepared(&mut self, cfg: PreparedVelocityConfig) {
+        if cfg.is_sane() {
             self.cfg = cfg;
             self.pi.set_gains(si(cfg.kp), si(cfg.ki));
-            self.ramp.set_rate(cfg.accel_limit);
+            self.ramp.rate = cfg.accel_limit;
         }
     }
 
     pub fn config(&self) -> VelocityLoopConfig {
-        self.cfg
+        self.cfg.config()
+    }
+
+    /// The ramp limit in its per-cycle encoding (zero = no ramp), for the
+    /// position loop's stopping bound inside the control ISR.
+    pub(crate) fn ramp_limit_encoded(&self) -> ElectricalAngularAcceleration {
+        self.cfg.accel_limit
     }
 
     /// Re-arm bumpless: seed the reference ramp at the measured velocity and
@@ -442,7 +513,9 @@ mod tests {
     struct SlewLimiter(super::SlewLimiter);
     impl SlewLimiter {
         fn new(rate: f32) -> Self {
-            Self(super::SlewLimiter::new(erad_per_s2(rate)))
+            Self(super::SlewLimiter::new(
+                (rate != 0.0).then(|| erad_per_s2(rate)),
+            ))
         }
         fn reset_to(&mut self, value: f32) {
             self.0.reset_to(erad_per_s(value));
@@ -551,7 +624,7 @@ mod tests {
         let mut velocity = VelocityLoop::new(VelocityLoopConfig {
             kp: 0.0,
             ki: 1.0,
-            accel_limit: erad_per_s2(0.0),
+            accel_limit: None,
             accel_ff: 0.0,
         });
         velocity.reset_holding(1.0, 0.5);
@@ -577,7 +650,7 @@ mod tests {
             let mut loop_ = VelocityLoop::new(VelocityLoopConfig {
                 kp: 1.0,
                 ki,
-                accel_limit: erad_per_s2(0.0),
+                accel_limit: None,
                 accel_ff: 0.0,
             });
             assert_eq!(loop_.step_clamped(2.0, 0.0, -3.0, 3.0, 0.0), 2.0);
@@ -595,13 +668,26 @@ mod tests {
             let mut loop_ = VelocityLoop::new(VelocityLoopConfig {
                 kp: 1.0,
                 ki: 0.0,
-                accel_limit: erad_per_s2(10.0),
+                accel_limit: Some(erad_per_s2(10.0)),
                 accel_ff: 0.0,
             });
             assert_eq!(
                 loop_.step_with_blockage(sign * 100.0, 0.0, -100.0, 100.0, blocked, 1.0),
                 sign
             );
+        }
+    }
+
+    #[test]
+    fn a_set_ramp_limit_must_be_positive() {
+        let with = |accel_limit| VelocityLoopConfig {
+            accel_limit,
+            ..VelocityLoopConfig::default()
+        };
+        assert!(with(None).is_sane());
+        assert!(with(Some(erad_per_s2(500.0))).is_sane());
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(!with(Some(erad_per_s2(bad))).is_sane(), "{bad}");
         }
     }
 
@@ -654,7 +740,7 @@ mod tests {
         let mut vl = VelocityLoop::new(VelocityLoopConfig {
             kp: 0.05,
             ki: 2.0,
-            accel_limit: erad_per_s2(5_000.0),
+            accel_limit: Some(erad_per_s2(5_000.0)),
             accel_ff: 0.0,
         });
         vl.reset(0.0);
@@ -676,7 +762,7 @@ mod tests {
         let mut vl = VelocityLoop::new(VelocityLoopConfig {
             kp: 0.5,
             ki: 50.0,
-            accel_limit: erad_per_s2(0.0), // step target straight in → guaranteed saturation
+            accel_limit: None, // step target straight in → guaranteed saturation
             accel_ff: 0.0,
         });
         vl.reset(0.0);
@@ -702,7 +788,7 @@ mod tests {
             let mut vl = VelocityLoop::new(VelocityLoopConfig {
                 kp: 0.05,
                 ki: 2.0,
-                accel_limit: erad_per_s2(2_000.0),
+                accel_limit: Some(erad_per_s2(2_000.0)),
                 accel_ff: *ff,
             });
             vl.reset(0.0);
@@ -749,7 +835,11 @@ mod tests {
             omega += (kt * iq - b * omega) / j * DT;
             lead = lead.max(vl.0.ramp.value().value - omega);
         }
-        let max_lead = (VelocityLoopConfig::default().accel_limit * HOLD_LEAD).value;
+        let max_lead = (VelocityLoopConfig::default()
+            .accel_limit
+            .expect("the default has a ramp")
+            * HOLD_LEAD)
+            .value;
         assert!(lead < max_lead + 10.0, "reference led by {lead}");
         let omega_cmd = omega;
         for _ in 0..(0.2 / DT) as u32 {
@@ -778,7 +868,7 @@ mod tests {
             !VelocityLoopConfig {
                 kp: 0.0,
                 ki: 0.0,
-                accel_limit: erad_per_s2(100.0),
+                accel_limit: Some(erad_per_s2(100.0)),
                 accel_ff: 0.0,
             }
             .is_sane()

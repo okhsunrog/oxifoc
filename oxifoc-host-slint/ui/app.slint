@@ -1134,7 +1134,7 @@ export component App inherits Window {
                         Text { text: "Kp (A per rad/s):"; } OxiNumberField { accessible-name: "Kp (A per rad/s):"; text <=> root.cfg-vel-kp; min-width: 120px; }
                         Text { text: "Ki (A per rad):"; } OxiNumberField { accessible-name: "Ki (A per rad):"; text <=> root.cfg-vel-ki; min-width: 120px; }
                     }
-                    Row { Text { text: "Accel limit (erad/s²):"; } OxiNumberField { accessible-name: "Accel limit (erad/s²):"; text <=> root.cfg-vel-accel; min-width: 120px; } }
+                    Row { Text { text: "Accel limit (erad/s², empty = no ramp):"; } OxiNumberField { accessible-name: "Accel limit (erad/s², empty = no ramp):"; text <=> root.cfg-vel-accel; min-width: 120px; } }
                 }
                 if root.config-group == 5 : GridLayout {
                     spacing: 6px;

@@ -648,8 +648,9 @@ pub struct TelemetryConfigAck {
 /// Config "unset" values are `Option`s instead of sentinels: current limits
 /// (`None` = inherit / unlimited, where `< 0` and `0` used to say so), the
 /// motor's manual current ceiling, power-loss class and fundamental
-/// inductances, and the failsafe brake current. PI gains (stored and the
-/// detection override in `ControlMode::OpenLoop`) are typed Ω and Ω/s.
+/// inductances, the failsafe brake current and the velocity loop's ramp
+/// limit (`None` = no ramp). PI gains (stored and the detection override in
+/// `ControlMode::OpenLoop`) are typed Ω and Ω/s.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.

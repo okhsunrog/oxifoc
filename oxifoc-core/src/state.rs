@@ -27,7 +27,7 @@ use crate::foc::phase::{PhaseProvider, PhaseSource};
 use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::{AdcSnapshot, CurrentSensor, HallSnapshot};
 use crate::foc::trig::SinCos;
-use crate::foc::velocity::VelocityLoopConfig;
+use crate::foc::velocity::PreparedVelocityConfig;
 use crate::isr_prof;
 #[cfg(feature = "isr-work-events")]
 use crate::isr_work;
@@ -121,7 +121,7 @@ pub enum DriverCommand {
     /// Apply failsafe tuning (deadman timeout + reaction policy + brake params)
     SetFailsafe(FailsafeConfig),
     /// Apply cruise velocity-loop tuning (gains + accel limit)
-    SetVelocityConfig(VelocityLoopConfig),
+    SetVelocityConfig(PreparedVelocityConfig),
     /// Apply graduated derating ramps (thermal/voltage/speed)
     SetDerating(DeratingConfig),
     /// Begin a single-flight, ISR-owned current-offset measurement.
@@ -1046,7 +1046,7 @@ where
             }
             DriverCommand::SetVelocityConfig(cfg) => {
                 // Config, not a setpoint — does NOT affirm the deadman.
-                foc.set_velocity_config(cfg);
+                foc.set_velocity_prepared(cfg);
                 continue;
             }
             DriverCommand::SetDerating(cfg) => {

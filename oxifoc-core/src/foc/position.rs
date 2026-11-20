@@ -15,7 +15,7 @@ use core::f32::consts::TAU;
 use crate::foc::fast_math::sqrtf;
 use crate::foc::{angle_difference, wrap_angle};
 use crate::units::{
-    AngleRepr, ELECTRICAL_RADIAN, ElectricalAngle, ElectricalAngularAcceleration,
+    AngleRepr, ConstZero, ELECTRICAL_RADIAN, ElectricalAngle, ElectricalAngularAcceleration,
     ElectricalAngularVelocity, Frequency, Sign, erad, erad_per_s, per_second,
 };
 
@@ -119,38 +119,52 @@ pub struct PositionLoopConfig {
     /// Proportional gain: velocity target per position error (1/s — the
     /// inverse of the approach time constant).
     pub kp: Frequency,
-    /// Travel speed ceiling; `0` = none (the velocity loop and the derating
-    /// speed ceiling still bound it).
-    pub max_speed: ElectricalAngularVelocity,
+    /// Travel speed ceiling; `None` = none (the velocity loop and the
+    /// derating speed ceiling still bound it).
+    pub max_speed: Option<ElectricalAngularVelocity>,
 }
 
 impl Default for PositionLoopConfig {
     fn default() -> Self {
         Self {
             kp: per_second(10.0),
-            max_speed: erad_per_s(1_000.0),
+            max_speed: Some(erad_per_s(1_000.0)),
         }
     }
 }
 
 impl PositionLoopConfig {
-    /// Finite, `kp > 0`, `max_speed >= 0`.
+    /// Finite, `kp > 0`, a set `max_speed > 0`.
     pub fn is_sane(&self) -> bool {
         self.kp.is_finite()
-            && self.max_speed.is_finite()
             && self.kp.is_positive()
-            && self.max_speed.is_non_negative()
+            && self
+                .max_speed
+                .is_none_or(|speed| speed.is_finite() && speed.is_positive())
     }
 
     /// The velocity target for position error `err`: `kp·err`, no
     /// faster than a stop at `decel` (the velocity loop's ramp) can still
     /// end at the target — `√(2·decel·|err|)` — and no faster than
-    /// `max_speed`. `decel <= 0` = unbounded.
+    /// `max_speed`. `None` decel = unbounded.
     pub fn speed_for(
+        &self,
+        err: ElectricalAngle,
+        decel: Option<ElectricalAngularAcceleration>,
+    ) -> ElectricalAngularVelocity {
+        self.speed_for_encoded(err, decel.unwrap_or(ElectricalAngularAcceleration::ZERO))
+    }
+
+    /// [`Self::speed_for`] with `decel` in the velocity loop's per-cycle
+    /// encoding (zero = unbounded), as the control ISR holds it
+    /// ([`PreparedVelocityConfig`](crate::foc::velocity::PreparedVelocityConfig)),
+    /// so the ISR does not rebuild an `Option` just to decode it again.
+    pub(crate) fn speed_for_encoded(
         &self,
         err: ElectricalAngle,
         decel: ElectricalAngularAcceleration,
     ) -> ElectricalAngularVelocity {
+        let max_speed = self.max_speed.unwrap_or(ElectricalAngularVelocity::ZERO);
         let e = err.abs();
         let mut v = self.kp * e;
         if decel.is_positive() {
@@ -158,8 +172,8 @@ impl PositionLoopConfig {
             // √(2·a·d) is an electrical speed by its physics.
             v = v.min((2.0 * decel * e).sqrt_with(sqrtf) * ELECTRICAL_RADIAN);
         }
-        if self.max_speed.is_positive() {
-            v = v.min(self.max_speed);
+        if max_speed.is_positive() {
+            v = v.min(max_speed);
         }
         if err.is_negative() { -v } else { v }
     }
@@ -220,31 +234,28 @@ mod tests {
     fn speed_law_stops_within_the_ramp() {
         let cfg = PositionLoopConfig {
             kp: per_second(10.0),
-            max_speed: erad_per_s(1_000.0),
+            max_speed: Some(erad_per_s(1_000.0)),
         };
         // Close in: the P term.
         assert!(
-            (cfg.speed_for(erad(0.5), erad_per_s2(2_000.0)) - erad_per_s(5.0)).abs()
+            (cfg.speed_for(erad(0.5), Some(erad_per_s2(2_000.0))) - erad_per_s(5.0)).abs()
                 < erad_per_s(1e-4)
         );
         assert!(
-            (cfg.speed_for(erad(-0.5), erad_per_s2(2_000.0)) + erad_per_s(5.0)).abs()
+            (cfg.speed_for(erad(-0.5), Some(erad_per_s2(2_000.0))) + erad_per_s(5.0)).abs()
                 < erad_per_s(1e-4)
         );
         // Mid-range: the stopping-distance bound √(2·a·e).
         assert!(
-            (cfg.speed_for(erad(100.0), erad_per_s2(2_000.0)) - erad_per_s(632.46)).abs()
+            (cfg.speed_for(erad(100.0), Some(erad_per_s2(2_000.0))) - erad_per_s(632.46)).abs()
                 < erad_per_s(0.01)
         );
         // Far: the travel ceiling.
         assert_eq!(
-            cfg.speed_for(erad(1e4), erad_per_s2(2_000.0)),
+            cfg.speed_for(erad(1e4), Some(erad_per_s2(2_000.0))),
             erad_per_s(1_000.0)
         );
         // No decel bound: P then ceiling.
-        assert_eq!(
-            cfg.speed_for(erad(50.0), erad_per_s2(0.0)),
-            erad_per_s(500.0)
-        );
+        assert_eq!(cfg.speed_for(erad(50.0), None), erad_per_s(500.0));
     }
 }

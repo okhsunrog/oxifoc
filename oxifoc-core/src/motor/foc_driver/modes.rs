@@ -258,7 +258,7 @@ where
         target.unwrap_or_else(|| {
             let error = self.position_target.minus(self.position.position());
             self.position_cfg
-                .speed_for(error, self.velocity_loop.config().accel_limit)
+                .speed_for_encoded(error, self.velocity_loop.ramp_limit_encoded())
         })
     }
 

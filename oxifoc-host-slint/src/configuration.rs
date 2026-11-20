@@ -133,10 +133,9 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                                 Some(ConfigValue::Velocity(v)) => {
                                     app.set_cfg_vel_kp(SharedString::from(format!("{}", v.kp)));
                                     app.set_cfg_vel_ki(SharedString::from(format!("{}", v.ki)));
-                                    app.set_cfg_vel_accel(SharedString::from(format!(
-                                        "{}",
-                                        v.accel_limit.value
-                                    )));
+                                    app.set_cfg_vel_accel(optional_text(
+                                        v.accel_limit.map(|a| a.value),
+                                    ));
                                 }
                                 Some(ConfigValue::Failsafe(f)) => {
                                     app.set_cfg_fs_staleness(SharedString::from(format!(
@@ -269,13 +268,17 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                 4 => {
                     let kp: f32 = parse_field("velocity kp", &app.get_cfg_vel_kp(), err);
                     let ki: f32 = parse_field("velocity ki", &app.get_cfg_vel_ki(), err);
-                    let accel: f32 = parse_field("accel limit", &app.get_cfg_vel_accel(), err);
+                    let accel: Option<f32> =
+                        parse_optional("accel limit", &app.get_cfg_vel_accel(), err);
                     ConfigAction::Patch {
                         group: ConfigGroupId::Velocity,
                         fields: vec![
                             format!("kp={kp}"),
                             format!("ki={ki}"),
-                            format!("accel_limit={accel}"),
+                            format!(
+                                "accel_limit={}",
+                                accel.map_or_else(|| "null".to_string(), |a| a.to_string())
+                            ),
                         ],
                     }
                 }

@@ -4,7 +4,7 @@ use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::{DeratingConfig, ModulationDerating, SpeedDerating};
 use crate::motor::drive::DriveConfig;
 use crate::types::VoltageFeedforwardMode;
-use crate::units::{amps, erad, erad_per_s, erad_per_s2, henries, ohms, seconds, volts, webers};
+use crate::units::{amps, erad, erad_per_s, henries, ohms, seconds, volts, webers};
 
 struct SplitPhase {
     frame_velocity: f32,
@@ -190,7 +190,7 @@ fn velocity_authority_and_final_current_grant_share_physical_speed() {
     driver.set_velocity_config(VelocityLoopConfig {
         kp: 1.0,
         ki: 0.0,
-        accel_limit: erad_per_s2(0.0),
+        accel_limit: None,
         accel_ff: 0.0,
     });
     driver.set_mode(ControlMode::VelocityControl {

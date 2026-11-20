@@ -164,7 +164,14 @@ fn main() -> std::io::Result<()> {
     rig.driver.set_velocity_config(VelocityLoopConfig {
         kp: arg(&args, "vkp", vel_default.kp),
         ki: arg(&args, "vki", vel_default.ki),
-        accel_limit: erad_per_s2(arg(&args, "accel", vel_default.accel_limit.value)),
+        // `--accel 0` turns the reference ramp off.
+        accel_limit: Some(arg(
+            &args,
+            "accel",
+            vel_default.accel_limit.map_or(0.0, |limit| limit.value),
+        ))
+        .filter(|&accel| accel > 0.0)
+        .map(erad_per_s2),
         accel_ff: arg(&args, "ff", vel_default.accel_ff),
     });
     let pos_default = PositionLoopConfig::default();

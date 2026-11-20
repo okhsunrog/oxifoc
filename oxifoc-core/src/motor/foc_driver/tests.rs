@@ -3667,7 +3667,7 @@ fn velocity_control_tracks_target_on_virtual_motor() {
     driver.set_velocity_config(VelocityLoopConfig {
         kp: 0.008,
         ki: 0.2,
-        accel_limit: erad_per_s2(400.0), // erad/s²
+        accel_limit: Some(erad_per_s2(400.0)), // erad/s²
         accel_ff: 0.0,
     });
 
@@ -5247,12 +5247,12 @@ fn position_control_moves_and_parks() {
         let mut rig = HallRig::new(0.5, 2e-5);
         rig.driver.set_position_config(PositionLoopConfig {
             kp: per_second(pkp),
-            max_speed: erad_per_s(1000.0),
+            max_speed: Some(erad_per_s(1000.0)),
         });
         rig.driver.set_velocity_config(VelocityLoopConfig {
             kp: vkp,
             ki: vki,
-            accel_limit: erad_per_s2(500.0),
+            accel_limit: Some(erad_per_s2(500.0)),
             accel_ff: ff,
         });
         let target = 20.0 * core::f32::consts::TAU;

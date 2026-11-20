@@ -12,7 +12,7 @@ use crate::foc::position::{Position, PositionLoopConfig, PositionTracker};
 use crate::foc::pwm::{PhasePwm, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
-use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
+use crate::foc::velocity::{PreparedVelocityConfig, VelocityLoop, VelocityLoopConfig};
 use crate::isr_prof;
 use crate::motor::failsafe::{FailsafeConfig, FailsafeController};
 use crate::types::ControlTiming;
@@ -285,7 +285,15 @@ where
     /// to the extent the gains differ.
     pub fn set_velocity_config(&mut self, cfg: VelocityLoopConfig) {
         if cfg.is_sane() {
-            self.velocity_loop.set_config(cfg);
+            self.set_velocity_prepared(PreparedVelocityConfig::new(cfg));
+        }
+    }
+
+    /// [`Self::set_velocity_config`] for a configuration converted outside
+    /// the control ISR (live config updates).
+    pub(crate) fn set_velocity_prepared(&mut self, cfg: PreparedVelocityConfig) {
+        if cfg.is_sane() {
+            self.velocity_loop.set_prepared(cfg);
             self.velocity_schedule.clear_request();
         }
     }

@@ -14,7 +14,7 @@ use crate::foc::phase::{PhaseProvider, PhaseSource};
 use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
-use crate::foc::velocity::VelocityLoopConfig;
+use crate::foc::velocity::{PreparedVelocityConfig, VelocityLoopConfig};
 use crate::motor::FocDriver;
 use crate::motor::derating::DeratingConfig;
 use crate::motor::drive::DriveConfig;
@@ -188,11 +188,16 @@ pub(crate) enum TuningUpdate {
     DcOffsets(DcOffsetsConfig),
     HallTuning(HallTuningConfig),
     Failsafe(FailsafeConfigStored),
-    Velocity(VelocityLoopConfig),
+    /// The stored value and its ISR form, converted on the task side.
+    Velocity(VelocityLoopConfig, PreparedVelocityConfig),
     Derating(DeratingConfig),
 }
 
 impl TuningUpdate {
+    pub(crate) fn velocity(value: VelocityLoopConfig) -> Self {
+        Self::Velocity(value, PreparedVelocityConfig::new(value))
+    }
+
     fn group(&self) -> ConfigGroupId {
         match self {
             Self::CurrentLimits(_) => ConfigGroupId::CurrentLimits,
@@ -200,7 +205,7 @@ impl TuningUpdate {
             Self::DcOffsets(_) => ConfigGroupId::DcOffsets,
             Self::HallTuning(_) => ConfigGroupId::HallTuning,
             Self::Failsafe(_) => ConfigGroupId::Failsafe,
-            Self::Velocity(_) => ConfigGroupId::Velocity,
+            Self::Velocity(..) => ConfigGroupId::Velocity,
             Self::Derating(_) => ConfigGroupId::Derating,
         }
     }
@@ -212,7 +217,7 @@ impl TuningUpdate {
             Self::DcOffsets(v) => config.dc_offsets = Some(v.clone()),
             Self::HallTuning(v) => config.hall_tuning = Some(v.clone()),
             Self::Failsafe(v) => config.failsafe = Some(v.clone()),
-            Self::Velocity(v) => config.velocity = Some(*v),
+            Self::Velocity(v, _) => config.velocity = Some(*v),
             Self::Derating(v) => config.derating = Some(*v),
         }
     }
@@ -220,7 +225,7 @@ impl TuningUpdate {
     fn allows_running(&self) -> bool {
         matches!(
             self,
-            Self::CurrentLimits(_) | Self::Velocity(_) | Self::Failsafe(_)
+            Self::CurrentLimits(_) | Self::Velocity(..) | Self::Failsafe(_)
         )
     }
 }
@@ -718,7 +723,7 @@ pub(super) fn apply<P, C, Ph, S>(
                     TuningUpdate::Failsafe(v) => {
                         foc.set_failsafe(FailsafeConfig::from(v));
                     }
-                    TuningUpdate::Velocity(v) => foc.set_velocity_config(*v),
+                    TuningUpdate::Velocity(_, prepared) => foc.set_velocity_prepared(*prepared),
                     TuningUpdate::Derating(v) => foc.set_derating(*v),
                 }
                 if let TuningUpdate::HallTuning(v) = value
