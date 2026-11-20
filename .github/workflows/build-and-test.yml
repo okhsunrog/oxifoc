@@ -17,8 +17,8 @@ jobs:
       - name: git-rev sync across lock files
         run: python3 scripts/check-git-rev-sync.py
 
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: install Rust 1.100 (host toolchain)
+        uses: dtolnay/rust-toolchain@1.100
         with:
           components: rustfmt
 
@@ -54,8 +54,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libudev-dev libfontconfig-dev libdbus-1-dev pkg-config
 
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: install Rust 1.100 (host toolchain)
+        uses: dtolnay/rust-toolchain@1.100
         with:
           components: clippy
 
@@ -76,8 +76,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libudev-dev libfontconfig-dev libdbus-1-dev pkg-config
 
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: install Rust 1.100 (host toolchain)
+        uses: dtolnay/rust-toolchain@1.100
 
       - uses: Swatinem/rust-cache@v2
 

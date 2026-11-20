@@ -35,6 +35,7 @@ use crate::foc::trig::LibmSinCos;
 use crate::foc::wrap_angle;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
+use crate::units::{amps, erad, ohms, seconds, si, volts};
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
 const DT: f32 = 1.0 / 20_000.0;
@@ -65,9 +66,9 @@ impl SimState {
     fn new(motor_params: MotorParams, vbus: f32) -> Self {
         let kp = motor_params.ld * 1_000.0;
         let ki = motor_params.r * 1_000.0;
-        let mut foc = FocController::<SvpwmModulator>::new(vbus);
-        foc.id_pi = PIController::new(kp, ki);
-        foc.iq_pi = PIController::new(kp, ki);
+        let mut foc = FocController::<SvpwmModulator>::new(volts(vbus));
+        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
         // Mirror the firmware: boards configure dead-time compensation from
         // their PWM config (g431: 800 ns), so a plant with dead-time
         // distortion gets the matching compensation here.
@@ -95,6 +96,7 @@ impl SimState {
 
         let telem = match self.mode {
             ControlMode::OpenLoop { current, .. } => {
+                let current = current.value;
                 // Same current placement as the firmware: d-axis when locked
                 // (velocity 0, holds the rotor), q-axis when spinning
                 // (produces torque). The harness used to put it on d in both
@@ -115,24 +117,28 @@ impl SimState {
                 // the ideal table vs +0.1% with a bare `d`, while the
                 // sub-stepped non-ideal table improves 10.3% → 7.4%).
                 self.foc
-                    .set_actuation_advance(self.ol_omega * DT * (self.pipeline_steps + 0.5));
+                    .set_actuation_advance(erad(self.ol_omega * DT * (self.pipeline_steps + 0.5)));
                 self.foc.step(
-                    (self.out.ia, self.out.ib, self.out.ic),
-                    self.sim_angle,
-                    id_t,
-                    iq_t,
+                    (amps(self.out.ia), amps(self.out.ib), amps(self.out.ic)),
+                    erad(self.sim_angle),
+                    amps(id_t),
+                    amps(iq_t),
                     MAX_DUTY,
-                    DT,
+                    seconds(DT),
                 )
             }
-            ControlMode::DirectVoltage { vd, vq, angle_rad } => {
+            ControlMode::DirectVoltage {
+                vd,
+                vq,
+                angle: angle_rad,
+            } => {
                 let (i_alpha, i_beta) = self.foc.current_sense_topology().clarke((
                     self.out.ia,
                     self.out.ib,
                     self.out.ic,
                 ));
                 self.foc
-                    .apply_dq(vd, vq, angle_rad, i_alpha, i_beta, MAX_DUTY)
+                    .apply_dq(vd, vq, angle_rad, amps(i_alpha), amps(i_beta), MAX_DUTY)
             }
             ControlMode::Coast | ControlMode::Stopped => FocOutput::empty(),
             _ => FocOutput::empty(),
@@ -149,7 +155,7 @@ impl SimState {
                 // only place dead-time compensation (and duty
                 // quantization) lives. Amplitude-invariant Clarke of the
                 // terminal voltages; the SVPWM common mode drops out.
-                let vbus = self.foc.vbus();
+                let vbus = self.foc.vbus().value;
                 let scale = vbus / f32::from(MAX_DUTY);
                 let va = f32::from(telem.duties[0]) * scale;
                 let vb = f32::from(telem.duties[1]) * scale;
@@ -218,15 +224,15 @@ impl DetectionHardware for VirtualHardware {
 
             match mode {
                 ControlMode::OpenLoop {
-                    angle_rad,
-                    velocity_rad_s,
+                    angle: angle_rad,
+                    velocity: velocity_rad_s,
                     pi_gains,
                     ..
                 } => {
                     // Apply PI gains override if provided
                     if let Some((kp, ki)) = pi_gains {
-                        sim.foc.id_pi.set_gains(kp, ki);
-                        sim.foc.iq_pi.set_gains(kp, ki);
+                        sim.foc.id_pi.set_gains(ohms(kp), si(ki));
+                        sim.foc.iq_pi.set_gains(ohms(kp), si(ki));
                     }
                     // Mirror FocDriver::step_open_loop exactly: with a
                     // velocity the angle keeps integrating from wherever it
@@ -235,9 +241,9 @@ impl DetectionHardware for VirtualHardware {
                     // reconstructed a velocity from successive commanded
                     // angles, i.e. it simulated a smooth rotation the real
                     // firmware never produced for host-paced angle steps.
-                    sim.ol_omega = velocity_rad_s;
-                    if velocity_rad_s == 0.0 {
-                        sim.sim_angle = wrap_angle(angle_rad);
+                    sim.ol_omega = velocity_rad_s.value;
+                    if velocity_rad_s.value == 0.0 {
+                        sim.sim_angle = wrap_angle(angle_rad.value);
                     }
                 }
                 ControlMode::Coast => sim.foc.reset(),
@@ -361,11 +367,19 @@ pub fn run_detection(
     vbus: f32,
     det_params: DetectionParams,
 ) -> Result<DetectionResult, DetectionError> {
+    run_detection_with::<LibmSinCos>(motor_params, vbus, det_params)
+}
+
+/// As [`run_detection`], with the detection code's sin/cos backend chosen
+/// by the caller (the firmware passes `FastSinCos` or `CordicSinCos`).
+pub fn run_detection_with<S: crate::foc::trig::SinCos>(
+    motor_params: MotorParams,
+    vbus: f32,
+    det_params: DetectionParams,
+) -> Result<DetectionResult, DetectionError> {
     with_sim(motor_params, vbus, |hw| {
-        block_on(run_full_detection::<
-            VirtualHardware,
-            VirtualTimer,
-            LibmSinCos,
-        >(hw, det_params))
+        block_on(run_full_detection::<VirtualHardware, VirtualTimer, S>(
+            hw, det_params,
+        ))
     })
 }

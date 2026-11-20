@@ -1,6 +1,7 @@
 use super::*;
 use crate::foc::phase::{MotionReferenceEpoch, PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::foc::velocity::VelocityLoopConfig;
+use crate::units::{erad, erad_per_s, erad_per_s2, ohms, si, volts};
 
 struct ScheduledPhase {
     angle: f32,
@@ -14,7 +15,7 @@ struct ScheduledPhase {
 impl PhaseProvider for ScheduledPhase {
     fn get(&self) -> PhaseOutput {
         PhaseOutput {
-            angle: self.angle,
+            angle: erad(self.angle),
             ..Default::default()
         }
     }
@@ -22,7 +23,9 @@ impl PhaseProvider for ScheduledPhase {
         self.updates += 1;
     }
     fn rotor_velocity(&self) -> Option<RotorVelocityEstimate> {
-        self.velocity.and_then(RotorVelocityEstimate::new)
+        self.velocity
+            .map(erad_per_s)
+            .and_then(RotorVelocityEstimate::new)
     }
     fn motion_reference_epoch(&self) -> MotionReferenceEpoch {
         self.epoch
@@ -41,7 +44,7 @@ impl PhaseProvider for ScheduledPhase {
 
 fn scheduled_driver() -> FocDriver<MockPwm, MockCurrentSensor, ScheduledPhase> {
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
         MockPwm { duties: [0; 3] },
         MockCurrentSensor {
             currents: (0.0, 0.0, 0.0),
@@ -60,10 +63,12 @@ fn scheduled_driver() -> FocDriver<MockPwm, MockCurrentSensor, ScheduledPhase> {
     driver.set_velocity_config(VelocityLoopConfig {
         kp: 1.0,
         ki: 1.0,
-        accel_limit: 0.0,
+        accel_limit: erad_per_s2(0.0),
         accel_ff: 0.0,
     });
-    driver.set_mode(ControlMode::VelocityControl { target_vel: 2.0 });
+    driver.set_mode(ControlMode::VelocityControl {
+        target_vel: erad_per_s(2.0),
+    });
     driver
 }
 
@@ -71,11 +76,11 @@ fn scheduled_driver() -> FocDriver<MockPwm, MockCurrentSensor, ScheduledPhase> {
 fn held_request_does_not_recompute_pi_on_an_ordinary_mutable_phase_sample() {
     let mut driver = scheduled_driver();
     driver.step(50).unwrap();
-    assert_eq!(driver.velocity_loop.last_iq(), 2.0);
+    assert_eq!(driver.velocity_loop.last_iq().value, 2.0);
     for now in (100..1_050).step_by(50) {
         driver.phase_mut().velocity = Some(1.0);
         driver.step(now).unwrap();
-        assert_eq!(driver.velocity_loop.last_iq(), 2.0);
+        assert_eq!(driver.velocity_loop.last_iq().value, 2.0);
         assert_eq!(driver.last_granted_iq, 2.0);
     }
     assert_eq!(
@@ -84,7 +89,7 @@ fn held_request_does_not_recompute_pi_on_an_ordinary_mutable_phase_sample() {
         "current/phase loop remains native-rate"
     );
     driver.step(1_050).unwrap();
-    assert!(driver.velocity_loop.last_iq() < 1.01);
+    assert!(driver.velocity_loop.last_iq().value < 1.01);
 }
 
 #[test]
@@ -123,7 +128,7 @@ fn outer_integral_uses_elapsed_seconds_independent_of_native_current_cadence() {
         driver.set_current_limits(CurrentLimits::from_max_current(100.0));
         // This fixture has no electrical plant. Disable current integration
         // so artificial voltage saturation cannot constrain the outer loop.
-        driver.set_current_pi_gains(0.0, 0.0);
+        driver.set_current_pi_gains(ohms(0.0), si(0.0));
         for step in 0..=native_hz {
             driver.step(step * 1_000_000 / native_hz).unwrap();
         }
@@ -145,7 +150,9 @@ fn loss_epoch_and_reversal_clear_held_torque_before_the_next_outer_tick() {
             0 => driver.phase_mut().velocity = None,
             1 => driver.phase_mut().trusted = false,
             2 => driver.phase_mut().epoch.advance(),
-            _ => driver.set_mode(ControlMode::VelocityControl { target_vel: -2.0 }),
+            _ => driver.set_mode(ControlMode::VelocityControl {
+                target_vel: erad_per_s(-2.0),
+            }),
         }
         driver.step(100).unwrap();
         assert_eq!(driver.last_granted_iq, 0.0);
@@ -169,7 +176,7 @@ fn current_authority_and_trip_still_act_between_outer_updates() {
     driver.step(50).unwrap();
     driver.bus_mod_q_filt = 0.5;
     driver.step(100).unwrap();
-    assert_eq!(driver.velocity_loop.last_iq(), 2.0);
+    assert_eq!(driver.velocity_loop.last_iq().value, 2.0);
     assert_eq!(driver.last_granted_iq, 0.2);
     driver.set_derating_scales(DeratingScales {
         drive: 0.0,
@@ -177,7 +184,7 @@ fn current_authority_and_trip_still_act_between_outer_updates() {
     });
     driver.step(150).unwrap();
     assert_eq!(driver.last_granted_iq, 0.0);
-    assert_eq!(driver.velocity_loop.last_iq(), 2.0);
+    assert_eq!(driver.velocity_loop.last_iq().value, 2.0);
     driver.current_sensor_mut().currents = (7.0, -3.5, -3.5);
     assert_eq!(driver.step(200), Err(StepError::Overcurrent));
     assert_eq!(driver.velocity_schedule.requested_iq(), 0.0);
@@ -198,7 +205,9 @@ fn startup_and_stopped_never_resume_a_stale_held_request() {
     driver.set_mode(ControlMode::Stopped);
     driver.step(200).unwrap();
     assert_eq!(driver.last_granted_iq, 0.0);
-    driver.set_mode(ControlMode::VelocityControl { target_vel: 1.0 });
+    driver.set_mode(ControlMode::VelocityControl {
+        target_vel: erad_per_s(1.0),
+    });
     driver.step(250).unwrap();
     assert_eq!(driver.last_granted_iq, 0.0);
     driver.step(1_050).unwrap();
@@ -251,12 +260,14 @@ fn failsafe_takes_the_final_grant_and_never_records_against_cruise() {
         assert!(!blocked.positive() && !blocked.negative());
         assert!(!voltage.positive() && !voltage.negative());
     }
-    driver.set_mode(ControlMode::VelocityControl { target_vel: 2.0 });
+    driver.set_mode(ControlMode::VelocityControl {
+        target_vel: erad_per_s(2.0),
+    });
     driver.bus_mod_q_filt = 0.0;
     driver.step(950).unwrap();
     assert_eq!(driver.last_granted_iq, 0.0);
     driver.step(1_050).unwrap();
-    assert_eq!(driver.velocity_loop.last_iq(), 2.0);
+    assert_eq!(driver.velocity_loop.last_iq().value, 2.0);
 }
 
 #[test]
@@ -266,7 +277,7 @@ fn released_native_clamp_is_tracked_once_with_the_correct_sign() {
         let mut baseline = scheduled_driver();
         for driver in [&mut limited, &mut baseline] {
             driver.set_mode(ControlMode::VelocityControl {
-                target_vel: sign * 2.0,
+                target_vel: erad_per_s(sign * 2.0),
             });
             driver.step(50).unwrap();
         }
@@ -278,7 +289,8 @@ fn released_native_clamp_is_tracked_once_with_the_correct_sign() {
             limited.step(now).unwrap();
             baseline.step(now).unwrap();
             if now == 1_050 || now == 2_050 {
-                let correction = limited.velocity_loop.last_iq() - baseline.velocity_loop.last_iq();
+                let correction =
+                    limited.velocity_loop.last_iq().value - baseline.velocity_loop.last_iq().value;
                 assert!((correction + sign).abs() < 1e-5, "{now}: {correction}");
             }
         }
@@ -290,9 +302,9 @@ fn both_voltage_clip_signs_survive_until_due_after_latest_clip_recovers() {
     for sign in [-1.0, 1.0] {
         let mut driver = scheduled_driver();
         driver.set_mode(ControlMode::VelocityControl {
-            target_vel: sign * 2.0,
+            target_vel: erad_per_s(sign * 2.0),
         });
-        driver.controller.iq_pi.set_gains(100.0, 0.0);
+        driver.controller.iq_pi.set_gains(ohms(100.0), si(0.0));
         driver.step(50).unwrap();
         assert_eq!(driver.controller.q_voltage_clip(), sign);
         assert_eq!(driver.last_granted_iq, sign * 2.0);
@@ -300,7 +312,7 @@ fn both_voltage_clip_signs_survive_until_due_after_latest_clip_recovers() {
         driver.step(100).unwrap();
         assert_eq!(driver.controller.q_voltage_clip(), -sign);
         assert_eq!(driver.last_granted_iq, sign * 2.0);
-        driver.controller.iq_pi.set_gains(0.01, 0.0);
+        driver.controller.iq_pi.set_gains(ohms(0.01), si(0.0));
         driver.current_sensor_mut().currents = (0.0, 0.0, 0.0);
         for now in (150..1_050).step_by(50) {
             driver.step(now).unwrap();
@@ -308,23 +320,27 @@ fn both_voltage_clip_signs_survive_until_due_after_latest_clip_recovers() {
             assert_eq!(driver.last_granted_iq, sign * 2.0);
         }
         driver.step(1_050).unwrap();
-        assert_eq!(driver.velocity_loop.last_iq(), sign);
+        assert_eq!(driver.velocity_loop.last_iq().value, sign);
     }
 }
 
 #[test]
 fn position_tracks_native_angles_but_only_recomputes_its_target_on_due_ticks() {
     let mut driver = scheduled_driver();
-    driver.set_mode(ControlMode::PositionControl { target_pos: 0.1 });
+    driver.set_mode(ControlMode::PositionControl {
+        target_pos: erad(0.1),
+    });
     driver.step(50).unwrap();
-    assert_eq!(driver.velocity_loop.last_iq(), 1.0);
+    assert_eq!(driver.velocity_loop.last_iq().value, 1.0);
     driver.phase_mut().angle = 0.05;
     driver.step(100).unwrap();
     assert_eq!(driver.position().as_rad(), 0.05);
     assert_eq!(driver.last_granted_iq, 1.0);
     driver.step(1_050).unwrap();
-    assert!((driver.velocity_loop.last_iq() - 0.5).abs() < 0.002);
-    driver.set_mode(ControlMode::PositionControl { target_pos: -0.1 });
+    assert!((driver.velocity_loop.last_iq().value - 0.5).abs() < 0.002);
+    driver.set_mode(ControlMode::PositionControl {
+        target_pos: erad(-0.1),
+    });
     driver.step(1_100).unwrap();
     assert_eq!(driver.last_granted_iq, 0.0);
     driver.step(2_050).unwrap();

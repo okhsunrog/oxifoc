@@ -17,6 +17,10 @@ use crate::foc::trig::SinCos;
 
 use crate::foc::fast_math::sqrtf;
 use crate::foc::trig::LibmSinCos;
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalResistance, Inductance, Time, amps,
+    henries, hertz, ohms,
+};
 #[path = "inductance_fit.rs"]
 mod fit;
 use fit::RlWindow;
@@ -34,29 +38,29 @@ const HFI_CYCLES_PER_FFT: usize = 1;
 const INDUCTANCE_SCALE_FACTOR: f32 = 1.0;
 
 /// Minimum valid inductance in Henries
-const MIN_VALID_INDUCTANCE: f32 = 1e-7; // 0.1 µH
+const MIN_VALID_INDUCTANCE: Inductance = henries(1e-7); // 0.1 µH
 
 /// Maximum valid inductance in Henries
-const MAX_VALID_INDUCTANCE: f32 = 0.1; // 100 mH
+const MAX_VALID_INDUCTANCE: Inductance = henries(0.1); // 100 mH
 
 /// Result of inductance measurement.
 #[derive(Clone, Copy, Debug, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct InductanceResult {
-    /// d-axis inductance in Henries
-    pub ld: f32,
+    /// d-axis inductance
+    pub ld: Inductance,
 
-    /// q-axis inductance in Henries
-    pub lq: f32,
+    /// q-axis inductance
+    pub lq: Inductance,
 
-    /// Average inductance (Ld + Lq) / 2 in Henries
-    pub l_avg: f32,
+    /// Average inductance (Ld + Lq) / 2
+    pub l_avg: Inductance,
 
-    /// Inductance difference (Lq - Ld) in Henries (saliency)
-    pub l_diff: f32,
+    /// Inductance difference (Lq - Ld) (saliency)
+    pub l_diff: Inductance,
 
     /// Average current during measurement (for validation)
-    pub avg_current: f32,
+    pub avg_current: ElectricCurrent,
 
     /// Mean window RMS residual relative to the current-change signal.
     pub relative_error: f32,
@@ -201,32 +205,32 @@ pub struct InductanceMeasurement<S: SinCos = LibmSinCos> {
     /// Current sample index within identification window
     sample_idx: usize,
     /// Previous current sample for differential calculation
-    prev_i_alpha: f32,
-    prev_i_beta: f32,
+    prev_i_alpha: ElectricCurrent,
+    prev_i_beta: ElectricCurrent,
     /// Number of complete identification windows collected
     cycles_completed: u32,
     /// Target number of identification windows to average
     target_cycles: u32,
     /// Accumulated Ld sum (for averaging across cycles)
-    ld_sum: f32,
+    ld_sum: Inductance,
     /// Accumulated signed saliency (1/Ld − 1/Lq)/2 per identification window.
     saliency_sum: f32,
     /// Accumulated quadrature (45°-off) saliency — alignment diagnostic.
     quadrature_sum: f32,
     /// Accumulated Lq sum
-    lq_sum: f32,
+    lq_sum: Inductance,
     error_sum: f32,
     /// Accumulated current sum (for validation)
-    current_sum: f32,
+    current_sum: ElectricCurrent,
     /// Total sample count
     total_samples: u32,
-    /// PWM/sampling frequency for the zero-order-hold response conversion.
-    pwm_freq_hz: f32,
-    /// Previously measured phase resistance (Ω) for compensation.
-    /// Set to 0 when unknown.
-    resistance_ohm: f32,
-    /// DC holding current (A) for separating AC from DC in R compensation.
-    hold_current: f32,
+    /// Sampling period for the zero-order-hold response conversion.
+    dt: Time,
+    /// Previously measured phase resistance for compensation.
+    /// Zero when unknown.
+    resistance: ElectricalResistance,
+    /// DC holding current for separating AC from DC in R compensation.
+    hold_current: ElectricCurrent,
     /// Is this the first sample? (skip differential on first)
     first_sample: bool,
     _sincos: PhantomData<S>,
@@ -247,20 +251,20 @@ impl<S: SinCos> InductanceMeasurement<S> {
             window: RlWindow::default(),
             fit_error: None,
             sample_idx: 0,
-            prev_i_alpha: 0.0,
-            prev_i_beta: 0.0,
+            prev_i_alpha: ElectricCurrent::ZERO,
+            prev_i_beta: ElectricCurrent::ZERO,
             cycles_completed: 0,
             target_cycles,
-            ld_sum: 0.0,
+            ld_sum: Inductance::ZERO,
             saliency_sum: 0.0,
             quadrature_sum: 0.0,
-            lq_sum: 0.0,
+            lq_sum: Inductance::ZERO,
             error_sum: 0.0,
-            current_sum: 0.0,
+            current_sum: ElectricCurrent::ZERO,
             total_samples: 0,
-            pwm_freq_hz,
-            resistance_ohm: params.resistance_ohm,
-            hold_current: params.hold_current_a,
+            dt: hertz(pwm_freq_hz).recip(),
+            resistance: ohms(params.resistance_ohm),
+            hold_current: amps(params.hold_current_a),
             first_sample: true,
             _sincos: PhantomData,
         }
@@ -283,22 +287,22 @@ impl<S: SinCos> InductanceMeasurement<S> {
     /// and corrupts the per-sample `di/v` division catastrophically.
     ///
     /// # Arguments
-    /// * `i_alpha`, `i_beta` - Measured α/β current (A)
+    /// * `i_alpha`, `i_beta` - Measured α/β current
     /// * `injection_angle` - direction angle of the injection command that
     ///   drove this `di`
-    /// * `v_inj_alpha`, `v_inj_beta` - that command's injection voltage (V)
+    /// * `v_inj_alpha`, `v_inj_beta` - that command's injection voltage
     ///
     /// # Returns
     /// `true` when a complete identification window has been processed.
     pub fn record(
         &mut self,
-        i_alpha: f32,
-        i_beta: f32,
+        i_alpha: ElectricCurrent,
+        i_beta: ElectricCurrent,
         _injection_angle: f32,
-        v_inj_alpha: f32,
-        v_inj_beta: f32,
+        v_inj_alpha: ElectricPotential,
+        v_inj_beta: ElectricPotential,
     ) -> bool {
-        let i_magnitude = sqrtf(i_alpha * i_alpha + i_beta * i_beta);
+        let i_magnitude = (i_alpha * i_alpha + i_beta * i_beta).sqrt_with(sqrtf);
         self.current_sum += i_magnitude;
         self.total_samples += 1;
 
@@ -310,22 +314,22 @@ impl<S: SinCos> InductanceMeasurement<S> {
         }
 
         let di = [i_alpha - self.prev_i_alpha, i_beta - self.prev_i_beta];
+        // Inductive voltage: the command minus the AC part of the R drop.
         let x = [
-            v_inj_alpha - self.resistance_ohm * (self.prev_i_alpha - self.hold_current),
-            v_inj_beta - self.resistance_ohm * self.prev_i_beta,
+            v_inj_alpha - self.resistance * (self.prev_i_alpha - self.hold_current),
+            v_inj_beta - self.resistance * self.prev_i_beta,
         ];
-        self.window.record(x, di);
+        // The window fits a 2x2 response matrix (units 1/H) on plain SI values.
+        self.window
+            .record([x[0].value, x[1].value], [di[0].value, di[1].value]);
         self.sample_idx += 1;
         self.prev_i_alpha = i_alpha;
         self.prev_i_beta = i_beta;
         if self.sample_idx >= FFT_SIZE {
-            match self
-                .window
-                .finish(self.resistance_ohm, 1.0 / self.pwm_freq_hz)
-            {
+            match self.window.finish(self.resistance.value, self.dt.value) {
                 Ok(result) => {
-                    self.ld_sum += result.ld;
-                    self.lq_sum += result.lq;
+                    self.ld_sum += henries(result.ld);
+                    self.lq_sum += henries(result.lq);
                     self.error_sum += result.relative_error;
                     self.saliency_sum += result.saliency;
                     self.quadrature_sum += result.quadrature;
@@ -368,7 +372,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
 
     /// Start another contiguous packet without mixing its DC hold interval
     /// into a differential current sample or discarding completed identification windows.
-    pub fn prime_currents(&mut self, alpha: f32, beta: f32) {
+    pub fn prime_currents(&mut self, alpha: ElectricCurrent, beta: ElectricCurrent) {
         self.prev_i_alpha = alpha;
         self.prev_i_beta = beta;
         self.sample_idx = 0;
@@ -380,7 +384,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
     ///
     /// Diagnostic only: near the ADC noise floor this estimate can be badly
     /// biased, so it must not size the next excitation's voltage.
-    pub fn interim_l_avg(&self) -> Option<f32> {
+    pub fn interim_l_avg(&self) -> Option<Inductance> {
         if self.cycles_completed == 0 {
             return None;
         }
@@ -398,12 +402,12 @@ impl<S: SinCos> InductanceMeasurement<S> {
         self.window = RlWindow::default();
         self.fit_error = None;
         self.cycles_completed = 0;
-        self.ld_sum = 0.0;
-        self.lq_sum = 0.0;
+        self.ld_sum = Inductance::ZERO;
+        self.lq_sum = Inductance::ZERO;
         self.error_sum = 0.0;
         self.saliency_sum = 0.0;
         self.quadrature_sum = 0.0;
-        self.current_sum = 0.0;
+        self.current_sum = ElectricCurrent::ZERO;
         self.total_samples = 0;
         self.first_sample = true;
     }
@@ -419,7 +423,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
     pub fn axes_aligned(&self) -> bool {
         let offset_scale = if self.cycles_completed > 0 {
             // Typical 1/L magnitude for "is the saliency significant at all"
-            (self.ld_sum / self.cycles_completed as f32).max(1e-9)
+            (self.ld_sum.value / self.cycles_completed as f32).max(1e-9)
         } else {
             return true;
         };
@@ -467,14 +471,14 @@ impl<S: SinCos> InductanceMeasurement<S> {
         let avg_current = if self.total_samples > 0 {
             self.current_sum / self.total_samples as f32
         } else {
-            0.0
+            ElectricCurrent::ZERO
         };
 
         // The holding current must actually be flowing: a disconnected
         // phase still yields plausible-looking 1/L samples from noise, and
         // the range gates above can't tell. |i| averages ≥ the DC hold for
         // a connected motor, so well under half of it means open circuit.
-        if self.hold_current > 0.05 && avg_current < 0.3 * self.hold_current {
+        if self.hold_current > amps(0.05) && avg_current < 0.3 * self.hold_current {
             return Err(DetectionError::MotorNotResponding);
         }
 
@@ -490,7 +494,7 @@ impl<S: SinCos> InductanceMeasurement<S> {
 }
 
 /// Validate measured inductance values.
-pub fn validate_inductance(ld: f32, lq: f32) -> Result<(), DetectionError> {
+pub fn validate_inductance(ld: Inductance, lq: Inductance) -> Result<(), DetectionError> {
     let valid_range = MIN_VALID_INDUCTANCE..=MAX_VALID_INDUCTANCE;
     if !valid_range.contains(&ld) || !valid_range.contains(&lq) {
         return Err(DetectionError::OutOfRange);
@@ -500,7 +504,7 @@ pub fn validate_inductance(ld: f32, lq: f32) -> Result<(), DetectionError> {
     // SPM: Ld ≈ Lq (ratio ≈ 1.0)
     // IPM: Ld < Lq (ratio 0.3–0.8 typical)
     // Anything outside this range likely indicates measurement error.
-    let ratio = ld / lq;
+    let ratio = ld.value / lq.value;
     if !(0.3..=3.5).contains(&ratio) {
         return Err(DetectionError::LowConfidence);
     }
@@ -525,6 +529,7 @@ pub enum Axis {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::volts;
 
     #[test]
     fn exact_packet_plant_recovers_saliency_at_quarter_rate_and_other_carriers() {
@@ -551,7 +556,7 @@ mod tests {
                     for _ in 0..2 {
                         let baseline = [3.07, -0.04];
                         let mut current = baseline;
-                        measurement.prime_currents(current[0], current[1]);
+                        measurement.prime_currents(amps(current[0]), amps(current[1]));
                         for k in 0..128 {
                             let theta = k as f32 * core::f32::consts::TAU / 32.0;
                             let phase = k as f32 * core::f32::consts::TAU * carrier / fs;
@@ -572,19 +577,25 @@ mod tests {
                                 baseline[0] + cos * next_dq[0] - sin * next_dq[1],
                                 baseline[1] + sin * next_dq[0] + cos * next_dq[1],
                             ];
-                            measurement.record(current[0], current[1], theta, u[0], u[1]);
+                            measurement.record(
+                                amps(current[0]),
+                                amps(current[1]),
+                                theta,
+                                volts(u[0]),
+                                volts(u[1]),
+                            );
                         }
                     }
                     let result = measurement.finish().unwrap();
                     assert!(
-                        (result.ld / ld - 1.0).abs() < 0.001,
+                        (result.ld.value / ld - 1.0).abs() < 0.001,
                         "carrier={carrier}, ld={}",
-                        result.ld
+                        result.ld.value
                     );
                     assert!(
-                        (result.lq / lq - 1.0).abs() < 0.001,
+                        (result.lq.value / lq - 1.0).abs() < 0.001,
                         "carrier={carrier}, lq={}",
-                        result.lq
+                        result.lq.value
                     );
                 }
             }
@@ -688,7 +699,13 @@ mod tests {
             i_alpha += di_alpha;
             i_beta += di_beta;
 
-            measurement.record(i_alpha, i_beta, injection_angle, prev_v_alpha, prev_v_beta);
+            measurement.record(
+                amps(i_alpha),
+                amps(i_beta),
+                injection_angle,
+                volts(prev_v_alpha),
+                volts(prev_v_beta),
+            );
             prev_v_alpha = v_alpha;
             prev_v_beta = v_beta;
         }
@@ -697,26 +714,26 @@ mod tests {
 
         // For SPM, Ld ≈ Lq ≈ L_actual
         // Allow larger tolerance due to simulation simplifications
-        let ld_error = (result.ld - l_actual).abs() / l_actual;
-        let lq_error = (result.lq - l_actual).abs() / l_actual;
+        let ld_error = (result.ld.value - l_actual).abs() / l_actual;
+        let lq_error = (result.lq.value - l_actual).abs() / l_actual;
 
         assert!(
             ld_error < 0.5,
             "Ld error too large: {:.1}% (got {:.2}µH, expected {:.2}µH)",
             ld_error * 100.0,
-            result.ld * 1e6,
+            result.ld.value * 1e6,
             l_actual * 1e6
         );
         assert!(
             lq_error < 0.5,
             "Lq error too large: {:.1}% (got {:.2}µH, expected {:.2}µH)",
             lq_error * 100.0,
-            result.lq * 1e6,
+            result.lq.value * 1e6,
             l_actual * 1e6
         );
 
         // Ld and Lq should be similar for SPM
-        let ratio = result.ld / result.lq;
+        let ratio = result.ld.value / result.lq.value;
         assert!(
             (0.5..=2.0).contains(&ratio),
             "Ld/Lq ratio {ratio} outside expected range for SPM"
@@ -726,18 +743,18 @@ mod tests {
     #[test]
     fn test_validate_inductance() {
         // Valid values (SPM motor, Ld ≈ Lq)
-        assert!(validate_inductance(0.0001, 0.00012).is_ok());
+        assert!(validate_inductance(henries(0.0001), henries(0.00012)).is_ok());
 
         // Valid values (IPM motor, Ld < Lq)
-        assert!(validate_inductance(0.00008, 0.00015).is_ok());
+        assert!(validate_inductance(henries(0.00008), henries(0.00015)).is_ok());
 
         // Invalid: too low
-        assert!(validate_inductance(1e-9, 0.0001).is_err());
+        assert!(validate_inductance(henries(1e-9), henries(0.0001)).is_err());
 
         // Invalid: too high
-        assert!(validate_inductance(1.0, 0.0001).is_err());
+        assert!(validate_inductance(henries(1.0), henries(0.0001)).is_err());
 
         // Invalid: extreme ratio
-        assert!(validate_inductance(0.0001, 0.001).is_err()); // 10:1 ratio
+        assert!(validate_inductance(henries(0.0001), henries(0.001)).is_err()); // 10:1 ratio
     }
 }

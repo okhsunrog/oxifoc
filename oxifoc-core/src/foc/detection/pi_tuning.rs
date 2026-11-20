@@ -19,8 +19,18 @@
 //! This places the closed-loop pole at -ω_bw, giving first-order response
 //! with time constant τ = 1/ω_bw.
 
+use core::ops::Div;
+
 use super::types::MotorParams;
 use crate::foc::clamp_f32;
+use crate::units::unit::{ohm, radian_per_second};
+use crate::units::{
+    AngularVelocity, ElectricCurrent, ElectricPotential, ElectricalResistance, Frequency,
+    Inductance, Time, henries, ohms, rad_per_s,
+};
+
+/// Integral gain of a current PI: volts per ampere-second (`R·ω_bw`).
+pub type CurrentIntegralGain = <ElectricalResistance as Div<Time>>::Output;
 
 /// Default current loop bandwidth in rad/s.
 ///
@@ -58,30 +68,40 @@ pub struct PiGains {
 /// Calculate PI gains for current control from motor parameters.
 ///
 /// # Arguments
-/// * `resistance` - Motor phase resistance in Ohms
-/// * `inductance` - Motor inductance in Henries (use Ld for d-axis, Lq for q-axis)
-/// * `bandwidth_rad_s` - Desired control bandwidth in rad/s
+/// * `resistance` - Motor phase resistance
+/// * `inductance` - Motor inductance (use Ld for d-axis, Lq for q-axis)
+/// * `bandwidth` - Desired control bandwidth
 ///
 /// # Returns
-/// Tuple of (Kp, Ki) gains
+/// `(Kp, Ki)`: Kp in V/A (= Ω), Ki in V/(A·s). Swapping R and L does not
+/// compile.
 ///
 /// # Example
 /// ```
 /// use oxifoc_core::foc::detection::pi_tuning::calculate_current_gains;
+/// use oxifoc_core::units::{henries, ohms, rad_per_s};
 ///
 /// // Motor with R=0.1Ω, L=100µH, 1000 rad/s bandwidth
-/// let (kp, ki) = calculate_current_gains(0.1, 0.0001, 1000.0);
-/// assert!((kp - 0.1).abs() < 0.001);  // Kp = L × ω = 0.0001 × 1000
-/// assert!((ki - 100.0).abs() < 1.0);   // Ki = R × ω = 0.1 × 1000
+/// let (kp, ki) = calculate_current_gains(ohms(0.1), henries(100e-6), rad_per_s(1000.0));
+/// assert!((kp.value - 0.1).abs() < 0.001);  // Kp = L × ω = 0.0001 × 1000
+/// assert!((ki.value - 100.0).abs() < 1.0);   // Ki = R × ω = 0.1 × 1000
+/// ```
+///
+/// ```compile_fail
+/// use oxifoc_core::foc::detection::pi_tuning::calculate_current_gains;
+/// use oxifoc_core::units::{henries, ohms, rad_per_s};
+///
+/// // R and L in the wrong order: a type error, not a 1000× wrong gain.
+/// let _ = calculate_current_gains(henries(100e-6), ohms(0.1), rad_per_s(1000.0));
 /// ```
 #[inline]
 pub fn calculate_current_gains(
-    resistance: f32,
-    inductance: f32,
-    bandwidth_rad_s: f32,
-) -> (f32, f32) {
-    let kp = inductance * bandwidth_rad_s;
-    let ki = resistance * bandwidth_rad_s;
+    resistance: ElectricalResistance,
+    inductance: Inductance,
+    bandwidth: AngularVelocity,
+) -> (ElectricalResistance, CurrentIntegralGain) {
+    let kp: ElectricalResistance = inductance * bandwidth;
+    let ki: CurrentIntegralGain = resistance * bandwidth;
     (kp, ki)
 }
 
@@ -91,29 +111,33 @@ pub fn calculate_current_gains(
 /// the bandwidth is reduced to stay within limits.
 ///
 /// # Arguments
-/// * `resistance` - Motor phase resistance in Ohms
-/// * `inductance` - Motor inductance in Henries
-/// * `target_bandwidth` - Desired bandwidth in rad/s
+/// * `resistance` - Motor phase resistance
+/// * `inductance` - Motor inductance
+/// * `target_bandwidth` - Desired bandwidth
 /// * `max_voltage` - Maximum available control voltage
 /// * `max_current` - Maximum expected current step
 ///
 /// # Returns
 /// Tuple of (Kp, Ki, actual_bandwidth)
 pub fn calculate_current_gains_limited(
-    resistance: f32,
-    inductance: f32,
-    target_bandwidth: f32,
-    max_voltage: f32,
-    max_current: f32,
-) -> (f32, f32, f32) {
+    resistance: ElectricalResistance,
+    inductance: Inductance,
+    target_bandwidth: AngularVelocity,
+    max_voltage: ElectricPotential,
+    max_current: ElectricCurrent,
+) -> (ElectricalResistance, CurrentIntegralGain, AngularVelocity) {
     // Maximum voltage needed for step response: V = Kp × I_step
     // Limit Kp such that Kp × I_max <= V_max
-    let max_kp = max_voltage / max_current;
-    let max_bandwidth_from_kp = max_kp / inductance;
+    let max_kp: ElectricalResistance = max_voltage / max_current;
+    let max_bandwidth_from_kp: AngularVelocity = (max_kp / inductance).into();
 
     // Use the more limiting bandwidth
     let actual_bandwidth = target_bandwidth.min(max_bandwidth_from_kp);
-    let actual_bandwidth = clamp_f32(actual_bandwidth, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
+    let actual_bandwidth = rad_per_s(clamp_f32(
+        actual_bandwidth.get::<radian_per_second>(),
+        MIN_BANDWIDTH_RAD_S,
+        MAX_BANDWIDTH_RAD_S,
+    ));
 
     let (kp, ki) = calculate_current_gains(resistance, inductance, actual_bandwidth);
     (kp, ki, actual_bandwidth)
@@ -152,15 +176,16 @@ pub fn calculate_foc_gains(params: &MotorParams, bandwidth_rad_s: f32) -> Option
     };
 
     let bandwidth = clamp_f32(bandwidth_rad_s, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
+    let r = ohms(params.resistance_ohm);
 
-    let (kp_d, ki_d) = calculate_current_gains(params.resistance_ohm, ld, bandwidth);
-    let (kp_q, ki_q) = calculate_current_gains(params.resistance_ohm, lq, bandwidth);
+    let (kp_d, ki_d) = calculate_current_gains(r, henries(ld), rad_per_s(bandwidth));
+    let (kp_q, ki_q) = calculate_current_gains(r, henries(lq), rad_per_s(bandwidth));
 
     Some(PiGains {
-        kp_d,
-        ki_d,
-        kp_q,
-        ki_q,
+        kp_d: kp_d.get::<ohm>(),
+        ki_d: ki_d.value,
+        kp_q: kp_q.get::<ohm>(),
+        ki_q: ki_q.value,
         bandwidth_rad_s: bandwidth,
     })
 }
@@ -173,26 +198,23 @@ pub fn calculate_foc_gains(params: &MotorParams, bandwidth_rad_s: f32) -> Option
 ///   but the plant responds fast), so it gets the conservative end
 /// - Capped at 1/10 of the PWM frequency (sampling/delay limit)
 ///
-/// # Arguments
-/// * `inductance_h` - Motor inductance in Henries
-/// * `pwm_freq_hz` - PWM switching frequency in Hz
-///
 /// # Returns
-/// Recommended bandwidth in rad/s
-pub fn estimate_bandwidth(inductance_h: f32, pwm_freq_hz: f32) -> f32 {
+/// Recommended bandwidth
+pub fn estimate_bandwidth(inductance: Inductance, pwm_freq: Frequency) -> AngularVelocity {
+    use crate::units::unit::hertz;
     // Rule of thumb: bandwidth should be at most 1/10 of PWM frequency
-    // to ensure adequate sampling and avoid aliasing
-    let max_from_pwm = pwm_freq_hz * core::f32::consts::TAU / 10.0;
+    // to ensure adequate sampling and avoid aliasing (2π rad per cycle).
+    let max_from_pwm = pwm_freq.get::<hertz>() * core::f32::consts::TAU / 10.0;
 
     // Also limit based on inductance - very low inductance motors
     // may have too fast dynamics for stable control
-    let suggested: f32 = if inductance_h < 10e-6 {
+    let suggested: f32 = if inductance < henries(10e-6) {
         // Very low inductance (< 10µH): be conservative
         500.0
-    } else if inductance_h < 100e-6 {
+    } else if inductance < henries(100e-6) {
         // Typical small motor (10-100µH)
         1000.0
-    } else if inductance_h < 1e-3 {
+    } else if inductance < henries(1e-3) {
         // Medium motor (100µH - 1mH)
         2000.0
     } else {
@@ -200,11 +222,11 @@ pub fn estimate_bandwidth(inductance_h: f32, pwm_freq_hz: f32) -> f32 {
         3000.0
     };
 
-    clamp_f32(
+    rad_per_s(clamp_f32(
         suggested.min(max_from_pwm),
         MIN_BANDWIDTH_RAD_S,
         MAX_BANDWIDTH_RAD_S,
-    )
+    ))
 }
 
 /// Calculate observer gain from motor parameters.
@@ -232,11 +254,13 @@ pub fn calculate_observer_gain(flux_linkage_wb: f32) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{amps, hertz, volts};
 
     #[test]
     fn test_calculate_current_gains() {
         // R = 0.1Ω, L = 100µH, ω = 1000 rad/s
-        let (kp, ki) = calculate_current_gains(0.1, 0.0001, 1000.0);
+        let (kp, ki) = calculate_current_gains(ohms(0.1), henries(0.0001), rad_per_s(1000.0));
+        let (kp, ki) = (kp.value, ki.value);
 
         // Kp = L × ω = 0.0001 × 1000 = 0.1
         assert!((kp - 0.1).abs() < 1e-6);
@@ -249,7 +273,14 @@ mod tests {
     fn test_calculate_current_gains_limited() {
         // R = 0.1Ω, L = 100µH, target ω = 5000 rad/s
         // But with V_max = 24V and I_max = 50A
-        let (kp, ki, actual_bw) = calculate_current_gains_limited(0.1, 0.0001, 5000.0, 24.0, 50.0);
+        let (kp, ki, actual_bw) = calculate_current_gains_limited(
+            ohms(0.1),
+            henries(0.0001),
+            rad_per_s(5000.0),
+            volts(24.0),
+            amps(50.0),
+        );
+        let (kp, ki, actual_bw) = (kp.value, ki.value, actual_bw.value);
 
         // Max Kp = 24/50 = 0.48
         // Max ω from Kp = 0.48/0.0001 = 4800 rad/s
@@ -293,11 +324,11 @@ mod tests {
     #[test]
     fn test_estimate_bandwidth() {
         // Low inductance motor
-        let bw = estimate_bandwidth(50e-6, 20000.0);
+        let bw = estimate_bandwidth(henries(50e-6), hertz(20000.0)).value;
         assert!((MIN_BANDWIDTH_RAD_S..=MAX_BANDWIDTH_RAD_S).contains(&bw));
 
         // Should not exceed PWM limit
-        let bw_limited = estimate_bandwidth(10e-6, 5000.0);
+        let bw_limited = estimate_bandwidth(henries(10e-6), hertz(5000.0)).value;
         let pwm_limit = 5000.0 * core::f32::consts::TAU / 10.0;
         assert!(bw_limited <= pwm_limit);
     }

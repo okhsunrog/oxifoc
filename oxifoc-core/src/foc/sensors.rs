@@ -21,12 +21,13 @@ use super::current_sense::ShuntCurrentSense;
 use super::hall_calibration::HallCalibrationResult;
 use super::hall_sensor::Direction;
 use crate::foc::hall_sensor::HallFaultKind;
+use crate::units::{ConstZero, ElectricalAngle, ElectricalAngularVelocity, Time};
 
 /// Snapshot from an angle sensor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AngleSample {
-    pub angle: f32,
-    pub omega: f32, // Electrical angular velocity (rad/s)
+    pub angle: ElectricalAngle,
+    pub omega: ElectricalAngularVelocity,
     pub direction: Direction,
 }
 
@@ -47,8 +48,8 @@ pub struct HallEdgeObservation {
     pub reference_epoch: u32,
     pub ticks: u64,
     pub timing: HallEdgeTiming,
-    pub sector_width_rad: f32,
-    pub velocity_rad_s: f32,
+    pub sector_width: ElectricalAngle,
+    pub velocity: ElectricalAngularVelocity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,7 +104,7 @@ pub trait CurrentSensor {
 pub trait AngleSensor {
     /// Hall position estimated from a boundary and bounded sector travel.
     #[cfg(feature = "bench-cogging-compensation")]
-    fn bench_hall_position(&self, _now_ticks: u64) -> Option<f32> {
+    fn bench_hall_position(&self, _now_ticks: u64) -> Option<ElectricalAngle> {
         None
     }
 
@@ -152,12 +153,11 @@ pub trait AngleSensor {
     }
 
     /// Whether the sensor's data has implausibly stopped updating while an
-    /// INDEPENDENT estimate says the rotor turns at `omega_ref` (electrical
-    /// rad/s) — e.g. hall edges that should have arrived at that speed but
+    /// INDEPENDENT estimate says the rotor turns at `omega_ref` — e.g. hall edges that should have arrived at that speed but
     /// did not. The caller supplies the evidence: edge timing alone cannot
     /// tell a rotor that stopped from a sensor that died. Default: never
     /// stale — absolute encoders and mocks have no notion of edge timing.
-    fn is_stale(&self, _now_ticks: u64, _omega_ref: f32) -> bool {
+    fn is_stale(&self, _now_ticks: u64, _omega_ref: ElectricalAngularVelocity) -> bool {
         false
     }
 
@@ -169,9 +169,9 @@ pub trait AngleSensor {
         None
     }
 
-    /// Read electrical angle in radians (0..2π). Default uses `sample`.
-    fn read_angle(&self) -> f32 {
-        self.sample(0).map(|s| s.angle).unwrap_or(0.0)
+    /// Read electrical angle (0..2π). Default uses `sample`.
+    fn read_angle(&self) -> ElectricalAngle {
+        self.sample(0).map_or(ElectricalAngle::ZERO, |s| s.angle)
     }
 
     /// Read rotation direction. Default uses `sample`.
@@ -206,8 +206,8 @@ pub trait AngleSensor {
 
 /// Optional velocity estimation from an angle sensor
 pub trait VelocitySensor {
-    /// Electrical angular velocity in rad/s
-    fn read_velocity(&self) -> f32;
+    /// Electrical angular velocity
+    fn read_velocity(&self) -> ElectricalAngularVelocity;
 }
 
 // ============================================================================
@@ -218,11 +218,11 @@ pub trait VelocitySensor {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HallInterpolationInfo {
     /// Angle from Hall state calibration table
-    pub base_angle: f32,
+    pub base_angle: ElectricalAngle,
     /// Offset added by velocity extrapolation
-    pub interpolation_offset: f32,
-    /// Velocity used for interpolation (rad/s)
-    pub estimated_velocity: f32,
+    pub interpolation_offset: ElectricalAngle,
+    /// Velocity used for interpolation
+    pub estimated_velocity: ElectricalAngularVelocity,
     /// Time since last Hall edge (microseconds)
     pub time_since_edge_us: u32,
 }
@@ -244,25 +244,25 @@ pub trait HallSensorTrait: AngleSensor {
     /// Timestamp of last Hall edge (in sensor's tick timebase)
     fn last_edge_ticks(&self) -> Option<u64>;
 
-    /// Electrical velocity from edge timing (rad/s)
-    fn electrical_velocity(&self) -> f32;
+    /// Electrical velocity from edge timing
+    fn electrical_velocity(&self) -> ElectricalAngularVelocity;
 
     /// Set calibration table (angles for logical states 0-5)
     /// For backwards compatibility - prefer `set_calibration_raw`
-    fn set_calibration(&mut self, table: [f32; 6]);
+    fn set_calibration(&mut self, table: [ElectricalAngle; 6]);
 
     /// Set calibration table using raw Hall states (8-entry table)
     /// This is the preferred method as it works with any Hall sensor wiring
-    fn set_calibration_raw(&mut self, raw_table: [f32; 8]);
+    fn set_calibration_raw(&mut self, raw_table: [ElectricalAngle; 8]);
 
     /// Apply calibration result from HallCalibrator
     fn apply_calibration(&mut self, result: &HallCalibrationResult) -> bool;
 
-    /// Set timing advance (radians)
-    fn set_advance(&mut self, advance_rad: f32);
+    /// Set timing advance
+    fn set_advance(&mut self, advance: ElectricalAngle);
 
-    /// Get current timing advance (radians)
-    fn advance(&self) -> f32;
+    /// Get current timing advance
+    fn advance(&self) -> ElectricalAngle;
 
     /// Get interpolation diagnostics
     fn interpolation_info(&self, now_ticks: u64) -> HallInterpolationInfo;
@@ -293,11 +293,11 @@ pub trait EncoderSensorTrait: AngleSensor {
     /// Set current position as electrical zero
     fn set_zero(&mut self);
 
-    /// Set electrical angle offset (radians)
-    fn set_offset(&mut self, offset_rad: f32);
+    /// Set electrical angle offset
+    fn set_offset(&mut self, offset: ElectricalAngle);
 
-    /// Get electrical angle offset (radians)
-    fn offset(&self) -> f32;
+    /// Get electrical angle offset
+    fn offset(&self) -> ElectricalAngle;
 
     /// Counts per electrical revolution
     fn counts_per_electrical_rev(&self) -> u32;
@@ -363,18 +363,18 @@ impl NoSensor {
 /// to report Hall sensor state to the host.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HallSnapshot {
-    /// Electrical angle in radians (0..2π)
-    pub angle_rad: f32,
-    /// Electrical angular velocity in rad/s
-    pub velocity_rad_s: f32,
+    /// Electrical angle (0..2π)
+    pub angle: ElectricalAngle,
+    /// Electrical angular velocity
+    pub velocity: ElectricalAngularVelocity,
     /// Current rotation direction
     pub direction: Direction,
     /// Logical Hall sector (0-5); physical bit patterns are mapped by the reader.
     pub state: u8,
     /// Cumulative error count
     pub error_count: u32,
-    /// Time since the latest hardware-captured edge, in seconds.
-    pub edge_age_s: f32,
+    /// Time since the latest hardware-captured edge.
+    pub edge_age: Time,
 }
 
 // ============================================================================
@@ -446,7 +446,7 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
     /// Create from board config
     pub fn from_config(config: &super::config::BoardConfig, reader: R) -> Self {
         let mut sensor = Self::new(
-            config.calib.shunt_ohms,
+            config.calib.shunt_ohms.value,
             config.calib.amp_gain,
             config.calib.adc_vref_mv,
             config.calib.adc_max_counts,

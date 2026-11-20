@@ -112,8 +112,8 @@ fn main() -> std::io::Result<()> {
         let mut rig = Rig::new(&cfg);
         // Spin up on hall at 10 A against the viscous load, then hand over.
         rig.driver.set_mode(ControlMode::CurrentControl {
-            iq_target: 10.0,
-            id_target: 0.0,
+            iq_target: oxifoc_core::units::amps(10.0),
+            id_target: oxifoc_core::units::amps(0.0),
         });
         for _ in 0..FOC_HZ {
             rig.step();
@@ -123,8 +123,9 @@ fn main() -> std::io::Result<()> {
         }
         let w0 = rig.out.omega_e;
         if lp == "velocity" {
-            rig.driver
-                .set_mode(ControlMode::VelocityControl { target_vel: w0 });
+            rig.driver.set_mode(ControlMode::VelocityControl {
+                target_vel: oxifoc_core::units::erad_per_s(w0),
+            });
         }
         for _ in 0..FOC_HZ / 2 {
             rig.step();
@@ -146,11 +147,11 @@ fn main() -> std::io::Result<()> {
             let s = (wf * t).sin();
             match lp.as_str() {
                 "current" => rig.driver.set_mode(ControlMode::CurrentControl {
-                    iq_target: 10.0 + 1.0 * s,
-                    id_target: 0.0,
+                    iq_target: oxifoc_core::units::amps(10.0 + 1.0 * s),
+                    id_target: oxifoc_core::units::amps(0.0),
                 }),
                 "velocity" => rig.driver.set_mode(ControlMode::VelocityControl {
-                    target_vel: w0 + 30.0 * s,
+                    target_vel: oxifoc_core::units::erad_per_s(w0 + 30.0 * s),
                 }),
                 _ => rig.torque_disturbance = torque_amp * s,
             }
@@ -159,8 +160,8 @@ fn main() -> std::io::Result<()> {
                 let tm = t - settle;
                 let (_, iq_true) = rec.true_dq();
                 match lp.as_str() {
-                    "current" => lock.add(tm, &[iq_true, rec.telem.iq, s]),
-                    "velocity" => lock.add(tm, &[rec.sample.omega_e, rec.telem.velocity_rad_s, s]),
+                    "current" => lock.add(tm, &[iq_true, rec.telem.iq.value, s]),
+                    "velocity" => lock.add(tm, &[rec.sample.omega_e, rec.telem.velocity.value, s]),
                     // Rotor speed (its constant part cancels over whole
                     // periods) and the frame error.
                     _ => lock.add(tm, &[rec.frame_err(), rec.sample.omega_e, s]),

@@ -4,6 +4,8 @@ use crate::foc::clamp_f32;
 use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
+#[cfg(feature = "storage")]
+use crate::units::Sign;
 
 /// Explicit source capability for an energized commissioning session.
 /// Unlike legacy configuration, this value has no unlimited sentinel.
@@ -183,33 +185,33 @@ impl CurrentLimits {
         // the board); NaN → unlimited (the boundary sanity check rejects
         // NaN commands, this is boot-path defense).
         let bus = |v: f32| if v.is_finite() { v } else { -1.0 };
-        let trip = if cfg.max_phase_current_a > 0.0 {
-            cfg.max_phase_current_a.min(hw_max_a)
+        let trip = if cfg.max_phase_current.is_positive() {
+            cfg.max_phase_current.value.min(hw_max_a)
         } else if rating_ok {
             hw_max_a.min(1.5 * rating_a)
         } else {
             hw_max_a
         };
-        let iq = if cfg.max_iq_a > 0.0 {
-            cfg.max_iq_a.min(iq_ceiling)
+        let iq = if cfg.max_iq.is_positive() {
+            cfg.max_iq.value.min(iq_ceiling)
         } else {
             iq_ceiling
         };
         let max_current_a = iq.min(trip / OVERCURRENT_HEADROOM);
         Self {
             max_current_a,
-            max_brake_a: if cfg.max_brake_a > 0.0 {
-                cfg.max_brake_a.min(max_current_a)
+            max_brake_a: if cfg.max_brake.is_positive() {
+                cfg.max_brake.value.min(max_current_a)
             } else {
                 max_current_a
             },
             overcurrent_threshold_a: trip,
-            bus_in_max_a: bus(cfg.bus_in_max_a),
-            bus_regen_max_a: bus(cfg.bus_regen_max_a),
+            bus_in_max_a: bus(cfg.bus_in_max.value),
+            bus_regen_max_a: bus(cfg.bus_regen_max.value),
             // `> 0` is false for NaN too: off. No ceiling needed here: the
             // current circle bounds what the budget can buy.
-            max_dissipation_w: if cfg.max_dissipation_w > 0.0 {
-                cfg.max_dissipation_w
+            max_dissipation_w: if cfg.max_dissipation.is_positive() {
+                cfg.max_dissipation.value
             } else {
                 0.0
             },

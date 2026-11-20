@@ -1,11 +1,15 @@
 use super::*;
 
+const VELOCITY_TAU_S: f32 = VELOCITY_TAU.value;
+
 #[test]
 fn magnitude_guard_matches_float_max_for_valid_inputs_and_any_stored_bits() {
     let check = |raw: f32, applied: f32, stored: f32| {
         assert!(raw.is_finite() && applied.is_finite());
         assert_eq!(
-            max_speed_magnitude(raw, applied, stored).to_bits(),
+            max_speed_magnitude(erad_per_s(raw), erad_per_s(applied), erad_per_s(stored),)
+                .value
+                .to_bits(),
             raw.abs().max(applied.abs()).max(stored.abs()).to_bits()
         );
     };
@@ -35,12 +39,13 @@ fn magnitude_guard_matches_float_max_for_valid_inputs_and_any_stored_bits() {
 use crate::foc::hall_sensor::Direction;
 use crate::foc::sensors::AngleSample;
 use crate::foc::wrap_angle;
+use crate::units::{erad, erad_per_s};
 
 fn sample(angle: f32, raw_omega: f32) -> ControlAngleSample {
     ControlAngleSample {
         sample: AngleSample {
-            angle: wrap_angle(angle),
-            omega: raw_omega,
+            angle: wrap_angle(erad(angle)),
+            omega: erad_per_s(raw_omega),
             direction: Direction::Clockwise,
         },
         reference_epoch: 0,
@@ -48,10 +53,11 @@ fn sample(angle: f32, raw_omega: f32) -> ControlAngleSample {
 }
 
 fn observe(motion: &mut HallControlMotion, angle: f32, raw: f32, ticks: u64, applied: f32) -> f32 {
-    motion
-        .observe(sample(angle, raw), ticks, applied)
+    (motion
+        .observe(sample(angle, raw), ticks, erad_per_s(applied))
         .unwrap()
-        .velocity
+        .velocity)
+        .value
 }
 
 #[test]
@@ -171,7 +177,7 @@ fn invalid_sensor_frames_do_not_poison_control_speed() {
     for invalid in [sample(f32::NAN, 1.0), sample(1.0, f32::INFINITY)] {
         let mut motion = HallControlMotion::default();
         observe(&mut motion, 0.0, 100.0, 0, 0.0);
-        assert!(motion.observe(invalid, 50, 20.0).is_none());
+        assert!(motion.observe(invalid, 50, erad_per_s(20.0)).is_none());
         assert_eq!(observe(&mut motion, 2.0, 100.0, 100, 20.0), 20.0);
     }
 }

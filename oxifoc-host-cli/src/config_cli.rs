@@ -71,6 +71,7 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
     println!("//! re-detection or re-tuning, then rebuild and reflash.");
     println!();
     println!("use oxifoc_core::storage::*;");
+    println!("use oxifoc_core::units::si;");
     println!();
     println!("/// The baked configuration.");
     println!("pub fn baked() -> RuntimeConfig {{");
@@ -194,10 +195,11 @@ fn rust_field_literal(
 fn rust_literal(v: &Value) -> String {
     match v {
         Value::Number(n) => {
-            // f32 fields must keep a float literal even for round values.
+            // Float fields are plain f32 or SI quantities; `si` builds
+            // either from the base-unit value the JSON carries.
             if n.is_f64() {
                 let f = n.as_f64().unwrap() as f32;
-                format!("{f:?}")
+                format!("si({f:?})")
             } else {
                 format!("{n}")
             }
@@ -224,13 +226,13 @@ mod tests {
             "None"
         );
         let json = serde_json::to_value(oxifoc_core::storage::HallTransitionGeometryConfig {
-            entry_angles: [0.0; 8],
+            entry_angles: [oxifoc_core::units::erad(0.0); 8],
             next_states: [0; 8],
         })
         .unwrap();
         assert_eq!(
             rust_field_literal(group, "geometry", &json).unwrap(),
-            "Some(HallTransitionGeometryConfig { entry_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], next_states: [0, 0, 0, 0, 0, 0, 0, 0] })"
+            "Some(HallTransitionGeometryConfig { entry_angles: [si(0.0), si(0.0), si(0.0), si(0.0), si(0.0), si(0.0), si(0.0), si(0.0)], next_states: [0, 0, 0, 0, 0, 0, 0, 0] })"
         );
         assert_eq!(
             rust_field_literal(group, "valid", &serde_json::json!([false, true])).unwrap(),
@@ -271,6 +273,9 @@ mod tests {
             )
             .is_err()
         );
-        assert_eq!(rust_literal(&serde_json::json!([1.0, 2.0])), "[1.0, 2.0]");
+        assert_eq!(
+            rust_literal(&serde_json::json!([1.0, 2.0])),
+            "[si(1.0), si(2.0)]"
+        );
     }
 }

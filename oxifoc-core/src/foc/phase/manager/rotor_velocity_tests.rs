@@ -4,6 +4,9 @@ use crate::foc::hall_sensor::{Direction, HallSensor};
 use crate::foc::phase::provider::{PhaseInput, PhaseProvider, RotorVelocityEstimate};
 use crate::foc::sensors::{AngleSample, AngleSensor, ControlAngleSample};
 use crate::foc::wrap_angle;
+use crate::units::ToBits;
+use crate::units::erad_per_s;
+use crate::units::{erad, henries, ohms, seconds, volts, webers};
 
 // The angle already represents the sensor's control sample. Its corrections
 // deliberately differ from the independent edge-period velocity.
@@ -22,8 +25,8 @@ impl VelocitySensor {
 
     fn set(&mut self, angle: f32, omega: f32) {
         self.sample = Some(AngleSample {
-            angle: wrap_angle(angle),
-            omega,
+            angle: wrap_angle(erad(angle)),
+            omega: erad_per_s(omega),
             direction: if omega < 0.0 {
                 Direction::CounterClockwise
             } else {
@@ -54,7 +57,7 @@ impl AngleSensor for VelocitySensor {
 
 fn input() -> PhaseInput {
     PhaseInput {
-        dt: 0.00005,
+        dt: seconds(0.00005),
         ..Default::default()
     }
 }
@@ -62,7 +65,7 @@ fn input() -> PhaseInput {
 fn rotor_speed(manager: &impl PhaseProvider) -> Option<f32> {
     manager
         .rotor_velocity()
-        .map(RotorVelocityEstimate::electrical_rad_s)
+        .map(|velocity| velocity.velocity().value)
 }
 
 fn update_hall(manager: &mut PhaseManager<VelocitySensor>, ticks: u64, angle: f32, omega: f32) {
@@ -74,15 +77,15 @@ fn update_hall(manager: &mut PhaseManager<VelocitySensor>, ticks: u64, angle: f3
 fn rotor_velocity_estimate_accepts_only_finite_values_without_changing_them() {
     for value in [0.0, -0.0, 123.5, -123.5, f32::MAX, f32::MIN] {
         assert_eq!(
-            RotorVelocityEstimate::new(value)
+            RotorVelocityEstimate::new(erad_per_s(value))
                 .unwrap()
-                .electrical_rad_s()
+                .velocity()
                 .to_bits(),
             value.to_bits()
         );
     }
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        assert!(RotorVelocityEstimate::new(value).is_none());
+        assert!(RotorVelocityEstimate::new(erad_per_s(value)).is_none());
     }
 }
 
@@ -91,7 +94,7 @@ fn hall_angle_catchup_does_not_change_constant_native_velocity() {
     let mut manager = PhaseManager::with_hall(VelocitySensor::new());
     update_hall(&mut manager, 0, 0.2, 80.0);
     assert_eq!(rotor_speed(&manager), Some(80.0));
-    assert_eq!(manager.get().velocity, 0.0);
+    assert_eq!(manager.get().velocity, erad_per_s(0.0));
 
     // Catchup at 1.5 times the native speed remains within the Hall limiter's
     // normal allowance, but must not become physical rotor acceleration.
@@ -104,12 +107,12 @@ fn hall_angle_catchup_does_not_change_constant_native_velocity() {
         );
         assert_eq!(rotor_speed(&manager), Some(80.0));
     }
-    assert!(manager.get().velocity > 110.0);
+    assert!(manager.get().velocity > erad_per_s(110.0));
     // Changing the native edge estimate still takes effect immediately while
     // the commutation-frame derivative remains continuous.
     update_hall(&mut manager, 20_050, 2.606, -250.0);
     assert_eq!(rotor_speed(&manager), Some(-250.0));
-    assert!(manager.get().velocity > 0.0);
+    assert!(manager.get().velocity > erad_per_s(0.0));
 }
 
 #[test]
@@ -125,7 +128,7 @@ fn stationary_frame_correction_does_not_report_physical_motion() {
             0.0,
         );
     }
-    assert!(manager.get().velocity > 10.0);
+    assert!(manager.get().velocity > erad_per_s(10.0));
     assert_eq!(rotor_speed(&manager), Some(0.0));
 }
 
@@ -140,18 +143,18 @@ fn unavailable_or_nonfinite_hall_does_not_publish_recovery_frame_speed() {
         let mut manager = PhaseManager::with_hall(VelocitySensor::new());
         update_hall(&mut manager, 0, 0.2, 80.0);
         manager.hall_mut().sample = invalid.map(|(angle, omega)| AngleSample {
-            angle,
-            omega,
+            angle: erad(angle),
+            omega: erad_per_s(omega),
             direction: Direction::Clockwise,
         });
         manager.update(&input(), 50);
         assert!(manager.is_open_loop_override_active());
-        assert_ne!(manager.get().velocity, 0.0);
+        assert_ne!(manager.get().velocity, erad_per_s(0.0));
         assert_eq!(rotor_speed(&manager), None);
         update_hall(&mut manager, 100, 3.0, -250.0);
         assert!(!manager.is_open_loop_override_active());
         assert_eq!(rotor_speed(&manager), Some(-250.0));
-        assert_ne!(manager.get().velocity, -250.0);
+        assert_ne!(manager.get().velocity, erad_per_s(-250.0));
     }
 }
 
@@ -188,7 +191,7 @@ fn fresh_epoch_uses_its_native_velocity_without_differentiating_reference_jump()
     update_hall(&mut manager, 50, 0.204, 80.0);
     manager.hall_mut().epoch = 1;
     update_hall(&mut manager, 100, 4.0, -30.0);
-    assert_eq!(manager.get().velocity, 0.0);
+    assert_eq!(manager.get().velocity, erad_per_s(0.0));
     assert_eq!(rotor_speed(&manager), Some(-30.0));
 }
 
@@ -198,11 +201,11 @@ fn model_replacement_invalidates_native_velocity_until_a_fresh_sample() {
     let mut manager = PhaseManager::with_hall(VelocitySensor::new());
     update_hall(&mut manager, 0, 0.2, 80.0);
     let mut model =
-        PreparedPhaseModel::from_config(&crate::storage::RuntimeConfig::default(), 24.0);
+        PreparedPhaseModel::from_config(&crate::storage::RuntimeConfig::default(), volts(24.0));
     assert_eq!(manager.apply_prepared_model(&mut model), PhaseSource::Hall);
     assert_eq!(rotor_speed(&manager), None);
     update_hall(&mut manager, 50, 2.0, 80.0);
-    assert_eq!(manager.get().velocity, 0.0);
+    assert_eq!(manager.get().velocity, erad_per_s(0.0));
     assert_eq!(rotor_speed(&manager), Some(80.0));
 }
 
@@ -224,8 +227,12 @@ fn measured_hall() -> HallSensor {
         next_states[i] = next;
     }
     let result = HallCalibrationResult {
-        geometry: HallTransitionGeometry::try_from_raw_parts(entries, next_states, angles),
-        angles,
+        geometry: HallTransitionGeometry::try_from_raw_parts(
+            entries.map(erad),
+            next_states,
+            angles.map(erad),
+        ),
+        angles: angles.map(erad),
         valid: [false, true, true, true, true, true, true, false],
         valid_count: 6,
     };
@@ -257,7 +264,7 @@ fn geometry_resync_invalidates_velocity_and_recovers_on_real_boundaries() {
     // Stop estimation uses growing edge age, not the non-decaying last speed.
     manager.update(&input(), 1_024_000);
     assert!(rotor_speed(&manager).unwrap() < 2.0);
-    assert!(manager.hall().electrical_velocity() > 100.0);
+    assert!(manager.hall().electrical_velocity() > erad_per_s(100.0));
 }
 
 #[test]
@@ -267,13 +274,22 @@ fn accepted_calibration_invalidates_velocity_but_rejection_preserves_it() {
     let before = rotor_speed(&manager);
     let mut calibration = HallCalibrationResult {
         geometry: None,
-        angles: [-1.0; 8],
+        angles: [erad(-1.0); 8],
         valid: [false; 8],
         valid_count: 0,
     };
     assert!(!manager.apply_hall_calibration(&calibration));
     assert_eq!(rotor_speed(&manager), before);
-    calibration.angles = [0.0, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 0.0];
+    calibration.angles = [
+        erad(0.0),
+        erad(0.5),
+        erad(1.5),
+        erad(2.5),
+        erad(3.5),
+        erad(4.5),
+        erad(5.5),
+        erad(0.0),
+    ];
     calibration.valid = [false, true, true, true, true, true, true, false];
     calibration.valid_count = 6;
     assert!(manager.apply_hall_calibration(&calibration));
@@ -284,15 +300,15 @@ fn accepted_calibration_invalidates_velocity_but_rejection_preserves_it() {
 
 fn prime_observer(manager: &mut PhaseManager<VelocitySensor>) -> PhaseInput {
     use crate::foc::phase::{BackEmfObserver, Observer};
-    let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
-    observer.force_phase(0.8);
-    observer.set_velocity(200.0);
+    let mut observer = BackEmfObserver::new(ohms(0.1), henries(100e-6), webers(0.02));
+    observer.force_phase(erad(0.8));
+    observer.set_velocity(erad_per_s(200.0));
     manager.set_observer(Observer::BackEmf(observer));
     manager.set_source(PhaseSource::Manual).unwrap();
     let (sin, cos) = 0.8_f32.sin_cos();
     let input = PhaseInput {
-        v_alpha: -4.0 * sin,
-        v_beta: 4.0 * cos,
+        v_alpha: volts(-4.0 * sin),
+        v_beta: volts(4.0 * cos),
         ..input()
     };
     manager.update(&input, 0);
@@ -311,15 +327,15 @@ fn hybrid_blend_changes_frame_without_inventing_rotor_acceleration() {
     {
         manager
             .set_source(PhaseSource::HallToObserver {
-                blend_low,
-                blend_high,
+                blend_low: erad_per_s(blend_low),
+                blend_high: erad_per_s(blend_high),
             })
             .unwrap();
         manager.hall_mut().set(0.4, 200.0);
         manager.update(&input, ticks);
         assert!((rotor_speed(&manager).unwrap() - 200.0).abs() < 1.0);
-        min_frame = min_frame.min(manager.get().velocity);
-        max_frame = max_frame.max(manager.get().velocity);
+        min_frame = min_frame.min(manager.get().velocity.value);
+        max_frame = max_frame.max(manager.get().velocity.value);
     }
     assert!(max_frame - min_frame > 100.0);
 }
@@ -346,8 +362,8 @@ fn motion_epoch_changes_on_hall_hybrid_fallback_but_not_ordinary_samples() {
     for source in [
         PhaseSource::Hall,
         PhaseSource::HallToObserver {
-            blend_low: 250.0,
-            blend_high: 350.0,
+            blend_low: erad_per_s(250.0),
+            blend_high: erad_per_s(350.0),
         },
     ] {
         let mut manager = PhaseManager::with_hall(VelocitySensor::new());
@@ -378,16 +394,20 @@ fn hybrid_observer_readiness_and_active_reseed_are_reference_boundaries() {
     for (blend_low, blend_high, contributes) in [(250.0, 350.0, false), (10.0, 50.0, true)] {
         let mut manager = PhaseManager::with_hall(VelocitySensor::new());
         update_hall(&mut manager, 0, 0.8, 200.0);
-        let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
-        observer.force_phase(0.8);
+        let mut observer = BackEmfObserver::new(ohms(0.1), henries(100e-6), webers(0.02));
+        observer.force_phase(erad(0.8));
         // A coherent seed just below the speed gate becomes ready in the
         // real observer update, rather than importing readiness by a setter.
-        observer.set_velocity(crate::foc::phase::observer::READY_MIN_VELOCITY.next_down());
+        observer.set_velocity(erad_per_s(
+            crate::foc::phase::observer::READY_MIN_VELOCITY
+                .value
+                .next_down(),
+        ));
         manager.set_observer(Observer::BackEmf(observer));
         manager
             .set_source(PhaseSource::HallToObserver {
-                blend_low,
-                blend_high,
+                blend_low: erad_per_s(blend_low),
+                blend_high: erad_per_s(blend_high),
             })
             .unwrap();
         assert!(!manager.observer.is_ready());
@@ -395,8 +415,8 @@ fn hybrid_observer_readiness_and_active_reseed_are_reference_boundaries() {
         let (sin, cos) = 0.8_f32.sin_cos();
         manager.update(
             &PhaseInput {
-                v_alpha: -4.0 * sin,
-                v_beta: 4.0 * cos,
+                v_alpha: volts(-4.0 * sin),
+                v_beta: volts(4.0 * cos),
                 ..input()
             },
             50,
@@ -407,10 +427,10 @@ fn hybrid_observer_readiness_and_active_reseed_are_reference_boundaries() {
         let before = manager.motion_reference_epoch();
         manager.compute_phase_with_fallback(
             Some(PhaseOutput {
-                angle: 0.8 + core::f32::consts::PI,
-                velocity: 30.0,
+                angle: erad(0.8 + core::f32::consts::PI),
+                velocity: erad_per_s(30.0),
             }),
-            RotorVelocityEstimate::new(30.0),
+            RotorVelocityEstimate::new(erad_per_s(30.0)),
             None,
             input().dt,
             true,
@@ -423,7 +443,7 @@ fn hybrid_observer_readiness_and_active_reseed_are_reference_boundaries() {
         let before = manager.motion_reference_epoch();
         manager.compute_phase_with_fallback(
             Some(PhaseOutput::default()),
-            RotorVelocityEstimate::new(0.0),
+            RotorVelocityEstimate::new(erad_per_s(0.0)),
             None,
             input().dt,
             true,
@@ -461,7 +481,9 @@ fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
     assert_eq!(rotor_speed(&manager), Some(0.0));
 
     manager
-        .set_source(PhaseSource::HfiToEncoder { switch_vel: 100.0 })
+        .set_source(PhaseSource::HfiToEncoder {
+            switch_vel: erad_per_s(100.0),
+        })
         .unwrap();
     manager.crossover_latched = true;
     manager.output = PhaseOutput {

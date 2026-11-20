@@ -10,10 +10,18 @@
 //! Used as a fallback when the HFI method produces suspicious results.
 
 use super::types::{DetectionError, VoltagePulseParams};
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalResistance, Frequency, Inductance,
+    Time, amps, henries, ohms, volts,
+};
 
-/// Minimum measurable current change (A).  Below this the pulse is
+/// Minimum measurable current change.  Below this the pulse is
 /// indistinguishable from ADC noise.
-const MIN_DI: f32 = 0.005;
+const MIN_DI: ElectricCurrent = amps(0.005);
+/// Smallest inductive voltage the period's di is credited to.
+const MIN_INDUCTIVE_V: ElectricPotential = volts(0.01);
+/// Plausible winding inductance: 0.1 µH to 100 mH.
+const L_RANGE: core::ops::RangeInclusive<Inductance> = henries(1e-7)..=henries(0.1);
 
 /// Accumulator for voltage-pulse inductance measurement on a single axis.
 ///
@@ -45,35 +53,40 @@ const MIN_DI: f32 = 0.005;
 pub struct VoltagePulseMeasurement {
     /// Total d-axis voltage applied *during* the pulse: the settled hold plus
     /// the pulse step.
-    applied_voltage_v: f32,
-    resistance_ohm: f32,
+    applied_voltage: ElectricPotential,
+    resistance: ElectricalResistance,
     /// Dead-time make-up baked into the settled hold (`vd_hold − R·I_hold`),
     /// subtracted from every pulse so the inductance is dead-time-immune.
-    v_deadtime: f32,
-    dt: f32,
+    v_deadtime: ElectricPotential,
+    dt: Time,
     target_pulses: u32,
-    inductance_sum: f32,
+    inductance_sum: Inductance,
     valid_count: u32,
 }
 
 impl VoltagePulseMeasurement {
     /// Create a new single-axis pulse measurement.
     ///
-    /// `hold_voltage_v` is the *settled* d-axis voltage holding the rotor at
+    /// `hold_voltage` is the *settled* d-axis voltage holding the rotor at
     /// `params.hold_current_a` (the open-loop PI output, `R·I_hold` plus the
-    /// residual dead-time `V_dt`). `V_dt = hold_voltage_v − R·I_hold` is
+    /// residual dead-time `V_dt`). `V_dt = hold_voltage − R·I_hold` is
     /// recovered here and removed from every pulse — see the type docs.
-    pub fn new(params: &VoltagePulseParams, pwm_freq_hz: f32, hold_voltage_v: f32) -> Self {
+    pub fn new(
+        params: &VoltagePulseParams,
+        pwm_freq: Frequency,
+        hold_voltage: ElectricPotential,
+    ) -> Self {
+        let resistance = ohms(params.resistance_ohm);
         // This is a signed command-side bias. Overcompensation can require a
         // negative PI hold; clipping its residual to zero fails to cancel it.
-        let v_deadtime = hold_voltage_v - params.resistance_ohm * params.hold_current_a;
+        let v_deadtime = hold_voltage - resistance * amps(params.hold_current_a);
         Self {
-            applied_voltage_v: hold_voltage_v + params.pulse_voltage_v,
-            resistance_ohm: params.resistance_ohm,
+            applied_voltage: hold_voltage + volts(params.pulse_voltage_v),
+            resistance,
             v_deadtime,
-            dt: 1.0 / pwm_freq_hz,
+            dt: pwm_freq.recip(),
             target_pulses: params.num_pulses,
-            inductance_sum: 0.0,
+            inductance_sum: Inductance::ZERO,
             valid_count: 0,
         }
     }
@@ -81,19 +94,19 @@ impl VoltagePulseMeasurement {
     /// Measured residual dead-time voltage (`vd_hold − R·I_hold`) — the part of
     /// the inverter dead-time the firmware's compensation did not cancel.
     /// Exposed for diagnostics and for self-calibrating the compensation factor.
-    pub fn dead_time_v(&self) -> f32 {
+    pub fn dead_time(&self) -> ElectricPotential {
         self.v_deadtime
     }
 
     /// Record one voltage-pulse result.
     ///
     /// # Arguments
-    /// * `i_before` — d-axis current just before the pulse (A)
-    /// * `i_after`  — d-axis current one PWM period after the pulse (A)
+    /// * `i_before` — d-axis current just before the pulse
+    /// * `i_after`  — d-axis current one PWM period after the pulse
     ///
     /// # Returns
     /// `true` when enough pulses have been collected.
-    pub fn record_pulse(&mut self, i_before: f32, i_after: f32) -> bool {
+    pub fn record_pulse(&mut self, i_before: ElectricCurrent, i_after: ElectricCurrent) -> bool {
         let di = i_after - i_before;
         if di.abs() < MIN_DI {
             // Pulse too weak to measure — skip but don't fail
@@ -105,11 +118,11 @@ impl VoltagePulseMeasurement {
         //   V_inductive = V_applied − R·i_avg − V_dt  (= pulse − R·(i_avg − I_hold))
         //   L = V_inductive · dt / di
         let i_avg = (i_before + i_after) / 2.0;
-        let v_inductive = self.applied_voltage_v - self.resistance_ohm * i_avg - self.v_deadtime;
+        let v_inductive = self.applied_voltage - self.resistance * i_avg - self.v_deadtime;
 
-        if v_inductive.abs() > 0.01 {
-            let l = v_inductive * self.dt / di;
-            if l > 0.0 && l.is_finite() {
+        if v_inductive.abs() > MIN_INDUCTIVE_V {
+            let l: Inductance = v_inductive * self.dt / di;
+            if l > Inductance::ZERO && l.is_finite() {
                 self.inductance_sum += l;
                 self.valid_count += 1;
             }
@@ -124,14 +137,14 @@ impl VoltagePulseMeasurement {
     }
 
     /// Compute the average inductance from accumulated pulses.
-    pub fn finish(self) -> Result<f32, DetectionError> {
+    pub fn finish(self) -> Result<Inductance, DetectionError> {
         if self.valid_count < self.target_pulses.min(5) {
             return Err(DetectionError::InsufficientSamples);
         }
 
         let l = self.inductance_sum / self.valid_count as f32;
 
-        if !(1e-7..=0.1).contains(&l) {
+        if !L_RANGE.contains(&l) {
             return Err(DetectionError::OutOfRange);
         }
 
@@ -142,6 +155,26 @@ impl VoltagePulseMeasurement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::hertz;
+
+    /// Plain-SI-float view of the measurement for the numeric checks below.
+    struct Meas(VoltagePulseMeasurement);
+
+    impl Meas {
+        fn new(params: &VoltagePulseParams, pwm_freq_hz: f32, hold_voltage_v: f32) -> Self {
+            Self(VoltagePulseMeasurement::new(
+                params,
+                hertz(pwm_freq_hz),
+                volts(hold_voltage_v),
+            ))
+        }
+        fn record_pulse(&mut self, i_before: f32, i_after: f32) -> bool {
+            self.0.record_pulse(amps(i_before), amps(i_after))
+        }
+        fn finish(self) -> Result<f32, DetectionError> {
+            self.0.finish().map(|l| l.value)
+        }
+    }
 
     #[test]
     fn pure_inductor_pulse() {
@@ -157,7 +190,7 @@ mod tests {
         let dt = 1.0 / 20_000.0;
         let i_before = 2.0;
         // R = 0 → holding voltage and dead-time make-up are both zero.
-        let mut meas = VoltagePulseMeasurement::new(&params, 20_000.0, 0.0);
+        let mut meas = Meas::new(&params, 20_000.0, 0.0);
 
         for _ in 0..10 {
             // di = V * dt / L
@@ -196,7 +229,7 @@ mod tests {
         // Settled hold = R·I_hold exactly (no dead-time in this ideal case), so
         // `V_dt = hold − R·I_hold = 0` and the step `pulse − R·(i_avg − I_hold)`
         // drives di.
-        let mut meas = VoltagePulseMeasurement::new(&params, 20_000.0, r * i_before);
+        let mut meas = Meas::new(&params, 20_000.0, r * i_before);
 
         for _ in 0..10 {
             // Exact first-order: V_pulse = R*di/2 + L*di/dt
@@ -230,7 +263,7 @@ mod tests {
         };
         let dt = 1.0 / 20_000.0;
         let i_before = 0.3;
-        let mut meas = VoltagePulseMeasurement::new(&params, 20_000.0, r * i_before);
+        let mut meas = Meas::new(&params, 20_000.0, r * i_before);
 
         for _ in 0..10 {
             let di = params.pulse_voltage_v * dt / (l_actual + r * dt / 2.0);
@@ -261,7 +294,7 @@ mod tests {
                 num_pulses: 8,
                 ..Default::default()
             };
-            let mut measurement = VoltagePulseMeasurement::new(&params, 20_000.0, hold_voltage);
+            let mut measurement = Meas::new(&params, 20_000.0, hold_voltage);
             let di = params.pulse_voltage_v * dt / (actual_l + r * dt * 0.5);
             for _ in 0..params.num_pulses {
                 measurement.record_pulse(params.hold_current_a, params.hold_current_a + di);

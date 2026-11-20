@@ -8,6 +8,7 @@ use crate::foc::phase::observer::{BackEmfObserver, Observer};
 use crate::foc::sensors::AngleSensor;
 use crate::foc::trig::SinCos;
 use crate::storage::RuntimeConfig;
+use crate::units::{ElectricPotential, Sign, per_second};
 
 /// Fully initialized estimator model. Construction (including filter setup)
 /// belongs to boot or the configuration task, never to the periodic FOC path.
@@ -21,7 +22,7 @@ pub struct PreparedPhaseModel {
 }
 
 impl PreparedPhaseModel {
-    pub fn from_config(config: &RuntimeConfig, vbus: f32) -> Self {
+    pub fn from_config(config: &RuntimeConfig, vbus: ElectricPotential) -> Self {
         let mut prepared = Self {
             reset_hall: None,
             selected_source: config.configured_feedback_source(),
@@ -32,36 +33,36 @@ impl PreparedPhaseModel {
         };
         if let Some(mp) = &config.motor_params
             && mp.is_valid()
-            && mp.flux_linkage_wb > 0.0
+            && mp.flux_linkage.is_positive()
         {
-            let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
-            let mut obs = BackEmfObserver::new(mp.resistance_ohm, l_avg, mp.flux_linkage_wb)
+            let l_avg = (mp.inductance_d + mp.inductance_q) / 2.0;
+            let mut obs = BackEmfObserver::new(mp.resistance, l_avg, mp.flux_linkage)
                 .with_lambda_tracking(crate::foc::phase::observer::DEFAULT_LAMBDA_GAIN);
-            if (mp.inductance_q_h - mp.inductance_d_h).abs() > 0.05 * l_avg {
-                obs = obs.with_saliency(mp.inductance_d_h, mp.inductance_q_h);
+            if (mp.inductance_q - mp.inductance_d).abs() > 0.05 * l_avg {
+                obs = obs.with_saliency(mp.inductance_d, mp.inductance_q);
             }
             prepared.observer = Observer::BackEmf(obs);
-            prepared.tracker.kp = 100.0 * 100.0;
-            prepared.tracker.kd = 2.0 * 1.2 * 100.0;
+            // Tracker: ωn = 100 rad/s, ζ = 1.2.
+            let omega_n = per_second(100.0);
+            prepared.tracker.kp = omega_n * omega_n;
+            prepared.tracker.kd = 2.0 * 1.2 * omega_n;
             #[cfg(feature = "hfi")]
             {
                 use crate::foc::phase::observer::{
-                    HFI_CARRIER_RIPPLE_TARGET_A, HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ_HZ,
+                    HFI_CARRIER_RIPPLE_TARGET, HFI_DEFAULT_AMPLITUDE_RATIO, HFI_DEFAULT_FREQ,
                     HFI_RIPPLE_RATING_FRACTION,
                 };
+                use crate::units::{Scalar, amps, volts};
                 let target = mp
                     .rating_current_a()
-                    .map_or(HFI_CARRIER_RIPPLE_TARGET_A, |rating| {
-                        crate::foc::clamp_f32(
-                            HFI_RIPPLE_RATING_FRACTION * rating,
-                            0.05,
-                            HFI_CARRIER_RIPPLE_TARGET_A,
-                        )
+                    .map_or(HFI_CARRIER_RIPPLE_TARGET, |rating| {
+                        (HFI_RIPPLE_RATING_FRACTION * amps(rating))
+                            .clamp_to(amps(0.05), HFI_CARRIER_RIPPLE_TARGET)
                     });
-                let amplitude = (target * HFI_DEFAULT_FREQ_HZ * core::f32::consts::TAU * l_avg)
+                let amplitude = (target * HFI_DEFAULT_FREQ * core::f32::consts::TAU * l_avg)
                     .min(vbus * HFI_DEFAULT_AMPLITUDE_RATIO)
-                    .max(0.05);
-                prepared.hfi = Some(HfiObserver::new(HFI_DEFAULT_FREQ_HZ, amplitude));
+                    .max(volts(0.05));
+                prepared.hfi = Some(HfiObserver::new(HFI_DEFAULT_FREQ, amplitude));
             }
             #[cfg(not(feature = "hfi"))]
             let _ = vbus;
@@ -118,7 +119,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
     /// Compatibility entry point for standalone users; platforms and live
     /// configuration both use the driver's complete prepared-model path.
-    pub fn configure_observers_from_config(&mut self, config: &RuntimeConfig, vbus: f32) {
+    pub fn configure_observers_from_config(
+        &mut self,
+        config: &RuntimeConfig,
+        vbus: ElectricPotential,
+    ) {
         self.apply_prepared_model(&mut PreparedPhaseModel::from_config(config, vbus));
     }
 }

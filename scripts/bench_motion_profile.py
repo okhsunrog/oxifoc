@@ -1,5 +1,6 @@
 """Finite low-speed Hall comparison over the C5, native Packed28, no NVM writes."""
 import argparse
+import math
 import hashlib
 import json
 from pathlib import Path
@@ -82,9 +83,9 @@ def main():
             assert hall["geometry"] is not None
             probe.run(["just", "cli-bridge", "config", "set", "hall-calibration", *[key+"="+json.dumps(value, separators=(",", ":")) for key,value in hall.items()], "--volatile"])
         if args.interp_min_erpm is not None:
-            probe.run(["just", "cli-bridge", "config", "set", "hall-tuning", f"interp_min_erpm={args.interp_min_erpm}", "--volatile"])
+            probe.run(["just", "cli-bridge", "config", "set", "hall-tuning", f"interp_min_speed={args.interp_min_erpm * math.pi / 30.0}", "--volatile"])
         if args.brake_power_w is not None:
-            probe.run(["just", "cli-bridge", "config", "set", "current-limits", f"max_dissipation_w={args.brake_power_w}", "--volatile"])
+            probe.run(["just", "cli-bridge", "config", "set", "current-limits", f"max_dissipation={args.brake_power_w}", "--volatile"])
         if args.speed_ceiling is not None:
             probe.run(["just", "cli-bridge", "config", "set", "derating",
                        f"speed.max_forward_erad_s={args.speed_ceiling}",

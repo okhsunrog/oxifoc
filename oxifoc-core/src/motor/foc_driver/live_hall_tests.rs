@@ -5,6 +5,9 @@ use crate::state::model::{CachedConfigAck, ConfigActionCache, ModelApplyGuard};
 use crate::state::{DriverCommand, MotorControlState, process_commands};
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{ConfigGroupId, ConfigResponse, ReqId};
+use crate::units::ToBits;
+use crate::units::seconds;
+use crate::units::{amps, erad, erad_per_s, volts};
 use core::cell::RefCell;
 use core::task::{Context, Poll, Waker};
 use critical_section::Mutex;
@@ -68,10 +71,13 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     let mut hall = HallSensor::new(1_000_000);
     hall.update(1, 0);
     let mut phase = PhaseManager::with_hall(hall);
-    phase.configure_observers_from_config(&model_config(), 24.0);
+    phase.configure_observers_from_config(&model_config(), volts(24.0));
     let observer_model = (phase.observer().resistance(), phase.observer().lambda());
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(&model_config(), 24.0),
+        FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(
+            &model_config(),
+            volts(24.0),
+        ),
         MockPwm { duties: [0; 3] },
         MockCurrentSensor {
             currents: (0.0, 0.0, 0.0),
@@ -83,10 +89,10 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     let model_coefficients = |driver: &FocController<SvpwmModulator, LibmSinCos>| {
         driver.decoupling().map(|model| {
             (
-                model.resistance_ohm,
-                model.ld_h,
-                model.lq_h,
-                model.flux_linkage_wb,
+                model.resistance.value,
+                model.ld.value,
+                model.lq.value,
+                model.flux_linkage.value,
             )
         })
     };
@@ -94,12 +100,12 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     let limit = driver.current_limits.max_current_a;
     let mut calibration = HallCalibrationConfig::default();
     for angle in &mut calibration.angles[1..=6] {
-        *angle += 0.4;
+        *angle += erad(0.4);
     }
     calibration.geometry = Some(crate::storage::HallTransitionGeometryConfig {
         entry_angles: calibration
             .angles
-            .map(|angle| angle - core::f32::consts::TAU / 12.0),
+            .map(|angle| angle - erad(core::f32::consts::TAU / 12.0)),
         next_states: [0, 3, 6, 2, 5, 1, 4, 0],
     });
     let prepare = |id, expected| {
@@ -162,8 +168,8 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     drop(apply);
 
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 0.1,
-        id_target: 0.0,
+        iq_target: amps(0.1),
+        id_target: amps(0.0),
     });
     let mut apply = Box::pin(prepare(103, 1).apply::<PendingTimer>());
     assert!(apply.as_mut().poll(&mut cx).is_pending());
@@ -272,20 +278,20 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
     let mut hall = HallSensor::new(1_000_000);
     hall.update(1, 0);
     let mut phase = PhaseManager::with_hall(hall);
-    phase.configure_observers_from_config(&model_config(), 24.0);
+    phase.configure_observers_from_config(&model_config(), volts(24.0));
     // Seed a high-speed cached frame to exercise Brake's regulated ramp gate.
     phase.set_source(PhaseSource::OpenLoop).unwrap();
-    phase.set_open_loop_velocity(100.0);
+    phase.set_open_loop_velocity(erad_per_s(100.0));
     phase.update(
         &crate::foc::phase::PhaseInput {
-            dt: 0.00005,
+            dt: seconds(0.00005),
             ..Default::default()
         },
         50,
     );
     phase.set_source(PhaseSource::Hall).unwrap();
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
         MockPwm { duties: [0; 3] },
         MockCurrentSensor {
             currents: (0.0, 0.0, 0.0),
@@ -295,11 +301,15 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
     );
     for mode in [
         ControlMode::CurrentControl {
-            iq_target: 0.1,
-            id_target: 0.0,
+            iq_target: amps(0.1),
+            id_target: amps(0.0),
         },
-        ControlMode::VelocityControl { target_vel: 10.0 },
-        ControlMode::PositionControl { target_pos: 1.0 },
+        ControlMode::VelocityControl {
+            target_vel: erad_per_s(10.0),
+        },
+        ControlMode::PositionControl {
+            target_pos: erad(1.0),
+        },
         ControlMode::Brake,
     ] {
         CMD_CHANNEL.try_send(DriverCommand::SetMode(mode)).unwrap();
@@ -309,15 +319,15 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
     }
     for mode in [
         ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current: 0.1,
-            velocity_rad_s: 0.0,
+            angle: erad(0.0),
+            current: amps(0.1),
+            velocity: erad_per_s(0.0),
             pi_gains: None,
         },
         ControlMode::DirectVoltage {
-            vd: 0.01,
-            vq: 0.0,
-            angle_rad: 0.0,
+            vd: volts(0.01),
+            vq: volts(0.0),
+            angle: erad(0.0),
         },
         ControlMode::Coast,
         ControlMode::Stopped,
@@ -351,8 +361,8 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
         );
         CMD_CHANNEL
             .try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-                iq_target: 0.1,
-                id_target: 0.0,
+                iq_target: amps(0.1),
+                id_target: amps(0.0),
             }))
             .unwrap();
         process_commands(&state, &mut driver, &registry);
@@ -366,10 +376,10 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
         .phase_mut()
         .set_source(PhaseSource::OpenLoop)
         .unwrap();
-    driver.phase_mut().set_open_loop_velocity(0.0);
+    driver.phase_mut().set_open_loop_velocity(erad_per_s(0.0));
     driver.phase_mut().update(
         &crate::foc::phase::PhaseInput {
-            dt: 0.00005,
+            dt: seconds(0.00005),
             ..Default::default()
         },
         100,
@@ -409,7 +419,7 @@ fn detector_cannot_install_hall_before_explicit_apply() {
     let mut hall = HallSensor::new(1_000_000);
     hall.update(1, 0);
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
         MockPwm { duties: [0; 3] },
         MockCurrentSensor {
             currents: (0.0, 0.0, 0.0),
@@ -421,7 +431,7 @@ fn detector_cannot_install_hall_before_explicit_apply() {
     let id = ReqId(201);
     let mut calibration = HallCalibrationConfig::default();
     for angle in &mut calibration.angles[1..=6] {
-        *angle += 0.7;
+        *angle += erad(0.7);
     }
     let mut cx = Context::from_waker(Waker::noop());
     let owner = DetectionActiveGuard::try_arm().unwrap();

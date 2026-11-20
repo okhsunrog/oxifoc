@@ -96,20 +96,20 @@ with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
 - **ControlledStop** — **regen-brake to a standstill, shaped in amps**
   (the brake current is the force on the wheel whatever the rider weighs
   or the slope does; decided 2026-09-30):
-  - the q current moves at `slew_a_per_s` from whatever was flowing — a
+  - the q current moves at `slew` from whatever was flowing — a
     drive command, the rider's own brake — toward the brake, in both
     directions: no step on entry, hand-over or release;
-  - it brakes at `brake_current_a` (`0` = the general `max_brake_a`),
-    always within `max_brake_a`, OV-derated; a harder brake the rider had
+  - it brakes at `brake_current` (`0` = the general `max_brake`),
+    always within `max_brake`, OV-derated; a harder brake the rider had
     in progress is kept (the stop never weakens a brake it takes over);
-  - `decel_rad_s2` only bounds the stop from above (a light rotor — a
+  - `decel` only bounds the stop from above (a light rotor — a
     wheel in the air — under a strong brake); with a rider the current
     binds first;
   - **while the rotor moves and the angle is trustworthy the stop never
     lets go**: a brake that cannot slow a descent still beats a coast
     (the old 2 s no-progress watchdog and 10 s time cap coasted — sim: a
     runaway to 3× top speed within a second);
-  - near standstill (`standstill_rad_s`) the active brake stands down —
+  - near standstill (`standstill`) the active brake stands down —
     the velocity estimate lags around zero and a current commanded on it
     pumps a light rotor through zero — and the configurable **terminal**
     applies: high-Z, or `ParkBrake` (default — `ControlMode::Brake`, the
@@ -122,7 +122,7 @@ with no further input, host-configurable via `FailsafeConfigStored` (ConfigKey
   to the parking brake with the `ParkBrake` terminal (the short needs no
   angle and guards itself by its current, below), else coasts. Regen
   pushing the bus into the OverVoltage fault exits high-Z via the fault
-  gate. Brake escalation past `brake_current_a` when the stop is too slow
+  gate. Brake escalation past `brake_current` when the stop is too slow
   for the slope is a backlog option (TODO.md).
 
 The same machinery serves the user-commanded **ramp-into-brake**: a `Brake`
@@ -132,9 +132,9 @@ but as a *user* action it does not set the re-arm latch.
 
 **Full battery on a descent**: regen has nowhere to go, and the OV derate
 alone would shed the brake exactly when it's needed most. With
-`max_dissipation_w` set, the brake keeps its torque and a negative d
+`max_dissipation` set, the brake keeps its torque and a negative d
 current burns the refused regen in the windings instead
-(`motor::dissipation`; the same covers `bus_regen_max_a` and a lab PSU).
+(`motor::dissipation`; the same covers `bus_regen_max` and a lab PSU).
 The physical limit remains, just higher: the motor can burn only
 `1.5·R·I²` inside the current circle — ≈ 50 W at 30 A, 190 W at 60 A on a
 5065 — so on a steep descent at full charge the brake still weakens past
@@ -151,9 +151,9 @@ The remaining modes have separate rules.
   `process_commands` (`BRAKE_ENTRY_MAX_E_RAD_S`): shorting the windings at
   speed dumps an uncontrolled back-EMF-driven current (→ λ/L) through the
   FETs. Once in, the brake is **VESC-style hybrid** (2026-09-30): the short
-  while its current stays within `max_brake_a` — a *viscous* brake (torque
+  while its current stays within `max_brake` — a *viscous* brake (torque
   ∝ speed, dissipated in the motor, zero draw at standstill, no angle
-  needed) — and a current-controlled brake at `max_brake_a` against the
+  needed) — and a current-controlled brake at `max_brake` against the
   motion when the board is pushed faster (a steep slope), back to the
   short where holding the limit would take a q voltage against the motion
   (the two currents meet there; VESC's vq-sign switch). It never lets go

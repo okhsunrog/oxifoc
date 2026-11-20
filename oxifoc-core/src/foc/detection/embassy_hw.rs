@@ -8,6 +8,7 @@
 
 use core::cell::RefCell;
 use core::future::poll_fn;
+use core::mem::DropGuard;
 use core::sync::atomic::{AtomicU16, Ordering};
 use core::task::Poll;
 
@@ -22,7 +23,7 @@ use crate::foc::detection::sweep::{
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::foc::phase_voltage::PhaseVoltageSense;
 use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
-use crate::foc::trig::{LibmSinCos, SinCos};
+use crate::foc::trig::{FastSinCos, SinCos};
 use crate::motor::ControlMode;
 use crate::state::{self, MotorControlState};
 use crate::timer::EmbassyTimer;
@@ -108,21 +109,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
         use super::excitation::{BurstCapture, PROCESS_CHUNK};
         use embassy_futures::select::{Either, select};
         self.check_health()?;
-        // No references into the buffer escape a CS. Dropping the future
-        // requests an ISR stop, including when the timeout wins.
-        struct Guard {
-            state: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-            armed: bool,
-        }
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                if self.armed {
-                    critical_section::with(|cs| {
-                        self.state.borrow(cs).borrow_mut().excitation.cancelled = true;
-                    });
-                }
-            }
-        }
+        // No references into the buffer escape a CS.
         critical_section::with(|cs| {
             if !self
                 .authority
@@ -135,10 +122,9 @@ impl DetectionHardware for EmbassyDetectionHardware {
             state.excitation.authority = self.authority;
             Ok(())
         })?;
-        let mut guard = Guard {
-            state: self.state_mutex,
-            armed: true,
-        };
+        // Dropping the future requests an ISR stop, including when the
+        // timeout wins or a health check fails.
+        let cancel_on_drop = DropGuard::new(self.state_mutex, request_excitation_cancel);
         // Prepare finite voltages in thread mode. No trig, modulo or waveform
         // calculation belongs in the 50-us control ISR. The reservation is
         // visible but cannot execute until all entries are initialized.
@@ -188,7 +174,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
         critical_section::with(|cs| {
             self.state_mutex.borrow(cs).borrow_mut().excitation.program = None;
         });
-        guard.armed = false;
+        DropGuard::dismiss(cancel_on_drop);
         outcome?;
         self.check_health()?;
         let mut min_dt = u32::MAX;
@@ -275,7 +261,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
             v_beta,
             omega_e,
             hall_sector: Some(hall.state),
-            hall_edge_age_s: hall.edge_age_s,
+            hall_edge_age_s: hall.edge_age.value,
         })
     }
 }
@@ -296,7 +282,7 @@ fn coast_sample(
         return Err(DetectionError::HardwareFault);
     }
     let hall = hall.ok_or(DetectionError::LowConfidence)?;
-    if !hall.velocity_rad_s.is_finite() || Some(hall.error_count) != initial_errors {
+    if !hall.velocity.is_finite() || Some(hall.error_count) != initial_errors {
         return Err(DetectionError::LowConfidence);
     }
     let (alpha, beta) = sense.alpha_beta(raw);
@@ -306,7 +292,7 @@ fn coast_sample(
     if alpha * alpha + beta * beta < voltage_floor * voltage_floor {
         return Err(DetectionError::InsufficientSamples);
     }
-    Ok((alpha, beta, hall.velocity_rad_s))
+    Ok((alpha, beta, hall.velocity.value))
 }
 
 async fn wait_next_telemetry(
@@ -323,8 +309,8 @@ fn resistance_sample(
     let Some(sense) = PhaseVoltageSense::from_board(board).filter(PhaseVoltageSense::has_filters)
     else {
         return Ok(ResistanceSample {
-            voltage_v: foc.vd,
-            current_a: foc.id,
+            voltage_v: foc.vd.value,
+            current_a: foc.id.value,
             source: ResistanceVoltageSource::ControllerCommand,
         });
     };
@@ -333,13 +319,27 @@ fn resistance_sample(
         return Err(DetectionError::HardwareFault);
     }
     let (alpha, beta) = sense.alpha_beta(raw);
-    let (sin, cos) = LibmSinCos::sin_cos(foc.angle_rad);
+    // FastSinCos: its 6e-7 error at the lock angle is far below one phase-ADC
+    // LSB; libm sinf/cosf would link ~12 KB of f64 soft-float.
+    let (sin, cos) = FastSinCos::sin_cos(foc.angle.value);
     let (voltage_v, _) = crate::foc::transforms::park(alpha, beta, sin, cos);
     Ok(ResistanceSample {
         voltage_v,
-        current_a: foc.id,
+        current_a: foc.id.value,
         source: ResistanceVoltageSource::FilteredPhaseAdc,
     })
+}
+
+/// Ask the ISR to stop a running excitation burst.
+///
+/// Out of line: every future that awaits a burst carries this in its drop
+/// glue, and one shared call is smaller than an inlined critical section in
+/// each of them.
+#[inline(never)]
+fn request_excitation_cancel(state: &CriticalSectionMutex<RefCell<MotorControlState>>) {
+    critical_section::with(|cs| {
+        state.borrow(cs).borrow_mut().excitation.cancelled = true;
+    });
 }
 
 async fn wait_next_sample(
@@ -352,13 +352,7 @@ async fn wait_next_sample(
 async fn wait_next_snapshot(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
 ) -> (AdcSnapshot, FocOutput, Option<HallSnapshot>, ControlMode) {
-    struct Subscription;
-    impl Drop for Subscription {
-        fn drop(&mut self) {
-            state::TELEM_WAKER.cancel();
-        }
-    }
-    let _subscription = Subscription;
+    let _subscription = DropGuard::new((), |()| state::TELEM_WAKER.cancel());
     let previous_seq = critical_section::with(|cs| state_mutex.borrow(cs).borrow().last_adc.seq);
     poll_fn(|cx| {
         // Re-polling alone is not proof of a new FOC cycle: the enclosing task

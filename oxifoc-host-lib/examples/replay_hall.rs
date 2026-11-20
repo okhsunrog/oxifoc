@@ -90,7 +90,7 @@ fn main() -> Result<()> {
                     "ticks": ticks, "state": capture.edges[next - 1].raw_state,
                     "angle": smoothed.sample.angle, "raw_angle": raw.angle, "omega": smoothed.sample.omega,
                     "edge_omega": raw.omega,
-                    "interpolating": raw.omega.abs() * 60.0 / core::f32::consts::TAU >= hall.interp_min_erpm(),
+                    "interpolating": raw.omega.abs().value * 60.0 / core::f32::consts::TAU >= hall.interp_min_erpm(),
                 }),
             )?;
             writeln!(output)?;

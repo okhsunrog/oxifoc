@@ -123,6 +123,7 @@ mod integration_tests {
     use super::resistance::ResistanceMeasurement;
     #[cfg(feature = "hfi-detect")]
     use super::types::InductanceParams;
+    use crate::units::{amps, erad, erad_per_s, ohms, seconds, si, volts};
 
     /// Full-pipeline L tolerance, shared by the HFI and voltage-pulse configs
     /// (both now resolve L to a few percent on these motors). The worst case
@@ -145,27 +146,41 @@ mod integration_tests {
         let kp = params.ld * 1_000.0;
         let ki = params.r * 1_000.0;
 
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki);
-        foc.iq_pi = PIController::new(kp, ki);
+        let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
+        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Settle for 2 000 steps (0.1 s ≈ 100 × Ld/R time constants).
         for _ in 0..2_000 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 1.0, 0.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(1.0),
+                amps(0.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         }
 
         // Collect 500 steady-state (Vd, Id) samples.
         let mut meas = ResistanceMeasurement::new(500);
         for _ in 0..500 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 1.0, 0.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
-            meas.record(telem.vd, telem.id);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(1.0),
+                amps(0.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            meas.record(volts(telem.vd.value), amps(telem.id.value));
         }
 
-        let r_measured = meas.finish().unwrap();
+        let r_measured = meas.finish().unwrap().value;
         let error = (r_measured - params.r).abs() / params.r;
         assert!(
             error < 0.10,
@@ -192,16 +207,23 @@ mod integration_tests {
         let kp = params.ld * 1_000.0;
         let ki = params.r * 1_000.0;
 
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki);
-        foc.iq_pi = PIController::new(kp, ki);
+        let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
+        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Spin with iq_target = 0.5 A for 0.5 s (10 000 steps ≈ 5 time constants).
         for _ in 0..10_000 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 0.5, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(0.5),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         }
 
         assert!(
@@ -211,14 +233,25 @@ mod integration_tests {
         );
 
         // Collect 500 steady-state (Vq, Iq, ωe) samples.
-        let mut meas = FluxLinkageMeasurement::new(params.r, 500);
+        let mut meas = FluxLinkageMeasurement::new(ohms(params.r), 500);
         for _ in 0..500 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 0.5, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
-            meas.record(telem.vq, telem.iq, out.omega_e);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(0.5),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            meas.record(
+                volts(telem.vq.value),
+                amps(telem.iq.value),
+                erad_per_s(out.omega_e),
+            );
         }
 
-        let lambda_measured = meas.finish().unwrap();
+        let lambda_measured = meas.finish().unwrap().value;
         let error = (lambda_measured - params.lambda).abs() / params.lambda;
         assert!(
             error < 0.15,
@@ -285,7 +318,13 @@ mod integration_tests {
             let out = motor.step(hold_v + v_inj_a, v_inj_b, 0.0, DT);
 
             let (i_alpha, i_beta) = transforms::clarke(out.ia, out.ib);
-            measurement.record(i_alpha, i_beta, injection_angle, v_inj_a, v_inj_b);
+            measurement.record(
+                amps(i_alpha),
+                amps(i_beta),
+                injection_angle,
+                volts(v_inj_a),
+                volts(v_inj_b),
+            );
         }
 
         let result = measurement.finish().unwrap();
@@ -293,28 +332,28 @@ mod integration_tests {
         // With carrier demodulation + R compensation, both axes should
         // be close to the true value for an SPM motor.
         let expected_l = params.ld;
-        let ld_error = (result.ld - expected_l).abs() / expected_l;
-        let lq_error = (result.lq - expected_l).abs() / expected_l;
+        let ld_error = (result.ld.value - expected_l).abs() / expected_l;
+        let lq_error = (result.lq.value - expected_l).abs() / expected_l;
 
         assert!(
             ld_error < 0.30,
             "Ld error too large: {:.1}% (measured {:.2} µH, expected {:.2} µH)",
             ld_error * 100.0,
-            result.ld * 1e6,
+            result.ld.value * 1e6,
             expected_l * 1e6
         );
         assert!(
             lq_error < 0.30,
             "Lq error too large: {:.1}% (measured {:.2} µH, expected {:.2} µH)",
             lq_error * 100.0,
-            result.lq * 1e6,
+            result.lq.value * 1e6,
             expected_l * 1e6
         );
 
         // SPM motor: Ld ≈ Lq, ratio should be close to 1.0.
         // The holding current on the d-axis creates some residual asymmetry
         // in the PMSM simulation, so allow a wider band than ideal.
-        let ratio = result.ld / result.lq;
+        let ratio = result.ld.value / result.lq.value;
         assert!(
             (0.5..=2.0).contains(&ratio),
             "Ld/Lq ratio {ratio:.2} too far from 1.0 for SPM motor"
@@ -365,6 +404,59 @@ mod integration_tests {
         assert!(result.ki_current > 0.0 && result.ki_current.is_finite());
         assert!(result.params.kv_rpm_per_v > 50.0);
         assert!(result.params.max_current_a > 0.0);
+    }
+
+    /// The detection code's sin/cos backend does not move its results: the
+    /// full sequence with `FastSinCos` (|err| < 1e-6) matches `LibmSinCos`.
+    /// Exercises every path that takes `S` (HFI injection and demodulation
+    /// when built, the locked-axis projections, the flux spin).
+    #[test]
+    fn detection_results_do_not_depend_on_the_sin_cos_backend() {
+        use super::sweep::DetectionParams;
+        use super::types::MotorSize;
+        use super::virtual_harness::run_detection_with;
+        use crate::foc::trig::{FastSinCos, LibmSinCos};
+
+        let motor_params = MotorParams {
+            j: 5e-4,
+            ..MotorParams::default()
+        };
+        let det_params = DetectionParams {
+            motor_size: MotorSize::Small,
+            pole_pairs: motor_params.pole_pairs,
+            current_max: 10.0,
+            max_power_loss_w: 50.0,
+            pwm_freq_hz: 20_000.0,
+            vbus: 24.0,
+            openloop_erpm: 1400.0,
+        };
+        let params = || DetectionParams { ..det_params };
+        let libm =
+            run_detection_with::<LibmSinCos>(motor_params, 24.0, params()).expect("libm detection");
+        let fast =
+            run_detection_with::<FastSinCos>(motor_params, 24.0, params()).expect("fast detection");
+        let rel = |a: f32, b: f32| ((a - b) / a).abs();
+        let pairs = [
+            ("R", libm.params.resistance_ohm, fast.params.resistance_ohm),
+            ("Ld", libm.params.inductance_d_h, fast.params.inductance_d_h),
+            ("Lq", libm.params.inductance_q_h, fast.params.inductance_q_h),
+            (
+                "L",
+                libm.params.inductance_avg_h,
+                fast.params.inductance_avg_h,
+            ),
+            (
+                "flux",
+                libm.params.flux_linkage_wb,
+                fast.params.flux_linkage_wb,
+            ),
+            ("kp", libm.kp_current, fast.kp_current),
+            ("ki", libm.ki_current, fast.ki_current),
+        ];
+        for (name, a, b) in pairs {
+            std::println!("{name}: libm {a:e}, fast {b:e}, rel diff {:.2e}", rel(a, b));
+            assert!(rel(a, b) < 1e-4, "{name}: libm {a} vs fast {b}");
+        }
     }
 
     /// Regression: high-R motor on a low bus (gimbal-class).

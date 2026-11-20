@@ -105,7 +105,7 @@ impl ShuntCurrentSense {
     /// enrichment path, so they cannot diverge.
     pub fn from_calib(calib: &crate::types::BoardCalib) -> Self {
         let mut s = Self::new(
-            calib.shunt_ohms,
+            calib.shunt_ohms.value,
             calib.amp_gain,
             calib.adc_vref_mv,
             calib.adc_max_counts,

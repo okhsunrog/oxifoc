@@ -33,6 +33,10 @@ use crate::foc::sensors::AngleSensor;
 use crate::foc::sensors::NoSensor;
 use crate::foc::trig::LibmSinCos;
 use crate::foc::trig::SinCos;
+use crate::units::{
+    ElectricPotential, ElectricalAngle, ElectricalAngularAcceleration, ElectricalAngularVelocity,
+    Frequency, PllIntegralGain, Time, erad, erad_per_s, seconds, volts,
+};
 use hall_control_motion::HallControlMotion;
 use hall_motion_witness::HallMotionWitness;
 use heapless::Vec as HeaplessVec;
@@ -45,7 +49,7 @@ pub const CROSSOVER_HYSTERESIS: f32 = 0.2;
 
 /// Hysteresis band (V) of the voltage-based HfiToObserverVolts crossover —
 /// MESC hardcodes the same 1 V between "carrier off" and "carrier on".
-pub const HFI_VOLTS_HYSTERESIS: f32 = 1.0;
+pub const HFI_VOLTS_HYSTERESIS: ElectricPotential = volts(1.0);
 
 // ============================================================================
 // Hall Health Tracking (VESC-style)
@@ -77,13 +81,13 @@ pub enum HallHealth {
 /// estimate wobble keeps second-order rolloff (~×0.2 at 60 Hz with the
 /// defaults) while the 8–20 Hz rotor-hunting band keeps its damping
 /// (~×0.98 follow at 14 Hz).
-const TRACKER_KD_TAU_S: f32 = 0.005;
+const TRACKER_KD_TAU: Time = seconds(0.005);
 
 /// Hard bound (rad) on how far the commutation frame may trail the raw
 /// estimate — the geometric guarantee against the flat-top/pull-out ride
 /// (see the clamp block in [`PhaseManager::tracker_output`]). 0.6 rad =
 /// 34°: torque per amp ≥ 0.83 of aligned, stiffness slope still steep.
-const TRACKER_MAX_LAG_RAD: f32 = 0.6;
+const TRACKER_MAX_LAG: ElectricalAngle = erad(0.6);
 
 /// Frequency catch-up time constant (s) while the load-angle clamp
 /// binds: fast enough to release the clamp within tens of ms after the
@@ -97,13 +101,13 @@ const TRACKER_MAX_LAG_RAD: f32 = 0.6;
 /// acceleration (bench 2026-07-07: drive-vs-estimate gap pinned at
 /// 0.62–0.67 rad the whole climb = commutating ~35° behind). With the
 /// lead, the pull's fixed point is ramp-consistent once the a_est
-/// feedforward converges (~3× TRACKER_FF_TAU_S ≈ 90 ms) and the clamp
+/// feedforward converges (~3× TRACKER_FF_TAU ≈ 90 ms) and the clamp
 /// releases into soft tracking — an entry transient instead of a
 /// standing regime. (A shorter τ instead — 2 ms — released the ride
 /// too, but every wobble-peak clamp GRAZE then slammed the frequency
 /// to the instantaneous wobble velocity: the 60 Hz attenuation test
 /// read ratio 1.14, worse than no tracker.)
-const TRACKER_CATCHUP_TAU_S: f32 = 0.02;
+const TRACKER_CATCHUP_TAU: Time = seconds(0.02);
 
 /// Acceleration-feedforward filter time constant (s): slow enough to
 /// reject the mid-band wobble (33 rad/s corner), fast enough to pick a
@@ -113,7 +117,7 @@ const TRACKER_CATCHUP_TAU_S: f32 = 0.02;
 /// (0.5–5.6 k rad/s²) lands on the torque-curve flat top for any ωn soft
 /// enough to filter the wobble — the freq-led dossier's tension, now
 /// resolved by feeding the trend instead of stiffening the loop.
-const TRACKER_FF_TAU_S: f32 = 0.03;
+const TRACKER_FF_TAU: Time = seconds(0.03);
 
 /// Rotor-hunting damper: fraction of the low-passed RELATIVE velocity
 /// (estimate vs frame) fed into the angle advance, and its filter (s).
@@ -126,7 +130,7 @@ const TRACKER_FF_TAU_S: f32 = 0.03;
 /// that measurably slowed the swing there; the τ keeps the 35–100 Hz
 /// wobble out of the damper (×0.7 at 14 Hz, ×0.2 at 60 Hz).
 const TRACKER_HUNT_DAMP: f32 = 0.5;
-const TRACKER_HUNT_TAU_S: f32 = 0.012;
+const TRACKER_HUNT_TAU: Time = seconds(0.012);
 
 /// Second-order phase tracker over the observer estimate — the freq-led
 /// REDESIGN (2026-07-08).
@@ -154,25 +158,25 @@ struct PhaseTracker {
     /// Cleared when it catches the observer or a flying probe seeds the frame.
     startup_tracking: bool,
     /// ωn² (1/s²); 0 = tracker disabled (raw observer commutation).
-    kp: f32,
+    kp: PllIntegralGain,
     /// 2ζωn (1/s) — damping-path gain (applied to the low-passed Δ).
-    kd: f32,
+    kd: Frequency,
     /// Engaged while source selection uses the tracker. Flying catches seed
     /// directly from the measurement, cold-start transitions retain continuity.
     active: bool,
-    theta: f32,
-    omega: f32,
-    /// Low-passed Δ for the damping path (see TRACKER_KD_TAU_S).
-    d_filt: f32,
-    /// Slow-filtered estimate velocity (τ = TRACKER_FF_TAU_S) — the
+    theta: ElectricalAngle,
+    omega: ElectricalAngularVelocity,
+    /// Low-passed Δ for the damping path (see TRACKER_KD_TAU).
+    d_filt: ElectricalAngle,
+    /// Slow-filtered estimate velocity (τ = TRACKER_FF_TAU) — the
     /// acceleration-feedforward tap.
-    v_slow: f32,
+    v_slow: ElectricalAngularVelocity,
     /// Low-passed relative velocity for the hunting damper (rad/s).
-    hunt_filt: f32,
+    hunt_filt: ElectricalAngularVelocity,
     /// Filtered estimate acceleration (rad/s², same τ): fed forward into
     /// the frequency integrator, it removes the type-2 lag for slow
     /// acceleration TRENDS while the τ keeps the 35–100 Hz wobble out.
-    a_est: f32,
+    a_est: ElectricalAngularAcceleration,
 }
 
 /// Open-loop override state for startup or Hall failure recovery
@@ -184,18 +188,18 @@ pub struct OpenLoopOverride {
     /// Whether open-loop override is active
     pub active: bool,
     /// Current open-loop angle (radians)
-    pub angle: f32,
+    pub angle: ElectricalAngle,
     /// Target velocity for open-loop ramp (rad/s)
-    pub velocity: f32,
+    pub velocity: ElectricalAngularVelocity,
     /// Time remaining in override mode (seconds)
-    pub timer: f32,
+    pub timer: Time,
 }
 
 /// Default open-loop override duration (seconds)
-pub const DEFAULT_OPENLOOP_TIME: f32 = 0.5;
+pub const DEFAULT_OPENLOOP_TIME: Time = seconds(0.5);
 
 /// Default minimum open-loop velocity (electrical rad/s, ~500 eRPM)
-pub const DEFAULT_OPENLOOP_MIN_VEL: f32 = 52.0;
+pub const DEFAULT_OPENLOOP_MIN_VEL: ElectricalAngularVelocity = erad_per_s(52.0);
 
 // ============================================================================
 // Phase Faults
@@ -305,9 +309,9 @@ where
     bench_observer_weight: Option<f32>,
     motion_reference_epoch: super::MotionReferenceEpoch,
     hall_reference_epoch: Option<u32>,
-    manual_angle: f32,
-    open_loop_angle: f32,
-    open_loop_velocity: f32,
+    manual_angle: ElectricalAngle,
+    open_loop_angle: ElectricalAngle,
+    open_loop_velocity: ElectricalAngularVelocity,
 
     // Timebase
     ticks_per_sec: u64,
@@ -345,7 +349,7 @@ where
 
     // |vq − R·iq| of the last update — back-EMF share of the drive voltage,
     // the regime signal for the voltage-based HFI crossover.
-    bemf_proxy_v: f32,
+    bemf_proxy: ElectricPotential,
 
     // Decimation counters for the ~2.4 Hz ISR traces (observer internals /
     // startup-hold convergence). Plain fields — ISR-only state; statics

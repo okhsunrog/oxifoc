@@ -2,20 +2,26 @@
 
 use crate::foc::angle_difference;
 use crate::foc::fast_math::u64_to_f32;
-use crate::foc::hall_sensor::{STALE_MIN_WINDOW_S, STALE_SECTOR_MULTIPLE};
+use crate::foc::hall_sensor::{STALE_MIN_WINDOW, STALE_SECTOR_MULTIPLE};
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::{HallEdgeObservation, HallEdgeTiming};
+use crate::units::{
+    ConstZero, ElectricalAngle, ElectricalAngularVelocity, Time, erad_per_s, seconds,
+};
+
+/// Below this speed no edge is expected soon.
+const MIN_MOVING_SPEED: ElectricalAngularVelocity = erad_per_s(1.0);
 
 pub(super) struct HallMotionWitness {
     baseline: Option<Baseline>,
-    seconds_per_tick: f32,
+    seconds_per_tick: Time,
 }
 
 impl Default for HallMotionWitness {
     fn default() -> Self {
         Self {
             baseline: None,
-            seconds_per_tick: 1e-6,
+            seconds_per_tick: seconds(1e-6),
         }
     }
 }
@@ -23,14 +29,14 @@ impl Default for HallMotionWitness {
 struct Baseline {
     edge_ticks: u64,
     reference_epoch: u32,
-    phase: f32,
-    travel: f32,
+    phase: ElectricalAngle,
+    travel: ElectricalAngle,
     stale: bool,
 }
 
 impl HallMotionWitness {
     pub(super) fn set_ticks_per_sec(&mut self, ticks_per_sec: u64) {
-        self.seconds_per_tick = 1.0 / u64_to_f32(ticks_per_sec.max(1));
+        self.seconds_per_tick = seconds(1.0 / u64_to_f32(ticks_per_sec.max(1)));
         self.reset();
     }
     pub(super) fn reset(&mut self) {
@@ -53,12 +59,12 @@ impl HallMotionWitness {
             return false;
         };
         let phase = observer.angle;
-        let distance = STALE_SECTOR_MULTIPLE * edge.sector_width_rad;
+        let distance = STALE_SECTOR_MULTIPLE * edge.sector_width;
         let seconds_per_tick = self.seconds_per_tick;
         let overdue = || {
             let age = u64_to_f32(now_ticks.saturating_sub(edge.ticks)) * seconds_per_tick;
-            let velocity = edge.velocity_rad_s.abs().min(observer.velocity.abs());
-            velocity >= 1.0 && age > STALE_MIN_WINDOW_S && age * velocity > distance
+            let velocity = edge.velocity.abs().min(observer.velocity.abs());
+            velocity >= MIN_MOVING_SPEED && age > STALE_MIN_WINDOW && age * velocity > distance
         };
         // A recovered glitch reports a historical crossing. The current
         // observer phase cannot anchor travel at that earlier instant. Keep
@@ -77,7 +83,7 @@ impl HallMotionWitness {
                 edge_ticks: edge.ticks,
                 reference_epoch: edge.reference_epoch,
                 phase,
-                travel: 0.0,
+                travel: ElectricalAngle::ZERO,
                 stale: false,
             });
             return false;
@@ -106,11 +112,12 @@ impl HallMotionWitness {
 mod tests {
     use super::*;
     use crate::foc::wrap_angle;
+    use crate::units::{erad, erad_per_s};
 
     fn motion(angle: f32) -> Option<PhaseOutput> {
         Some(PhaseOutput {
-            angle,
-            velocity: 1000.0,
+            angle: erad(angle),
+            velocity: erad_per_s(1000.0),
         })
     }
 
@@ -118,8 +125,8 @@ mod tests {
         reference_epoch: 0,
         ticks: 1000,
         timing: HallEdgeTiming::Captured,
-        sector_width_rad: 0.6,
-        velocity_rad_s: 1000.0,
+        sector_width: erad(0.6),
+        velocity: erad_per_s(1000.0),
     };
 
     #[test]
@@ -209,7 +216,7 @@ mod tests {
         let mut witness = HallMotionWitness::default();
         witness.set_ticks_per_sec(2_000_000);
         let edge = HallEdgeObservation {
-            sector_width_rad: 0.1,
+            sector_width: erad(0.1),
             ..EDGE
         };
         witness.observe(edge, motion(0.0), 900);

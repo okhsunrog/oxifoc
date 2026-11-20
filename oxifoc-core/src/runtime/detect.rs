@@ -30,6 +30,8 @@ use crate::state::DetectionActiveGuard;
 use crate::state::model::CONFIG_COORDINATOR;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse};
+use crate::units::amps;
+use crate::units::{henries, ohms, webers};
 
 struct ReadySetup {
     session: crate::types::measurement::SessionId,
@@ -45,7 +47,7 @@ pub(super) fn setup_is_current(request: &crate::types::SaveDriveSetup) -> bool {
         ready.as_ref().is_some_and(|ready| {
             let mut offered = request.setup.clone();
             offered.current = crate::drive_setup::DriveCurrent::Auto;
-            offered.motor.max_current_a = 0.0;
+            offered.motor.max_current.value = 0.0;
             ready.session == request.session
                 && offered == ready.setup
                 && ready.revisions == *CONFIG_COORDINATOR.revisions.borrow(cs).borrow()
@@ -321,8 +323,10 @@ async fn measure_step<B: DetectionBackend>(
 ) -> DetectResponse {
     match req {
         DetectRequest::MeasureResistance {
-            max_power_loss_w, ..
+            max_power_loss: max_power_loss_w,
+            ..
         } => {
+            let max_power_loss_w = max_power_loss_w.value;
             if !pos(max_power_loss_w) {
                 return DetectResponse::Error(DetectError::OutOfRange);
             }
@@ -359,7 +363,9 @@ async fn measure_step<B: DetectionBackend>(
                     };
                     match backend.measure_resistance(&params).await {
                         Ok(r) => match measured_resistance(r) {
-                            Ok(resistance_ohm) => DetectResponse::Resistance { resistance_ohm },
+                            Ok(resistance_ohm) => DetectResponse::Resistance {
+                                resistance: ohms(resistance_ohm),
+                            },
                             Err(e) => DetectResponse::Error(e),
                         },
                         Err(e) => DetectResponse::Error(map_err(e)),
@@ -370,10 +376,11 @@ async fn measure_step<B: DetectionBackend>(
         }
 
         DetectRequest::MeasureInductance {
-            max_power_loss_w,
-            resistance_ohm: r,
+            max_power_loss: max_power_loss_w,
+            resistance: r,
             ..
         } => {
+            let (max_power_loss_w, r) = (max_power_loss_w.value, r.value);
             if !pos(max_power_loss_w) || !pos(r) {
                 return DetectResponse::Error(DetectError::OutOfRange);
             }
@@ -388,21 +395,24 @@ async fn measure_step<B: DetectionBackend>(
             };
             match backend.measure_inductance(&params, foc_freq_hz).await {
                 Ok((ld, lq)) => DetectResponse::Inductance {
-                    inductance_d_h: ld,
-                    inductance_q_h: lq,
+                    inductance_d: henries(ld),
+                    inductance_q: henries(lq),
                 },
                 Err(e) => DetectResponse::Error(map_err(e)),
             }
         }
 
         DetectRequest::MeasureFlux {
-            max_power_loss_w,
-            resistance_ohm: r,
-            inductance_h,
+            max_power_loss: max_power_loss_w,
+            resistance: r,
+            inductance: inductance_h,
             pole_pairs,
-            openloop_erpm,
+            openloop_speed: openloop_erpm,
             ..
         } => {
+            let (max_power_loss_w, r, inductance_h) =
+                (max_power_loss_w.value, r.value, inductance_h.value);
+            let openloop_erpm = openloop_erpm.get::<crate::units::unit::electrical::erpm>();
             // pole_pairs = 0 would turn openloop_erpm into an infinite
             // spin target via the erpm/pole_pairs division below.
             if !pos(max_power_loss_w)
@@ -442,7 +452,7 @@ async fn measure_step<B: DetectionBackend>(
                         0.0
                     };
                     DetectResponse::FluxLinkage {
-                        flux_linkage_wb: flux,
+                        flux_linkage: webers(flux),
                         kv_rpm_per_v: kv,
                     }
                 }
@@ -451,10 +461,11 @@ async fn measure_step<B: DetectionBackend>(
         }
 
         DetectRequest::CalibrateHall {
-            max_power_loss_w,
-            resistance_ohm,
+            max_power_loss: max_power_loss_w,
+            resistance: resistance_ohm,
             ..
         } => {
+            let (max_power_loss_w, resistance_ohm) = (max_power_loss_w.value, resistance_ohm.value);
             let currents = match DetectionCurrents::new(
                 max_power_loss_w,
                 resistance_ohm,
@@ -465,7 +476,7 @@ async fn measure_step<B: DetectionBackend>(
                 Err(error) => return DetectResponse::Error(map_err(error)),
             };
             let params = HallCalibrationParams {
-                current_amps: currents.hall_a,
+                current: amps(currents.hall_a),
                 ..Default::default()
             };
             match backend.calibrate_hall(params).await {
@@ -526,16 +537,16 @@ fn prepare_commissioning(
     let source = source
         .or_else(|| {
             limits.map(|limits| crate::types::commissioning::SourceLimits {
-                input_a: limits.bus_in_max_a,
-                regen_a: limits.bus_regen_max_a,
+                input: limits.bus_in_max,
+                regen: limits.bus_regen_max,
             })
         })
         .ok_or(DetectError::Unsafe)?;
-    let source =
-        PowerSourceLimits::new(source.input_a, source.regen_a).map_err(|_| DetectError::Unsafe)?;
+    let source = PowerSourceLimits::new(source.input.value, source.regen.value)
+        .map_err(|_| DetectError::Unsafe)?;
     // A fresh board has no user override. Its independent platform trip still
     // applies; an explicitly stored stricter protection always survives.
-    let configured_trip = limits.map_or(0.0, |limits| limits.max_phase_current_a);
+    let configured_trip = limits.map_or(0.0, |limits| limits.max_phase_current.value);
     if !configured_trip.is_finite() || configured_trip < 0.0 {
         return Err(DetectError::Unsafe);
     }
@@ -585,6 +596,7 @@ fn config_revisions() -> [u32; crate::types::ConfigGroupId::COUNT] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{amps, erpm, henries, ohms, watts};
 
     #[test]
     fn commissioning_uses_inverter_and_source_without_old_motor_limits() {
@@ -592,14 +604,14 @@ mod tests {
         let mut cfg = RuntimeConfig::default();
         assert!(prepare_commissioning(70.0, None, None, None).is_err());
         cfg.current_limits = Some(CurrentLimitsConfig {
-            max_iq_a: 3.0,
-            max_phase_current_a: 30.0,
-            bus_in_max_a: 5.0,
-            bus_regen_max_a: 0.0,
+            max_iq: amps(3.0),
+            max_phase_current: amps(30.0),
+            bus_in_max: amps(5.0),
+            bus_regen_max: amps(0.0),
             ..Default::default()
         });
         cfg.motor_params = Some(MotorParamsConfig {
-            max_current_a: 2.0,
+            max_current: amps(2.0),
             ..Default::default()
         });
         assert_eq!(
@@ -615,11 +627,11 @@ mod tests {
             4.0
         );
         assert!(prepare_commissioning(70.0, Some(&cfg), Some(f32::NAN), None).is_err());
-        cfg.current_limits.as_mut().unwrap().bus_regen_max_a = -1.0;
+        cfg.current_limits.as_mut().unwrap().bus_regen_max.value = -1.0;
         assert!(prepare_commissioning(70.0, Some(&cfg), None, None).is_err());
         let confirmed = crate::types::commissioning::SourceLimits {
-            input_a: 5.0,
-            regen_a: 0.0,
+            input: amps(5.0),
+            regen: amps(0.0),
         };
         assert_eq!(
             prepare_commissioning(70.0, Some(&cfg), None, Some(confirmed))
@@ -640,32 +652,33 @@ mod tests {
         // the boundary rules stay unit-testable without an async backend.
         match *req {
             DetectRequest::MeasureResistance {
-                max_power_loss_w, ..
-            } => pos(max_power_loss_w),
-            DetectRequest::MeasureInductance {
-                max_power_loss_w,
-                resistance_ohm,
+                max_power_loss: max_power_loss_w,
                 ..
-            } => pos(max_power_loss_w) && pos(resistance_ohm),
+            } => pos(max_power_loss_w.value),
+            DetectRequest::MeasureInductance {
+                max_power_loss: max_power_loss_w,
+                resistance: resistance_ohm,
+                ..
+            } => pos(max_power_loss_w.value) && pos(resistance_ohm.value),
             DetectRequest::MeasureFlux {
-                max_power_loss_w,
-                resistance_ohm,
-                inductance_h,
+                max_power_loss: max_power_loss_w,
+                resistance: resistance_ohm,
+                inductance: inductance_h,
                 pole_pairs,
-                openloop_erpm,
+                openloop_speed: openloop_erpm,
                 ..
             } => {
-                pos(max_power_loss_w)
-                    && pos(resistance_ohm)
-                    && pos(inductance_h)
+                pos(max_power_loss_w.value)
+                    && pos(resistance_ohm.value)
+                    && pos(inductance_h.value)
                     && pole_pairs >= 1
-                    && pos(openloop_erpm)
+                    && pos(openloop_erpm.value)
             }
             DetectRequest::CalibrateHall {
-                max_power_loss_w,
-                resistance_ohm,
+                max_power_loss: max_power_loss_w,
+                resistance: resistance_ohm,
                 ..
-            } => pos(max_power_loss_w) && pos(resistance_ohm),
+            } => pos(max_power_loss_w.value) && pos(resistance_ohm.value),
             DetectRequest::MeasureCurrentOffsets { .. } => true,
         }
     }
@@ -674,49 +687,49 @@ mod tests {
     fn detect_requests_reject_nan_and_degenerate_payloads() {
         // NaN power: sqrtf(NaN).min(max) would SELECT the platform maximum.
         assert!(!request_is_sane(&DetectRequest::MeasureResistance {
-            current_limit_a: None,
-            max_power_loss_w: f32::NAN,
+            current_limit: None,
+            max_power_loss: watts(f32::NAN),
         }));
         assert!(!request_is_sane(&DetectRequest::MeasureResistance {
-            current_limit_a: None,
-            max_power_loss_w: 0.0,
+            current_limit: None,
+            max_power_loss: watts(0.0),
         }));
         assert!(request_is_sane(&DetectRequest::MeasureResistance {
-            current_limit_a: None,
-            max_power_loss_w: 25.0,
+            current_limit: None,
+            max_power_loss: watts(25.0),
         }));
         // Zero resistance divides the bus-current clamp.
         assert!(!request_is_sane(&DetectRequest::MeasureInductance {
-            current_limit_a: None,
-            max_power_loss_w: 25.0,
-            resistance_ohm: 0.0,
+            current_limit: None,
+            max_power_loss: watts(25.0),
+            resistance: ohms(0.0),
         }));
         // pole_pairs = 0 turns openloop_erpm into an infinite spin target.
         assert!(!request_is_sane(&DetectRequest::MeasureFlux {
-            current_limit_a: None,
-            max_power_loss_w: 25.0,
-            resistance_ohm: 0.03,
-            inductance_h: 10e-6,
+            current_limit: None,
+            max_power_loss: watts(25.0),
+            resistance: ohms(0.03),
+            inductance: henries(10e-6),
             pole_pairs: 0,
-            openloop_erpm: 3000.0,
+            openloop_speed: erpm(3000.0),
         }));
         assert!(request_is_sane(&DetectRequest::MeasureFlux {
-            current_limit_a: None,
-            max_power_loss_w: 25.0,
-            resistance_ohm: 0.03,
-            inductance_h: 10e-6,
+            current_limit: None,
+            max_power_loss: watts(25.0),
+            resistance: ohms(0.03),
+            inductance: henries(10e-6),
             pole_pairs: 7,
-            openloop_erpm: 3000.0,
+            openloop_speed: erpm(3000.0),
         }));
         assert!(!request_is_sane(&DetectRequest::CalibrateHall {
-            current_limit_a: None,
-            max_power_loss_w: 0.0,
-            resistance_ohm: 0.0,
+            current_limit: None,
+            max_power_loss: watts(0.0),
+            resistance: ohms(0.0),
         }));
         assert!(!request_is_sane(&DetectRequest::CalibrateHall {
-            current_limit_a: None,
-            max_power_loss_w: f32::NAN,
-            resistance_ohm: 0.0,
+            current_limit: None,
+            max_power_loss: watts(f32::NAN),
+            resistance: ohms(0.0),
         }));
     }
 

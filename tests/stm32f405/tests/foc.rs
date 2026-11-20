@@ -11,6 +11,7 @@ mod tests {
     use super::support::dwt::{Stats, cycles as dwt_cycles, enable as enable_dwt};
     use core::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
     use core::mem::ManuallyDrop;
+    use oxifoc_core::units::{amps, erad, seconds, volts};
 
     use oxifoc_core::foc::{
         controller::FocController,
@@ -149,12 +150,19 @@ mod tests {
 
     #[test]
     fn foc_zero_currents(_state: TestState) {
-        let mut foc = FocController::<SvpwmModulator, FastSinCos>::new(12.0);
+        let mut foc = FocController::<SvpwmModulator, FastSinCos>::new(volts(12.0));
         let max_duty: u16 = 1000;
         let dt = 50e-6_f32;
 
         for &angle in &[0.0_f32, FRAC_PI_4, PI, 5.0] {
-            let telem = foc.step((0.0, 0.0, 0.0), angle, 0.0, 0.0, max_duty, dt);
+            let telem = foc.step(
+                (amps(0.0), amps(0.0), amps(0.0)),
+                erad(angle),
+                amps(0.0),
+                amps(0.0),
+                max_duty,
+                seconds(dt),
+            );
             let center = max_duty / 2;
             let tolerance = max_duty / 10;
             for (i, &duty) in telem.duties.iter().enumerate() {
@@ -169,21 +177,39 @@ mod tests {
 
     #[test]
     fn foc_synthetic_current(_state: TestState) {
-        let mut foc = FocController::<SvpwmModulator, FastSinCos>::new(24.0);
+        let mut foc = FocController::<SvpwmModulator, FastSinCos>::new(volts(24.0));
         let max_duty: u16 = 2000;
         let dt = 50e-6_f32;
 
-        let mut last = foc.step((1.0, -0.5, -0.5), 0.0, 0.0, 0.0, max_duty, dt);
+        let mut last = foc.step(
+            (amps(1.0), amps(-0.5), amps(-0.5)),
+            erad(0.0),
+            amps(0.0),
+            amps(0.0),
+            max_duty,
+            seconds(dt),
+        );
         for _ in 0..10 {
-            last = foc.step((1.0, -0.5, -0.5), 0.0, 0.0, 0.0, max_duty, dt);
+            last = foc.step(
+                (amps(1.0), amps(-0.5), amps(-0.5)),
+                erad(0.0),
+                amps(0.0),
+                amps(0.0),
+                max_duty,
+                seconds(dt),
+            );
         }
 
-        defmt::assert!(last.vd < 0.0, "Expected negative vd, got {}", last.vd);
+        defmt::assert!(
+            last.vd.value < 0.0,
+            "Expected negative vd, got {}",
+            last.vd.value
+        );
         let all_same = last.duties[0] == last.duties[1] && last.duties[1] == last.duties[2];
         defmt::assert!(!all_same, "Duties should differ: {:?}", last.duties);
         defmt::info!(
             "FOC synthetic current: PASS (vd={}, duties={:?})",
-            last.vd,
+            last.vd.value,
             last.duties
         );
     }
@@ -462,12 +488,19 @@ mod tests {
     // ========== Benchmark: full FOC step at 168MHz ==========
 
     fn bench_foc<S: SinCos>(label: &str) {
-        let mut foc = FocController::<SvpwmModulator, S>::new(24.0);
+        let mut foc = FocController::<SvpwmModulator, S>::new(volts(24.0));
         let max_duty: u16 = 2000;
         let dt = 50e-6_f32;
 
         for i in 0..20u32 {
-            foc.step((1.0, -0.5, -0.5), (i as f32) * 0.1, 0.5, 2.0, max_duty, dt);
+            foc.step(
+                (amps(1.0), amps(-0.5), amps(-0.5)),
+                erad((i as f32) * 0.1),
+                amps(0.5),
+                amps(2.0),
+                max_duty,
+                seconds(dt),
+            );
         }
 
         const N: u32 = 1000;
@@ -482,7 +515,14 @@ mod tests {
             let ic = -ia - ib;
 
             let start = dwt_cycles();
-            let result = foc.step((ia, ib, ic), angle, 0.5, 2.0, max_duty, dt);
+            let result = foc.step(
+                (amps(ia), amps(ib), amps(ic)),
+                erad(angle),
+                amps(0.5),
+                amps(2.0),
+                max_duty,
+                seconds(dt),
+            );
             let end = dwt_cycles();
             core::hint::black_box(&result);
 

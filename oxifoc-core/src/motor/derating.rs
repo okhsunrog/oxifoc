@@ -27,6 +27,9 @@
 //! ladder remain the backstops at the ramp ends.
 
 use crate::foc::clamp_f32;
+use crate::units::{ElectricPotential, ElectricalAngularVelocity, Linear, Sign};
+use crate::units::{erad_per_s, volts};
+use uom::ConstZero;
 
 /// Live derating factors (1.0 = no derate), applied by the driver's
 /// torque grant (`FocDriver::grant_torque`), selected by direction.
@@ -70,9 +73,9 @@ impl DeratingScales {
 #[serde(deny_unknown_fields)]
 pub struct SpeedDerating {
     /// Forward speed ceiling in electrical rad/s. Zero disables the ceiling.
-    pub max_forward_erad_s: f32,
+    pub max_forward: ElectricalAngularVelocity,
     /// Reverse speed ceiling in electrical rad/s. Zero disables the ceiling.
-    pub max_reverse_erad_s: f32,
+    pub max_reverse: ElectricalAngularVelocity,
     /// Fraction of each enabled speed ceiling at which motoring torque tapers.
     pub speed_start_frac: f32,
 }
@@ -80,8 +83,8 @@ pub struct SpeedDerating {
 impl Default for SpeedDerating {
     fn default() -> Self {
         Self {
-            max_forward_erad_s: 0.0,
-            max_reverse_erad_s: 0.0,
+            max_forward: erad_per_s(0.0),
+            max_reverse: erad_per_s(0.0),
             speed_start_frac: 0.8,
         }
     }
@@ -89,35 +92,36 @@ impl Default for SpeedDerating {
 
 impl SpeedDerating {
     fn is_sane(self) -> bool {
-        let valid_limit = |v: f32| v.is_finite() && v >= 0.0;
-        valid_limit(self.max_forward_erad_s)
-            && valid_limit(self.max_reverse_erad_s)
+        let valid_limit = |v: ElectricalAngularVelocity| v.is_finite() && v.is_non_negative();
+        valid_limit(self.max_forward)
+            && valid_limit(self.max_reverse)
             && self.speed_start_frac > 0.0
             && self.speed_start_frac < 1.0
     }
 
-    pub(super) fn speed_ceiling(self, rider_direction: f32) -> f32 {
-        if rider_direction < 0.0 {
-            self.max_reverse_erad_s
+    /// The speed ceiling for a rider-facing direction (its sign).
+    pub(super) fn speed_ceiling(self, rider_direction: impl Sign) -> ElectricalAngularVelocity {
+        if rider_direction.is_negative() {
+            self.max_reverse
         } else {
-            self.max_forward_erad_s
+            self.max_forward
         }
     }
 
     /// Evaluate on every FOC cycle. A free rotor can cross the taper
     /// between updates of the slower temperature and bus voltage scales.
-    pub(super) fn speed_cut(self, omega: f32) -> f32 {
+    pub(super) fn speed_cut(self, omega: ElectricalAngularVelocity) -> f32 {
         let ceiling = self.speed_ceiling(omega);
         let speed = omega.abs();
         let start = ceiling * self.speed_start_frac;
-        if ceiling == 0.0 {
+        if ceiling == ElectricalAngularVelocity::ZERO {
             1.0
         } else if speed >= ceiling {
             0.0
         } else if speed <= start {
             1.0
         } else {
-            (ceiling - speed) / (ceiling - start)
+            (ceiling - speed).ratio_to(ceiling - start)
         }
     }
 }
@@ -176,13 +180,13 @@ pub struct TemperatureDerating {
 #[serde(deny_unknown_fields)]
 pub struct BusVoltageDerating {
     /// Battery cutoff ramp start (V, full drive above); `0` disables
-    pub vbus_cut_start_v: f32,
+    pub cut_start: ElectricPotential,
     /// Battery cutoff ramp end (V, zero drive at/below; must be < start)
-    pub vbus_cut_end_v: f32,
+    pub cut_end: ElectricPotential,
     /// Regen overvoltage ramp start (V, full brake below); `0` disables
-    pub vbus_regen_start_v: f32,
+    pub regen_start: ElectricPotential,
     /// Regen overvoltage ramp end (V, zero regen at/above; must be > start)
-    pub vbus_regen_end_v: f32,
+    pub regen_end: ElectricPotential,
 }
 
 /// Speed, modulation, temperature and bus voltage derating.
@@ -220,10 +224,10 @@ impl Default for TemperatureDerating {
 impl Default for BusVoltageDerating {
     fn default() -> Self {
         Self {
-            vbus_cut_start_v: 0.0,
-            vbus_cut_end_v: 0.0,
-            vbus_regen_start_v: 0.0,
-            vbus_regen_end_v: 0.0,
+            cut_start: volts(0.0),
+            cut_end: volts(0.0),
+            regen_start: volts(0.0),
+            regen_end: volts(0.0),
         }
     }
 }
@@ -238,10 +242,10 @@ impl DeratingConfig {
             && f(self.temperature.temp_motor_start_c)
             && f(self.temperature.temp_motor_end_c)
             && f(self.temperature.accel_dec)
-            && f(self.bus_voltage.vbus_cut_start_v)
-            && f(self.bus_voltage.vbus_cut_end_v)
-            && f(self.bus_voltage.vbus_regen_start_v)
-            && f(self.bus_voltage.vbus_regen_end_v);
+            && self.bus_voltage.cut_start.is_finite()
+            && self.bus_voltage.cut_end.is_finite()
+            && self.bus_voltage.regen_start.is_finite()
+            && self.bus_voltage.regen_end.is_finite();
         if !all_finite {
             return false;
         }
@@ -251,11 +255,11 @@ impl DeratingConfig {
             || self.temperature.temp_motor_end_c > self.temperature.temp_motor_start_c;
         // Battery cutoff ramps DOWNWARD in voltage: start (full power)
         // above end (zero).
-        let cut_ok = self.bus_voltage.vbus_cut_start_v <= 0.0
-            || (self.bus_voltage.vbus_cut_end_v > 0.0
-                && self.bus_voltage.vbus_cut_start_v > self.bus_voltage.vbus_cut_end_v);
-        let regen_ok = self.bus_voltage.vbus_regen_start_v <= 0.0
-            || self.bus_voltage.vbus_regen_end_v > self.bus_voltage.vbus_regen_start_v;
+        let cut_ok = self.bus_voltage.cut_start.is_non_positive()
+            || (self.bus_voltage.cut_end.is_positive()
+                && self.bus_voltage.cut_start > self.bus_voltage.cut_end);
+        let regen_ok = self.bus_voltage.regen_start.is_non_positive()
+            || self.bus_voltage.regen_end > self.bus_voltage.regen_start;
         self.speed.is_sane()
             && (0.0..=1.0).contains(&self.modulation.duty_start_frac)
             && (0.0..=1.0).contains(&self.temperature.accel_dec)
@@ -271,10 +275,10 @@ impl DeratingConfig {
         &self,
         fet_temp_c: Option<f32>,
         motor_temp_c: Option<f32>,
-        vbus_v: f32,
+        vbus: ElectricPotential,
     ) -> DeratingScales {
         let thermal = self.thermal_scales(fet_temp_c, motor_temp_c);
-        let bus = self.bus_voltage_scales(vbus_v);
+        let bus = self.bus_voltage_scales(vbus);
         DeratingScales {
             drive: thermal.drive.min(bus.drive),
             brake: thermal.brake,
@@ -323,28 +327,23 @@ impl DeratingConfig {
         }
     }
 
-    pub(super) fn bus_voltage_scales(&self, vbus_v: f32) -> DeratingScales {
+    pub(super) fn bus_voltage_scales(&self, vbus: ElectricPotential) -> DeratingScales {
         let mut drive = 1.0f32;
         let mut regen = 1.0f32;
-        if self.bus_voltage.vbus_cut_start_v > 0.0
-            && self.bus_voltage.vbus_cut_start_v > self.bus_voltage.vbus_cut_end_v
+        if self.bus_voltage.cut_start.is_positive()
+            && self.bus_voltage.cut_start > self.bus_voltage.cut_end
         {
             // ramp_down mirrored in voltage: full above start, zero at end.
-            drive = drive.min(
-                1.0 - ramp_down(
-                    vbus_v,
-                    self.bus_voltage.vbus_cut_end_v,
-                    self.bus_voltage.vbus_cut_start_v,
-                ),
-            );
+            drive = drive
+                .min(1.0 - ramp_down(vbus, self.bus_voltage.cut_end, self.bus_voltage.cut_start));
         }
-        if self.bus_voltage.vbus_regen_start_v > 0.0
-            && self.bus_voltage.vbus_regen_end_v > self.bus_voltage.vbus_regen_start_v
+        if self.bus_voltage.regen_start.is_positive()
+            && self.bus_voltage.regen_end > self.bus_voltage.regen_start
         {
             regen = ramp_down(
-                vbus_v,
-                self.bus_voltage.vbus_regen_start_v,
-                self.bus_voltage.vbus_regen_end_v,
+                vbus,
+                self.bus_voltage.regen_start,
+                self.bus_voltage.regen_end,
             );
         }
 
@@ -357,11 +356,14 @@ impl DeratingConfig {
 }
 
 /// 1.0 at/below `start`, 0.0 at/above `end`, linear between.
-fn ramp_down(x: f32, start: f32, end: f32) -> f32 {
+fn ramp_down<T>(x: T, start: T, end: T) -> f32
+where
+    T: Linear + PartialOrd + core::ops::Sub<Output = T>,
+{
     if end <= start {
         return if x >= end { 0.0 } else { 1.0 };
     }
-    clamp_f32((end - x) / (end - start), 0.0, 1.0)
+    clamp_f32((end - x).ratio_to(end - start), 0.0, 1.0)
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -371,6 +373,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::volts;
 
     fn cfg() -> DeratingConfig {
         DeratingConfig::default()
@@ -378,7 +381,7 @@ mod tests {
 
     #[test]
     fn cold_board_no_derate() {
-        let s = cfg().compute(Some(40.0), None, 24.0);
+        let s = cfg().compute(Some(40.0), None, volts(24.0));
         assert_eq!(s, DeratingScales::default());
     }
 
@@ -386,20 +389,20 @@ mod tests {
     fn fet_ramp_derates_accel_before_brake() {
         // Mid-ramp on the brake curve (85→100): the accel copy (lerped
         // toward 25 °C) must already be lower.
-        let s = cfg().compute(Some(92.0), None, 24.0);
+        let s = cfg().compute(Some(92.0), None, volts(24.0));
         assert!(s.brake > 0.4 && s.brake < 0.7, "brake mid-ramp: {s:?}");
         assert!(s.drive < s.brake, "accel must derate earlier: {s:?}");
 
         // At the ramp end: both at zero — the OverTemp fault right past
         // this point means the ramp already failed.
-        let s = cfg().compute(Some(100.0), None, 24.0);
+        let s = cfg().compute(Some(100.0), None, volts(24.0));
         assert_eq!(s.brake, 0.0);
         assert_eq!(s.drive, 0.0);
     }
 
     #[test]
     fn missing_sensor_skips_ramp() {
-        let s = cfg().compute(None, None, 24.0);
+        let s = cfg().compute(None, None, volts(24.0));
         assert_eq!(s, DeratingScales::default());
     }
 
@@ -407,16 +410,16 @@ mod tests {
     fn battery_cutoff_sheds_drive_keeps_brake() {
         let c = DeratingConfig {
             bus_voltage: BusVoltageDerating {
-                vbus_cut_start_v: 40.0,
-                vbus_cut_end_v: 36.0,
+                cut_start: volts(40.0),
+                cut_end: volts(36.0),
                 ..Default::default()
             },
             ..cfg()
         };
-        let s = c.compute(Some(40.0), None, 38.0);
+        let s = c.compute(Some(40.0), None, volts(38.0));
         assert!((s.drive - 0.5).abs() < 1e-3, "mid-cut: {s:?}");
         assert_eq!(s.brake, 1.0, "sag must never cost braking");
-        let s = c.compute(Some(40.0), None, 35.0);
+        let s = c.compute(Some(40.0), None, volts(35.0));
         assert_eq!(s.drive, 0.0, "below cut end: no drive");
     }
 
@@ -424,16 +427,16 @@ mod tests {
     fn regen_ov_sheds_regen_only() {
         let c = DeratingConfig {
             bus_voltage: BusVoltageDerating {
-                vbus_regen_start_v: 56.0,
-                vbus_regen_end_v: 58.0,
+                regen_start: volts(56.0),
+                regen_end: volts(58.0),
                 ..Default::default()
             },
             ..cfg()
         };
-        let s = c.compute(Some(40.0), None, 57.0);
+        let s = c.compute(Some(40.0), None, volts(57.0));
         assert!((s.regen - 0.5).abs() < 1e-3, "mid-regen-cut: {s:?}");
         assert_eq!((s.drive, s.brake), (1.0, 1.0));
-        let s = c.compute(Some(40.0), None, 58.5);
+        let s = c.compute(Some(40.0), None, volts(58.5));
         assert_eq!(s.regen, 0.0, "full pack: no regen");
         assert_eq!(s.worst(), 0.0, "and the rider is warned");
     }
@@ -442,15 +445,15 @@ mod tests {
     fn ramps_compose_via_min() {
         let c = DeratingConfig {
             bus_voltage: BusVoltageDerating {
-                vbus_cut_start_v: 40.0,
-                vbus_cut_end_v: 36.0,
+                cut_start: volts(40.0),
+                cut_end: volts(36.0),
                 ..Default::default()
             },
             ..cfg()
         };
         // Hot + sagging: drive takes the tighter of the two ramps.
-        let s = c.compute(Some(92.0), None, 38.0);
-        let thermal_only = c.compute(Some(92.0), None, 50.0);
+        let s = c.compute(Some(92.0), None, volts(38.0));
+        let thermal_only = c.compute(Some(92.0), None, volts(50.0));
         assert!(s.drive <= thermal_only.drive.min(0.5));
     }
 
@@ -470,8 +473,8 @@ mod tests {
         assert!(
             !DeratingConfig {
                 bus_voltage: BusVoltageDerating {
-                    vbus_cut_start_v: 36.0,
-                    vbus_cut_end_v: 40.0, // cutoff must ramp downward
+                    cut_start: volts(36.0),
+                    cut_end: volts(40.0), // cutoff must ramp downward
                     ..Default::default()
                 },
                 ..cfg()
@@ -520,14 +523,14 @@ mod speed_tests {
     #[test]
     fn speed_taper_can_be_enabled_in_only_one_direction() {
         let speed = SpeedDerating {
-            max_forward_erad_s: 100.0,
+            max_forward: erad_per_s(100.0),
             ..SpeedDerating::default()
         };
         assert!(speed.is_sane());
-        assert_eq!(speed.speed_cut(80.0), 1.0);
-        assert_eq!(speed.speed_cut(90.0), 0.5);
-        assert_eq!(speed.speed_cut(100.0), 0.0);
-        assert_eq!(speed.speed_cut(-200.0), 1.0);
+        assert_eq!(speed.speed_cut(erad_per_s(80.0)), 1.0);
+        assert_eq!(speed.speed_cut(erad_per_s(90.0)), 0.5);
+        assert_eq!(speed.speed_cut(erad_per_s(100.0)), 0.0);
+        assert_eq!(speed.speed_cut(erad_per_s(-200.0)), 1.0);
     }
 
     #[test]
@@ -539,7 +542,7 @@ mod speed_tests {
         }
         speed.speed_start_frac = 0.8;
         for ceiling in [-1.0, f32::INFINITY, f32::NAN] {
-            speed.max_reverse_erad_s = ceiling;
+            speed.max_reverse.value = ceiling;
             assert!(!speed.is_sane());
         }
     }

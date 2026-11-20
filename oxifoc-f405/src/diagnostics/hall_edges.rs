@@ -103,14 +103,14 @@ impl PhaseRecorder {
             sequence,
             flags,
             phase.bench_observer_weight().unwrap_or(f32::NAN).to_bits(),
-            output.angle.to_bits(),
-            output.velocity.to_bits(),
+            output.angle.value.to_bits(),
+            output.velocity.value.to_bits(),
             phase
                 .rotor_velocity()
-                .map_or(f32::NAN, |v| v.electrical_rad_s())
+                .map_or(f32::NAN, |v| v.velocity().value)
                 .to_bits(),
-            observer.phase().unwrap_or(f32::NAN).to_bits(),
-            observer.velocity().unwrap_or(f32::NAN).to_bits(),
+            observer.phase().map_or(f32::NAN, |v| v.value).to_bits(),
+            observer.velocity().map_or(f32::NAN, |v| v.value).to_bits(),
         ];
         for (word, value) in slot.iter().zip(values) {
             word.store(value, Ordering::Relaxed);
@@ -193,7 +193,7 @@ impl PhaseRecorder {
         let health = phase.hall_health();
         let output = phase.get();
         let previous_angle = self.previous_angle;
-        self.previous_angle = output.angle;
+        self.previous_angle = output.angle.value;
         if self.previous_health.replace(health) == Some(health) {
             return;
         }
@@ -209,21 +209,26 @@ impl PhaseRecorder {
         };
         let observer = phase
             .debug_observer()
-            .unwrap_or((f32::NAN, f32::NAN, f32::NAN, f32::NAN));
-        let validity = phase.observer().validity().unwrap_or((f32::NAN, f32::NAN));
+            .map_or((f32::NAN, f32::NAN, f32::NAN, f32::NAN), |(a, b, c, d)| {
+                (a.value, b.value, c.value, d.value)
+            });
+        let validity = phase
+            .observer()
+            .validity()
+            .map_or((f32::NAN, f32::NAN), |(e, t)| (e.value, t.value));
         let values = [
             sequence,
             health_code,
             u32::from(phase.angle_trustworthy()),
             previous_angle.to_bits(),
-            output.angle.to_bits(),
-            output.velocity.to_bits(),
+            output.angle.value.to_bits(),
+            output.velocity.value.to_bits(),
             observer.0.to_bits(),
             observer.2.to_bits(),
             observer.3.to_bits(),
-            hall.map_or(f32::NAN, |h| h.angle_rad).to_bits(),
-            hall.map_or(f32::NAN, |h| h.velocity_rad_s).to_bits(),
-            hall.map_or(f32::NAN, |h| h.edge_age_s).to_bits(),
+            hall.map_or(f32::NAN, |h| h.angle.value).to_bits(),
+            hall.map_or(f32::NAN, |h| h.velocity.value).to_bits(),
+            hall.map_or(f32::NAN, |h| h.edge_age.value).to_bits(),
             validity.0.to_bits(),
             validity.1.to_bits(),
         ];

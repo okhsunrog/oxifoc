@@ -2,6 +2,7 @@
 name = "oxifoc-core"
 version = "0.1.0"
 edition = "2024"
+rust-version.workspace = true
 description = "Platform-agnostic FOC (Field-Oriented Control) algorithms and motor control logic"
 
 [dependencies]
@@ -24,6 +25,10 @@ microfft = { version = "0.6", default-features = false, features = ["size-32"], 
 
 # Optional persistent storage
 sequential-storage = { version = "8.0", default-features = false, features = ["postcard"], optional = true }
+
+# Typed physical quantities (SI, f32 storage). no_std: no libm, `sqrt` comes
+# from `fast_math` through `Quantity::sqrt_with`. The library name stays `uom`.
+uom = { package = "uom-ng", version = "0.39", default-features = false, features = ["f32", "si", "serde", "postcard-schema"] }
 
 # Serialization (always required for shared types)
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -185,7 +190,7 @@ virtual-motor = []
 std = ["critical-section?/std"]
 
 # defmt support for embedded logging
-defmt = ["dep:defmt", "heapless/defmt"]
+defmt = ["dep:defmt", "heapless/defmt", "uom/defmt"]
 # Per-section DWT cycle counters inside the shared ISR path (run_foc_cycle /
 # FocDriver::step) — device-only (reads the Cortex-M DWT directly). ~30
 # cycles of overhead per ISR; the platform stats task reports the sums.

@@ -10,6 +10,10 @@ use crate::foc::phase::startup::SensorlessStartup;
 use crate::foc::sensors::AngleSensor;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
+use crate::units::{
+    ConstZero, ElectricalAngle, ElectricalAngularAcceleration, ElectricalAngularVelocity,
+    Frequency, PllIntegralGain, Time,
+};
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set the timebase for tick conversions
@@ -87,12 +91,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Enable the second-order commutation phase tracker for the pure-Observer source.
     ///
     /// `omega_n` = tracker natural frequency
-    /// (el rad/s — wobble above it is rejected quadratically, hunting
-    /// below it is followed/damped), `zeta` = damping ratio (1.0 =
-    /// critical). `omega_n <= 0` disables (raw observer output).
-    pub fn set_phase_tracker(&mut self, omega_n: f32, zeta: f32) {
+    /// (rad/s of electrical angle — wobble above it is rejected
+    /// quadratically, hunting below it is followed/damped), `zeta` = damping
+    /// ratio (1.0 = critical). `omega_n <= 0` disables (raw observer output).
+    pub fn set_phase_tracker(&mut self, omega_n: Frequency, zeta: f32) {
         if omega_n.is_finite() && zeta.is_finite() && zeta >= 0.0 {
-            let wn = omega_n.max(0.0);
+            let wn = omega_n.max(Frequency::ZERO);
             self.tracker.kp = wn * wn;
             self.tracker.kd = 2.0 * zeta * wn;
             self.tracker.active = false;
@@ -102,13 +106,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Configure the back-EMF observer's physics acceleration prior
     /// (no-op without a configured observer) — see
     /// `BackEmfObserver::set_accel_prior`.
-    pub fn set_observer_accel_prior(&mut self, floor_el: f32, per_amp_el: f32) {
-        self.observer.set_accel_prior(floor_el, per_amp_el);
+    pub fn set_observer_accel_prior(
+        &mut self,
+        floor: ElectricalAngularAcceleration,
+        per_amp: ElectricalAngularAcceleration,
+    ) {
+        self.observer.set_accel_prior(floor, per_amp);
     }
 
     /// Override the back-EMF observer's PLL gains (no-op without a
     /// configured observer) — bench tuning of the slip-kick loop gain.
-    pub fn set_observer_pll_gains(&mut self, kp: f32, ki: f32) {
+    pub fn set_observer_pll_gains(&mut self, kp: Frequency, ki: PllIntegralGain) {
         if let Observer::BackEmf(o) = &mut self.observer {
             o.set_pll_gains(kp, ki);
         }
@@ -118,7 +126,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// the same trusted-handoff semantics the deadshort catch uses
     /// internally. Sim/bench forensics: injecting a phase kick mid-drive
     /// (seed at `phase + Δ`) emulates one accumulated slip-kick.
-    pub fn seed_observer(&mut self, angle: f32, velocity: f32) {
+    pub fn seed_observer(&mut self, angle: ElectricalAngle, velocity: ElectricalAngularVelocity) {
         self.motion_reference_epoch.advance();
         self.rotor_velocity = None;
         self.hall_motion_witness.reset();
@@ -185,32 +193,32 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     }
 
     /// Set manual angle (for Manual source)
-    pub fn set_manual_angle(&mut self, angle: f32) {
+    pub fn set_manual_angle(&mut self, angle: ElectricalAngle) {
         self.manual_angle = wrap_angle(angle);
     }
 
     /// Get manual angle
-    pub fn manual_angle(&self) -> f32 {
+    pub fn manual_angle(&self) -> ElectricalAngle {
         self.manual_angle
     }
 
     /// Set open-loop velocity (for OpenLoop source)
-    pub fn set_open_loop_velocity(&mut self, velocity: f32) {
+    pub fn set_open_loop_velocity(&mut self, velocity: ElectricalAngularVelocity) {
         self.open_loop_velocity = velocity;
     }
 
     /// Get open-loop velocity
-    pub fn open_loop_velocity(&self) -> f32 {
+    pub fn open_loop_velocity(&self) -> ElectricalAngularVelocity {
         self.open_loop_velocity
     }
 
     /// Set open-loop angle directly
-    pub fn set_open_loop_angle(&mut self, angle: f32) {
+    pub fn set_open_loop_angle(&mut self, angle: ElectricalAngle) {
         self.open_loop_angle = wrap_angle(angle);
     }
 
     /// Get open-loop angle
-    pub fn open_loop_angle(&self) -> f32 {
+    pub fn open_loop_angle(&self) -> ElectricalAngle {
         self.open_loop_angle
     }
 
@@ -288,7 +296,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     ///
     /// This is called automatically when Hall fails and observer isn't ready.
     /// Can also be called manually for startup.
-    pub fn activate_open_loop_override(&mut self, initial_angle: f32, velocity: f32) {
+    pub fn activate_open_loop_override(
+        &mut self,
+        initial_angle: ElectricalAngle,
+        velocity: ElectricalAngularVelocity,
+    ) {
         self.open_loop_override.active = true;
         self.open_loop_override.angle = wrap_angle(initial_angle);
         self.open_loop_override.velocity = velocity;
@@ -298,6 +310,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Deactivate open-loop override
     pub fn deactivate_open_loop_override(&mut self) {
         self.open_loop_override.active = false;
-        self.open_loop_override.timer = 0.0;
+        self.open_loop_override.timer = Time::ZERO;
     }
 }

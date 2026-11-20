@@ -95,24 +95,26 @@ fn events(args: &HashMap<String, String>, key: &str) -> Vec<(u64, f32)> {
 fn mode_for(rig: &Rig, mode: &str, set: f32, pos0: f32) -> ControlMode {
     match mode {
         "rpm" => ControlMode::VelocityControl {
-            target_vel: rig.rpm_to_el(set),
+            target_vel: oxifoc_core::units::erad_per_s(rig.rpm_to_el(set)),
         },
         "pos" => ControlMode::PositionControl {
-            target_pos: pos0 + set * TAU,
+            target_pos: oxifoc_core::units::erad(pos0 + set * TAU),
         },
         // The OpenLoop current rides the q axis of its frame: a frame a
         // quarter turn back puts the vector — and the rotor's rest — on
         // the angle read now.
         "lock" => ControlMode::OpenLoop {
-            angle_rad: wrap_angle(rig.driver.phase().get().angle - FRAC_PI_2),
-            current: set,
-            velocity_rad_s: 0.0,
+            angle: oxifoc_core::units::erad(wrap_angle(
+                (rig.driver.phase().get().angle - oxifoc_core::units::erad(FRAC_PI_2)).value,
+            )),
+            current: oxifoc_core::units::amps(set),
+            velocity: oxifoc_core::units::erad_per_s(0.0),
             pi_gains: None,
         },
         "anchor" => ControlMode::Brake,
         _ => ControlMode::CurrentControl {
-            iq_target: set,
-            id_target: 0.0,
+            iq_target: oxifoc_core::units::amps(set),
+            id_target: oxifoc_core::units::amps(0.0),
         },
     }
 }
@@ -161,7 +163,11 @@ fn main() -> std::io::Result<()> {
     rig.driver.set_velocity_config(VelocityLoopConfig {
         kp: arg(&args, "vkp", vel_default.kp),
         ki: arg(&args, "vki", vel_default.ki),
-        accel_limit: arg(&args, "accel", vel_default.accel_limit),
+        accel_limit: oxifoc_core::units::erad_per_s2(arg(
+            &args,
+            "accel",
+            vel_default.accel_limit.value,
+        )),
         accel_ff: arg(&args, "ff", vel_default.accel_ff),
     });
     let pos_default = PositionLoopConfig::default();
@@ -216,9 +222,11 @@ fn main() -> std::io::Result<()> {
                 ControlMode::Brake
             } else {
                 ControlMode::CurrentControl {
-                    iq_target: -err.signum() * (set + anchor_kp * (err.abs() - anchor_db))
-                        - anchor_kd * rig.driver.phase().get().velocity,
-                    id_target: 0.0,
+                    iq_target: oxifoc_core::units::amps(
+                        -err.signum() * (set + anchor_kp * (err.abs() - anchor_db))
+                            - anchor_kd * rig.driver.phase().get().velocity.value,
+                    ),
+                    id_target: oxifoc_core::units::amps(0.0),
                 }
             };
             // Re-entering Brake every cycle would restart it as the plain
@@ -253,18 +261,20 @@ fn main() -> std::io::Result<()> {
             let t = step as f32 * DT;
             let (id_true, iq_true) = rec.true_dq();
             let obs = rig.driver.phase().observer();
-            let obs_raw_err = obs
-                .phase_raw()
-                .map_or(f32::NAN, |p| angle_difference(p, rec.sample.angle_rad));
+            let obs_raw_err = obs.phase_raw().map_or(f32::NAN, |p| {
+                angle_difference(p.value, rec.sample.angle_rad)
+            });
             let iq_target = match rig.driver.mode() {
-                ControlMode::CurrentControl { iq_target, .. } => iq_target,
+                ControlMode::CurrentControl { iq_target, .. } => iq_target.value,
                 _ => f32::NAN,
             };
             let pos_target = match rig.driver.mode() {
-                ControlMode::PositionControl { target_pos } => target_pos,
-                ControlMode::OpenLoop { angle_rad, .. } => {
+                ControlMode::PositionControl { target_pos } => target_pos.value,
+                ControlMode::OpenLoop {
+                    angle: angle_rad, ..
+                } => {
                     // The lock's rest angle, unwrapped next to the rotor.
-                    let rest = wrap_angle(angle_rad + FRAC_PI_2);
+                    let rest = wrap_angle(angle_rad.value + FRAC_PI_2);
                     pos_true + angle_difference(rest, rec.sample.angle_rad)
                 }
                 _ => f32::NAN,
@@ -272,16 +282,17 @@ fn main() -> std::io::Result<()> {
             let pos_est = rig.driver.position().as_rad();
             writeln!(
                 w,
-                "{t:.6},{:.5},{:.5},{obs_raw_err:.5},{:.2},{:.2},{:.2},{:.4},{:.4},{id_true:.4},{iq_true:.4},{:.4},{:.4},{:.5},{},{},{iq_target:.3},{pos_true:.4},{pos_est:.4},{pos_target:.4},{}",
+                "{t:.6?},{:.5?},{:.5?},{obs_raw_err:.5?},{:.2?},{:.2?},{:.2?},{:.4?},{:.4?},{id_true:.4?},{iq_true:.4?},{:.4?},{:.4?},{:.5?},{:?},{:?},{iq_target:.3?},{pos_true:.4?},{pos_est:.4?},{pos_target:.4?},{:?}",
                 wrap_angle(rec.sample.angle_rad),
                 rec.frame_err(),
                 rec.sample.omega_e,
-                rec.telem.velocity_rad_s,
-                obs.velocity().unwrap_or(f32::NAN),
-                rec.telem.id,
-                rec.telem.iq,
-                rec.telem.vd,
-                rec.telem.vq,
+                rec.telem.velocity.value,
+                obs.velocity()
+                    .unwrap_or(oxifoc_core::units::erad_per_s(f32::NAN)),
+                rec.telem.id.value,
+                rec.telem.iq.value,
+                rec.telem.vd.value,
+                rec.telem.vq.value,
                 rec.sample.torque,
                 u8::from(rig.driver.phase().is_starting()),
                 u8::from(rig.driver.phase().angle_trustworthy()),

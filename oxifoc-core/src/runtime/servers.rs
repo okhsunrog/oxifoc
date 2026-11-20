@@ -61,6 +61,8 @@ use crate::types::MotorCommandOutcome;
 pub const MOTOR_ACK_TIMEOUT_MS: u64 = 1_000;
 #[cfg(feature = "storage")]
 use crate::storage::{FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig};
+#[cfg(feature = "storage")]
+use crate::units::{amps, rad_per_s, volts, watts};
 
 /// Device info server - responds to info requests from host
 ///
@@ -343,7 +345,7 @@ fn resolved_config(
     use crate::types::{ConfigGroupId, ConfigValue};
     match group {
         ConfigGroupId::MotorParams => cfg.motor_params.clone().map(|mut motor| {
-            motor.max_current_a = motor.rating_current_a().unwrap_or(0.0);
+            motor.max_current.value = motor.rating_current_a().unwrap_or(0.0);
             ConfigValue::MotorParams(motor)
         }),
         ConfigGroupId::VoltageLimits => Some(ConfigValue::VoltageLimits(
@@ -364,27 +366,28 @@ fn resolved_config(
                 rating,
             );
             Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                max_iq_a: limits.max_current_a,
-                max_brake_a: limits.max_brake_a,
-                max_phase_current_a: limits.overcurrent_threshold_a,
-                bus_in_max_a: limits.bus_in_max_a,
-                bus_regen_max_a: limits.bus_regen_max_a,
-                max_dissipation_w: limits.max_dissipation_w,
+                max_iq: amps(limits.max_current_a),
+                max_brake: amps(limits.max_brake_a),
+                max_phase_current: amps(limits.overcurrent_threshold_a),
+                bus_in_max: amps(limits.bus_in_max_a),
+                bus_regen_max: amps(limits.bus_regen_max_a),
+                max_dissipation: watts(limits.max_dissipation_w),
             }))
         }
         ConfigGroupId::PiGains => {
             let controller = crate::foc::controller::FocController::<
                 crate::foc::pwm::SvpwmModulator,
                 crate::foc::trig::LibmSinCos,
-            >::from_runtime_config(cfg, 24.0);
+            >::from_runtime_config(cfg, volts(24.0));
             let (kp, ki) = controller.id_pi.gains();
+            let (kp, ki) = (kp.value, ki.value);
             Some(ConfigValue::PiGains(PiGainsConfig {
                 kp,
                 ki,
-                bandwidth_rad_s: cfg.pi_gains.as_ref().filter(|v| v.is_sane()).map_or(
+                bandwidth: rad_per_s(cfg.pi_gains.as_ref().filter(|v| v.is_sane()).map_or(
                     crate::foc::detection::pi_tuning::DEFAULT_BANDWIDTH_RAD_S,
-                    |v| v.bandwidth_rad_s,
-                ),
+                    |v| v.bandwidth.value,
+                )),
             }))
         }
         _ => None,
@@ -1050,7 +1053,7 @@ async fn save_drive_setup<T: crate::timer::Timer>(
     let trip = config
         .current_limits
         .as_ref()
-        .map_or(0.0, |limits| limits.max_phase_current_a);
+        .map_or(0.0, |limits| limits.max_phase_current.value);
     let Ok(setup) = request.inner.setup.clone().validate(board_trip_a, trip) else {
         return ConfigResponse::Invalid;
     };

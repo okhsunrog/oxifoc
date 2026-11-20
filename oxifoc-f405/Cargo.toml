@@ -2,6 +2,7 @@
 name = "oxifoc-f405"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.100"
 description = "STM32F405-based motor controller (Simple FOCer 2 / VESC hardware)"
 
 [[bin]]

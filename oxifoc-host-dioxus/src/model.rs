@@ -189,7 +189,7 @@ impl Model {
             let label = match mode {
                 ControlMode::Stopped => "Stop drive".to_string(),
                 ControlMode::CurrentControl { iq_target, .. } => {
-                    format!("Apply Iq {iq_target:.2} A")
+                    format!("Apply Iq {:.2} A", iq_target.value)
                 }
                 _ => format!("{mode:?}"),
             };
@@ -237,8 +237,8 @@ pub fn verify_virtual() -> anyhow::Result<()> {
         let (tx, rx) = motor_channel();
         model.runtime.cmd_tx.send(HostCommand::MotorAck(
             ControlMode::CurrentControl {
-                iq_target: 1.,
-                id_target: 0.,
+                iq_target: oxifoc_core::units::amps(1.),
+                id_target: oxifoc_core::units::amps(0.),
             },
             tx,
         ))?;

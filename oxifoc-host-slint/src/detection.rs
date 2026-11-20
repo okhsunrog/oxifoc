@@ -129,7 +129,7 @@ pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<Ato
                 .and_then(|out| {
                     let setup = out.setup(plan, DriveCurrent::Auto)?;
                     let preview = detect::preview_setup(&cmd, setup, board_trip_a)?;
-                    Ok((out, preview.limits().max_iq_a))
+                    Ok((out, preview.limits().max_iq.value))
                 });
                 let _ = weak.upgrade_in_event_loop(move |app| {
                     app.set_detect_running(false);
@@ -219,7 +219,7 @@ pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<Ato
                 let preview = detect::preview_setup(&cmd, setup, board_trip_a)?;
                 detect::apply_sequence(&cmd, &out, plan, current)?;
                 motor_config_generation.fetch_add(1, Ordering::Relaxed);
-                Ok(preview.limits().max_iq_a)
+                Ok(preview.limits().max_iq.value)
             });
             let _ = weak.upgrade_in_event_loop(move |app| {
                 app.set_detect_running(false);
@@ -251,7 +251,7 @@ fn show_result(app: &App, plan: DetectionPlan, out: DetectionOutcome) {
         app.set_detect_setup_summary(
             format!(
                 "{feedback} · Input {} A · Regeneration {} A",
-                source.input_a, source.regen_a
+                source.input.value, source.regen.value
             )
             .into(),
         );
@@ -268,16 +268,18 @@ fn show_result(app: &App, plan: DetectionPlan, out: DetectionOutcome) {
 
 fn source_limits(app: &App) -> Result<oxifoc_core::types::commissioning::SourceLimits, String> {
     let source = oxifoc_core::types::commissioning::SourceLimits {
-        input_a: app
-            .get_detect_source_input()
-            .trim()
-            .parse()
-            .map_err(|_| "Enter input current limit (A)")?,
-        regen_a: app
-            .get_detect_source_regen()
-            .trim()
-            .parse()
-            .map_err(|_| "Enter regenerative current limit (A), or select No regeneration")?,
+        input: oxifoc_core::units::amps(
+            app.get_detect_source_input()
+                .trim()
+                .parse()
+                .map_err(|_| "Enter input current limit (A)")?,
+        ),
+        regen: oxifoc_core::units::amps(
+            app.get_detect_source_regen()
+                .trim()
+                .parse()
+                .map_err(|_| "Enter regenerative current limit (A), or select No regeneration")?,
+        ),
     };
     if !source.is_valid() {
         return Err("Input current must be positive; regenerative current must be nonnegative. Both must be finite.".into());

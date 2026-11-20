@@ -140,7 +140,7 @@ impl StepRecord {
 
     /// Commutation frame error vs the rotor at the sample instant (rad).
     pub fn frame_err(&self) -> f32 {
-        angle_difference(self.telem.angle_rad, self.sample.angle_rad)
+        angle_difference(self.telem.angle.value, self.sample.angle_rad)
     }
 }
 
@@ -166,10 +166,10 @@ impl Rig {
     pub fn new(cfg: &RigConfig) -> Self {
         let (mut params, vbus, i_max) = preset(&cfg.motor);
         if let Some(model) = &cfg.motor_params {
-            params.r = model.resistance_ohm;
-            params.ld = model.inductance_d_h;
-            params.lq = model.inductance_q_h;
-            params.lambda = model.flux_linkage_wb;
+            params.r = model.resistance.value;
+            params.ld = model.inductance_d.value;
+            params.lq = model.inductance_q.value;
+            params.lambda = model.flux_linkage.value;
             params.pole_pairs = model.pole_pairs;
         }
         if cfg.j > 0.0 {
@@ -180,10 +180,10 @@ impl Rig {
         params.actuation_delay = cfg.delay;
         let config = RuntimeConfig {
             motor_params: Some(MotorParamsConfig {
-                resistance_ohm: params.r,
-                inductance_d_h: params.ld,
-                inductance_q_h: params.lq,
-                flux_linkage_wb: params.lambda,
+                resistance: oxifoc_core::units::ohms(params.r),
+                inductance_d: oxifoc_core::units::henries(params.ld),
+                inductance_q: oxifoc_core::units::henries(params.lq),
+                flux_linkage: oxifoc_core::units::webers(params.lambda),
                 pole_pairs: params.pole_pairs,
                 ..MotorParamsConfig::default()
             }),
@@ -204,9 +204,12 @@ impl Rig {
         }
         hall.update(out.hall_state, 0);
         let mut phase = PhaseManager::with_hall(hall);
-        phase.configure_observers_from_config(&config, vbus);
-        phase.set_phase_tracker(cfg.tracker, 1.2);
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(&config, vbus);
+        phase.configure_observers_from_config(&config, oxifoc_core::units::volts(vbus));
+        phase.set_phase_tracker(oxifoc_core::units::per_second(cfg.tracker), 1.2);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(
+            &config,
+            oxifoc_core::units::volts(vbus),
+        );
         let pwm = Pwm {
             duties: [0; 3],
             enabled: false,
@@ -270,7 +273,7 @@ impl Rig {
                 } else {
                     self.last_hall
                 };
-                Some(a0 + angle_difference(geometry.entry_angles[usize::from(entered)], a0))
+                Some(a0 + angle_difference(geometry.entry_angles[usize::from(entered)].value, a0))
             } else {
                 let k0 = ((a0 - FRAC_PI_6) / FRAC_PI_3).floor();
                 let k1 = ((a1 - FRAC_PI_6) / FRAC_PI_3).floor();
@@ -292,7 +295,8 @@ impl Rig {
         self.prev_angle = sample.angle_rad;
         let omega_m = sample.omega_e / f32::from(self.params.pole_pairs);
         self.out = if self.driver.pwm().enabled {
-            self.motor.step(telem.v_alpha, telem.v_beta, load, DT)
+            self.motor
+                .step(telem.v_alpha.value, telem.v_beta.value, load, DT)
         } else {
             self.motor.step_coast(load, DT)
         };
@@ -308,7 +312,8 @@ fn measured_hall_state(geometry: &HallTransitionGeometryConfig, angle: f32) -> u
     // The most recent forward entry boundary identifies the active state.
     (1_usize..=6)
         .min_by(|&a, &b| {
-            let distance = |state: usize| (angle - geometry.entry_angles[state]).rem_euclid(TAU);
+            let distance =
+                |state: usize| (angle - geometry.entry_angles[state].value).rem_euclid(TAU);
             distance(a).total_cmp(&distance(b))
         })
         .expect("nonempty Hall state set") as u8

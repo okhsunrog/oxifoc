@@ -12,6 +12,7 @@ use oxifoc_core::foc::{
 use oxifoc_core::motor::dissipation::{self, RegenBudget, WindingModel};
 use oxifoc_core::motor::foc_driver::CurrentLimits;
 use oxifoc_core::motor::{ControlMode, FocDriver};
+use oxifoc_core::units::{amps, erad, erad_per_s, henries, ohms, volts, watts, webers};
 
 struct InertPwm;
 
@@ -50,13 +51,13 @@ struct FixedRotor(f32);
 impl PhaseProvider for FixedRotor {
     fn get(&self) -> PhaseOutput {
         PhaseOutput {
-            angle: 0.0,
-            velocity: self.0,
+            angle: erad(0.0),
+            velocity: erad_per_s(self.0),
         }
     }
     fn update(&mut self, _: &PhaseInput, _: u64) {}
     fn rotor_velocity(&self) -> Option<RotorVelocityEstimate> {
-        RotorVelocityEstimate::new(self.0)
+        RotorVelocityEstimate::new(erad_per_s(self.0))
     }
 }
 
@@ -68,15 +69,15 @@ fn driver_batch(seed: u32) -> u64 {
         _ => 1.0,
     });
     let mut controller = FocController::<SvpwmModulator, FastSinCos>::from_motor_params(
-        black_box(0.064_200_59),
-        black_box(40.991_37e-6),
-        black_box(24.0),
+        ohms(black_box(0.064_200_59)),
+        henries(black_box(40.991_37e-6)),
+        volts(black_box(24.0)),
     );
     controller.set_decoupling(Some(black_box(Decoupling {
-        ld_h: 31.216_663e-6,
-        lq_h: 50.766_08e-6,
-        flux_linkage_wb: 0.003_976_720_4,
-        resistance_ohm: 0.064_200_59,
+        ld: henries(31.216_663e-6),
+        lq: henries(50.766_08e-6),
+        flux_linkage: webers(0.003_976_720_4),
+        resistance: ohms(0.064_200_59),
     })));
     let mut driver = FocDriver::new(
         controller,
@@ -92,14 +93,14 @@ fn driver_batch(seed: u32) -> u64 {
         ..CurrentLimits::from_max_current(30.0 / 1.3)
     });
     driver.set_mode(ControlMode::VelocityControl {
-        target_vel: black_box(450.0),
+        target_vel: erad_per_s(black_box(450.0)),
     });
     let mut checksum = 0u64;
     for step in 1..=64 {
         let output = black_box(&mut driver).step(step * 1000);
         defmt::assert!(output.is_ok());
         if let Ok(out) = output {
-            checksum = checksum.wrapping_add(u64::from(black_box(out.vq).to_bits()));
+            checksum = checksum.wrapping_add(u64::from(black_box(out.vq.value).to_bits()));
         }
     }
     checksum
@@ -110,9 +111,9 @@ fn input(mode: u32, index: u32) -> (WindingModel, f32, f32, f32, f32) {
     match mode {
         0 => (
             WindingModel {
-                r_ohm: 0.064_200_59,
-                flux_wb: 0.003_976_720_4,
-                saliency_h: 1.954_941_7e-5,
+                resistance: ohms(0.064_200_59),
+                flux_linkage: webers(0.003_976_720_4),
+                saliency: henries(1.954_941_7e-5),
             },
             -(30.0 / 1.3),
             420.0 + n,
@@ -121,9 +122,9 @@ fn input(mode: u32, index: u32) -> (WindingModel, f32, f32, f32, f32) {
         ),
         1 => (
             WindingModel {
-                r_ohm: 0.036,
-                flux_wb: 0.00292,
-                saliency_h: 0.0002,
+                resistance: ohms(0.036),
+                flux_linkage: webers(0.00292),
+                saliency: henries(0.0002),
             },
             -(0.1 + n * 0.01),
             120.0,
@@ -132,9 +133,9 @@ fn input(mode: u32, index: u32) -> (WindingModel, f32, f32, f32, f32) {
         ),
         _ => (
             WindingModel {
-                r_ohm: 0.036,
-                flux_wb: 0.0102,
-                saliency_h: 0.0002,
+                resistance: ohms(0.036),
+                flux_linkage: webers(0.0102),
+                saliency: henries(0.0002),
             },
             -(25.0 + n * 0.001),
             100.0,
@@ -146,7 +147,7 @@ fn input(mode: u32, index: u32) -> (WindingModel, f32, f32, f32, f32) {
 
 const BUDGET: RegenBudget = RegenBudget {
     frac: 1.0,
-    max_w: 0.0,
+    max_power: watts(0.0),
 };
 
 #[inline(never)]
@@ -155,13 +156,13 @@ fn reference_batch(seed: u32) -> u64 {
     for index in 0..64 {
         let (m, iq, omega, heat, current) = black_box(input(seed >> 16, seed + index));
         let model = reference::WindingModel {
-            r_ohm: m.r_ohm,
-            flux_wb: m.flux_wb,
-            saliency_h: m.saliency_h,
+            r_ohm: m.resistance.value,
+            flux_wb: m.flux_linkage.value,
+            saliency_h: m.saliency.value,
         };
         let budget = reference::RegenBudget {
             frac: BUDGET.frac,
-            max_w: BUDGET.max_w,
+            max_w: BUDGET.max_power.value,
         };
         let value = black_box(reference::dissipate(
             iq, omega, &model, &budget, heat, current,
@@ -179,10 +180,15 @@ fn full_batch(seed: u32) -> u64 {
     for index in 0..64 {
         let (model, iq, omega, heat, current) = black_box(input(seed >> 16, seed + index));
         let value = black_box(dissipation::dissipate(
-            iq, omega, &model, &BUDGET, heat, current,
+            amps(iq),
+            erad_per_s(omega),
+            &model,
+            &BUDGET,
+            amps(heat),
+            amps(current),
         ));
         sum = sum.wrapping_add(value.map_or(0, |(d, q)| {
-            (u64::from(d.to_bits()) << 32) | u64::from(q.to_bits())
+            (u64::from(d.value.to_bits()) << 32) | u64::from(q.value.to_bits())
         }));
     }
     sum
@@ -194,9 +200,14 @@ fn q_only_batch(seed: u32) -> u64 {
     for index in 0..64 {
         let (model, iq, omega, heat, current) = black_box(input(seed >> 16, seed + index));
         let value = black_box(dissipation::dissipate_iq(
-            iq, omega, &model, &BUDGET, heat, current,
+            amps(iq),
+            erad_per_s(omega),
+            &model,
+            &BUDGET,
+            amps(heat),
+            amps(current),
         ));
-        sum = sum.wrapping_add(value.map_or(0, |q| u64::from(q.to_bits())));
+        sum = sum.wrapping_add(value.map_or(0, |q| u64::from(q.value.to_bits())));
     }
     sum
 }
@@ -245,31 +256,34 @@ pub fn run() {
         let omega = 1.0 + ((state >> 18) & 2047) as f32;
         let q = -current * ((state >> 9) & 511) as f32 / 511.0;
         let model = WindingModel {
-            r_ohm: 0.005 + (state & 255) as f32 * 0.001,
-            flux_wb: 0.001 + ((state >> 8) & 255) as f32 * 0.00004,
-            saliency_h: if state & 1 == 0 { 0.0 } else { 0.0002 },
+            resistance: ohms(0.005 + (state & 255) as f32 * 0.001),
+            flux_linkage: webers(0.001 + ((state >> 8) & 255) as f32 * 0.00004),
+            saliency: henries(if state & 1 == 0 { 0.0 } else { 0.0002 }),
         };
         let budget = RegenBudget {
             frac: ((state >> 17) & 3).min(2) as f32 * 0.5,
-            max_w: if state & 2 == 0 { 0.0 } else { 5.0 },
+            max_power: watts(if state & 2 == 0 { 0.0 } else { 5.0 }),
         };
         let r = reference::dissipate(
             q,
             omega,
             &reference::WindingModel {
-                r_ohm: model.r_ohm,
-                flux_wb: model.flux_wb,
-                saliency_h: model.saliency_h,
+                r_ohm: model.resistance.value,
+                flux_wb: model.flux_linkage.value,
+                saliency_h: model.saliency.value,
             },
             &reference::RegenBudget {
                 frac: budget.frac,
-                max_w: budget.max_w,
+                max_w: budget.max_power.value,
             },
             heat,
             current,
         );
-        let full = dissipation::dissipate(q, omega, &model, &budget, heat, current);
-        let projected = dissipation::dissipate_iq(q, omega, &model, &budget, heat, current);
+        let (q, omega, heat, current) = (amps(q), erad_per_s(omega), amps(heat), amps(current));
+        let full = dissipation::dissipate(q, omega, &model, &budget, heat, current)
+            .map(|(d, iq)| (d.value, iq.value));
+        let projected =
+            dissipation::dissipate_iq(q, omega, &model, &budget, heat, current).map(|q| q.value);
         match (r, full, projected) {
             (Some((rd, rq)), Some((d, iq)), Some(projected)) => {
                 full_mismatches +=

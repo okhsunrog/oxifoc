@@ -1,14 +1,15 @@
 //! Second-order commutation tracker over the observer estimate.
 
 use super::{
-    PhaseManager, TRACKER_CATCHUP_TAU_S, TRACKER_FF_TAU_S, TRACKER_HUNT_DAMP, TRACKER_HUNT_TAU_S,
-    TRACKER_KD_TAU_S, TRACKER_MAX_LAG_RAD,
+    PhaseManager, TRACKER_CATCHUP_TAU, TRACKER_FF_TAU, TRACKER_HUNT_DAMP, TRACKER_HUNT_TAU,
+    TRACKER_KD_TAU, TRACKER_MAX_LAG,
 };
 use crate::foc::angle_difference;
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::AngleSensor;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
+use crate::units::{ConstZero, ElectricalAngle, ElectricalAngularAcceleration, Linear, Sign, Time};
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     // ========================================================================
@@ -17,7 +18,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
     /// One step of the commutation phase tracker (see [`PhaseTracker`](super::PhaseTracker)).
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    pub(super) fn tracker_output(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
+    pub(super) fn tracker_output(&mut self, raw: PhaseOutput, dt: Time) -> PhaseOutput {
         let prof_t0 = crate::isr_prof::now();
         let out = self.tracker_output_inner(raw, dt);
         crate::isr_prof::add(&crate::isr_prof::OUT_TRK, prof_t0, crate::isr_prof::now());
@@ -25,7 +26,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     }
 
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    fn tracker_output_inner(&mut self, raw: PhaseOutput, dt: f32) -> PhaseOutput {
+    fn tracker_output_inner(&mut self, raw: PhaseOutput, dt: Time) -> PhaseOutput {
         let tr = &mut self.tracker;
         if !tr.active {
             // Cold starts acquire from the current commutation frame.
@@ -44,10 +45,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             };
             tr.theta = seed.angle;
             tr.omega = seed.velocity;
-            tr.d_filt = 0.0;
+            tr.d_filt = ElectricalAngle::ZERO;
             tr.v_slow = raw.velocity;
-            tr.a_est = 0.0;
-            tr.hunt_filt = 0.0;
+            tr.a_est = ElectricalAngularAcceleration::ZERO;
+            tr.hunt_filt = ConstZero::ZERO;
             tr.active = true;
         } else {
             // Timing contract: `raw` already predicts the NEXT sampling
@@ -59,9 +60,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             tr.theta = wrap_angle(tr.theta + tr.omega * dt);
         }
         let d = angle_difference(raw.angle, tr.theta);
-        // Acceleration feedforward (see TRACKER_FF_TAU_S): the filtered
+        // Acceleration feedforward (see TRACKER_FF_TAU): the filtered
         // trend of the estimate's own velocity.
-        let a_ff = (dt / TRACKER_FF_TAU_S).min(1.0);
+        let a_ff = dt.ratio_to(TRACKER_FF_TAU).min(1.0);
         let v_slow_prev = tr.v_slow;
         tr.v_slow += a_ff * (raw.velocity - tr.v_slow);
         tr.a_est += a_ff * ((tr.v_slow - v_slow_prev) / dt - tr.a_est);
@@ -70,17 +71,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // trend ERROR (unmodeled load steps, the first ~2τ of a punch)
         // produces lag, and the hard clamp below bounds that.
         tr.omega += (tr.kp * d + tr.a_est) * dt;
-        // Damping path on the low-passed Δ (see TRACKER_KD_TAU_S): the
+        // Damping path on the low-passed Δ (see TRACKER_KD_TAU): the
         // LPF removes the PI zero's high-frequency leakage, NOT the
         // restoring force — the lagged-pull negative-damping trap of the
         // freq-led era applied lag to the whole stiffness; here the
         // un-lagged kp path carries it.
-        let a_d = (dt / TRACKER_KD_TAU_S).min(1.0);
+        let a_d = dt.ratio_to(TRACKER_KD_TAU).min(1.0);
         tr.d_filt += a_d * (d - tr.d_filt);
         // Hunting damper (see TRACKER_HUNT_DAMP): yield with the rotor's
         // swing velocity so the quasi-synchronous frame extracts energy
         // from the hunt mode instead of storing it.
-        let a_h = (dt / TRACKER_HUNT_TAU_S).min(1.0);
+        let a_h = dt.ratio_to(TRACKER_HUNT_TAU).min(1.0);
         tr.hunt_filt += a_h * (TRACKER_HUNT_DAMP * (raw.velocity - tr.omega) - tr.hunt_filt);
         tr.theta = wrap_angle(tr.theta + (tr.kd * tr.d_filt + tr.hunt_filt) * dt);
         // Hard load-angle bound. A soft tracker that filters the 35–100 Hz
@@ -91,7 +92,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // standing lag and died in the same dq OC as the freq-led
         // geometry. The clamp makes the failure mode impossible instead
         // of tuning it away: the frame never trails the estimate by more
-        // than TRACKER_MAX_LAG_RAD (cos 34° = 0.83 of full torque, far
+        // than TRACKER_MAX_LAG (cos 34° = 0.83 of full torque, far
         // from the flat top). While it binds the output slides WITH the
         // raw estimate (wobble passes — acceptable: hard transients are
         // loud, the mid-band cycle is a light-load phenomenon) and the
@@ -100,18 +101,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         let d2 = angle_difference(raw.angle, tr.theta);
         // A cold-start frame can begin far from the real rotor. Restore
         // the cruise lag clamp once the tracker has closed that initial gap.
-        if tr.startup_tracking && !self.startup.is_active() && d2.abs() <= TRACKER_MAX_LAG_RAD {
+        if tr.startup_tracking && !self.startup.is_active() && d2.abs() <= TRACKER_MAX_LAG {
             tr.startup_tracking = false;
         }
-        if !tr.startup_tracking && d2.abs() > TRACKER_MAX_LAG_RAD {
-            let sign = if d2 > 0.0 { 1.0 } else { -1.0 };
-            tr.theta = wrap_angle(raw.angle - sign * TRACKER_MAX_LAG_RAD);
-            let a_v = (dt / TRACKER_CATCHUP_TAU_S).min(1.0);
+        if !tr.startup_tracking && d2.abs() > TRACKER_MAX_LAG {
+            let sign = if d2.is_positive() { 1.0 } else { -1.0 };
+            tr.theta = wrap_angle(raw.angle - sign * TRACKER_MAX_LAG);
+            let a_v = dt.ratio_to(TRACKER_CATCHUP_TAU).min(1.0);
             // Ramp-lag-compensated target: pulling toward a ramping
             // velocity alone leaves a standing ω̇·τ deficit and the clamp
             // never releases during a sustained spin-up (see
-            // TRACKER_CATCHUP_TAU_S).
-            let target = raw.velocity + tr.a_est * TRACKER_CATCHUP_TAU_S;
+            // TRACKER_CATCHUP_TAU).
+            let target = raw.velocity + tr.a_est * TRACKER_CATCHUP_TAU;
             tr.omega += a_v * (target - tr.omega);
         }
         PhaseOutput {

@@ -22,7 +22,12 @@ use crate::motor::derating::DeratingScales;
 use crate::motor::dissipation::RegenBudget;
 use crate::motor::dissipation::WindingModel;
 use crate::motor::dissipation::dissipate_with_id;
+use crate::motor::dissipation::heat_current_limit;
 use crate::motor::drive::DriveConfig;
+use crate::units::unit::ampere;
+use crate::units::{
+    ElectricPotential, Linear, Sign, amps, erad_per_s, henries, ohms, volts, watts, webers,
+};
 
 struct BusIqBounds {
     lo: f32,
@@ -270,12 +275,13 @@ impl ProtectionMonitor {
         self.config
             .speed
             .speed_ceiling(self.drive.rider_sign(physical_direction))
+            .value
     }
 
     fn drive_cut(&self, omega: f32) -> f32 {
         self.config
             .speed
-            .speed_cut(self.drive.rider_sign(omega))
+            .speed_cut(erad_per_s(self.drive.rider_sign(omega)))
             .min(self.duty_cut())
     }
 
@@ -384,7 +390,7 @@ impl ProtectionMonitor {
             crate::isr_work::mark(crate::isr_work::DERATING);
             let omega = sample.velocity;
             let temperature = self.config.thermal_scales(fet_c, motor_c);
-            let bus_voltage = self.config.bus_voltage_scales(sample.vbus_v);
+            let bus_voltage = self.config.bus_voltage_scales(volts(sample.vbus_v));
             self.environment_drive = temperature.drive.min(bus_voltage.drive);
             #[cfg(feature = "fast-telemetry")]
             {
@@ -488,11 +494,21 @@ where
         self.protection.duty_utilization = 0.0;
     }
 
-    pub(super) fn update_duty_utilization(&mut self, vd: f32, vq: f32, dt: f32) {
+    // Per-cycle on the ISR path; keep it inlined as the f32 version was.
+    #[inline(always)]
+    pub(super) fn update_duty_utilization(
+        &mut self,
+        vd: ElectricPotential,
+        vq: ElectricPotential,
+        dt: f32,
+    ) {
         if self.protection.config.modulation.duty_start_frac < 1.0 {
             let voltage_limit = self.controller.voltage_limit();
-            if voltage_limit > 0.0 {
-                let utilization = (sqrtf(vd * vd + vq * vq) / voltage_limit).min(1.0);
+            if voltage_limit.is_positive() {
+                let utilization = (vd * vd + vq * vq)
+                    .sqrt_with(sqrtf)
+                    .ratio_to(voltage_limit)
+                    .min(1.0);
                 let alpha = (dt / 0.002).min(1.0);
                 self.protection.duty_utilization +=
                     alpha * (utilization - self.protection.duty_utilization);
@@ -673,7 +689,10 @@ where
         let mut phase = before_grant;
         if limits.is_enabled() && before_grant * omega >= 0.0 {
             let p = &self.protection;
-            let speed = p.config.speed.speed_cut(p.drive.rider_sign(omega));
+            let speed = p
+                .config
+                .speed
+                .speed_cut(erad_per_s(p.drive.rider_sign(omega)));
             let duty = p.duty_cut();
             let scale = p.environment_drive.min(speed.min(duty));
             let ceiling = limits.max_current_a * scale;
@@ -798,24 +817,17 @@ where
                 limits.max_brake_a * brake,
             ),
         );
-        let budget = RegenBudget {
-            frac: self.derating().regen,
-            max_w: if limits.bus_regen_max_a >= 0.0 {
-                self.vbus * limits.bus_regen_max_a
-            } else {
-                f32::INFINITY
-            },
-        };
-        let id_max = sqrtf(limits.max_dissipation_w * brake / (1.5 * model.r_ohm));
+        let budget = self.regen_budget();
+        let id_max = heat_current_limit(watts(limits.max_dissipation_w * brake), model.resistance);
         crate::motor::dissipation::dissipate_iq(
-            iq,
-            constraints.omega,
+            amps(iq),
+            erad_per_s(constraints.omega),
             &model,
             &budget,
             id_max,
-            limits.max_current_a,
+            amps(limits.max_current_a),
         )
-        .unwrap_or_else(|| constraints.bus.clamp(iq))
+        .map_or_else(|| constraints.bus.clamp(iq), |q| q.get::<ampere>())
     }
 
     // Keep the optional nonlinear solve out of the common torque grant: its
@@ -834,28 +846,21 @@ where
         let limits = &self.current_limits;
         let lim = limits.max_brake_a * brake;
         let (id_target, iq) = limits.clamp_targets(id_target, clamp_f32(iq_target, -lim, lim));
-        let budget = RegenBudget {
-            frac: self.derating().regen,
-            max_w: if limits.bus_regen_max_a >= 0.0 {
-                self.vbus * limits.bus_regen_max_a
-            } else {
-                f32::INFINITY
-            },
-        };
+        let budget = self.regen_budget();
         // The heat budget buys id_max = √(W / 1.5·R), and follows the
         // thermal brake derate: a hot motor or board burns less (and so
         // brakes less on a full pack).
-        let id_max = sqrtf(limits.max_dissipation_w * brake / (1.5 * model.r_ohm));
+        let id_max = heat_current_limit(watts(limits.max_dissipation_w * brake), model.resistance);
         #[cfg(feature = "isr-profiling")]
         let solve_start = crate::isr_prof::now();
         let result = dissipate_with_id(
-            id_target,
-            iq,
-            omega,
+            amps(id_target),
+            amps(iq),
+            erad_per_s(omega),
             &model,
             &budget,
             id_max,
-            limits.max_current_a,
+            amps(limits.max_current_a),
         );
         #[cfg(feature = "isr-profiling")]
         crate::isr_prof::add(
@@ -866,7 +871,7 @@ where
         match result {
             // The solver preserves an explicit d-axis direction and uses
             // aligning current when it introduces a new heat request.
-            Some(grant) => grant,
+            Some((id, iq)) => (id.get::<ampere>(), iq.get::<ampere>()),
             // Plugging: the brake draws from the supply, nothing to shape.
             None => (
                 id_target,
@@ -885,11 +890,25 @@ where
             .controller
             .decoupling()
             .filter(|_| self.current_limits.max_dissipation_w > 0.0)?;
-        (d.resistance_ohm > 0.0 && d.flux_linkage_wb > 0.0).then_some(WindingModel {
-            r_ohm: d.resistance_ohm,
-            flux_wb: d.flux_linkage_wb,
-            saliency_h: (d.lq_h - d.ld_h).abs(),
+        (d.resistance.value > 0.0 && d.flux_linkage.value > 0.0).then_some(WindingModel {
+            resistance: ohms(d.resistance.value),
+            flux_linkage: webers(d.flux_linkage.value),
+            saliency: henries((d.lq.value - d.ld.value).abs()),
         })
+    }
+
+    /// What the supply accepts this cycle: the regen derate share and the
+    /// bus regen-current limit as a charging-power ceiling.
+    fn regen_budget(&self) -> RegenBudget {
+        let limits = &self.current_limits;
+        RegenBudget {
+            frac: self.derating().regen,
+            max_power: if limits.bus_regen_max_a >= 0.0 {
+                volts(self.vbus) * amps(limits.bus_regen_max_a)
+            } else {
+                watts(f32::INFINITY)
+            },
+        }
     }
 
     /// Clamp the iq target so the implied bus current stays inside
@@ -1258,7 +1277,7 @@ mod tests {
                     assert_eq!(registry.has_category(FaultCategory::OverTemp), expected_hot);
                     assert_eq!(
                         monitor.scales,
-                        DeratingConfig::default().compute(fet_c, motor_c, 24.0)
+                        DeratingConfig::default().compute(fet_c, motor_c, volts(24.0))
                     );
                 }
             }
@@ -1279,7 +1298,7 @@ mod tests {
                 brake: 0.234,
                 regen: 0.345,
             };
-            let refreshed = DeratingConfig::default().compute(Some(100.0), None, 24.0);
+            let refreshed = DeratingConfig::default().compute(Some(100.0), None, volts(24.0));
             assert_ne!(retained, refreshed);
             // Include the eight-bit frame-counter wrap.
             for cycle in 0..frame_length * 264 {

@@ -2,6 +2,7 @@
 name = "oxifoc-host-cli"
 version = "0.1.0"
 edition = "2024"
+rust-version.workspace = true
 
 [dependencies]
 oxifoc-host-lib = { path = "../oxifoc-host-lib" }

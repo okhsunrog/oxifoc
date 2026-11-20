@@ -1,5 +1,7 @@
 //! Motor classes and immutable commissioning conditions shared by every client.
 use super::DetectRequest;
+use crate::units::Sign;
+use crate::units::{ElectricCurrent, ElectricalAngularVelocity};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
@@ -27,15 +29,15 @@ impl MotorClass {
 )]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SourceLimits {
-    pub input_a: f32,
-    pub regen_a: f32,
+    pub input: ElectricCurrent,
+    pub regen: ElectricCurrent,
 }
 impl SourceLimits {
     pub fn is_valid(self) -> bool {
-        self.input_a.is_finite()
-            && self.input_a > 0.0
-            && self.regen_a.is_finite()
-            && self.regen_a >= 0.0
+        self.input.is_finite()
+            && self.input.is_positive()
+            && self.regen.is_finite()
+            && self.regen.is_non_negative()
     }
 }
 
@@ -46,19 +48,25 @@ pub struct CommissioningPlan {
     pub source: SourceLimits,
     pub motor_class: MotorClass,
     pub pole_pairs: u8,
-    pub flux_target_erpm: f32,
-    pub current_limit_a: Option<f32>,
+    pub flux_target_speed: ElectricalAngularVelocity,
+    pub current_limit: Option<ElectricCurrent>,
     pub calibrate_hall: bool,
 }
 impl CommissioningPlan {
     pub fn is_valid(self) -> bool {
         self.source.is_valid()
             && self.pole_pairs > 0
-            && self.flux_target_erpm.is_finite()
-            && self.flux_target_erpm > 0.0
             && self
-                .current_limit_a
-                .is_none_or(|v| v.is_finite() && v >= 0.5)
+                .flux_target_speed
+                .get::<crate::units::unit::electrical::erpm>()
+                .is_finite()
+            && self
+                .flux_target_speed
+                .get::<crate::units::unit::electrical::erpm>()
+                > 0.0
+            && self
+                .current_limit
+                .is_none_or(|v| v.is_finite() && v.value >= 0.5)
     }
     /// Stage requests may supply freshly measured prerequisites, but cannot
     /// silently change the conditions confirmed when the session was opened.
@@ -66,34 +74,34 @@ impl CommissioningPlan {
         let loss = self.motor_class.preset().max_power_loss_w;
         match request {
             DetectRequest::MeasureResistance {
-                max_power_loss_w,
-                current_limit_a,
+                max_power_loss: max_power_loss_w,
+                current_limit: current_limit_a,
             }
             | DetectRequest::MeasureInductance {
-                max_power_loss_w,
-                current_limit_a,
+                max_power_loss: max_power_loss_w,
+                current_limit: current_limit_a,
                 ..
-            } => max_power_loss_w == loss && current_limit_a == self.current_limit_a,
+            } => max_power_loss_w.value == loss && current_limit_a == self.current_limit,
             DetectRequest::MeasureFlux {
-                max_power_loss_w,
-                current_limit_a,
+                max_power_loss: max_power_loss_w,
+                current_limit: current_limit_a,
                 pole_pairs,
-                openloop_erpm,
+                openloop_speed: openloop_erpm,
                 ..
             } => {
-                max_power_loss_w == loss
-                    && current_limit_a == self.current_limit_a
+                max_power_loss_w.value == loss
+                    && current_limit_a == self.current_limit
                     && pole_pairs == self.pole_pairs
-                    && openloop_erpm == self.flux_target_erpm
+                    && openloop_erpm == self.flux_target_speed
             }
             DetectRequest::CalibrateHall {
-                max_power_loss_w,
-                current_limit_a,
+                max_power_loss: max_power_loss_w,
+                current_limit: current_limit_a,
                 ..
             } => {
                 self.calibrate_hall
-                    && max_power_loss_w == loss
-                    && current_limit_a == self.current_limit_a
+                    && max_power_loss_w.value == loss
+                    && current_limit_a == self.current_limit
             }
             DetectRequest::MeasureCurrentOffsets { .. } => false,
         }

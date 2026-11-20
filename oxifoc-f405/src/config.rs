@@ -6,6 +6,7 @@ use oxifoc_core::foc::config::{BoardConfig, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::types::BoardCalib;
+use oxifoc_core::units::ElectricCurrent;
 
 /// USART1 USB executor and NetStack BASEPRI ceiling share one typed priority.
 /// ADC P0 and Hall P1 remain unmasked while network callbacks run.
@@ -57,12 +58,12 @@ const MAX_MOTOR_TEMP_C: f32 = 120.0;
 pub const BOARD: BoardConfig = BoardConfig {
     current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
-        shunt_ohms: 0.0005,                     // 0.5mΩ (two 1mΩ in parallel)
-        amp_gain: 10.0,                         // DRV8301 10 V/V gain
-        adc_vref_mv: 3300,                      // 3.3V
-        adc_max_counts: 4095,                   // 12-bit
-        invert_current_sign: false,             // DRV8301: standard polarity
-        vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
+        shunt_ohms: oxifoc_core::units::ohms(0.0005), // 0.5mΩ (two 1mΩ in parallel)
+        amp_gain: 10.0,                               // DRV8301 10 V/V gain
+        adc_vref_mv: 3300,                            // 3.3V
+        adc_max_counts: 4095,                         // 12-bit
+        invert_current_sign: false,                   // DRV8301: standard polarity
+        vbus_divider_ratio: (39.0 + 2.2) / 2.2,       // ~18.73:1
     },
     max_iq_target_a: 10.0, // Max torque current
     // Fault thresholds (matched to VESC hwconf)
@@ -95,8 +96,8 @@ pub const BOARD: BoardConfig = BoardConfig {
 pub const BOARD: BoardConfig = BoardConfig {
     current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
-        shunt_ohms: 0.0005, // 0.5mΩ in-line phase shunts
-        amp_gain: 20.0,     // DRV8301 20 V/V gain (must match drv8301.rs SHUNT_AMP_GAIN)
+        shunt_ohms: oxifoc_core::units::ohms(0.0005), // 0.5mΩ in-line phase shunts
+        amp_gain: 20.0, // DRV8301 20 V/V gain (must match drv8301.rs SHUNT_AMP_GAIN)
         adc_vref_mv: 3300,
         adc_max_counts: 4095,
         invert_current_sign: false, // hw60 does NOT define INVERTED_SHUNT_POLARITY
@@ -153,7 +154,7 @@ pub const DEAD_TIME_COMP_NS: u32 = if cfg!(feature = "bench-no-deadtime-comp") {
 } else {
     360
 };
-pub const DEAD_TIME_COMP_LINEAR_CURRENT_A: f32 = 1.0;
+pub const DEAD_TIME_COMP_LINEAR_CURRENT: ElectricCurrent = oxifoc_core::units::amps(1.0);
 
 // ============================================================================
 // Timing Configuration

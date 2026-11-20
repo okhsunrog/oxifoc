@@ -4,7 +4,7 @@ use super::{
     ActuationModel, CommandWatchdog, ControlMode, CurrentLimits, CurrentPiGains, FocDriver,
     ProtectionMonitor,
 };
-use crate::foc::controller::{Decoupling, FocController};
+use crate::foc::controller::{CurrentKi, CurrentKp, Decoupling, FocController};
 use crate::foc::current_offset::CurrentOffsetCalibrator;
 use crate::foc::phase::PhaseInput;
 use crate::foc::phase::PhaseProvider;
@@ -23,6 +23,8 @@ use crate::foc::velocity::VelocityLoop;
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::failsafe::FailsafeController;
+
+use crate::units::{amps, erad_per_s, seconds, si, volts};
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -47,7 +49,7 @@ where
         dt: f32,
     ) -> Self {
         controller.set_current_sense_topology(current_sensor.current_sense_topology());
-        let vbus = controller.vbus();
+        let vbus = controller.vbus().value;
         // The board's duty cap, so the controller never commands a vector
         // the bridge would clip (see FocController::set_duty_cap).
         if pwm.max_duty() > 0 {
@@ -213,11 +215,11 @@ where
         );
         self.phase.update(
             &PhaseInput {
-                v_alpha,
-                v_beta,
-                i_alpha,
-                i_beta,
-                dt,
+                v_alpha: volts(v_alpha),
+                v_beta: volts(v_beta),
+                i_alpha: amps(i_alpha),
+                i_beta: amps(i_beta),
+                dt: seconds(dt),
             },
             now_ticks,
         );
@@ -293,12 +295,12 @@ where
             return None;
         };
         Some(super::VelocityControlSnapshot {
-            target_rad_s: target_vel,
-            reference_rad_s: self.velocity_loop.reference_rad_s(),
+            target_rad_s: target_vel.value,
+            reference_rad_s: self.velocity_loop.reference().value,
             feedback_rad_s: self
                 .phase
                 .rotor_velocity()
-                .map(RotorVelocityEstimate::electrical_rad_s),
+                .map(|velocity| velocity.velocity().value),
             requested_iq_a: self.velocity_schedule.requested_iq(),
             granted_iq_a: self.last_granted_iq,
             granted_id_a: self.last_granted_id,
@@ -336,7 +338,7 @@ where
 
     #[cfg(feature = "fast-telemetry")]
     pub fn velocity_integral_a(&self) -> f32 {
-        self.velocity_loop.integral_a()
+        self.velocity_loop.integral().value
     }
 
     /// Apply position-loop tuning (sane values only; see
@@ -438,7 +440,9 @@ where
                 (
                     ControlMode::VelocityControl { target_vel: old },
                     ControlMode::VelocityControl { target_vel: new },
-                ) if new == 0.0 || old * new < 0.0 => self.velocity_schedule.clear_request(),
+                ) if new.value == 0.0 || old.value * new.value < 0.0 => {
+                    self.velocity_schedule.clear_request();
+                }
                 (
                     ControlMode::PositionControl { target_pos: old },
                     ControlMode::PositionControl { target_pos: new },
@@ -477,13 +481,16 @@ where
         {
             let velocity = self.phase.rotor_velocity();
             self.velocity_feedback_available = velocity.is_some();
-            let omega = velocity.map_or(0.0, RotorVelocityEstimate::electrical_rad_s);
+            let omega = velocity.map_or(
+                crate::units::ConstZero::ZERO,
+                RotorVelocityEstimate::velocity,
+            );
             self.velocity_loop.reset(omega);
             self.velocity_schedule
                 .rearm(self.phase.motion_reference_epoch());
         }
         if let ControlMode::PositionControl { target_pos } = mode {
-            self.position_target = Position::from_rad(target_pos);
+            self.position_target = Position::from_rad(target_pos.value);
         }
 
         // A sequence owns one saved baseline: subsequent steps may change the
@@ -499,8 +506,8 @@ where
                     q: self.controller.iq_pi.gains(),
                 });
             }
-            self.controller.id_pi.set_gains(kp, ki);
-            self.controller.iq_pi.set_gains(kp, ki);
+            self.controller.id_pi.set_gains(si(kp), si(ki));
+            self.controller.iq_pi.set_gains(si(kp), si(ki));
             self.controller.reset();
         }
 
@@ -515,9 +522,9 @@ where
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
         );
         let start_dir = match mode {
-            ControlMode::CurrentControl { iq_target, .. } => iq_target,
+            ControlMode::CurrentControl { iq_target, .. } => iq_target.value,
             ControlMode::Throttle { fraction } => fraction,
-            ControlMode::VelocityControl { target_vel } => target_vel,
+            ControlMode::VelocityControl { target_vel } => target_vel.value,
             _ => 0.0,
         };
         if was_idle && start_dir != 0.0 {
@@ -541,8 +548,8 @@ where
     /// fallback; this does not make it measured feedback for the outer PI.
     pub(crate) fn torque_speed(&self) -> f32 {
         match self.phase.rotor_velocity() {
-            Some(velocity) => velocity.electrical_rad_s(),
-            None => self.phase.get().velocity,
+            Some(velocity) => velocity.velocity().value,
+            None => self.phase.get().velocity.value,
         }
     }
 
@@ -557,16 +564,16 @@ where
         current: (f32, f32),
     ) {
         self.set_mode(ControlMode::DirectVoltage {
-            vd,
-            vq,
-            angle_rad: angle,
+            vd: volts(vd),
+            vq: volts(vq),
+            angle: crate::units::erad(angle),
         });
         self.detection_compensation_current = Some(current);
     }
 
     /// Update bus voltage
     pub fn set_vbus(&mut self, vbus: f32) {
-        self.controller.set_vbus(vbus);
+        self.controller.set_vbus(volts(vbus));
         self.vbus = vbus;
     }
 
@@ -607,7 +614,7 @@ where
 
     /// Set persistent d/q PI tuning, superseding any temporary bench override.
     /// Ordinary tuning preserves PI state; leaving an override clears it.
-    pub fn set_current_pi_gains(&mut self, kp: f32, ki: f32) {
+    pub fn set_current_pi_gains(&mut self, kp: CurrentKp, ki: CurrentKi) {
         if self.temporary_pi_restore.take().is_some() {
             self.controller.reset();
         }
@@ -623,7 +630,7 @@ where
 
     /// Drop cruise state without moving its rate-limiting deadline.
     pub(super) fn invalidate_velocity(&mut self) {
-        self.velocity_loop.reset(0.0);
+        self.velocity_loop.reset(erad_per_s(0.0));
         self.velocity_feedback_available = false;
         self.velocity_schedule.invalidate();
     }

@@ -371,7 +371,7 @@ async fn main(spawner: Spawner) {
     let board = config::measured_board();
     defmt::info!(
         "Board config: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, vref={}mV, faults={}",
-        board.calib.shunt_ohms,
+        board.calib.shunt_ohms.value,
         board.calib.amp_gain,
         board.calib.vbus_divider_ratio,
         board.calib.adc_vref_mv,

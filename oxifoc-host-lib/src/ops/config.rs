@@ -269,7 +269,7 @@ fn write_revision(
         ),
         ConfigResponse::Invalid => bail!(
             "device refused the write: value fails validation. Rules: all fields \
-             finite; current_limits: max_phase_current_a >= 1.3 x max_iq_a (the \
+             finite; current_limits: max_phase_current >= 1.3 x max_iq (the \
              overcurrent trip needs headroom above full throttle); derating: every \
              enabled ramp well-formed (temp/regen end > start, battery cut start > \
              end, accel_dec in 0..=1); board-calibration: \
@@ -471,7 +471,8 @@ mod tests {
                     5.0 * tau / 6.0,
                     tau / 2.0,
                     0.0,
-                ],
+                ]
+                .map(oxifoc_core::units::erad),
                 next_states: [0, 3, 6, 2, 5, 1, 4, 0],
             }),
             ..Default::default()
@@ -568,23 +569,23 @@ mod tests {
     #[test]
     fn field_patches_preserve_unmentioned_motor_and_velocity_values() {
         let motor = MotorParamsConfig {
-            resistance_ohm: 0.1,
-            ld_fundamental_h: 81e-6,
-            lq_fundamental_h: 127e-6,
+            resistance: oxifoc_core::units::ohms(0.1),
+            ld_fundamental: oxifoc_core::units::henries(81e-6),
+            lq_fundamental: oxifoc_core::units::henries(127e-6),
             ..Default::default()
         };
         let (_, write) = patch_fields(
             ConfigGroupId::MotorParams,
             serde_json::to_value(motor).unwrap(),
-            &["resistance_ohm=0.2".into()],
+            &["resistance=0.2".into()],
         )
         .unwrap();
         let ConfigValue::MotorParams(patched) = write else {
             panic!("wrong write variant");
         };
-        assert_eq!(patched.resistance_ohm, 0.2);
-        assert_eq!(patched.ld_fundamental_h, 81e-6);
-        assert_eq!(patched.lq_fundamental_h, 127e-6);
+        assert_eq!(patched.resistance.value, 0.2);
+        assert_eq!(patched.ld_fundamental.value, 81e-6);
+        assert_eq!(patched.lq_fundamental.value, 127e-6);
 
         let velocity = VelocityLoopConfig {
             accel_ff: 0.75,

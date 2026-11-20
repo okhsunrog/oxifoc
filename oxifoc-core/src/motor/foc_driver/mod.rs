@@ -42,7 +42,7 @@ pub enum MotorModelError {
     Consumed,
 }
 
-use crate::foc::controller::FocController;
+use crate::foc::controller::{CurrentKi, CurrentKp, FocController};
 use crate::foc::current_offset::CurrentOffsetCalibrator;
 use crate::foc::current_offset::CurrentOffsetError;
 use crate::foc::current_offset::CurrentOffsetReport;
@@ -345,6 +345,6 @@ where
 
 /// Save tuning, not the controller's integrators or other model state.
 struct CurrentPiGains {
-    d: (f32, f32),
-    q: (f32, f32),
+    d: (CurrentKp, CurrentKi),
+    q: (CurrentKp, CurrentKi),
 }

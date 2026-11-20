@@ -43,8 +43,8 @@ pub async fn hall_task() {
                 seq,
                 crate::sensors::hall::read_hall_state_raw(),
                 hall.state,
-                hall.angle_rad,
-                hall.velocity_rad_s,
+                hall.angle,
+                hall.velocity,
                 hall.error_count,
                 crate::sensors::hall::OVERCAPTURES.load(Ordering::Relaxed),
             );

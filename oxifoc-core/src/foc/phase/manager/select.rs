@@ -8,7 +8,17 @@ use crate::foc::sensors::AngleSample;
 use crate::foc::sensors::AngleSensor;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
-use core::f32::consts::TAU;
+use crate::units::{
+    ConstZero, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity, Linear, Sign, Time,
+    erad,
+};
+use core::f32::consts::{FRAC_PI_2, PI, TAU};
+use core::ops::Sub;
+
+/// Sensor/observer disagreement beyond which the observer is half a turn off.
+const QUARTER_TURN: ElectricalAngle = erad(FRAC_PI_2);
+const HALF_TURN: ElectricalAngle = erad(PI);
+const FULL_TURN: ElectricalAngle = erad(TAU);
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Current HFI estimate as a phase output (None if no HFI configured).
@@ -44,7 +54,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         hall_sample: Option<PhaseOutput>,
         hall_velocity: Option<RotorVelocityEstimate>,
         encoder_sample: Option<AngleSample>,
-        dt: f32,
+        dt: Time,
         observer_was_ready: bool,
     ) -> PhaseOutput {
         self.rotor_velocity = None;
@@ -96,7 +106,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                             };
                             // Keep the commutation frame continuous through
                             // cold-start source changes and confirmed handoff.
-                            if self.tracker.kp > 0.0
+                            if self.tracker.kp.is_positive()
                                 && (!self.startup.is_active() || self.tracker.startup_tracking)
                             {
                                 self.tracker_output(raw, dt)
@@ -108,7 +118,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                         _ => self.output,
                     }
                 } else if self.startup.is_active() {
-                    if self.tracker.kp > 0.0 && self.tracker.startup_tracking && self.tracker.active
+                    if self.tracker.kp.is_positive()
+                        && self.tracker.startup_tracking
+                        && self.tracker.active
                     {
                         return self.tracker_output(
                             PhaseOutput {
@@ -208,7 +220,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 // Speed reference: the faster of the two estimates, for the
                 // same reason as the hall blend — near the handoff the
                 // low-speed source's velocity may already be degrading.
-                let obs_vel = self.observer.velocity().unwrap_or(0.0).abs();
+                let obs_vel = self
+                    .observer
+                    .velocity()
+                    .unwrap_or(ElectricalAngularVelocity::ZERO)
+                    .abs();
                 let speed = hfi_out.velocity.abs().max(obs_vel);
                 let blend_low = min_vel * (1.0 - CROSSOVER_HYSTERESIS);
                 let blend = compute_blend(speed, blend_low, min_vel);
@@ -240,7 +256,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             // weight comes from the back-EMF share of the drive voltage
             // instead of a velocity threshold. Same latch/reseed mechanics.
             PhaseSource::HfiToObserverVolts {
-                toggle_v,
+                toggle: toggle_v,
                 min_confidence,
             } => {
                 let mut hfi_out = self.hfi_output().unwrap_or(self.output);
@@ -256,8 +272,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                     return hfi_out;
                 }
 
-                let blend_low = (toggle_v - HFI_VOLTS_HYSTERESIS).max(0.0);
-                let blend = compute_blend(self.bemf_proxy_v, blend_low, toggle_v);
+                let blend_low = (toggle_v - HFI_VOLTS_HYSTERESIS).max(ElectricPotential::ZERO);
+                let blend = compute_blend(self.bemf_proxy, blend_low, toggle_v);
 
                 let was_latched = self.crossover_latched;
                 self.crossover_latched = blend >= 1.0;
@@ -307,7 +323,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
             PhaseSource::Manual => PhaseOutput {
                 angle: self.manual_angle,
-                velocity: 0.0,
+                velocity: ElectricalAngularVelocity::ZERO,
             },
 
             PhaseSource::OpenLoop => PhaseOutput {
@@ -339,8 +355,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         &mut self,
         sensor: PhaseOutput,
         sensor_velocity: Option<RotorVelocityEstimate>,
-        blend_low: f32,
-        blend_high: f32,
+        blend_low: ElectricalAngularVelocity,
+        blend_high: ElectricalAngularVelocity,
         observer_was_ready: bool,
     ) -> PhaseOutput {
         // An unconverged observer must not pull the output anywhere — the
@@ -365,7 +381,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // toward trusting the dying sensor MORE, while the (ready) observer
         // still reports the true speed.
         let mut obs_velocity = self.observer.velocity();
-        let obs_speed = obs_velocity.unwrap_or(0.0).abs();
+        let obs_speed = obs_velocity
+            .unwrap_or(ElectricalAngularVelocity::ZERO)
+            .abs();
         let blend = compute_blend(sensor.velocity.abs().max(obs_speed), blend_low, blend_high);
         let mut obs_angle = self.observer.phase();
 
@@ -376,7 +394,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         // mid-crossover. Reseed instead of blending.
         let reseeded = blend < 1.0
             && obs_angle.is_some_and(|obs_angle| {
-                angle_difference(obs_angle, sensor.angle).abs() > core::f32::consts::FRAC_PI_2
+                angle_difference(obs_angle, sensor.angle).abs() > QUARTER_TURN
             });
         if reseeded {
             self.hall_motion_witness.reset();
@@ -430,7 +448,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
 fn blend_rotor_velocity(
     sensor: Option<RotorVelocityEstimate>,
-    observer: f32,
+    observer: ElectricalAngularVelocity,
     blend: f32,
 ) -> Option<RotorVelocityEstimate> {
     if blend <= 0.0 {
@@ -438,7 +456,7 @@ fn blend_rotor_velocity(
     } else if blend >= 1.0 {
         RotorVelocityEstimate::new(observer)
     } else {
-        RotorVelocityEstimate::new(sensor?.electrical_rad_s() * (1.0 - blend) + observer * blend)
+        RotorVelocityEstimate::new(sensor?.velocity() * (1.0 - blend) + observer * blend)
     }
 }
 
@@ -452,23 +470,27 @@ fn sample_to_output(sample: Option<AngleSample>, fallback: &PhaseOutput) -> Phas
     }
 }
 
-/// Compute blend factor (0.0 = sensor, 1.0 = observer)
-pub(super) fn compute_blend(velocity: f32, blend_low: f32, blend_high: f32) -> f32 {
-    if velocity <= blend_low {
+/// Compute blend factor (0.0 = sensor, 1.0 = observer) from a speed or the
+/// back-EMF voltage share.
+pub(super) fn compute_blend<T>(value: T, blend_low: T, blend_high: T) -> f32
+where
+    T: Linear + PartialOrd + Sub<Output = T>,
+{
+    if value <= blend_low {
         0.0
-    } else if velocity >= blend_high {
+    } else if value >= blend_high {
         1.0
     } else {
-        (velocity - blend_low) / (blend_high - blend_low)
+        (value - blend_low).ratio_to(blend_high - blend_low)
     }
 }
 
 /// Blend two angles with given factor (0.0 = a, 1.0 = b)
-pub(super) fn blend_angles(a: f32, b: f32, blend: f32) -> f32 {
+pub(super) fn blend_angles(a: ElectricalAngle, b: ElectricalAngle, blend: f32) -> ElectricalAngle {
     // Handle angle wraparound properly
     let diff = wrap_angle(b - a);
-    let diff_signed = if diff > core::f32::consts::PI {
-        diff - TAU
+    let diff_signed = if diff > HALF_TURN {
+        diff - FULL_TURN
     } else {
         diff
     };

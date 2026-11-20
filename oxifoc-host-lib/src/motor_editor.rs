@@ -57,13 +57,13 @@ type Draft = [String; FIELDS.len()];
 
 fn draft_from(motor: &MotorParamsConfig) -> Draft {
     [
-        motor.resistance_ohm.to_string(),
-        motor.inductance_d_h.to_string(),
-        motor.inductance_q_h.to_string(),
-        motor.flux_linkage_wb.to_string(),
+        motor.resistance.value.to_string(),
+        motor.inductance_d.value.to_string(),
+        motor.inductance_q.value.to_string(),
+        motor.flux_linkage.value.to_string(),
         motor.pole_pairs.to_string(),
-        motor.max_current_a.to_string(),
-        motor.max_power_loss_w.to_string(),
+        motor.max_current.value.to_string(),
+        motor.max_power_loss.value.to_string(),
     ]
 }
 
@@ -107,13 +107,13 @@ fn edited_motor(
     original: &MotorParamsConfig,
 ) -> Result<MotorParamsConfig, &'static str> {
     Ok(MotorParamsConfig {
-        resistance_ohm: decimal(&draft[0], true)?,
-        inductance_d_h: decimal(&draft[1], true)?,
-        inductance_q_h: decimal(&draft[2], true)?,
-        flux_linkage_wb: decimal(&draft[3], false)?,
+        resistance: oxifoc_core::units::ohms(decimal(&draft[0], true)?),
+        inductance_d: oxifoc_core::units::henries(decimal(&draft[1], true)?),
+        inductance_q: oxifoc_core::units::henries(decimal(&draft[2], true)?),
+        flux_linkage: oxifoc_core::units::webers(decimal(&draft[3], false)?),
         pole_pairs: pole_pairs(&draft[4])?,
-        max_current_a: decimal(&draft[5], false)?,
-        max_power_loss_w: decimal(&draft[6], false)?,
+        max_current: oxifoc_core::units::amps(decimal(&draft[5], false)?),
+        max_power_loss: oxifoc_core::units::watts(decimal(&draft[6], false)?),
         ..original.clone()
     })
 }
@@ -418,12 +418,12 @@ mod tests {
     #[test]
     fn edits_preserve_fundamental_inductance_calibration() {
         let original = MotorParamsConfig {
-            resistance_ohm: 0.5,
-            inductance_d_h: 0.00047,
-            inductance_q_h: 0.00049,
+            resistance: oxifoc_core::units::ohms(0.5),
+            inductance_d: oxifoc_core::units::henries(0.00047),
+            inductance_q: oxifoc_core::units::henries(0.00049),
             pole_pairs: 7,
-            ld_fundamental_h: 0.00081,
-            lq_fundamental_h: 0.00121,
+            ld_fundamental: oxifoc_core::units::henries(0.00081),
+            lq_fundamental: oxifoc_core::units::henries(0.00121),
             ..Default::default()
         };
         let mut draft = draft_from(&original);
@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(
             edited,
             MotorParamsConfig {
-                resistance_ohm: 0.6,
+                resistance: oxifoc_core::units::ohms(0.6),
                 ..original
             }
         );

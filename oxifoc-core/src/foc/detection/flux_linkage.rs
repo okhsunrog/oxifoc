@@ -32,15 +32,16 @@
 
 use super::types::{DetectionError, FluxLinkageParams};
 use crate::foc::fast_math::sqrtf;
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngularVelocity, ElectricalResistance,
+    Inductance, MagneticFlux, erad_per_s, ohms, seconds, volts, webers,
+};
 
-/// Minimum valid flux linkage in Weber
-const MIN_VALID_FLUX: f32 = 0.0001; // 0.1 mWb
+/// Plausible permanent-magnet flux linkage.
+const VALID_FLUX: core::ops::RangeInclusive<MagneticFlux> = webers(0.0001)..=webers(1.0);
 
-/// Maximum valid flux linkage in Weber
-const MAX_VALID_FLUX: f32 = 1.0; // 1 Wb
-
-/// Minimum angular velocity for valid measurement (rad/s)
-const MIN_VALID_OMEGA: f32 = 10.0; // ~95 eRPM
+/// Minimum electrical angular velocity for a valid measurement (~95 eRPM).
+const MIN_VALID_OMEGA: ElectricalAngularVelocity = erad_per_s(10.0);
 
 /// One coherent undriven voltage sample. Hall sectors are optional for model
 /// backends; physical Hall-equipped boards also supply the captured edge age.
@@ -66,31 +67,32 @@ impl CoastSample {
 /// Unlike pointwise V/omega this does not use a lagging sector-speed estimate
 /// during deceleration. Edge timestamps interpolate the integration boundaries.
 pub struct HallCoastMeasurement {
-    previous: Option<(CoastSample, f32)>,
-    integral: f32,
-    anchor: Option<(u8, f32)>,
+    previous: Option<(CoastSample, ElectricPotential)>,
+    /// `∫|V_bemf| dt`: one electrical turn integrates to `2π·λ`.
+    integral: MagneticFlux,
+    anchor: Option<(u8, MagneticFlux)>,
     steps: u8,
     direction: i8,
     samples: u32,
     turns: u32,
-    lambda_sum: f32,
-    lambda_min: f32,
-    lambda_max: f32,
+    lambda_sum: MagneticFlux,
+    lambda_min: MagneticFlux,
+    lambda_max: MagneticFlux,
 }
 
 impl Default for HallCoastMeasurement {
     fn default() -> Self {
         Self {
             previous: None,
-            integral: 0.0,
+            integral: MagneticFlux::ZERO,
             anchor: None,
             steps: 0,
             direction: 0,
             samples: 0,
             turns: 0,
-            lambda_sum: 0.0,
-            lambda_min: f32::INFINITY,
-            lambda_max: 0.0,
+            lambda_sum: MagneticFlux::ZERO,
+            lambda_min: webers(f32::INFINITY),
+            lambda_max: MagneticFlux::ZERO,
         }
     }
 }
@@ -101,12 +103,12 @@ impl HallCoastMeasurement {
         self.turns >= 3 && self.samples >= 32
     }
 
-    pub fn record(&mut self, sample: CoastSample) -> Result<Option<f32>, DetectionError> {
+    pub fn record(&mut self, sample: CoastSample) -> Result<Option<MagneticFlux>, DetectionError> {
         let sector = sample
             .hall_sector
             .filter(|s| *s < 6)
             .ok_or(DetectionError::LowConfidence)?;
-        let voltage = sample.magnitude();
+        let voltage = volts(sample.magnitude());
         if !voltage.is_finite()
             || !sample.omega_e.is_finite()
             || !sample.hall_edge_age_s.is_finite()
@@ -118,12 +120,14 @@ impl HallCoastMeasurement {
         let Some((previous, previous_voltage)) = self.previous.replace((sample, voltage)) else {
             return Ok(None);
         };
-        let dt = sample
-            .timestamp_us
-            .checked_sub(previous.timestamp_us)
-            .filter(|dt| *dt > 0)
-            .ok_or(DetectionError::LowConfidence)? as f32
-            * 1e-6;
+        let dt = seconds(
+            sample
+                .timestamp_us
+                .checked_sub(previous.timestamp_us)
+                .filter(|dt| *dt > 0)
+                .ok_or(DetectionError::LowConfidence)? as f32
+                * 1e-6,
+        );
         self.integral += 0.5 * (previous_voltage + voltage) * dt;
         let previous_sector = previous.hall_sector.ok_or(DetectionError::LowConfidence)?;
         if sector == previous_sector {
@@ -139,7 +143,7 @@ impl HallCoastMeasurement {
             return Err(DetectionError::LowConfidence);
         }
         self.direction = direction;
-        let tail = sample.hall_edge_age_s.min(dt);
+        let tail = seconds(sample.hall_edge_age_s).min(dt);
         let edge_voltage = voltage + (previous_voltage - voltage) * tail / dt;
         let at_edge = self.integral - 0.5 * (edge_voltage + voltage) * tail;
         let Some((anchor_sector, anchor_integral)) = self.anchor else {
@@ -154,7 +158,9 @@ impl HallCoastMeasurement {
             return Err(DetectionError::LowConfidence);
         }
         let lambda = (at_edge - anchor_integral) / core::f32::consts::TAU;
-        validate_flux_linkage(lambda)?;
+        if !VALID_FLUX.contains(&lambda) {
+            return Err(DetectionError::OutOfRange);
+        }
         self.turns += 1;
         self.lambda_sum += lambda;
         self.lambda_min = self.lambda_min.min(lambda);
@@ -164,7 +170,7 @@ impl HallCoastMeasurement {
         Ok(Some(lambda))
     }
 
-    pub fn finish(&self) -> Result<f32, DetectionError> {
+    pub fn finish(&self) -> Result<MagneticFlux, DetectionError> {
         if !self.has_enough_samples() {
             return Err(DetectionError::InsufficientSamples);
         }
@@ -183,13 +189,13 @@ impl HallCoastMeasurement {
 #[derive(Clone, Debug)]
 pub struct FluxLinkageMeasurement {
     /// Known phase resistance (from previous measurement)
-    resistance_ohm: f32,
+    resistance: ElectricalResistance,
     /// Sum of Vq samples
-    vq_sum: f32,
+    vq_sum: ElectricPotential,
     /// Sum of Iq samples
-    iq_sum: f32,
-    /// Sum of angular velocity samples (rad/s)
-    omega_sum: f32,
+    iq_sum: ElectricCurrent,
+    /// Sum of electrical angular velocity samples
+    omega_sum: ElectricalAngularVelocity,
     /// Number of samples collected
     sample_count: u32,
     /// Minimum samples required
@@ -202,12 +208,12 @@ impl FluxLinkageMeasurement {
     /// # Arguments
     /// * `resistance_ohm` - Previously measured motor resistance
     /// * `min_samples` - Minimum samples required for valid result
-    pub fn new(resistance_ohm: f32, min_samples: u32) -> Self {
+    pub fn new(resistance: ElectricalResistance, min_samples: u32) -> Self {
         Self {
-            resistance_ohm,
-            vq_sum: 0.0,
-            iq_sum: 0.0,
-            omega_sum: 0.0,
+            resistance,
+            vq_sum: ElectricPotential::ZERO,
+            iq_sum: ElectricCurrent::ZERO,
+            omega_sum: ElectricalAngularVelocity::ZERO,
             sample_count: 0,
             min_samples,
         }
@@ -219,19 +225,24 @@ impl FluxLinkageMeasurement {
             return Err(DetectionError::MissingPrerequisite);
         }
 
-        Ok(Self::new(params.resistance_ohm, params.num_samples))
+        Ok(Self::new(ohms(params.resistance_ohm), params.num_samples))
     }
 
     /// Record a sample during steady-state spinning.
     ///
     /// # Arguments
-    /// * `vq` - q-axis voltage in Volts
-    /// * `iq` - q-axis current in Amps
-    /// * `omega_e` - electrical angular velocity in rad/s
+    /// * `vq` - q-axis voltage
+    /// * `iq` - q-axis current
+    /// * `omega_e` - electrical angular velocity
     ///
     /// Note: Only call this during steady-state operation at target speed.
     #[inline]
-    pub fn record(&mut self, vq: f32, iq: f32, omega_e: f32) {
+    pub fn record(
+        &mut self,
+        vq: ElectricPotential,
+        iq: ElectricCurrent,
+        omega_e: ElectricalAngularVelocity,
+    ) {
         self.vq_sum += vq;
         self.iq_sum += iq;
         self.omega_sum += omega_e;
@@ -243,22 +254,27 @@ impl FluxLinkageMeasurement {
     /// Convenience method that converts mechanical RPM to electrical rad/s.
     ///
     /// # Arguments
-    /// * `vq` - q-axis voltage in Volts
-    /// * `iq` - q-axis current in Amps
+    /// * `vq` - q-axis voltage
+    /// * `iq` - q-axis current
     /// * `rpm` - mechanical RPM
     /// * `pole_pairs` - number of motor pole pairs
     #[inline]
-    pub fn record_with_rpm(&mut self, vq: f32, iq: f32, rpm: f32, pole_pairs: u8) {
-        let omega_e = rpm_to_omega_e(rpm, pole_pairs);
-        self.record(vq, iq, omega_e);
+    pub fn record_with_rpm(
+        &mut self,
+        vq: ElectricPotential,
+        iq: ElectricCurrent,
+        rpm: f32,
+        pole_pairs: u8,
+    ) {
+        self.record(vq, iq, erad_per_s(rpm_to_omega_e(rpm, pole_pairs)));
     }
 
     /// Reset the accumulator for a new measurement.
     #[inline]
     pub fn reset(&mut self) {
-        self.vq_sum = 0.0;
-        self.iq_sum = 0.0;
-        self.omega_sum = 0.0;
+        self.vq_sum = ElectricPotential::ZERO;
+        self.iq_sum = ElectricCurrent::ZERO;
+        self.omega_sum = ElectricalAngularVelocity::ZERO;
         self.sample_count = 0;
     }
 
@@ -283,9 +299,9 @@ impl FluxLinkageMeasurement {
     /// Compute the flux linkage from accumulated samples.
     ///
     /// # Returns
-    /// * `Ok(flux_linkage)` - Flux linkage in Weber
+    /// * `Ok(flux_linkage)` - Flux linkage
     /// * `Err(DetectionError)` - If measurement failed
-    pub fn finish(self) -> Result<f32, DetectionError> {
+    pub fn finish(self) -> Result<MagneticFlux, DetectionError> {
         if self.sample_count < self.min_samples {
             return Err(DetectionError::InsufficientSamples);
         }
@@ -301,13 +317,10 @@ impl FluxLinkageMeasurement {
         }
 
         // Calculate flux linkage: λ = (Vq - R×Iq) / ωe
-        let flux_linkage = (avg_vq - self.resistance_ohm * avg_iq) / avg_omega;
+        let flux_linkage: MagneticFlux = (avg_vq - self.resistance * avg_iq) / avg_omega;
 
         // Validate result
-        if flux_linkage < MIN_VALID_FLUX {
-            return Err(DetectionError::OutOfRange);
-        }
-        if flux_linkage > MAX_VALID_FLUX {
+        if !VALID_FLUX.contains(&flux_linkage) {
             return Err(DetectionError::OutOfRange);
         }
 
@@ -317,7 +330,7 @@ impl FluxLinkageMeasurement {
     /// Get intermediate flux estimate without consuming the accumulator.
     ///
     /// Useful for monitoring convergence during measurement.
-    pub fn current_estimate(&self) -> Option<f32> {
+    pub fn current_estimate(&self) -> Option<MagneticFlux> {
         if self.sample_count < 10 {
             return None;
         }
@@ -331,7 +344,7 @@ impl FluxLinkageMeasurement {
             return None;
         }
 
-        Some((avg_vq - self.resistance_ohm * avg_iq) / avg_omega)
+        Some((avg_vq - self.resistance * avg_iq) / avg_omega)
     }
 }
 
@@ -362,12 +375,12 @@ impl FluxLinkageMeasurement {
 /// L = (Ld+Lq)/2 is used for both axes).
 #[derive(Clone, Debug)]
 pub struct MagnitudeFluxMeasurement {
-    resistance_ohm: f32,
-    /// Average inductance (Henries) for the reactance term.
-    inductance_h: f32,
-    e_d_sum: f32,
-    e_q_sum: f32,
-    omega_sum: f32,
+    resistance: ElectricalResistance,
+    /// Average inductance for the reactance term.
+    inductance: Inductance,
+    e_d_sum: ElectricPotential,
+    e_q_sum: ElectricPotential,
+    omega_sum: ElectricalAngularVelocity,
     sample_count: u32,
     min_samples: u32,
 }
@@ -376,16 +389,16 @@ impl MagnitudeFluxMeasurement {
     /// Create a new magnitude-based flux measurement.
     ///
     /// # Arguments
-    /// * `resistance_ohm` — previously measured R
-    /// * `inductance_h` — previously measured L_avg (Henries)
+    /// * `resistance` — previously measured R
+    /// * `inductance` — previously measured L_avg
     /// * `min_samples` — minimum samples for valid result
-    pub fn new(resistance_ohm: f32, inductance_h: f32, min_samples: u32) -> Self {
+    pub fn new(resistance: ElectricalResistance, inductance: Inductance, min_samples: u32) -> Self {
         Self {
-            resistance_ohm,
-            inductance_h,
-            e_d_sum: 0.0,
-            e_q_sum: 0.0,
-            omega_sum: 0.0,
+            resistance,
+            inductance,
+            e_d_sum: ElectricPotential::ZERO,
+            e_q_sum: ElectricPotential::ZERO,
+            omega_sum: ElectricalAngularVelocity::ZERO,
             sample_count: 0,
             min_samples,
         }
@@ -393,16 +406,24 @@ impl MagnitudeFluxMeasurement {
 
     /// Record a sample using all four dq components.
     #[inline]
-    pub fn record(&mut self, vd: f32, vq: f32, id: f32, iq: f32, omega_e: f32) {
+    pub fn record(
+        &mut self,
+        vd: ElectricPotential,
+        vq: ElectricPotential,
+        id: ElectricCurrent,
+        iq: ElectricCurrent,
+        omega_e: ElectricalAngularVelocity,
+    ) {
         // Back out the back-EMF vector from the steady-state dq equations.
-        self.e_d_sum += vd - self.resistance_ohm * id + omega_e * self.inductance_h * iq;
-        self.e_q_sum += vq - self.resistance_ohm * iq - omega_e * self.inductance_h * id;
+        let reactance = omega_e * self.inductance;
+        self.e_d_sum += vd - self.resistance * id + reactance * iq;
+        self.e_q_sum += vq - self.resistance * iq - reactance * id;
         self.omega_sum += omega_e;
         self.sample_count += 1;
     }
 
     /// Compute the flux linkage.
-    pub fn finish(self) -> Result<f32, DetectionError> {
+    pub fn finish(self) -> Result<MagneticFlux, DetectionError> {
         if self.sample_count < self.min_samples {
             return Err(DetectionError::InsufficientSamples);
         }
@@ -417,9 +438,10 @@ impl MagnitudeFluxMeasurement {
         }
 
         // λ = |e⃗| / ω
-        let flux = sqrtf(avg_e_d * avg_e_d + avg_e_q * avg_e_q) / avg_omega.abs();
+        let emf = (avg_e_d * avg_e_d + avg_e_q * avg_e_q).sqrt_with(sqrtf);
+        let flux: MagneticFlux = emf / avg_omega.abs();
 
-        if !(MIN_VALID_FLUX..=MAX_VALID_FLUX).contains(&flux) {
+        if !VALID_FLUX.contains(&flux) {
             return Err(DetectionError::OutOfRange);
         }
 
@@ -442,11 +464,11 @@ impl MagnitudeFluxMeasurement {
 /// on voltage and speed measurement.
 #[derive(Clone, Debug)]
 pub struct SpinDownFluxMeasurement {
-    v_bemf_sum: f32,
-    omega_sum: f32,
+    v_bemf_sum: ElectricPotential,
+    omega_sum: ElectricalAngularVelocity,
     sample_count: u32,
     min_samples: u32,
-    min_omega: f32,
+    min_omega: ElectricalAngularVelocity,
 }
 
 impl SpinDownFluxMeasurement {
@@ -461,7 +483,10 @@ impl SpinDownFluxMeasurement {
     /// perfectly measurable. 500 samples (~0.25 s) is statistically ample
     /// for the V/ω ratio.
     pub fn from_params(params: &FluxLinkageParams) -> Self {
-        Self::new(params.num_samples.min(500), params.min_coast_omega_e)
+        Self::new(
+            params.num_samples.min(500),
+            erad_per_s(params.min_coast_omega_e),
+        )
     }
 
     /// Create a new spin-down flux measurement.
@@ -471,11 +496,11 @@ impl SpinDownFluxMeasurement {
     ///
     /// # Arguments
     /// * `min_samples` - Minimum samples required for a valid result
-    /// * `min_omega` - Minimum |ωe| (rad/s) to accept a sample
-    pub fn new(min_samples: u32, min_omega: f32) -> Self {
+    /// * `min_omega` - Minimum |ωe| to accept a sample
+    pub fn new(min_samples: u32, min_omega: ElectricalAngularVelocity) -> Self {
         Self {
-            v_bemf_sum: 0.0,
-            omega_sum: 0.0,
+            v_bemf_sum: ElectricPotential::ZERO,
+            omega_sum: ElectricalAngularVelocity::ZERO,
             sample_count: 0,
             min_samples,
             min_omega,
@@ -488,12 +513,16 @@ impl SpinDownFluxMeasurement {
     /// too small for accurate measurement).
     ///
     /// # Arguments
-    /// * `v_bemf` - Back-EMF voltage magnitude `√(vα² + vβ²)` in Volts
-    /// * `omega_e` - Electrical angular velocity in rad/s
+    /// * `v_bemf` - Back-EMF voltage magnitude `√(vα² + vβ²)`
+    /// * `omega_e` - Electrical angular velocity
     ///
     /// # Returns
     /// `true` if the sample was accepted, `false` if rejected.
-    pub fn record(&mut self, v_bemf: f32, omega_e: f32) -> bool {
+    pub fn record(
+        &mut self,
+        v_bemf: ElectricPotential,
+        omega_e: ElectricalAngularVelocity,
+    ) -> bool {
         if !v_bemf.is_finite() || !omega_e.is_finite() || omega_e.abs() < self.min_omega {
             return false;
         }
@@ -509,7 +538,7 @@ impl SpinDownFluxMeasurement {
     }
 
     /// Compute the flux linkage from accumulated samples.
-    pub fn finish(self) -> Result<f32, DetectionError> {
+    pub fn finish(self) -> Result<MagneticFlux, DetectionError> {
         if self.sample_count < self.min_samples {
             return Err(DetectionError::InsufficientSamples);
         }
@@ -522,9 +551,9 @@ impl SpinDownFluxMeasurement {
             return Err(DetectionError::LowConfidence);
         }
 
-        let flux = avg_v / avg_omega;
+        let flux: MagneticFlux = avg_v / avg_omega;
 
-        if !(MIN_VALID_FLUX..=MAX_VALID_FLUX).contains(&flux) {
+        if !VALID_FLUX.contains(&flux) {
             return Err(DetectionError::OutOfRange);
         }
 
@@ -532,7 +561,7 @@ impl SpinDownFluxMeasurement {
     }
 
     /// Get an intermediate estimate without consuming the accumulator.
-    pub fn current_estimate(&self) -> Option<f32> {
+    pub fn current_estimate(&self) -> Option<MagneticFlux> {
         if self.sample_count < 5 {
             return None;
         }
@@ -678,18 +707,97 @@ pub fn calculate_observer_gain(flux_linkage_wb: f32) -> f32 {
 /// * `Ok(())` - Flux linkage is valid
 /// * `Err(DetectionError)` - Flux linkage is out of expected range
 pub fn validate_flux_linkage(flux_linkage: f32) -> Result<(), DetectionError> {
-    if flux_linkage < MIN_VALID_FLUX {
-        return Err(DetectionError::OutOfRange);
+    if VALID_FLUX.contains(&webers(flux_linkage)) {
+        Ok(())
+    } else {
+        Err(DetectionError::OutOfRange)
     }
-    if flux_linkage > MAX_VALID_FLUX {
-        return Err(DetectionError::OutOfRange);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{amps, henries};
+
+    // The numeric checks below are in plain SI floats; these views shadow
+    // the typed accumulators at the test boundary.
+    struct FluxLinkageMeasurement(super::FluxLinkageMeasurement);
+    impl FluxLinkageMeasurement {
+        fn new(resistance_ohm: f32, min_samples: u32) -> Self {
+            Self(super::FluxLinkageMeasurement::new(
+                ohms(resistance_ohm),
+                min_samples,
+            ))
+        }
+        fn record(&mut self, vq: f32, iq: f32, omega_e: f32) {
+            self.0.record(volts(vq), amps(iq), erad_per_s(omega_e));
+        }
+        fn record_with_rpm(&mut self, vq: f32, iq: f32, rpm: f32, pole_pairs: u8) {
+            self.0.record_with_rpm(volts(vq), amps(iq), rpm, pole_pairs);
+        }
+        fn finish(self) -> Result<f32, DetectionError> {
+            self.0.finish().map(|l| l.value)
+        }
+        fn current_estimate(&self) -> Option<f32> {
+            self.0.current_estimate().map(|l| l.value)
+        }
+    }
+
+    struct MagnitudeFluxMeasurement(super::MagnitudeFluxMeasurement);
+    impl MagnitudeFluxMeasurement {
+        fn new(resistance_ohm: f32, inductance_h: f32, min_samples: u32) -> Self {
+            Self(super::MagnitudeFluxMeasurement::new(
+                ohms(resistance_ohm),
+                henries(inductance_h),
+                min_samples,
+            ))
+        }
+        fn record(&mut self, vd: f32, vq: f32, id: f32, iq: f32, omega_e: f32) {
+            self.0.record(
+                volts(vd),
+                volts(vq),
+                amps(id),
+                amps(iq),
+                erad_per_s(omega_e),
+            );
+        }
+        fn finish(self) -> Result<f32, DetectionError> {
+            self.0.finish().map(|l| l.value)
+        }
+    }
+
+    struct SpinDownFluxMeasurement(super::SpinDownFluxMeasurement);
+    impl SpinDownFluxMeasurement {
+        fn new(min_samples: u32, min_omega: f32) -> Self {
+            Self(super::SpinDownFluxMeasurement::new(
+                min_samples,
+                erad_per_s(min_omega),
+            ))
+        }
+        fn record(&mut self, v_bemf: f32, omega_e: f32) -> bool {
+            self.0.record(volts(v_bemf), erad_per_s(omega_e))
+        }
+        fn has_enough_samples(&self) -> bool {
+            self.0.has_enough_samples()
+        }
+        fn finish(self) -> Result<f32, DetectionError> {
+            self.0.finish().map(|l| l.value)
+        }
+    }
+
+    #[derive(Default)]
+    struct HallCoastMeasurement(super::HallCoastMeasurement);
+    impl HallCoastMeasurement {
+        fn record(&mut self, sample: CoastSample) -> Result<Option<f32>, DetectionError> {
+            self.0.record(sample).map(|l| l.map(|l| l.value))
+        }
+        fn has_enough_samples(&self) -> bool {
+            self.0.has_enough_samples()
+        }
+        fn finish(&self) -> Result<f32, DetectionError> {
+            self.0.finish().map(|l| l.value)
+        }
+    }
 
     /// Synthesize exact steady-state command-frame quantities for an SPM
     /// motor spinning synchronously at `omega` with the stator current on

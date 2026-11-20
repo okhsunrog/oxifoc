@@ -524,17 +524,17 @@ set-voltage-limits-usb minimum_mv maximum_mv storage="ram":
 # All six current/power limits are explicit: A, A, A, A, A, W.
 set-current-limits-usb drive trip bus regen brake heat storage="ram":
     @test {{ quote(storage) }} = ram -o {{ quote(storage) }} = flash
-    @just cli-usb config set current-limits max_iq_a={{ quote(drive) }} \
-        max_phase_current_a={{ quote(trip) }} bus_in_max_a={{ quote(bus) }} \
-        bus_regen_max_a={{ quote(regen) }} max_brake_a={{ quote(brake) }} \
-        max_dissipation_w={{ quote(heat) }} {{ if storage == "ram" { "--volatile" } else { "" } }}
+    @just cli-usb config set current-limits max_iq={{ quote(drive) }} \
+        max_phase_current={{ quote(trip) }} bus_in_max={{ quote(bus) }} \
+        bus_regen_max={{ quote(regen) }} max_brake={{ quote(brake) }} \
+        max_dissipation={{ quote(heat) }} {{ if storage == "ram" { "--volatile" } else { "" } }}
 
 # Motor model in SI units; explicit flash selection, RAM by default.
 set-motor-usb resistance ld lq flux pole_pairs storage="ram":
     @test {{ quote(storage) }} = ram -o {{ quote(storage) }} = flash
     @just cli-usb config set motor-params \
-        resistance_ohm={{ quote(resistance) }} inductance_d_h={{ quote(ld) }} \
-        inductance_q_h={{ quote(lq) }} flux_linkage_wb={{ quote(flux) }} \
+        resistance={{ quote(resistance) }} inductance_d={{ quote(ld) }} \
+        inductance_q={{ quote(lq) }} flux_linkage={{ quote(flux) }} \
         pole_pairs={{ quote(pole_pairs) }} {{ if storage == "ram" { "--volatile" } else { "" } }}
 
 # Install one complete Hall reference; arrays/optional geometry use JSON syntax.

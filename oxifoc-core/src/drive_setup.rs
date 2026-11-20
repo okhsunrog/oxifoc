@@ -6,6 +6,8 @@ use crate::storage::{CurrentLimitsConfig, HallCalibrationConfig, MotorParamsConf
 #[cfg(any(feature = "runtime", test))]
 use crate::storage::{MotorFeedbackConfig, MotorFeedbackMode};
 use crate::types::commissioning::SourceLimits;
+use crate::units::Sign;
+use crate::units::{amps, watts};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
@@ -60,13 +62,17 @@ impl DriveSetup {
     ) -> Result<ValidatedDriveSetup, SetupError> {
         use crate::motor::foc_driver::OVERCURRENT_HEADROOM;
         if !self.motor.is_valid()
-            || self.motor.flux_linkage_wb <= 0.0
-            || !self.motor.max_power_loss_w.is_finite()
-            || self.motor.max_power_loss_w <= 0.0
-            || [self.motor.ld_fundamental_h, self.motor.lq_fundamental_h]
-                .iter()
-                .any(|v| !v.is_finite() || *v < 0.0)
-            || ((self.motor.ld_fundamental_h == 0.0) != (self.motor.lq_fundamental_h == 0.0))
+            || self.motor.flux_linkage.is_non_positive()
+            || !self.motor.max_power_loss.is_finite()
+            || self.motor.max_power_loss.is_non_positive()
+            || [
+                self.motor.ld_fundamental.value,
+                self.motor.lq_fundamental.value,
+            ]
+            .iter()
+            .any(|v| !v.is_finite() || *v < 0.0)
+            || ((self.motor.ld_fundamental.value == 0.0)
+                != (self.motor.lq_fundamental.value == 0.0))
         {
             return Err(SetupError::Motor);
         }
@@ -98,17 +104,17 @@ impl DriveSetup {
             DriveCurrent::Override(_) => return Err(SetupError::Current),
         };
         let limits = CurrentLimitsConfig {
-            max_iq_a: current,
-            max_brake_a: current,
-            max_phase_current_a: configured_trip_a,
-            bus_in_max_a: self.source.input_a,
-            bus_regen_max_a: self.source.regen_a,
+            max_iq: amps(current),
+            max_brake: amps(current),
+            max_phase_current: amps(configured_trip_a),
+            bus_in_max: self.source.input,
+            bus_regen_max: self.source.regen,
             // A new setup must not inherit dissipative braking from another motor.
-            max_dissipation_w: 0.0,
+            max_dissipation: watts(0.0),
         };
         let mut setup = self;
         // The thermal estimate is derived, not an independent user assertion.
-        setup.motor.max_current_a = thermal;
+        setup.motor.max_current.value = thermal;
         Ok(ValidatedDriveSetup {
             setup,
             limits,
@@ -128,8 +134,8 @@ impl ValidatedDriveSetup {
     pub(crate) fn current_policy(&self) -> CurrentLimitsConfig {
         match self.setup.current {
             DriveCurrent::Auto => CurrentLimitsConfig {
-                max_iq_a: 0.0,
-                max_brake_a: 0.0,
+                max_iq: amps(0.0),
+                max_brake: amps(0.0),
                 ..self.limits.clone()
             },
             DriveCurrent::Override(_) => self.limits.clone(),
@@ -139,7 +145,7 @@ impl ValidatedDriveSetup {
     #[cfg(any(feature = "runtime", test))]
     pub(crate) fn motor_policy(&self) -> MotorParamsConfig {
         MotorParamsConfig {
-            max_current_a: 0.0,
+            max_current: amps(0.0),
             ..self.setup.motor.clone()
         }
     }
@@ -179,22 +185,23 @@ impl ValidatedDriveSetup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{amps, henries, ohms, watts, webers};
     fn candidate() -> DriveSetup {
         DriveSetup {
             motor: MotorParamsConfig {
-                resistance_ohm: 0.063,
-                inductance_d_h: 31e-6,
-                inductance_q_h: 51e-6,
-                flux_linkage_wb: 0.004,
+                resistance: ohms(0.063),
+                inductance_d: henries(31e-6),
+                inductance_q: henries(51e-6),
+                flux_linkage: webers(0.004),
                 pole_pairs: 7,
-                max_power_loss_w: 120.0,
-                max_current_a: 999.0,
+                max_power_loss: watts(120.0),
+                max_current: amps(999.0),
                 ..Default::default()
             },
             feedback: Feedback::Sensorless,
             source: SourceLimits {
-                input_a: 5.0,
-                regen_a: 0.0,
+                input: amps(5.0),
+                regen: amps(0.0),
             },
             current: DriveCurrent::Auto,
         }
@@ -204,14 +211,14 @@ mod tests {
         let prepared = candidate().validate(70.0, 30.0).unwrap();
         assert!(prepared.thermal_current_a() > 35.0);
         assert_eq!(
-            prepared.limits().max_iq_a,
+            prepared.limits().max_iq.value,
             30.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
         );
-        assert_eq!(prepared.limits().bus_in_max_a, 5.0);
-        assert_eq!(prepared.limits().bus_regen_max_a, 0.0);
-        assert_eq!(prepared.limits().max_phase_current_a, 30.0);
+        assert_eq!(prepared.limits().bus_in_max.value, 5.0);
+        assert_eq!(prepared.limits().bus_regen_max.value, 0.0);
+        assert_eq!(prepared.limits().max_phase_current.value, 30.0);
         assert_eq!(
-            prepared.setup().motor.max_current_a,
+            prepared.setup().motor.max_current.value,
             prepared.thermal_current_a()
         );
     }
@@ -224,15 +231,15 @@ mod tests {
         }
         let mut c = candidate();
         c.current = DriveCurrent::Override(20.0);
-        assert_eq!(c.validate(70.0, 30.0).unwrap().limits().max_iq_a, 20.0);
+        assert_eq!(c.validate(70.0, 30.0).unwrap().limits().max_iq.value, 20.0);
     }
     #[test]
     fn bad_source_model_and_feedback_are_rejected() {
         let mut c = candidate();
-        c.source.regen_a = -1.0;
+        c.source.regen.value = -1.0;
         assert!(matches!(c.validate(70.0, 30.0), Err(SetupError::Source)));
         let mut c = candidate();
-        c.motor.flux_linkage_wb = 0.0;
+        c.motor.flux_linkage.value = 0.0;
         assert!(matches!(c.validate(70.0, 30.0), Err(SetupError::Motor)));
         let mut c = candidate();
         let mut hall = HallCalibrationConfig::default();

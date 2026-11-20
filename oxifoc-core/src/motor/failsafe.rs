@@ -241,10 +241,10 @@ impl From<&FailsafeConfigStored> for FailsafeConfig {
         Self {
             policy: FailsafePolicy::from_u8(cfg.policy),
             staleness_timeout_us: u64::from(cfg.staleness_timeout_ms) * 1_000,
-            brake_current_a: cfg.brake_current_a,
-            slew_a_per_s: cfg.slew_a_per_s,
-            standstill_rad_s: cfg.standstill_rad_s,
-            decel_rad_s2: cfg.decel_rad_s2,
+            brake_current_a: cfg.brake_current.value,
+            slew_a_per_s: cfg.slew.value,
+            standstill_rad_s: cfg.standstill.value,
+            decel_rad_s2: cfg.decel.value,
             terminal: FailsafeTerminal::from_u8(cfg.terminal),
         }
     }
@@ -622,6 +622,7 @@ fn derate_for_ov(target: f32, vbus: f32, ov_threshold_v: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::amps_per_s;
 
     const DT: f32 = 1.0 / 20_000.0;
 
@@ -1078,7 +1079,7 @@ mod tests {
 
         // Non-sane stored (zero slew) → full default fallback, never disabled.
         let bad = FailsafeConfigStored {
-            slew_a_per_s: 0.0,
+            slew: amps_per_s(0.0),
             ..FailsafeConfigStored::default()
         };
         assert_eq!(

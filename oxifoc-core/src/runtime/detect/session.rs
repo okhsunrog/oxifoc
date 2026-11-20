@@ -4,6 +4,7 @@ use super::operations::{Admission, Operations};
 use crate::types::commissioning::CommissioningPlan;
 use crate::types::measurement::*;
 use crate::types::{ConfigGroupId, DetectError, DetectRequest, DetectResponse};
+use crate::units::{henries, ohms, watts, webers};
 
 pub struct Session {
     id: SessionId,
@@ -125,20 +126,30 @@ impl Session {
                         self.matching_stage = id.sequence == self.completed + 1
                             && match (id.sequence, request) {
                                 (1, DetectRequest::MeasureResistance { .. }) => true,
-                                (2, DetectRequest::MeasureInductance { resistance_ohm, .. })
-                                | (4, DetectRequest::CalibrateHall { resistance_ohm, .. }) => {
-                                    resistance_ohm == self.measured[0]
-                                }
+                                (
+                                    2,
+                                    DetectRequest::MeasureInductance {
+                                        resistance: resistance_ohm,
+                                        ..
+                                    },
+                                )
+                                | (
+                                    4,
+                                    DetectRequest::CalibrateHall {
+                                        resistance: resistance_ohm,
+                                        ..
+                                    },
+                                ) => resistance_ohm.value == self.measured[0],
                                 (
                                     3,
                                     DetectRequest::MeasureFlux {
-                                        resistance_ohm,
-                                        inductance_h,
+                                        resistance: resistance_ohm,
+                                        inductance: inductance_h,
                                         ..
                                     },
                                 ) => {
-                                    resistance_ohm == self.measured[0]
-                                        && inductance_h
+                                    resistance_ohm.value == self.measured[0]
+                                        && inductance_h.value
                                             == (self.measured[1] + self.measured[2]) / 2.0
                                 }
                                 _ => false,
@@ -198,28 +209,34 @@ impl Session {
         };
         use crate::drive_setup::{DriveCurrent, DriveSetup, Feedback};
         let feedback = match (id.sequence, result) {
-            (1, DetectResponse::Resistance { resistance_ohm }) => {
-                self.measured[0] = resistance_ohm;
+            (
+                1,
+                DetectResponse::Resistance {
+                    resistance: resistance_ohm,
+                },
+            ) => {
+                self.measured[0] = resistance_ohm.value;
                 None
             }
             (
                 2,
                 DetectResponse::Inductance {
-                    inductance_d_h,
-                    inductance_q_h,
+                    inductance_d: inductance_d_h,
+                    inductance_q: inductance_q_h,
                 },
             ) => {
-                self.measured[1] = inductance_d_h;
-                self.measured[2] = inductance_q_h;
+                self.measured[1] = inductance_d_h.value;
+                self.measured[2] = inductance_q_h.value;
                 None
             }
             (
                 3,
                 DetectResponse::FluxLinkage {
-                    flux_linkage_wb, ..
+                    flux_linkage: flux_linkage_wb,
+                    ..
                 },
             ) => {
-                self.measured[3] = flux_linkage_wb;
+                self.measured[3] = flux_linkage_wb.value;
                 (!plan.calibrate_hall).then_some(Feedback::Sensorless)
             }
             (4, DetectResponse::HallCalibrated(hall)) if plan.calibrate_hall => {
@@ -237,12 +254,12 @@ impl Session {
             ] = self.measured;
             self.candidate = Some(DriveSetup {
                 motor: crate::storage::MotorParamsConfig {
-                    resistance_ohm,
-                    inductance_d_h,
-                    inductance_q_h,
-                    flux_linkage_wb,
+                    resistance: ohms(resistance_ohm),
+                    inductance_d: henries(inductance_d_h),
+                    inductance_q: henries(inductance_q_h),
+                    flux_linkage: webers(flux_linkage_wb),
                     pole_pairs: plan.pole_pairs,
-                    max_power_loss_w: plan.motor_class.preset().max_power_loss_w,
+                    max_power_loss: watts(plan.motor_class.preset().max_power_loss_w),
                     ..Default::default()
                 },
                 feedback,
@@ -256,6 +273,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::watts;
     fn open(s: &mut Session) -> SessionId {
         let Reply::Session(expected) = s.handle(Request::Inspect).reply else {
             panic!()
@@ -306,8 +324,8 @@ mod tests {
                 s.handle(Request::Start {
                     id,
                     request: DetectRequest::MeasureResistance {
-                        max_power_loss_w: value,
-                        current_limit_a: None
+                        max_power_loss: watts(value),
+                        current_limit: None
                     }
                 })
                 .reply,
@@ -354,8 +372,8 @@ mod tests {
             sequence: 1,
         };
         let request = DetectRequest::MeasureResistance {
-            max_power_loss_w: 120.,
-            current_limit_a: None,
+            max_power_loss: watts(120.),
+            current_limit: None,
         };
         assert!(s.handle(Request::Start { id, request }).start.is_some());
         assert!(s.handle(Request::Start { id, request }).start.is_none());
@@ -386,16 +404,17 @@ mod tests {
 mod plan_tests {
     use super::*;
     use crate::types::commissioning::{MotorClass, SourceLimits};
+    use crate::units::{amps, erpm};
     fn plan() -> CommissioningPlan {
         CommissioningPlan {
             source: SourceLimits {
-                input_a: 5.0,
-                regen_a: 0.0,
+                input: amps(5.0),
+                regen: amps(0.0),
             },
             motor_class: MotorClass::MediumOutrunner,
             pole_pairs: 7,
-            flux_target_erpm: 4000.,
-            current_limit_a: None,
+            flux_target_speed: erpm(4000.),
+            current_limit: None,
             calibrate_hall: true,
         }
     }
@@ -418,35 +437,35 @@ mod plan_tests {
             let steps = [
                 (
                     DetectRequest::MeasureResistance {
-                        max_power_loss_w: 120.,
-                        current_limit_a: None,
+                        max_power_loss: watts(120.),
+                        current_limit: None,
                     },
                     DetectResponse::Resistance {
-                        resistance_ohm: 0.063,
+                        resistance: ohms(0.063),
                     },
                 ),
                 (
                     DetectRequest::MeasureInductance {
-                        max_power_loss_w: 120.,
-                        current_limit_a: None,
-                        resistance_ohm: inductance_input,
+                        max_power_loss: watts(120.),
+                        current_limit: None,
+                        resistance: ohms(inductance_input),
                     },
                     DetectResponse::Inductance {
-                        inductance_d_h: 31e-6,
-                        inductance_q_h: 51e-6,
+                        inductance_d: henries(31e-6),
+                        inductance_q: henries(51e-6),
                     },
                 ),
                 (
                     DetectRequest::MeasureFlux {
-                        max_power_loss_w: 120.,
-                        current_limit_a: None,
-                        resistance_ohm: 0.063,
-                        inductance_h: (31e-6 + 51e-6) / 2.0,
+                        max_power_loss: watts(120.),
+                        current_limit: None,
+                        resistance: ohms(0.063),
+                        inductance: henries((31e-6 + 51e-6) / 2.0),
                         pole_pairs: 7,
-                        openloop_erpm: 4000.,
+                        openloop_speed: erpm(4000.),
                     },
                     DetectResponse::FluxLinkage {
-                        flux_linkage_wb: 0.004,
+                        flux_linkage: webers(0.004),
                         kv_rpm_per_v: 197.0,
                     },
                 ),
@@ -463,7 +482,7 @@ mod plan_tests {
             if inductance_input == 0.063 {
                 let setup = s.candidate.unwrap();
                 assert_eq!(setup.source, p.source);
-                assert_eq!(setup.motor.resistance_ohm, 0.063);
+                assert_eq!(setup.motor.resistance.value, 0.063);
                 assert_eq!(setup.feedback, crate::drive_setup::Feedback::Sensorless);
             } else {
                 assert!(s.candidate.is_none());
@@ -486,7 +505,7 @@ mod plan_tests {
         };
         assert!(matches!(s.handle(request).reply, Reply::Session(v) if v == id));
         let mut changed = p;
-        changed.source.input_a = 7.;
+        changed.source.input.value = 7.;
         assert!(matches!(
             s.handle(Request::Open {
                 expected: initial,
@@ -501,8 +520,8 @@ mod plan_tests {
             sequence: 1,
         };
         let r = DetectRequest::MeasureResistance {
-            max_power_loss_w: 120.,
-            current_limit_a: None,
+            max_power_loss: watts(120.),
+            current_limit: None,
         };
         assert!(
             s.handle(Request::Start {
@@ -515,7 +534,7 @@ mod plan_tests {
         s.finish(
             first,
             Outcome::Completed(DetectResponse::Resistance {
-                resistance_ohm: 0.06,
+                resistance: ohms(0.06),
             }),
         );
         let mut revisions = [0; ConfigGroupId::COUNT];
@@ -551,8 +570,8 @@ mod plan_tests {
             s.handle(Request::Start {
                 id: second,
                 request: DetectRequest::MeasureResistance {
-                    max_power_loss_w: 400.,
-                    current_limit_a: None
+                    max_power_loss: watts(400.),
+                    current_limit: None
                 }
             })
             .reply,
@@ -572,7 +591,7 @@ mod plan_tests {
         let mut s = Session::new(42);
         for bad in [f32::NAN, f32::INFINITY, -1., 0.] {
             let mut p = plan();
-            p.source.input_a = bad;
+            p.source.input.value = bad;
             assert!(matches!(
                 s.handle(Request::Open {
                     expected: s.id,

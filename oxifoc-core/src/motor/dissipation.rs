@@ -32,8 +32,17 @@
 //! motor warmer than at detection has a higher R and burns more than
 //! modelled, and the inverter's own losses add to it — both on the safe
 //! (less charge) side.
+//!
+//! The solver works in typed quantities ([`crate::units`]), so every power,
+//! voltage and current expression below is dimension-checked. It has the
+//! same FPU instructions as the f32 version; inlined into the torque grants,
+//! register allocation adds one `vmov` per circle-bisection step (rare path,
+//! accepted).
 
-use crate::foc::fast_math::sqrtf;
+use crate::units::{
+    ConstZero, CurrentSquared, ElectricCurrent, ElectricPotential, ElectricalAngularVelocity,
+    ElectricalResistance, Inductance, MagneticFlux, Power, sqrt_current,
+};
 
 #[cfg(feature = "isr-profiling")]
 #[unsafe(no_mangle)]
@@ -47,14 +56,14 @@ pub static BENCH_DISSIPATION_SEARCHES: core::sync::atomic::AtomicU32 =
 /// The winding parameters the power balance runs on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindingModel {
-    /// Phase resistance (Ω, Y-equivalent), `> 0`
-    pub r_ohm: f32,
-    /// Permanent-magnet flux linkage (Wb), `> 0`
-    pub flux_wb: f32,
-    /// Absolute d/q inductance difference (H). This gives the exact
+    /// Phase resistance (Y-equivalent), `> 0`
+    pub resistance: ElectricalResistance,
+    /// Permanent-magnet flux linkage, `> 0`
+    pub flux_linkage: MagneticFlux,
+    /// Absolute d/q inductance difference. This gives the exact
     /// reluctance power for Lq >= Ld and negative id, and a conservative
     /// upper bound for inverse saliency or a caller's positive id.
-    pub saliency_h: f32,
+    pub saliency: Inductance,
 }
 
 /// What the supply accepts this cycle.
@@ -63,27 +72,57 @@ pub struct RegenBudget {
     /// Share of the brake's own regen the supply still takes, 0..=1 (the
     /// regen-overvoltage derate).
     pub frac: f32,
-    /// Ceiling on the charging power (W): vbus × the bus regen-current
-    /// limit, `INFINITY` when unlimited.
-    pub max_w: f32,
+    /// Ceiling on the charging power: vbus × the bus regen-current
+    /// limit, infinite when unlimited.
+    pub max_power: Power,
 }
 
-/// Power the brake pushes into the supply (W, negative = draws from it).
-fn charge_w(w: f32, k: f32, r: f32, q: f32, d: f32) -> f32 {
+/// The d current a heat budget buys: `√(P / 1.5·R)`.
+///
+/// `1.5·R·id²` is the copper loss of `id` in the dq frame (amplitude-
+/// invariant Clarke), so this is the largest |id| whose loss stays within
+/// `heat`. Callers pass `heat >= 0` and `R > 0` (see `dissipation_model`);
+/// the root is not clamped.
+#[inline(always)]
+#[must_use]
+pub fn heat_current_limit(heat: Power, resistance: ElectricalResistance) -> ElectricCurrent {
+    (heat / (1.5 * resistance)).sqrt_with(crate::foc::fast_math::sqrtf)
+}
+
+/// Power the brake pushes into the supply (negative = draws from it).
+fn charge(
+    w: ElectricPotential,
+    k: ElectricalResistance,
+    r: ElectricalResistance,
+    q: ElectricCurrent,
+    d: ElectricCurrent,
+) -> Power {
     1.5 * ((w + k * d) * q - r * (q * q + d * d))
 }
 
 /// Largest q <= ceiling satisfying R q² - w q + c >= 0.
 /// Both intervals matter: a request above the upper root is feasible.
-fn quadratic_ceiling(ceiling: f32, w: f32, r: f32, c: f32) -> f32 {
+fn quadratic_ceiling(
+    ceiling: ElectricCurrent,
+    w: ElectricPotential,
+    r: ElectricalResistance,
+    c: Power,
+) -> ElectricCurrent {
     if (w - r * ceiling) * ceiling <= c {
         return ceiling;
     }
-    let disc = (w * w - 4.0 * r * c).max(0.0);
-    2.0 * c / (w + sqrtf(disc))
+    let disc = (w * w - 4.0 * r * c).max(ConstZero::ZERO);
+    2.0 * c / (w + disc.sqrt_with(crate::foc::fast_math::sqrtf))
 }
 
-/// Shape a braking current (`iq` opposing `omega`) to the regen budget.
+/// `q` with the sign of `of` (positive for a zero `of`, as `f32::signum`).
+#[inline(always)]
+fn with_sign_of(q: ElectricCurrent, of: ElectricCurrent) -> ElectricCurrent {
+    of.value.signum() * q
+}
+
+/// Shape a braking current (`iq` opposing `omega`, electrical) to the regen
+/// budget.
 ///
 /// Returns `Some((id, iq))` when the brake regenerates: `iq` keeps its
 /// sign, is at most the request in magnitude and as large as `id_max` /
@@ -91,27 +130,44 @@ fn quadratic_ceiling(ceiling: f32, w: f32, r: f32, c: f32) -> f32 {
 /// the surplus. `None` when the brake does not charge the supply at this
 /// speed (plugging — it draws), so there is nothing to shape.
 pub fn dissipate(
-    iq: f32,
-    omega: f32,
+    iq: ElectricCurrent,
+    omega: ElectricalAngularVelocity,
     model: &WindingModel,
     budget: &RegenBudget,
-    id_max: f32,
-    i_max: f32,
-) -> Option<(f32, f32)> {
-    dissipate_with_id(0.0, iq, omega, model, budget, id_max, i_max)
+    id_max: ElectricCurrent,
+    i_max: ElectricCurrent,
+) -> Option<(ElectricCurrent, ElectricCurrent)> {
+    dissipate_with_id(
+        ElectricCurrent::ZERO,
+        iq,
+        omega,
+        model,
+        budget,
+        id_max,
+        i_max,
+    )
 }
 
 /// The q-current component of [`dissipate`] for an authority probe.
 /// The actual actuator grant must still compute and apply the required id.
 pub fn dissipate_iq(
-    iq: f32,
-    omega: f32,
+    iq: ElectricCurrent,
+    omega: ElectricalAngularVelocity,
     model: &WindingModel,
     budget: &RegenBudget,
-    id_max: f32,
-    i_max: f32,
-) -> Option<f32> {
-    dissipate_magnitude::<false>(0.0, iq, omega, model, budget, id_max, i_max).map(|(_, q)| q)
+    id_max: ElectricCurrent,
+    i_max: ElectricCurrent,
+) -> Option<ElectricCurrent> {
+    dissipate_magnitude::<false>(
+        ElectricCurrent::ZERO,
+        iq,
+        omega,
+        model,
+        budget,
+        id_max,
+        i_max,
+    )
+    .map(|(_, q)| q)
 }
 
 /// As [`dissipate`], retaining the caller's existing d-current direction and
@@ -119,49 +175,50 @@ pub fn dissipate_iq(
 /// Its current-circle share and reluctance power must be included BEFORE
 /// solving; clipping iq afterwards can move it into an infeasible interval.
 pub(super) fn dissipate_with_id(
-    id: f32,
-    iq: f32,
-    omega: f32,
+    id: ElectricCurrent,
+    iq: ElectricCurrent,
+    omega: ElectricalAngularVelocity,
     model: &WindingModel,
     budget: &RegenBudget,
-    id_max: f32,
-    i_max: f32,
-) -> Option<(f32, f32)> {
+    id_max: ElectricCurrent,
+    i_max: ElectricCurrent,
+) -> Option<(ElectricCurrent, ElectricCurrent)> {
     let (d, q) = dissipate_magnitude::<true>(id.abs(), iq, omega, model, budget, id_max, i_max)?;
-    Some((if id < 0.0 { -d } else { d }, q))
+    Some((if id < ElectricCurrent::ZERO { -d } else { d }, q))
 }
 
 /// Solve the polarity-independent power bound. Keep the choice of magnetic
 /// alignment outside the scalar heat/current-circle calculation.
 fn dissipate_magnitude<const COMPUTE_D: bool>(
-    id_abs: f32,
-    iq: f32,
-    omega: f32,
+    id_abs: ElectricCurrent,
+    iq: ElectricCurrent,
+    omega: ElectricalAngularVelocity,
     model: &WindingModel,
     budget: &RegenBudget,
-    id_max: f32,
-    i_max: f32,
-) -> Option<(f32, f32)> {
+    id_max: ElectricCurrent,
+    i_max: ElectricCurrent,
+) -> Option<(ElectricCurrent, ElectricCurrent)> {
     #[cfg(feature = "isr-profiling")]
     BENCH_DISSIPATION_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    let r = model.r_ohm;
-    let w = omega.abs() * model.flux_wb;
-    let k = omega.abs() * model.saliency_h;
-    let i_sq = i_max * i_max;
+    let r = model.resistance;
+    // Back-EMF of the magnet (V) and the reluctance term per amp of d (Ω).
+    let w: ElectricPotential = omega.abs() * model.flux_linkage;
+    let k: ElectricalResistance = omega.abs() * model.saliency;
+    let i_sq: CurrentSquared = i_max * i_max;
     let d_min = id_abs.min(i_max);
-    let q_cap = if d_min == 0.0 {
+    let q_cap = if d_min == ElectricCurrent::ZERO {
         i_max
     } else {
-        sqrtf((i_sq - d_min * d_min).max(0.0))
+        sqrt_current(i_sq - d_min * d_min)
     };
     let q = iq.abs().min(q_cap);
-    let p0 = charge_w(w, k, r, q, d_min);
-    if p0 <= 0.0 || p0.is_nan() {
+    let p0 = charge(w, k, r, q, d_min);
+    if p0 <= Power::ZERO || p0.is_nan() {
         return None;
     }
-    let allow = (budget.frac * p0).min(budget.max_w).max(0.0);
+    let allow = (budget.frac * p0).min(budget.max_power).max(Power::ZERO);
     if p0 <= allow {
-        return Some((d_min, iq.signum() * q));
+        return Some((d_min, with_sign_of(q, iq)));
     }
     let a = allow / 1.5;
     let d_max = id_max.max(d_min).min(i_max);
@@ -172,15 +229,15 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
     // The concave charge curve starts above `allow` at d_min, so this
     // crossing lies inside [d_min, d_max]. Keep the full search for requests
     // which actually reach a heat/current-circle boundary.
-    if q * q + d_max * d_max <= i_sq && charge_w(w, k, r, q, d_max) <= allow {
+    if q * q + d_max * d_max <= i_sq && charge(w, k, r, q, d_max) <= allow {
         let d = if COMPUTE_D {
             required_d(q, w, k, r, a).max(d_min)
         } else {
             d_min
         };
-        return Some((d, iq.signum() * q));
+        return Some((d, with_sign_of(q, iq)));
     }
-    let boundary = sqrtf((i_sq - d_max * d_max).max(0.0));
+    let boundary = sqrt_current(i_sq - d_max * d_max);
 
     // For fixed q, charging power is concave in d. Its minimum over
     // [d_min, cap(q)] is therefore at one of the ENDPOINTS. Search each
@@ -193,8 +250,9 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
         r * d_max * d_max + a,
     ));
     if q > boundary {
-        let circle_charge = |q: f32| (w + k * sqrtf((i_sq - q * q).max(0.0))) * q - r * i_sq;
-        let circle = if k == 0.0 {
+        let circle_charge =
+            |q: ElectricCurrent| (w + k * sqrt_current(i_sq - q * q)) * q - r * i_sq;
+        let circle = if k == ElectricalResistance::ZERO {
             // The common surface-PM case stays analytic in the ISR.
             ((r * i_sq + a) / w).min(q)
         } else if circle_charge(q) <= a {
@@ -227,7 +285,7 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
         } else {
             // Both endpoints violate a concave inequality: no solution
             // in this part of the current circle.
-            0.0
+            ElectricCurrent::ZERO
         };
         if circle >= boundary {
             granted = granted.max(circle);
@@ -235,20 +293,28 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
     }
 
     let q = granted.min(q);
-    let d = if !COMPUTE_D || charge_w(w, k, r, q, d_min) <= allow {
+    let d = if !COMPUTE_D || charge(w, k, r, q, d_min) <= allow {
         d_min
     } else {
         required_d(q, w, k, r, a).max(d_min)
     };
-    Some((d, iq.signum() * q))
+    Some((d, with_sign_of(q, iq)))
 }
 
 #[cfg(feature = "bench-outline-circle")]
 #[inline(never)]
-fn circle_crossing(mut lo: f32, mut hi: f32, i_sq: f32, w: f32, k: f32, r: f32, a: f32) -> f32 {
+fn circle_crossing(
+    mut lo: ElectricCurrent,
+    mut hi: ElectricCurrent,
+    i_sq: CurrentSquared,
+    w: ElectricPotential,
+    k: ElectricalResistance,
+    r: ElectricalResistance,
+    a: Power,
+) -> ElectricCurrent {
     for _ in 0..16 {
         let mid = 0.5 * (lo + hi);
-        let charge = (w + k * sqrtf((i_sq - mid * mid).max(0.0))) * mid - r * i_sq;
+        let charge = (w + k * sqrt_current(i_sq - mid * mid)) * mid - r * i_sq;
         if charge <= a {
             lo = mid;
         } else {
@@ -260,28 +326,78 @@ fn circle_crossing(mut lo: f32, mut hi: f32, i_sq: f32, w: f32, k: f32, r: f32, 
 
 /// Positive crossing of R d² - k q d - (w q - R q² - a) = 0.
 #[inline]
-fn required_d(q: f32, w: f32, k: f32, r: f32, a: f32) -> f32 {
-    let b = k * q;
-    let need = (w - r * q) * q - a;
-    (b + sqrtf((b * b + 4.0 * r * need).max(0.0))) / (2.0 * r)
+fn required_d(
+    q: ElectricCurrent,
+    w: ElectricPotential,
+    k: ElectricalResistance,
+    r: ElectricalResistance,
+    a: Power,
+) -> ElectricCurrent {
+    let b: ElectricPotential = k * q;
+    let need: Power = (w - r * q) * q - a;
+    (b + (b * b + 4.0 * r * need)
+        .max(ConstZero::ZERO)
+        .sqrt_with(crate::foc::fast_math::sqrtf))
+        / (2.0 * r)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foc::fast_math::sqrtf;
+    use crate::units::volts;
+    use crate::units::{amps, erad_per_s, henries, ohms, watts, webers};
+
+    // The numeric checks below are written in plain SI floats; these
+    // wrappers shadow the typed API at the test boundary.
+    fn dissipate(
+        iq: f32,
+        omega: f32,
+        model: &WindingModel,
+        budget: &RegenBudget,
+        id_max: f32,
+        i_max: f32,
+    ) -> Option<(f32, f32)> {
+        dissipate_with_id(0.0, iq, omega, model, budget, id_max, i_max)
+    }
+
+    fn dissipate_with_id(
+        id: f32,
+        iq: f32,
+        omega: f32,
+        model: &WindingModel,
+        budget: &RegenBudget,
+        id_max: f32,
+        i_max: f32,
+    ) -> Option<(f32, f32)> {
+        super::dissipate_with_id(
+            amps(id),
+            amps(iq),
+            erad_per_s(omega),
+            model,
+            budget,
+            amps(id_max),
+            amps(i_max),
+        )
+        .map(|(d, q)| (d.value, q.value))
+    }
+
+    fn charge_w(w: f32, k: f32, r: f32, q: f32, d: f32) -> f32 {
+        super::charge(volts(w), ohms(k), ohms(r), amps(q), amps(d)).value
+    }
 
     /// Flipsky 5065 (the HallRig plant).
     const M5065: WindingModel = WindingModel {
-        r_ohm: 0.036,
-        flux_wb: 2.92e-3,
-        saliency_h: 0.0,
+        resistance: ohms(0.036),
+        flux_linkage: webers(2.92e-3),
+        saliency: henries(0.0),
     };
 
     fn charge(omega: f32, (id, iq): (f32, f32)) -> f32 {
         charge_w(
-            omega.abs() * M5065.flux_wb,
+            omega.abs() * M5065.flux_linkage.value,
             0.0,
-            M5065.r_ohm,
+            M5065.resistance.value,
             iq.abs(),
             id.abs(),
         )
@@ -289,15 +405,15 @@ mod tests {
 
     const NONE: RegenBudget = RegenBudget {
         frac: 0.0,
-        max_w: f32::INFINITY,
+        max_power: watts(f32::INFINITY),
     };
 
     #[test]
     fn low_speed_braking_keeps_the_requested_torque_with_minimal_heat() {
         let model = WindingModel {
-            r_ohm: 0.03086,
-            flux_wb: 0.00319,
-            saliency_h: 9.26e-6,
+            resistance: ohms(0.03086),
+            flux_linkage: webers(0.00319),
+            saliency: henries(9.26e-6),
         };
         for omega in [-120.0f32, -40.0, 40.0, 120.0] {
             for q in [0.1, 0.5, 1.0] {
@@ -308,8 +424,9 @@ mod tests {
                 assert!(id * id + iq * iq <= 100.0);
                 // Independent steady-state dq power, with Lq - Ld as above.
                 let power = |d: f32| {
-                    let vd = model.r_ohm * d - omega * 27.56e-6 * iq;
-                    let vq = model.r_ohm * iq + omega * (18.30e-6 * d + model.flux_wb);
+                    let vd = model.resistance.value * d - omega * 27.56e-6 * iq;
+                    let vq = model.resistance.value * iq
+                        + omega * (18.30e-6 * d + model.flux_linkage.value);
                     -1.5 * (vd * d + vq * iq)
                 };
                 assert!(power(id) <= 1e-5);
@@ -317,9 +434,9 @@ mod tests {
                 // positive Id; its crossing must still use minimal heat.
                 assert!(
                     charge_w(
-                        omega.abs() * model.flux_wb,
-                        omega.abs() * model.saliency_h,
-                        model.r_ohm,
+                        omega.abs() * model.flux_linkage.value,
+                        omega.abs() * model.saliency.value,
+                        model.resistance.value,
                         q,
                         id * 0.99
                     ) > 0.0
@@ -330,7 +447,7 @@ mod tests {
 
     #[test]
     fn current_circle_keeps_the_upper_feasible_interval() {
-        let omega = 1.09 / M5065.flux_wb;
+        let omega = 1.09 / M5065.flux_linkage.value;
         let (id, iq) = dissipate(-30.0, omega, &M5065, &NONE, 5.0, 30.0).unwrap();
         assert!(iq < -29.7, "braking collapsed: ({id}, {iq})");
         assert!(id.abs() <= 5.0 && id * id + iq * iq <= 900.01);
@@ -343,7 +460,7 @@ mod tests {
         // voltage equations, including both normal and inverse saliency.
         for (ld, lq) in [(100e-6f32, 300e-6f32), (300e-6, 100e-6)] {
             let model = WindingModel {
-                saliency_h: (lq - ld).abs(),
+                saliency: henries((lq - ld).abs()),
                 ..M5065
             };
             for omega in [100.0f32, 373.29, 400.0, 1500.0, -400.0] {
@@ -353,8 +470,9 @@ mod tests {
                         let Some((id, iq)) = dissipate(q, omega, &model, &NONE, d_cap, 30.0) else {
                             continue;
                         };
-                        let vd = model.r_ohm * id - omega * lq * iq;
-                        let vq = model.r_ohm * iq + omega * (ld * id + model.flux_wb);
+                        let vd = model.resistance.value * id - omega * lq * iq;
+                        let vq = model.resistance.value * iq
+                            + omega * (ld * id + model.flux_linkage.value);
                         let charge = -1.5 * (vd * id + vq * iq);
                         assert!(charge <= 0.002, "regen {charge}: ({id}, {iq}) at {omega}");
                         assert!(id.abs() <= d_cap + 0.001);
@@ -368,7 +486,7 @@ mod tests {
     #[test]
     fn existing_d_current_is_accounted_before_granting_braking() {
         let model = WindingModel {
-            saliency_h: 200e-6,
+            saliency: henries(200e-6),
             ..M5065
         };
         for id in [-25.0f32, -10.0, -0.5, 0.5, 10.0, 25.0] {
@@ -382,9 +500,9 @@ mod tests {
             assert!(d * d + q * q <= 900.02);
             assert!(
                 charge_w(
-                    400.0 * model.flux_wb,
-                    400.0 * model.saliency_h,
-                    model.r_ohm,
+                    400.0 * model.flux_linkage.value,
+                    400.0 * model.saliency.value,
+                    model.resistance.value,
                     q.abs(),
                     d.abs()
                 ) <= 0.002
@@ -398,13 +516,16 @@ mod tests {
         // a feasible sampled point must never brake harder than the grant.
         for delta in [0.0f32, 200e-6] {
             let model = WindingModel {
-                saliency_h: delta,
+                saliency: henries(delta),
                 ..M5065
             };
             for omega in [373.29f32, 400.0, 1500.0] {
                 for d_cap in [5.0f32, 20.0, 30.0] {
                     for max_w in [0.0f32, 5.0] {
-                        let budget = RegenBudget { frac: 1.0, max_w };
+                        let budget = RegenBudget {
+                            frac: 1.0,
+                            max_power: watts(max_w),
+                        };
                         let (id, iq) =
                             dissipate(-30.0, omega, &model, &budget, d_cap, 30.0).unwrap();
                         for di in 0..=300 {
@@ -419,9 +540,10 @@ mod tests {
                                 }
                                 let power = 1.5
                                     * (f64::from(omega)
-                                        * (f64::from(model.flux_wb) + f64::from(delta) * d)
+                                        * (f64::from(model.flux_linkage.value)
+                                            + f64::from(delta) * d)
                                         * q
-                                        - f64::from(model.r_ohm) * (d * d + q * q));
+                                        - f64::from(model.resistance.value) * (d * d + q * q));
                                 if power <= f64::from(max_w) {
                                     assert!(
                                         q <= f64::from(iq.abs()) + 0.002,
@@ -440,7 +562,7 @@ mod tests {
     fn full_budget_passes_the_brake_through() {
         let open = RegenBudget {
             frac: 1.0,
-            max_w: f32::INFINITY,
+            max_power: watts(f32::INFINITY),
         };
         assert_eq!(
             dissipate(-15.0, 1500.0, &M5065, &open, 30.0, 30.0),
@@ -511,7 +633,7 @@ mod tests {
         let omega = 400.0;
         let half = RegenBudget {
             frac: 0.5,
-            max_w: f32::INFINITY,
+            max_power: watts(f32::INFINITY),
         };
         let p0 = charge(omega, (0.0, -10.0));
         let out = dissipate(-10.0, omega, &M5065, &half, 30.0, 30.0).unwrap();
@@ -524,7 +646,7 @@ mod tests {
         let omega = 400.0;
         let capped = RegenBudget {
             frac: 1.0,
-            max_w: 5.0,
+            max_power: watts(5.0),
         };
         let out = dissipate(-10.0, omega, &M5065, &capped, 30.0, 30.0).unwrap();
         assert_eq!(out.1, -10.0);

@@ -1,4 +1,6 @@
-# Host workspace. Firmware and on-target tests pin their own toolchains.
+# Host workspace, pinned to the stable release that is also the MSRV
+# (`[workspace.package] rust-version`). Firmware and on-target tests pin their
+# own nightlies. Bump both together.
 [toolchain]
-channel = "stable"
+channel = "1.100"
 components = ["rust-src", "rustfmt", "clippy", "llvm-tools"]

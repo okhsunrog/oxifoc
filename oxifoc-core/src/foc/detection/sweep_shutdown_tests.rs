@@ -2,6 +2,7 @@ use super::*;
 #[cfg(feature = "hfi-detect")]
 use crate::foc::detection::excitation::{BurstSample, Waveform};
 use crate::foc::trig::LibmSinCos;
+use crate::units::{amps, erad, volts};
 use core::cell::Cell;
 use core::task::{Context, Poll, Waker};
 
@@ -45,9 +46,9 @@ fn flux_settle_keeps_command_deadman_fed_and_observes_hardware_health() {
             assert_eq!(
                 mode,
                 ControlMode::OpenLoop {
-                    angle_rad: 0.0,
-                    current: 2.0,
-                    velocity_rad_s: 200.0,
+                    angle: erad(0.0),
+                    current: amps(2.0),
+                    velocity: erad_per_s(200.0),
                     pi_gains: None
                 }
             );
@@ -108,8 +109,11 @@ impl DetectionHardware for CompensatedHold {
 
     async fn send_command(&self, mode: ControlMode) {
         let (current, vd, stopped) = match mode {
-            ControlMode::OpenLoop { current, .. } => (current, 0.03 * current - 0.22, false),
+            ControlMode::OpenLoop { current, .. } => {
+                (current.value, 0.03 * current.value - 0.22, false)
+            }
             ControlMode::DirectVoltage { vd, .. } => {
+                let vd = vd.value;
                 self.saw_negative_voltage
                     .set(self.saw_negative_voltage.get() || vd < 0.0);
                 ((vd + 0.22) / 0.03, vd, false)
@@ -125,9 +129,9 @@ impl DetectionHardware for CompensatedHold {
 
     async fn wait_telemetry(&mut self) -> FocOutput {
         FocOutput {
-            vd: self.vd.get(),
-            vq: 0.15,
-            id: self.current.get(),
+            vd: volts(self.vd.get()),
+            vq: volts(0.15),
+            id: amps(self.current.get()),
             ..FocOutput::empty()
         }
     }
@@ -299,7 +303,7 @@ fn missing_holding_current_refuses_all_excitation_methods() {
         }
         async fn wait_telemetry(&mut self) -> FocOutput {
             FocOutput {
-                vd: 10.0,
+                vd: volts(10.0),
                 ..FocOutput::empty()
             }
         }

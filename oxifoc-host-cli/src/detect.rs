@@ -110,9 +110,9 @@ pub fn run_detect(
     } else {
         motor_params_value(runtime)?
     };
-    let r = resistance.unwrap_or_else(|| f32_field(&stored, "resistance_ohm"));
+    let r = resistance.unwrap_or_else(|| f32_field(&stored, "resistance"));
     let l = inductance.unwrap_or_else(|| {
-        (f32_field(&stored, "inductance_d_h") + f32_field(&stored, "inductance_q_h")) / 2.0
+        (f32_field(&stored, "inductance_d") + f32_field(&stored, "inductance_q")) / 2.0
     });
     let DetectionPlan {
         pole_pairs: pp,
@@ -124,8 +124,8 @@ pub fn run_detect(
 
     let req = match step {
         DetectStep::Resistance => DetectRequest::MeasureResistance {
-            max_power_loss_w,
-            current_limit_a,
+            max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
+            current_limit: current_limit_a.map(oxifoc_core::units::amps),
         },
         DetectStep::Inductance => {
             if r <= 0.0 {
@@ -134,9 +134,9 @@ pub fn run_detect(
                 );
             }
             DetectRequest::MeasureInductance {
-                max_power_loss_w,
-                current_limit_a,
-                resistance_ohm: r,
+                max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
+                current_limit: current_limit_a.map(oxifoc_core::units::amps),
+                resistance: oxifoc_core::units::ohms(r),
             }
         }
         DetectStep::Flux => {
@@ -147,12 +147,12 @@ pub fn run_detect(
                 );
             }
             DetectRequest::MeasureFlux {
-                max_power_loss_w,
-                current_limit_a,
-                resistance_ohm: r,
-                inductance_h: l,
+                max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
+                current_limit: current_limit_a.map(oxifoc_core::units::amps),
+                resistance: oxifoc_core::units::ohms(r),
+                inductance: oxifoc_core::units::henries(l),
                 pole_pairs: pp,
-                openloop_erpm: flux_target_erpm,
+                openloop_speed: oxifoc_core::units::erpm(flux_target_erpm),
             }
         }
         DetectStep::Hall => {
@@ -164,9 +164,9 @@ pub fn run_detect(
                 );
             }
             DetectRequest::CalibrateHall {
-                max_power_loss_w,
-                current_limit_a,
-                resistance_ohm: r,
+                max_power_loss: oxifoc_core::units::watts(max_power_loss_w),
+                current_limit: current_limit_a.map(oxifoc_core::units::amps),
+                resistance: oxifoc_core::units::ohms(r),
             }
         }
         DetectStep::Offsets => {
@@ -243,9 +243,9 @@ fn run_all(
     let info = record::latest_hw_info(runtime)
         .or(hardware)
         .context("controller hardware info unavailable")?;
-    let preview = detect::preview_setup(&runtime.cmd_tx, setup.clone(), info.max_current_a)?;
+    let preview = detect::preview_setup(&runtime.cmd_tx, setup.clone(), info.max_current_a.value)?;
     let thermal = preview.thermal_current_a();
-    let effective = preview.limits().max_iq_a;
+    let effective = preview.limits().max_iq.value;
     let apply = if !apply && !json && std::io::stdin().is_terminal() {
         eprintln!(
             "R {:.3} mΩ · Ld/Lq {:.3}/{:.3} µH · Flux {:.3} mWb · {}",
@@ -261,7 +261,7 @@ fn run_all(
         );
         eprintln!(
             "Input {} A · Regeneration {} A · Thermal estimate {thermal:.2} A · Drive limit {effective:.2} A",
-            setup.source.input_a, setup.source.regen_a,
+            setup.source.input.value, setup.source.regen.value,
         );
         matches!(
             prompt("Save this setup? [y/N]")?
@@ -481,7 +481,10 @@ pub fn confirm_source(
             .parse()
             .context("invalid regenerative current")?,
     };
-    let source = oxifoc_core::types::commissioning::SourceLimits { input_a, regen_a };
+    let source = oxifoc_core::types::commissioning::SourceLimits {
+        input: oxifoc_core::units::amps(input_a),
+        regen: oxifoc_core::units::amps(regen_a),
+    };
     anyhow::ensure!(
         source.is_valid(),
         "input current must be positive and regenerative current nonnegative; both must be finite"
@@ -529,13 +532,9 @@ mod hardware_tests {
             stream_defmt: Some(false),
             ..Default::default()
         });
-        struct StopOnDrop(CommandSender);
-        impl Drop for StopOnDrop {
-            fn drop(&mut self) {
-                let _ = stop(&self.0);
-            }
-        }
-        let stop_guard = StopOnDrop(runtime.cmd_tx.clone());
+        let stop_guard = std::mem::DropGuard::new(runtime.cmd_tx.clone(), |tx| {
+            let _ = stop(&tx);
+        });
         let connected_by = Instant::now() + Duration::from_secs(8);
         while !runtime.connected.load(std::sync::atomic::Ordering::Acquire) {
             anyhow::ensure!(Instant::now() < connected_by, "USB did not connect");
@@ -569,9 +568,11 @@ mod hardware_tests {
         let request = oxifoc_host_lib::new_detection(
             &runtime.cmd_tx,
             DetectRequest::MeasureInductance {
-                max_power_loss_w: DetectionPlan::from(&detect::PRESETS[2]).max_power_loss_w,
-                current_limit_a: None,
-                resistance_ohm: resistance,
+                max_power_loss: oxifoc_core::units::watts(
+                    DetectionPlan::from(&detect::PRESETS[2]).max_power_loss_w,
+                ),
+                current_limit: None,
+                resistance: oxifoc_core::units::ohms(resistance),
             },
         )?;
         let mut capture = record::Capture::start(&runtime, 20000)?;
@@ -624,8 +625,8 @@ mod hardware_tests {
             let mut repeated = request.clone();
             if changed {
                 repeated.request = DetectRequest::MeasureResistance {
-                    max_power_loss_w: 120.0,
-                    current_limit_a: None,
+                    max_power_loss: oxifoc_core::units::watts(120.0),
+                    current_limit: None,
                 };
             }
             let (tx, mut rx) = oxifoc_host_lib::detect_channel();

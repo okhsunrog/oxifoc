@@ -1,4 +1,5 @@
 use super::*;
+use crate::units::{erad, erad_per_s, seconds};
 
 // Drive the sensor from an independent continuous rotor trajectory. Hall
 // thresholds are half-way between nominal centroids, including the 2π wrap.
@@ -18,13 +19,14 @@ fn run_path(path: impl Fn(f32) -> f32, seconds: f32, interp: f32) -> (f32, f32, 
             hall.update(raw, u64::from(step) * 50);
             last = raw;
         }
-        final_speed = hall
+        final_speed = (hall
             .sample_for_control(u64::from(step) * 50)
             .unwrap()
             .sample
-            .omega;
+            .omega)
+            .value;
         integrated += final_speed * 0.00005;
-        old_integrated += hall.sample_at(u64::from(step) * 50).unwrap().omega * 0.00005;
+        old_integrated += hall.sample_at(u64::from(step) * 50).unwrap().omega.value * 0.00005;
     }
     (integrated, old_integrated, final_speed)
 }
@@ -85,18 +87,33 @@ fn constant_motion_tracks_both_directions_without_distance_bias() {
 #[test]
 fn travel_filter_retains_multiple_captures_and_ignores_duplicate_samples() {
     let mut motion = RotorMotion::default();
-    motion.cross_boundary(0.0);
-    assert_eq!(motion.sample(100, 1e-6, 0.0, 0.0), 0.0);
+    motion.cross_boundary(erad(0.0));
+    assert_eq!(
+        motion.sample(100, seconds(1e-6), erad(0.0), erad_per_s(0.0)),
+        erad_per_s(0.0)
+    );
     for boundary in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.5] {
-        motion.cross_boundary(boundary);
+        motion.cross_boundary(erad(boundary));
     }
-    assert_eq!(motion.sample(100, 1e-6, 0.0, 0.0), 0.0);
-    assert_eq!(motion.sample(99, 1e-6, 0.0, 0.0), 0.0);
-    let speed = motion.sample(1100, 1e-6, 0.0, 0.0);
-    assert!((speed * 0.021 - (TAU + 0.5)).abs() < 1e-5);
-    assert_eq!(motion.sample(1100, 1e-6, 0.0, 0.0), speed);
+    assert_eq!(
+        motion.sample(100, seconds(1e-6), erad(0.0), erad_per_s(0.0)),
+        erad_per_s(0.0)
+    );
+    assert_eq!(
+        motion.sample(99, seconds(1e-6), erad(0.0), erad_per_s(0.0)),
+        erad_per_s(0.0)
+    );
+    let speed = motion.sample(1100, seconds(1e-6), erad(0.0), erad_per_s(0.0));
+    assert!((speed * seconds(0.021) - erad(TAU + 0.5)).abs() < erad(1e-5));
+    assert_eq!(
+        motion.sample(1100, seconds(1e-6), erad(0.0), erad_per_s(0.0)),
+        speed
+    );
     // A gap outside the control cadence reanchors, not an aliased revolution.
-    assert_eq!(motion.sample(1_000_000, 1e-6, 0.0, 0.0), 0.0);
+    assert_eq!(
+        motion.sample(1_000_000, seconds(1e-6), erad(0.0), erad_per_s(0.0)),
+        erad_per_s(0.0)
+    );
 }
 
 #[test]
@@ -113,10 +130,14 @@ fn measured_unequal_sectors_keep_speed_and_travel_in_both_directions() {
         next[raw] = sequence[(i + 1) % 6] as u8;
     }
     let calibration = HallCalibrationResult {
-        angles: centers,
+        angles: centers.map(erad),
         valid: [false, true, true, true, true, true, true, false],
         valid_count: 6,
-        geometry: HallTransitionGeometry::try_from_raw_parts(entries, next, centers),
+        geometry: HallTransitionGeometry::try_from_raw_parts(
+            entries.map(erad),
+            next,
+            centers.map(erad),
+        ),
     };
     assert!(calibration.geometry.is_some());
     for velocity in [-120.0, -40.0, 40.0, 120.0] {
@@ -136,7 +157,7 @@ fn measured_unequal_sectors_keep_speed_and_travel_in_both_directions() {
                 hall.update(raw, step * 50);
                 previous = raw;
             }
-            speed = hall.sample_for_control(step * 50).unwrap().sample.omega;
+            speed = (hall.sample_for_control(step * 50).unwrap().sample.omega).value;
             travel += speed * 0.00005;
         }
         assert!(

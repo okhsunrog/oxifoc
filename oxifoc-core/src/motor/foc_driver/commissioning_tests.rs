@@ -1,4 +1,5 @@
 use super::*;
+use crate::units::{amps, erad, erad_per_s, ohms, si, volts};
 
 fn prepared(input: f32, regen: f32) -> PreparedCommissioning {
     PreparedCommissioning::new(
@@ -12,9 +13,9 @@ fn prepared(input: f32, regen: f32) -> PreparedCommissioning {
 
 fn hold() -> ControlMode {
     ControlMode::OpenLoop {
-        angle_rad: 0.0,
-        current: 10.0,
-        velocity_rad_s: 0.0,
+        angle: erad(0.0),
+        current: amps(10.0),
+        velocity: erad_per_s(0.0),
         pi_gains: Some((0.01, 10.0)),
     }
 }
@@ -52,7 +53,7 @@ fn commissioning_all_exit_paths_restore_limits_and_pi_without_resuming() {
     for exit in 0..6 {
         let old = CurrentLimits::from_max_current(2.0);
         let mut driver = grant_driver(old, DeratingScales::IDENTITY);
-        driver.set_current_pi_gains(0.12, 12.0);
+        driver.set_current_pi_gains(ohms(0.12), si(12.0));
         driver.begin_commissioning(1, prepared(5.0, 0.0)).unwrap();
         driver.set_mode(hold());
         match exit {
@@ -61,8 +62,8 @@ fn commissioning_all_exit_paths_restore_limits_and_pi_without_resuming() {
             2 => driver.emergency_stop(),
             3 => driver.enter_failsafe(),
             4 => driver.set_mode(ControlMode::CurrentControl {
-                id_target: 0.0,
-                iq_target: 1.0,
+                id_target: amps(0.0),
+                iq_target: amps(1.0),
             }),
             _ => {
                 driver.current_sensor.currents = (40.0, -20.0, -20.0);
@@ -72,8 +73,8 @@ fn commissioning_all_exit_paths_restore_limits_and_pi_without_resuming() {
         assert_eq!(driver.commissioning_generation(), None);
         assert_eq!(driver.mode(), ControlMode::Stopped);
         assert_eq!(driver.current_limits.max_current_a, old.max_current_a);
-        assert_eq!(driver.controller.id_pi.gains(), (0.12, 12.0));
-        assert_eq!(driver.controller.id_pi.get_integral(), 0.0);
+        assert_eq!(pi_gains(&driver.controller.id_pi), (0.12, 12.0));
+        assert_eq!(driver.controller.id_pi.get_integral(), volts(0.0));
     }
 }
 
@@ -88,9 +89,9 @@ fn source_monitor_covers_d_axis_consumption_and_reverse_power_in_voltage_packets
         );
         driver.begin_commissioning(1, prepared(1.0, regen)).unwrap();
         driver.set_mode(ControlMode::DirectVoltage {
-            vd: 12.0,
-            vq: 0.0,
-            angle_rad: 0.0,
+            vd: volts(12.0),
+            vq: volts(0.0),
+            angle: erad(0.0),
         });
         for _ in 0..4 {
             driver

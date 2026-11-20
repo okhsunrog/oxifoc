@@ -1,5 +1,6 @@
 //! Session-scoped measurement protocol. Transport retries preserve operation identity.
 use super::{DetectError, DetectRequest, DetectResponse};
+use crate::units::ElectricalAngle;
 #[derive(
     serde::Serialize, serde::Deserialize, postcard_schema::Schema, Clone, Copy, Debug, PartialEq, Eq,
 )]
@@ -88,40 +89,43 @@ impl Measurement {
         use DetectRequest::*;
         match *request {
             MeasureResistance {
-                max_power_loss_w,
-                current_limit_a,
-            } => max_power_loss_w.is_finite() && current_limit_a.is_none_or(f32::is_finite),
+                max_power_loss: max_power_loss_w,
+                current_limit: current_limit_a,
+            } => {
+                max_power_loss_w.is_finite()
+                    && current_limit_a.is_none_or(uom::si::Quantity::is_finite)
+            }
             MeasureInductance {
-                max_power_loss_w,
-                current_limit_a,
-                resistance_ohm,
+                max_power_loss: max_power_loss_w,
+                current_limit: current_limit_a,
+                resistance: resistance_ohm,
             }
             | CalibrateHall {
-                max_power_loss_w,
-                current_limit_a,
-                resistance_ohm,
+                max_power_loss: max_power_loss_w,
+                current_limit: current_limit_a,
+                resistance: resistance_ohm,
             } => {
                 max_power_loss_w.is_finite()
                     && resistance_ohm.is_finite()
-                    && current_limit_a.is_none_or(f32::is_finite)
+                    && current_limit_a.is_none_or(uom::si::Quantity::is_finite)
             }
             MeasureFlux {
-                max_power_loss_w,
-                current_limit_a,
-                resistance_ohm,
-                inductance_h,
-                openloop_erpm,
+                max_power_loss: max_power_loss_w,
+                current_limit: current_limit_a,
+                resistance: resistance_ohm,
+                inductance: inductance_h,
+                openloop_speed: openloop_erpm,
                 ..
             } => {
                 [
-                    max_power_loss_w,
-                    resistance_ohm,
-                    inductance_h,
-                    openloop_erpm,
+                    max_power_loss_w.value,
+                    resistance_ohm.value,
+                    inductance_h.value,
+                    openloop_erpm.value,
                 ]
                 .iter()
                 .all(|v| v.is_finite())
-                    && current_limit_a.is_none_or(f32::is_finite)
+                    && current_limit_a.is_none_or(uom::si::Quantity::is_finite)
             }
             MeasureCurrentOffsets { .. } => true,
         }
@@ -133,7 +137,7 @@ impl Measurement {
 )]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct HallTransitionGeometryConfig {
-    pub entry_angles: [f32; 8],
+    pub entry_angles: [ElectricalAngle; 8],
     pub next_states: [u8; 8],
 }
 
@@ -142,8 +146,8 @@ pub struct HallTransitionGeometryConfig {
 )]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct HallCalibrationConfig {
-    /// Electrical angle (radians) for each raw Hall state (0-7)
-    pub angles: [f32; 8],
+    /// Electrical angle for each raw Hall state (0-7)
+    pub angles: [ElectricalAngle; 8],
     /// Validity flags for each Hall state
     pub valid: [bool; 8],
     /// Omitted geometry retains the legacy midpoint approximation. JSON may

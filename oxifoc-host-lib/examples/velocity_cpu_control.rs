@@ -23,15 +23,6 @@ fn send(runtime: &HostRuntime, mode: ControlMode) -> Result<MotorStatus> {
     }
 }
 
-struct StopGuard<'a>(&'a HostRuntime);
-impl Drop for StopGuard<'_> {
-    fn drop(&mut self) {
-        if let Err(error) = send(self.0, ControlMode::Stopped) {
-            eprintln!("terminal Stop failed: {error:#}");
-        }
-    }
-}
-
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() != 2 || args[0] != "--run" {
@@ -57,7 +48,11 @@ fn main() -> Result<()> {
             && (22_000..=26_000).contains(&initial.vbus_mv),
         "unexpected starting state: {initial:?}"
     );
-    let _stop = StopGuard(&runtime);
+    let _stop = std::mem::DropGuard::new(&runtime, |runtime| {
+        if let Err(error) = send(runtime, ControlMode::Stopped) {
+            eprintln!("terminal Stop failed: {error:#}");
+        }
+    });
     let started = Instant::now();
     let mut events = Vec::new();
     let mut slow = Vec::new();
@@ -66,7 +61,9 @@ fn main() -> Result<()> {
             let (at, mode) = match step {
                 0..=25 => (
                     0.3 + f64::from(step) * 0.2,
-                    ControlMode::VelocityControl { target_vel: 40.0 },
+                    ControlMode::VelocityControl {
+                        target_vel: oxifoc_core::units::erad_per_s(40.0),
+                    },
                 ),
                 26 => (5.5, ControlMode::Coast),
                 _ => (7.5, ControlMode::Stopped),

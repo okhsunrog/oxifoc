@@ -20,12 +20,49 @@
 //! is what [`PhaseProvider::get`](crate::foc::phase::PhaseProvider::get)
 //! measures; hosts convert mechanical targets via pole pairs.
 
-use crate::foc::pi_controller::ClampedPI;
+use core::ops::Div;
 
-/// How far (s of ramp) the reference may lead a rotor whose actuator is at
+use crate::foc::pi_controller::{ClampedPI, PiUnits};
+use crate::units::erad_per_s2;
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricalAngularAcceleration, ElectricalAngularVelocity, Scalar,
+    Sign, Time, amps, seconds, si,
+};
+
+/// How far (time of ramp) the reference may lead a rotor whose actuator is at
 /// its limit — also how long a lower command then waits for the reference
 /// to come back to the rotor.
-const HOLD_LEAD_S: f32 = 0.1;
+const HOLD_LEAD: Time = seconds(0.1);
+
+/// Velocity PI proportional gain: A per electrical rad/s.
+pub type VelocityKp = <ElectricCurrent as Div<ElectricalAngularVelocity>>::Output;
+/// Velocity PI integral gain: A per (electrical rad/s · s).
+pub type VelocityKi = <VelocityKp as Div<Time>>::Output;
+/// Acceleration feedforward: A per electrical rad/s².
+pub type AccelFeedforward = <ElectricCurrent as Div<ElectricalAngularAcceleration>>::Output;
+
+/// Units of the velocity PI: speed error in, q current out.
+#[derive(Clone, Copy, Debug)]
+pub enum VelocityPi {}
+
+impl PiUnits for VelocityPi {
+    type Error = ElectricalAngularVelocity;
+    type Output = ElectricCurrent;
+    type Time = Time;
+    type Kp = VelocityKp;
+    type Ki = VelocityKi;
+    #[inline(always)]
+    fn proportional(kp: VelocityKp, error: ElectricalAngularVelocity) -> ElectricCurrent {
+        kp * error
+    }
+    #[inline(always)]
+    fn integral(ki: VelocityKi, error_sum: ElectricalAngularVelocity, dt: Time) -> ElectricCurrent {
+        ki * error_sum * 0.5 * dt
+    }
+}
+
+/// Saturation tolerance absorbing the feedforward split's rounding.
+const SATURATION_TOLERANCE: ElectricCurrent = amps(1e-4);
 
 /// Directions in which the actuator was blocked during a controller interval.
 #[derive(Clone, Copy, Debug, Default)]
@@ -44,16 +81,16 @@ impl VelocityBlockage {
         self.0 & 2 != 0
     }
 
-    pub(crate) fn note_clip(&mut self, clip: f32) {
-        if clip > 0.0 {
+    pub(crate) fn note_clip(&mut self, clip: impl Sign) {
+        if clip.is_positive() {
             self.0 |= 1;
-        } else if clip < 0.0 {
+        } else if clip.is_negative() {
             self.0 |= 2;
         }
     }
 
-    fn blocks(self, movement: f32) -> bool {
-        (movement > 0.0 && self.0 & 1 != 0) || (movement < 0.0 && self.0 & 2 != 0)
+    fn blocks(self, movement: impl Sign) -> bool {
+        (movement.is_positive() && self.0 & 1 != 0) || (movement.is_negative() && self.0 & 2 != 0)
     }
 }
 
@@ -63,33 +100,40 @@ impl VelocityBlockage {
 /// non-finite disables limiting (the value jumps straight to the target).
 #[derive(Debug)]
 pub struct SlewLimiter {
-    value: f32,
-    /// Max |d(value)/dt| in units per second.
-    rate: f32,
+    value: ElectricalAngularVelocity,
+    /// Max |d(value)/dt|.
+    rate: ElectricalAngularAcceleration,
 }
 
 impl SlewLimiter {
-    pub const fn new(rate: f32) -> Self {
-        Self { value: 0.0, rate }
+    pub const fn new(rate: ElectricalAngularAcceleration) -> Self {
+        Self {
+            value: ElectricalAngularVelocity::ZERO,
+            rate,
+        }
     }
 
     /// Jump the internal value (bumpless re-arm: seed from the measurement).
-    pub fn reset_to(&mut self, value: f32) {
+    pub fn reset_to(&mut self, value: ElectricalAngularVelocity) {
         self.value = value;
     }
 
     /// Current (ramped) value.
-    pub fn value(&self) -> f32 {
+    pub fn value(&self) -> ElectricalAngularVelocity {
         self.value
     }
 
-    pub fn set_rate(&mut self, rate: f32) {
+    pub fn set_rate(&mut self, rate: ElectricalAngularAcceleration) {
         self.rate = rate;
     }
 
     /// Advance one cycle toward `target`, moving at most `rate * dt`.
-    pub fn step(&mut self, target: f32, dt: f32) -> f32 {
-        if self.rate <= 0.0 || !self.rate.is_finite() {
+    pub fn step(
+        &mut self,
+        target: ElectricalAngularVelocity,
+        dt: Time,
+    ) -> ElectricalAngularVelocity {
+        if self.rate.is_non_positive() || !self.rate.is_finite() {
             self.value = target;
             return self.value;
         }
@@ -97,7 +141,7 @@ impl SlewLimiter {
         let d = target - self.value;
         self.value = if d.abs() <= max_step {
             target
-        } else if d > 0.0 {
+        } else if d.is_positive() {
             self.value + max_step
         } else {
             self.value - max_step
@@ -120,7 +164,7 @@ pub struct VelocityLoopConfig {
     pub ki: f32,
     /// Reference ramp limit, electrical rad/s² (both accel and decel).
     /// `<= 0` disables the ramp (step targets go straight to the PI).
-    pub accel_limit: f32,
+    pub accel_limit: ElectricalAngularAcceleration,
     /// Acceleration feedforward, A per (electrical rad/s²) of REFERENCE
     /// slew — the motor's measured accel-per-amp inverted (`1/8100` for
     /// the ZD2808). The ramp's torque is then delivered open-loop and the
@@ -143,7 +187,7 @@ impl Default for VelocityLoopConfig {
         Self {
             kp: 0.01,
             ki: 0.2,
-            accel_limit: 500.0,
+            accel_limit: erad_per_s2(500.0),
             accel_ff: 0.0,
         }
     }
@@ -170,11 +214,11 @@ impl VelocityLoopConfig {
 /// limit (steep hill, step target) doesn't wind the integrator up.
 #[derive(Debug)]
 pub struct VelocityLoop {
-    pi: ClampedPI,
+    pi: ClampedPI<VelocityPi>,
     ramp: SlewLimiter,
     cfg: VelocityLoopConfig,
-    /// Last commanded iq (A) — lets the failsafe arm bumpless from this loop.
-    last_iq: f32,
+    /// Last commanded iq — lets the failsafe arm bumpless from this loop.
+    last_iq: ElectricCurrent,
     /// Which bound the last output sat at (+1 max, −1 min, 0 neither).
     saturated: f32,
 }
@@ -182,10 +226,15 @@ pub struct VelocityLoop {
 impl VelocityLoop {
     pub fn new(cfg: VelocityLoopConfig) -> Self {
         Self {
-            pi: ClampedPI::new(cfg.kp, cfg.ki, 0.0, 0.0),
+            pi: ClampedPI::with_gains(
+                si(cfg.kp),
+                si(cfg.ki),
+                ElectricCurrent::ZERO,
+                ElectricCurrent::ZERO,
+            ),
             ramp: SlewLimiter::new(cfg.accel_limit),
             cfg,
-            last_iq: 0.0,
+            last_iq: ElectricCurrent::ZERO,
             saturated: 0.0,
         }
     }
@@ -194,7 +243,7 @@ impl VelocityLoop {
     pub fn set_config(&mut self, cfg: VelocityLoopConfig) {
         if cfg.is_sane() {
             self.cfg = cfg;
-            self.pi.set_gains(cfg.kp, cfg.ki);
+            self.pi.set_gains(si(cfg.kp), si(cfg.ki));
             self.ramp.set_rate(cfg.accel_limit);
         }
     }
@@ -206,56 +255,62 @@ impl VelocityLoop {
     /// Re-arm bumpless: seed the reference ramp at the measured velocity and
     /// clear the integrator. Call on (re-)entry into velocity mode so the
     /// loop ramps *from where the rotor is*, not from zero.
-    pub fn reset(&mut self, omega_meas: f32) {
+    pub fn reset(&mut self, omega_meas: ElectricalAngularVelocity) {
         self.ramp.reset_to(if omega_meas.is_finite() {
             omega_meas
         } else {
-            0.0
+            ElectricalAngularVelocity::ZERO
         });
         self.pi.reset();
-        self.last_iq = 0.0;
+        self.last_iq = ElectricCurrent::ZERO;
         self.saturated = 0.0;
     }
 
     /// Re-arm taking over a q-current already being driven: the reference
     /// starts at the measured velocity and the integrator at `iq`, so the
     /// first output continues `iq` instead of dropping to zero.
-    pub fn reset_holding(&mut self, omega_meas: f32, iq: f32) {
+    pub fn reset_holding(&mut self, omega_meas: ElectricalAngularVelocity, iq: ElectricCurrent) {
         self.reset(omega_meas);
         self.pi.preload(iq);
         self.last_iq = iq;
     }
 
-    /// Last commanded q-current (A) from the previous [`step`](Self::step).
-    pub fn last_iq(&self) -> f32 {
+    /// Last commanded q-current from the previous [`step`](Self::step).
+    pub fn last_iq(&self) -> ElectricCurrent {
         self.last_iq
     }
 
     /// Slew-limited speed reference currently presented to the PI.
-    pub fn reference_rad_s(&self) -> f32 {
+    pub fn reference(&self) -> ElectricalAngularVelocity {
         self.ramp.value()
     }
 
     #[cfg(feature = "fast-telemetry")]
-    pub(crate) fn integral_a(&self) -> f32 {
+    pub(crate) fn integral(&self) -> ElectricCurrent {
         self.pi.get_integral()
     }
 
     /// Account for the previous interval's granted-minus-requested current.
-    pub(crate) fn track_grant(&mut self, correction: f32) {
+    pub(crate) fn track_grant(&mut self, correction: ElectricCurrent) {
         if correction.is_finite() {
             self.pi.track_output(correction);
         }
     }
 
-    /// One cycle. `iq_limit` is the current-limit magnitude (A); `<= 0` or
+    /// One cycle. `iq_limit` is the current-limit magnitude; `<= 0` or
     /// non-finite means unlimited (mirrors `CurrentLimits` semantics — the
     /// downstream `clamp_targets` is still the real ceiling).
-    pub fn step(&mut self, omega_target: f32, omega_meas: f32, iq_limit: f32, dt: f32) -> f32 {
-        let limit = if iq_limit > 0.0 && iq_limit.is_finite() {
+    pub fn step(
+        &mut self,
+        omega_target: ElectricalAngularVelocity,
+        omega_meas: ElectricalAngularVelocity,
+        iq_limit: ElectricCurrent,
+        dt: Time,
+    ) -> ElectricCurrent {
+        let limit = if iq_limit.is_positive() && iq_limit.is_finite() {
             iq_limit
         } else {
-            f32::INFINITY
+            ElectricCurrent::INFINITY
         };
         self.step_clamped(omega_target, omega_meas, -limit, limit, dt)
     }
@@ -266,12 +321,12 @@ impl VelocityLoop {
     /// one side at zero doesn't wind the integrator.
     pub fn step_clamped(
         &mut self,
-        omega_target: f32,
-        omega_meas: f32,
-        iq_min: f32,
-        iq_max: f32,
-        dt: f32,
-    ) -> f32 {
+        omega_target: ElectricalAngularVelocity,
+        omega_meas: ElectricalAngularVelocity,
+        iq_min: ElectricCurrent,
+        iq_max: ElectricCurrent,
+        dt: Time,
+    ) -> ElectricCurrent {
         self.step_blocked(omega_target, omega_meas, iq_min, iq_max, 0.0, dt)
     }
 
@@ -281,13 +336,13 @@ impl VelocityLoop {
     /// current loop out of voltage at top speed.
     pub fn step_blocked(
         &mut self,
-        omega_target: f32,
-        omega_meas: f32,
-        iq_min: f32,
-        iq_max: f32,
+        omega_target: ElectricalAngularVelocity,
+        omega_meas: ElectricalAngularVelocity,
+        iq_min: ElectricCurrent,
+        iq_max: ElectricCurrent,
         blocked: f32,
-        dt: f32,
-    ) -> f32 {
+        dt: Time,
+    ) -> ElectricCurrent {
         let mut blockage = VelocityBlockage::default();
         blockage.note_clip(blocked);
         self.step_with_blockage(omega_target, omega_meas, iq_min, iq_max, blockage, dt)
@@ -295,27 +350,35 @@ impl VelocityLoop {
 
     pub(crate) fn step_with_blockage(
         &mut self,
-        omega_target: f32,
-        omega_meas: f32,
-        iq_min: f32,
-        iq_max: f32,
+        omega_target: ElectricalAngularVelocity,
+        omega_meas: ElectricalAngularVelocity,
+        iq_min: ElectricCurrent,
+        iq_max: ElectricCurrent,
         blockage: VelocityBlockage,
-        dt: f32,
-    ) -> f32 {
-        self.step_with_feedforward(omega_target, omega_meas, iq_min, iq_max, blockage, dt, 0.0)
+        dt: Time,
+    ) -> ElectricCurrent {
+        self.step_with_feedforward(
+            omega_target,
+            omega_meas,
+            iq_min,
+            iq_max,
+            blockage,
+            dt,
+            ElectricCurrent::ZERO,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn step_with_feedforward(
         &mut self,
-        omega_target: f32,
-        omega_meas: f32,
-        iq_min: f32,
-        iq_max: f32,
+        omega_target: ElectricalAngularVelocity,
+        omega_meas: ElectricalAngularVelocity,
+        iq_min: ElectricCurrent,
+        iq_max: ElectricCurrent,
         blockage: VelocityBlockage,
-        dt: f32,
-        position_feedforward: f32,
-    ) -> f32 {
+        dt: Time,
+        position_feedforward: ElectricCurrent,
+    ) -> ElectricCurrent {
         let ref_prev = self.ramp.value();
         let mut omega_ref = self.ramp.step(omega_target, dt);
         // With the actuator at its limit in the direction the reference is
@@ -327,11 +390,11 @@ impl VelocityLoop {
         // past top speed, the motor held top speed for 6 s).
         let moved = omega_ref - ref_prev;
         let stuck = blockage.blocks(moved)
-            || (moved > 0.0 && self.saturated > 0.0)
-            || (moved < 0.0 && self.saturated < 0.0);
-        if self.cfg.accel_limit > 0.0 && stuck {
-            let lead = self.cfg.accel_limit * HOLD_LEAD_S;
-            omega_ref = if moved > 0.0 {
+            || (moved.is_positive() && self.saturated > 0.0)
+            || (moved.is_negative() && self.saturated < 0.0);
+        if self.cfg.accel_limit.is_positive() && stuck {
+            let lead = self.cfg.accel_limit * HOLD_LEAD;
+            omega_ref = if moved.is_positive() {
                 omega_ref.min((omega_meas + lead).max(ref_prev))
             } else {
                 omega_ref.max((omega_meas - lead).min(ref_prev))
@@ -342,19 +405,16 @@ impl VelocityLoop {
         // it is our own ramp). Charged against the PI's anti-windup bounds
         // so back-calculation sees only the PI's own share of the budget
         // (same rule as the current loop's FF split in controller.rs).
-        let accel_ff = if self.cfg.accel_ff > 0.0 && dt > 0.0 {
-            crate::foc::clamp_f32(
-                (omega_ref - ref_prev) / dt * self.cfg.accel_ff,
-                iq_min,
-                iq_max,
-            )
+        let accel_ff = if self.cfg.accel_ff > 0.0 && dt.is_positive() {
+            let gain: AccelFeedforward = si(self.cfg.accel_ff);
+            ((omega_ref - ref_prev) / dt * gain).clamp_to(iq_min, iq_max)
         } else {
-            0.0
+            ElectricCurrent::ZERO
         };
         // A signed position correction may reduce positive motoring current
         // even when the lower torque bound is zero. The shifted PI bounds
         // constrain the combined request.
-        let ff = if position_feedforward != 0.0 {
+        let ff = if position_feedforward != ElectricCurrent::ZERO {
             accel_ff + position_feedforward
         } else {
             accel_ff
@@ -362,9 +422,9 @@ impl VelocityLoop {
         self.pi.set_limits(iq_min - ff, iq_max - ff);
         self.last_iq = self.pi.update(omega_ref, omega_meas, dt) + ff;
         // (The tolerance absorbs the feedforward split's rounding.)
-        self.saturated = if self.last_iq >= iq_max - 1e-4 {
+        self.saturated = if self.last_iq >= iq_max - SATURATION_TOLERANCE {
             1.0
-        } else if self.last_iq <= iq_min + 1e-4 {
+        } else if self.last_iq <= iq_min + SATURATION_TOLERANCE {
             -1.0
         } else {
             0.0
@@ -376,6 +436,114 @@ impl VelocityLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{erad_per_s, erad_per_s2};
+
+    // The numeric checks below are in plain SI floats; these views shadow
+    // the typed limiter and loop at the test boundary.
+    struct SlewLimiter(super::SlewLimiter);
+    impl SlewLimiter {
+        fn new(rate: f32) -> Self {
+            Self(super::SlewLimiter::new(erad_per_s2(rate)))
+        }
+        fn reset_to(&mut self, value: f32) {
+            self.0.reset_to(erad_per_s(value));
+        }
+        fn value(&self) -> f32 {
+            self.0.value().value
+        }
+        fn step(&mut self, target: f32, dt: f32) -> f32 {
+            self.0.step(erad_per_s(target), seconds(dt)).value
+        }
+    }
+
+    struct VelocityLoop(super::VelocityLoop);
+    impl VelocityLoop {
+        fn new(cfg: VelocityLoopConfig) -> Self {
+            Self(super::VelocityLoop::new(cfg))
+        }
+        fn set_config(&mut self, cfg: VelocityLoopConfig) {
+            self.0.set_config(cfg);
+        }
+        fn config(&self) -> VelocityLoopConfig {
+            self.0.config()
+        }
+        fn reset(&mut self, omega: f32) {
+            self.0.reset(erad_per_s(omega));
+        }
+        fn reset_holding(&mut self, omega: f32, iq: f32) {
+            self.0.reset_holding(erad_per_s(omega), amps(iq));
+        }
+        fn last_iq(&self) -> f32 {
+            self.0.last_iq().value
+        }
+        fn track_grant(&mut self, correction: f32) {
+            self.0.track_grant(amps(correction));
+        }
+        fn step(&mut self, target: f32, meas: f32, limit: f32, dt: f32) -> f32 {
+            self.0
+                .step(
+                    erad_per_s(target),
+                    erad_per_s(meas),
+                    amps(limit),
+                    seconds(dt),
+                )
+                .value
+        }
+        fn step_clamped(&mut self, target: f32, meas: f32, min: f32, max: f32, dt: f32) -> f32 {
+            self.0
+                .step_clamped(
+                    erad_per_s(target),
+                    erad_per_s(meas),
+                    amps(min),
+                    amps(max),
+                    seconds(dt),
+                )
+                .value
+        }
+        fn step_with_blockage(
+            &mut self,
+            target: f32,
+            meas: f32,
+            min: f32,
+            max: f32,
+            blockage: VelocityBlockage,
+            dt: f32,
+        ) -> f32 {
+            self.0
+                .step_with_blockage(
+                    erad_per_s(target),
+                    erad_per_s(meas),
+                    amps(min),
+                    amps(max),
+                    blockage,
+                    seconds(dt),
+                )
+                .value
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn step_with_feedforward(
+            &mut self,
+            target: f32,
+            meas: f32,
+            min: f32,
+            max: f32,
+            blockage: VelocityBlockage,
+            dt: f32,
+            feedforward: f32,
+        ) -> f32 {
+            self.0
+                .step_with_feedforward(
+                    erad_per_s(target),
+                    erad_per_s(meas),
+                    amps(min),
+                    amps(max),
+                    blockage,
+                    seconds(dt),
+                    amps(feedforward),
+                )
+                .value
+        }
+    }
 
     const DT: f32 = 1.0 / 20_000.0;
 
@@ -384,7 +552,7 @@ mod tests {
         let mut velocity = VelocityLoop::new(VelocityLoopConfig {
             kp: 0.0,
             ki: 1.0,
-            accel_limit: 0.0,
+            accel_limit: erad_per_s2(0.0),
             accel_ff: 0.0,
         });
         velocity.reset_holding(1.0, 0.5);
@@ -410,7 +578,7 @@ mod tests {
             let mut loop_ = VelocityLoop::new(VelocityLoopConfig {
                 kp: 1.0,
                 ki,
-                accel_limit: 0.0,
+                accel_limit: erad_per_s2(0.0),
                 accel_ff: 0.0,
             });
             assert_eq!(loop_.step_clamped(2.0, 0.0, -3.0, 3.0, 0.0), 2.0);
@@ -428,7 +596,7 @@ mod tests {
             let mut loop_ = VelocityLoop::new(VelocityLoopConfig {
                 kp: 1.0,
                 ki: 0.0,
-                accel_limit: 10.0,
+                accel_limit: erad_per_s2(10.0),
                 accel_ff: 0.0,
             });
             assert_eq!(
@@ -487,7 +655,7 @@ mod tests {
         let mut vl = VelocityLoop::new(VelocityLoopConfig {
             kp: 0.05,
             ki: 2.0,
-            accel_limit: 5_000.0,
+            accel_limit: erad_per_s2(5_000.0),
             accel_ff: 0.0,
         });
         vl.reset(0.0);
@@ -509,7 +677,7 @@ mod tests {
         let mut vl = VelocityLoop::new(VelocityLoopConfig {
             kp: 0.5,
             ki: 50.0,
-            accel_limit: 0.0, // step target straight in → guaranteed saturation
+            accel_limit: erad_per_s2(0.0), // step target straight in → guaranteed saturation
             accel_ff: 0.0,
         });
         vl.reset(0.0);
@@ -535,7 +703,7 @@ mod tests {
             let mut vl = VelocityLoop::new(VelocityLoopConfig {
                 kp: 0.05,
                 ki: 2.0,
-                accel_limit: 2_000.0,
+                accel_limit: erad_per_s2(2_000.0),
                 accel_ff: *ff,
             });
             vl.reset(0.0);
@@ -547,7 +715,7 @@ mod tests {
                 // measure lag against the REFERENCE mid-ramp only
                 let t = k as f32 * DT;
                 if t > 0.05 && t < 0.25 {
-                    worst = worst.max((vl.ramp.value() - omega).abs());
+                    worst = worst.max((vl.0.ramp.value().value - omega).abs());
                 }
             }
             // 1 s in: settled (the FF-less arm's ramp-lag overshoot has
@@ -580,9 +748,9 @@ mod tests {
         for _ in 0..(3.0 / DT) as u32 {
             let iq = vl.step(5_000.0, omega, 0.5, DT);
             omega += (kt * iq - b * omega) / j * DT;
-            lead = lead.max(vl.ramp.value() - omega);
+            lead = lead.max(vl.0.ramp.value().value - omega);
         }
-        let max_lead = VelocityLoopConfig::default().accel_limit * HOLD_LEAD_S;
+        let max_lead = (VelocityLoopConfig::default().accel_limit * HOLD_LEAD).value;
         assert!(lead < max_lead + 10.0, "reference led by {lead}");
         let omega_cmd = omega;
         for _ in 0..(0.2 / DT) as u32 {
@@ -611,7 +779,7 @@ mod tests {
             !VelocityLoopConfig {
                 kp: 0.0,
                 ki: 0.0,
-                accel_limit: 100.0,
+                accel_limit: erad_per_s2(100.0),
                 accel_ff: 0.0,
             }
             .is_sane()

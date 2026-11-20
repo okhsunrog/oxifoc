@@ -36,6 +36,7 @@
 use core::f32::consts::TAU;
 
 use super::hall_sensor::HALL_STATE_TABLE;
+use crate::units::{AngleRepr, ConstZero, ElectricCurrent, ElectricalAngle, amps, erad};
 
 mod geometry;
 pub use geometry::{HallSweepDirection, HallTransitionGeometry};
@@ -47,7 +48,7 @@ pub const DEFAULT_MIN_SAMPLES: u32 = 30;
 impl Default for HallCalibrationParams {
     fn default() -> Self {
         Self {
-            current_amps: 2.0,
+            current: amps(2.0),
             ramp_time_ms: 1000,
             sweep_count: 6,
             step_delay_us: 5000,
@@ -66,8 +67,8 @@ pub trait HallReader {
 /// Parameters for Hall sensor calibration
 #[derive(Clone, Copy, Debug)]
 pub struct HallCalibrationParams {
-    /// Open-loop current magnitude (Amps)
-    pub current_amps: f32,
+    /// Open-loop current magnitude
+    pub current: ElectricCurrent,
     /// Time to ramp up current (milliseconds)
     pub ramp_time_ms: u32,
     /// Number of full 360° sweeps (VESC uses 6: 3 forward + 3 reverse)
@@ -118,13 +119,13 @@ impl HallCalibrator {
     /// Record a sample: electrical angle and raw Hall state
     ///
     /// # Arguments
-    /// * `angle_rad` - Current electrical angle (radians, 0 to 2π)
+    /// * `angle` - Current electrical angle (0 to 2π)
     /// * `raw_hall_state` - Raw 3-bit Hall reading (0-7)
-    pub fn record(&mut self, angle_rad: f32, raw_hall_state: u8) {
+    pub fn record(&mut self, angle: ElectricalAngle, raw_hall_state: u8) {
         let idx = (raw_hall_state & 0x07) as usize;
         let (s, c) = {
             use crate::foc::trig::SinCos;
-            crate::foc::trig::FastSinCos::sin_cos(angle_rad)
+            crate::foc::trig::FastSinCos::sin_cos(angle.radians())
         };
         self.sin_acc[idx] += s;
         self.cos_acc[idx] += c;
@@ -137,13 +138,12 @@ impl HallCalibrator {
     /// unordered callers may continue using `record` and centroid-only `finish`.
     pub fn record_directed(
         &mut self,
-        angle_rad: f32,
+        angle: ElectricalAngle,
         raw_hall_state: u8,
         direction: HallSweepDirection,
     ) {
-        self.record(angle_rad, raw_hall_state);
-        self.transitions
-            .record(angle_rad, raw_hall_state, direction);
+        self.record(angle, raw_hall_state);
+        self.transitions.record(angle, raw_hall_state, direction);
     }
 
     /// Reset the calibrator for a new calibration run
@@ -165,7 +165,7 @@ impl HallCalibrator {
     /// * `Ok(HallCalibrationResult)` - Valid calibration with angles for each state
     /// * `Err(CalibrationError)` - Calibration failed (insufficient samples or wrong state count)
     pub fn finish(self) -> Result<HallCalibrationResult, CalibrationError> {
-        let mut angles = [0.0_f32; 8];
+        let mut angles = [ElectricalAngle::ZERO; 8];
         let mut valid = [false; 8];
         let mut valid_count = 0u8;
 
@@ -184,7 +184,7 @@ impl HallCalibrator {
                     angle += TAU;
                 }
 
-                angles[i] = angle;
+                angles[i] = erad(angle);
                 valid[i] = true;
                 valid_count += 1;
             } else if count > 0 {
@@ -236,10 +236,10 @@ impl HallCalibrator {
 /// Result of Hall sensor calibration
 #[derive(Clone, Copy, Debug)]
 pub struct HallCalibrationResult {
-    /// Electrical angle (radians, 0 to 2π) for each raw Hall state (0-7)
+    /// Electrical angle (0 to 2π) for each raw Hall state (0-7)
     ///
     /// Invalid states (0, 7) will have angle 0.0.
-    pub angles: [f32; 8],
+    pub angles: [ElectricalAngle; 8],
     /// Validity flags for each raw state
     pub valid: [bool; 8],
     /// Number of valid states detected (should be 6)
@@ -259,8 +259,8 @@ impl HallCalibrationResult {
     ///
     /// Maps raw Hall states to logical states via `HALL_STATE_TABLE`,
     /// returning angles in the order expected by `HallSensor::set_calibration()`.
-    pub fn to_logical_table(&self) -> [f32; 6] {
-        let mut table = [0.0_f32; 6];
+    pub fn to_logical_table(&self) -> [ElectricalAngle; 6] {
+        let mut table = [ElectricalAngle::ZERO; 6];
 
         // For each valid raw state, place its angle at the corresponding logical index
         for raw in 1..=6u8 {
@@ -274,7 +274,7 @@ impl HallCalibrationResult {
     }
 
     /// Get angle for a specific raw Hall state
-    pub fn angle_for_raw_state(&self, raw_state: u8) -> Option<f32> {
+    pub fn angle_for_raw_state(&self, raw_state: u8) -> Option<ElectricalAngle> {
         let idx = (raw_state & 0x07) as usize;
         if self.valid[idx] {
             Some(self.angles[idx])
@@ -304,6 +304,7 @@ pub enum CalibrationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::erad;
 
     #[test]
     fn test_calibrator_basic() {
@@ -329,7 +330,7 @@ mod tests {
         // Record samples around each center
         for (state, center) in state_centers {
             for offset in [-0.05, 0.0, 0.05] {
-                cal.record(center + offset, state);
+                cal.record(erad(center + offset), state);
             }
         }
 
@@ -340,10 +341,10 @@ mod tests {
         // Check angles are close to expected centers
         for (state, center) in state_centers {
             let angle = result.angle_for_raw_state(state).unwrap();
-            let diff = (angle - center).abs();
+            let diff = (angle - erad(center)).abs();
             assert!(
-                diff < 0.1,
-                "State {state} angle {angle} not close to {center}"
+                diff < erad(0.1),
+                "State {state:?} angle {angle:?} not close to {center:?}"
             );
         }
     }
@@ -354,13 +355,13 @@ mod tests {
 
         // Only record a few samples for state 1
         for _ in 0..5 {
-            cal.record(0.5, 1);
+            cal.record(erad(0.5), 1);
         }
 
         // Record enough for other states
         for state in [2, 3, 4, 5, 6] {
             for i in 0..15 {
-                cal.record(i as f32 * 0.1, state);
+                cal.record(erad(i as f32 * 0.1), state);
             }
         }
 
@@ -378,7 +379,7 @@ mod tests {
         // Only record for 4 states
         for state in [1, 2, 3, 4] {
             for _ in 0..5 {
-                cal.record(f32::from(state) * 0.5, state);
+                cal.record(erad(f32::from(state) * 0.5), state);
             }
         }
 
@@ -404,7 +405,7 @@ mod tests {
         ];
 
         for (state, angle) in test_angles {
-            cal.record(angle, state);
+            cal.record(erad(angle), state);
         }
 
         let result = cal.finish().unwrap();
@@ -412,12 +413,12 @@ mod tests {
 
         // Verify logical table order
         // HALL_STATE_TABLE[1]=0, [3]=1, [2]=2, [6]=3, [4]=4, [5]=5
-        assert!((table[0] - 0.0).abs() < 0.01); // logical 0 from raw 1
-        assert!((table[1] - 1.0).abs() < 0.01); // logical 1 from raw 3
-        assert!((table[2] - 2.0).abs() < 0.01); // logical 2 from raw 2
-        assert!((table[3] - 3.0).abs() < 0.01); // logical 3 from raw 6
-        assert!((table[4] - 4.0).abs() < 0.01); // logical 4 from raw 4
-        assert!((table[5] - 5.0).abs() < 0.01); // logical 5 from raw 5
+        assert!((table[0] - erad(0.0)).abs() < erad(0.01)); // logical 0 from raw 1
+        assert!((table[1] - erad(1.0)).abs() < erad(0.01)); // logical 1 from raw 3
+        assert!((table[2] - erad(2.0)).abs() < erad(0.01)); // logical 2 from raw 2
+        assert!((table[3] - erad(3.0)).abs() < erad(0.01)); // logical 3 from raw 6
+        assert!((table[4] - erad(4.0)).abs() < erad(0.01)); // logical 4 from raw 4
+        assert!((table[5] - erad(5.0)).abs() < erad(0.01)); // logical 5 from raw 5
     }
 
     #[test]
@@ -425,14 +426,14 @@ mod tests {
         let mut cal = HallCalibrator::with_min_samples(2);
 
         // Record angles near 0/2π boundary for state 1
-        cal.record(TAU - 0.1, 1);
-        cal.record(0.0, 1);
-        cal.record(0.1, 1);
+        cal.record(erad(TAU - 0.1), 1);
+        cal.record(erad(0.0), 1);
+        cal.record(erad(0.1), 1);
 
         // Record other states
         for state in [2, 3, 4, 5, 6] {
             for _ in 0..3 {
-                cal.record(f32::from(state) * 0.5, state);
+                cal.record(erad(f32::from(state) * 0.5), state);
             }
         }
 
@@ -440,7 +441,7 @@ mod tests {
         let angle = result.angle_for_raw_state(1).unwrap();
 
         // Should be close to 0 or TAU (they're equivalent)
-        let near_zero = !(0.2..=TAU - 0.2).contains(&angle);
-        assert!(near_zero, "Angle {angle} should be near 0 or 2π");
+        let near_zero = !(0.2..=TAU - 0.2).contains(&angle.value);
+        assert!(near_zero, "Angle {angle:?} should be near 0 or 2π");
     }
 }

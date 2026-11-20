@@ -18,7 +18,7 @@
 ///
 /// const BOARD: BoardConfig = BoardConfig {
 ///     calib: BoardCalib {
-///         shunt_ohms: 0.003,           // 3mΩ shunts
+///         shunt_ohms: oxifoc_core::units::ohms(0.003), // 3mΩ shunts
 ///         amp_gain: 16.0,              // 16x OPAMP gain
 ///         adc_vref_mv: 3300,           // 3.3V reference
 ///         adc_max_counts: 4095,        // 12-bit ADC
@@ -147,7 +147,7 @@ impl BoardConfig {
         let mut scale = self.calib.adc_vref_mv as f32
             / 1000.0
             / f32::from(self.calib.adc_max_counts)
-            / self.calib.shunt_ohms
+            / self.calib.shunt_ohms.value
             / self.calib.amp_gain;
         if self.calib.invert_current_sign {
             scale = -scale;
@@ -276,11 +276,12 @@ impl NtcConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::ohms;
 
     const TEST_BOARD: BoardConfig = BoardConfig {
         current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
         calib: crate::types::BoardCalib {
-            shunt_ohms: 0.003,
+            shunt_ohms: ohms(0.003),
             amp_gain: 16.0,
             adc_vref_mv: 3300,
             adc_max_counts: 4095,

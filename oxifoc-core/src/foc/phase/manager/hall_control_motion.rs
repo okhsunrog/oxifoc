@@ -4,26 +4,41 @@ use crate::foc::angle_difference;
 use crate::foc::fast_math::u64_to_f32;
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::ControlAngleSample;
+use crate::units::{
+    ConstZero, ElectricalAngle, ElectricalAngularVelocity, Time, ToBits, erad, erad_per_s, seconds,
+};
 use core::f32::consts::PI;
 
 // At 20 kHz this is alpha = 0.01, matching the corrected-angle speed
 // filter used for VESC's feedforward. The time constant, not a fixed alpha,
 // also applies when Stopped decimates phase updates or the loop rate changes.
-const VELOCITY_TAU_S: f32 = 0.00495;
+const VELOCITY_TAU: Time = seconds(0.00495);
+
+/// Longest observation gap over which a derivative is still taken.
+const MAX_GAP: Time = seconds(4.0 * 0.00495);
+
+/// Possible travel at which a wrapped angle could alias a half turn.
+const HALF_TURN: ElectricalAngle = erad(PI);
 
 /// `raw` and `applied` have already passed the finite checks in `observe`.
 /// Positive float bit patterns are ordered like unsigned integers. Preserve
 /// `f32::max` ignoring a NaN stored state, and retain infinity for the guard.
 #[inline(always)]
-fn max_speed_magnitude(raw: f32, applied: f32, stored: f32) -> f32 {
-    let magnitude = |value: f32| value.to_bits() & 0x7fff_ffff;
+fn max_speed_magnitude(
+    raw: ElectricalAngularVelocity,
+    applied: ElectricalAngularVelocity,
+    stored: ElectricalAngularVelocity,
+) -> ElectricalAngularVelocity {
+    let magnitude = |value: ElectricalAngularVelocity| value.to_bits() & 0x7fff_ffff;
     let stored = magnitude(stored);
     let stored = if stored > f32::INFINITY.to_bits() {
         0
     } else {
         stored
     };
-    f32::from_bits(magnitude(raw).max(magnitude(applied)).max(stored))
+    erad_per_s(f32::from_bits(
+        magnitude(raw).max(magnitude(applied)).max(stored),
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -33,7 +48,7 @@ enum Baseline {
     /// A source discontinuity: seed from the currently applied control speed.
     Reenter,
     Tracking {
-        angle: f32,
+        angle: ElectricalAngle,
         ticks: u64,
     },
 }
@@ -42,8 +57,8 @@ enum Baseline {
 /// remains in the sensor for interpolation, health checks and diagnostics.
 pub(super) struct HallControlMotion {
     baseline: Baseline,
-    velocity: f32,
-    seconds_per_tick: f32,
+    velocity: ElectricalAngularVelocity,
+    seconds_per_tick: Time,
     reference_epoch: u32,
 }
 
@@ -51,27 +66,27 @@ impl Default for HallControlMotion {
     fn default() -> Self {
         Self {
             baseline: Baseline::Cold,
-            velocity: 0.0,
-            seconds_per_tick: 1.0e-6,
+            velocity: ElectricalAngularVelocity::ZERO,
+            seconds_per_tick: seconds(1.0e-6),
             reference_epoch: 0,
         }
     }
 }
 
 impl HallControlMotion {
-    pub(super) fn velocity(&self) -> f32 {
+    pub(super) fn velocity(&self) -> ElectricalAngularVelocity {
         self.velocity
     }
 
     pub(super) fn reset(&mut self) {
         self.baseline = Baseline::Cold;
-        self.velocity = 0.0;
+        self.velocity = ElectricalAngularVelocity::ZERO;
     }
 
     pub(super) fn set_ticks_per_sec(&mut self, ticks_per_sec: u64) {
         #[allow(clippy::cast_precision_loss)]
         {
-            self.seconds_per_tick = 1.0 / ticks_per_sec.max(1) as f32;
+            self.seconds_per_tick = seconds(1.0 / ticks_per_sec.max(1) as f32);
         }
         self.reset();
     }
@@ -95,7 +110,7 @@ impl HallControlMotion {
         &mut self,
         observation: ControlAngleSample,
         now_ticks: u64,
-        applied_velocity: f32,
+        applied_velocity: ElectricalAngularVelocity,
     ) -> Option<PhaseOutput> {
         let ControlAngleSample {
             sample,
@@ -112,10 +127,10 @@ impl HallControlMotion {
         let applied_velocity = if applied_velocity.is_finite() {
             applied_velocity
         } else {
-            0.0
+            ElectricalAngularVelocity::ZERO
         };
         match self.baseline {
-            Baseline::Cold => self.velocity = 0.0,
+            Baseline::Cold => self.velocity = ElectricalAngularVelocity::ZERO,
             Baseline::Reenter => self.velocity = applied_velocity,
             Baseline::Tracking { angle, ticks } => {
                 let elapsed_ticks = now_ticks.wrapping_sub(ticks);
@@ -130,15 +145,15 @@ impl HallControlMotion {
                     // timestamp appears in the opposite half of the counter and
                     // reanchors without inventing an angular derivative.
                     if elapsed_ticks > 0 && elapsed_ticks <= u64::MAX / 2 {
-                        let elapsed_s = u64_to_f32(elapsed_ticks) * self.seconds_per_tick;
+                        let elapsed = u64_to_f32(elapsed_ticks) * self.seconds_per_tick;
                         let possible_travel =
                             max_speed_magnitude(sample.omega, applied_velocity, self.velocity)
-                                * elapsed_s;
+                                * elapsed;
                         // A long observation gap or possible half-turn aliases a
                         // wrapped angle. Hold the applied speed and reanchor;
                         // never infer missing turns. This continuity guard is
                         // separate from the driver's deadline protection.
-                        if elapsed_s > 4.0 * VELOCITY_TAU_S || possible_travel >= PI {
+                        if elapsed > MAX_GAP || possible_travel >= HALF_TURN {
                             self.velocity = applied_velocity;
                         } else {
                             #[cfg(feature = "isr-work-events")]
@@ -152,8 +167,8 @@ impl HallControlMotion {
                                 crate::foc::angle_difference_single_turn(sample.angle, angle);
                             #[cfg(not(feature = "bench-hall-single-turn"))]
                             let delta = angle_difference(sample.angle, angle);
-                            self.velocity = (VELOCITY_TAU_S * self.velocity + delta)
-                                / (VELOCITY_TAU_S + elapsed_s);
+                            self.velocity =
+                                (VELOCITY_TAU * self.velocity + delta) / (VELOCITY_TAU + elapsed);
                         }
                     } else if elapsed_ticks != 0 {
                         self.velocity = applied_velocity;

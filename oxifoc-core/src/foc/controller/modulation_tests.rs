@@ -1,10 +1,12 @@
 //! Differential oracle retaining the controller math before modulation preparation.
 use super::*;
 use crate::foc::trig::FastSinCos;
+use crate::units::{amps, seconds};
+use crate::units::{erad, erad_per_s, henries, ohms, rad_per_s, volts, webers};
 
 impl<M: Modulator, S: SinCos> FocController<M, S> {
     fn legacy_voltage_limit(&self) -> f32 {
-        self.vbus
+        self.vbus.value
             * self
                 .modulation
                 .requested
@@ -59,15 +61,25 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // state (i → i*), outside the loop dynamically.
         let (vd_ff, vq_ff) = match self.decoupling {
             Some(d) => (
-                -vel_rad_s * d.lq_h * iq_target,
-                vel_rad_s * (d.ld_h * id_target + d.flux_linkage_wb),
+                -vel_rad_s * d.lq.value * iq_target,
+                vel_rad_s * (d.ld.value * id_target + d.flux_linkage.value),
             ),
             None => (0.0, 0.0),
         };
 
         // Current controllers (dq frame) + feedforward + optional HFI injection
-        let vd_raw = self.id_pi.update(id_target, id, dt) + vd_ff + vd_inject;
-        let vq_raw = self.iq_pi.update(iq_target, iq, dt) + vq_ff + vq_inject;
+        let vd_raw = self
+            .id_pi
+            .update(amps(id_target), amps(id), seconds(dt))
+            .value
+            + vd_ff
+            + vd_inject;
+        let vq_raw = self
+            .iq_pi
+            .update(amps(iq_target), amps(iq), seconds(dt))
+            .value
+            + vq_ff
+            + vq_inject;
 
         // Circular voltage limit (modulation limit ∧ duty cap) with d-axis
         // PRIORITY: the d loop keeps the current vector on its axis
@@ -87,10 +99,10 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // (the old PI-share rule peaked at 15 A vs 6 A on a 2 V back-EMF
         // feedforward error).
         if vd != vd_raw {
-            self.id_pi.apply_anti_windup(vd - vd_raw);
+            self.id_pi.apply_anti_windup(volts(vd - vd_raw));
         }
         if vq != vq_raw {
-            self.iq_pi.apply_anti_windup(vq - vq_raw);
+            self.iq_pi.apply_anti_windup(volts(vq - vq_raw));
         }
         // Within 2% of the limit counts too: at the limit the q demand
         // hovers across it cycle to cycle, and an outer loop must not
@@ -107,8 +119,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // voltage acts ~one PWM period after the currents were sampled and
         // the rotor will have moved (see `set_actuation_advance`).
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
-        let (v_alpha, v_beta) = self.apply_actuation_advance(v_alpha, v_beta);
-        let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus;
+        let (v_alpha, v_beta) = self.apply_actuation_advance(volts(v_alpha), volts(v_beta));
+        let (v_alpha, v_beta) = (v_alpha.value, v_beta.value);
+        let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus.value;
         // Dead-time signs from the REFERENCE current vector: in closed loop
         // the current follows it, and unlike the measured current it does
         // not flip sign on ADC noise at low current (sim: with ±0.15 A of
@@ -119,31 +132,31 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let (mod_a, mod_b) = Self::apply_dead_time_comp(
             v_alpha * volts_to_mod,
             v_beta * volts_to_mod,
-            i_ref_alpha,
-            i_ref_beta,
+            amps(i_ref_alpha),
+            amps(i_ref_beta),
             self.dead_time_comp,
-            self.dead_time_current_inv_a,
+            self.dead_time_current_inv,
         );
         let duties = self.legacy_duties_for(mod_a, mod_b, max_duty);
         self.bus_mod_q = QAxisModulation::from_pwm(duties, max_duty, sin_theta, cos_theta);
 
         FocOutput {
-            ia,
-            ib,
-            ic,
-            angle_rad,
-            i_alpha,
-            i_beta,
-            id,
-            iq,
-            vd,
-            vq,
-            v_alpha,
-            v_beta,
+            ia: amps(ia),
+            ib: amps(ib),
+            ic: amps(ic),
+            angle: erad(angle_rad),
+            i_alpha: amps(i_alpha),
+            i_beta: amps(i_beta),
+            id: amps(id),
+            iq: amps(iq),
+            vd: volts(vd),
+            vq: volts(vq),
+            v_alpha: volts(v_alpha),
+            v_beta: volts(v_beta),
             duties,
             // The controller only sees the angle; the driver (or the sim)
             // stamps the active source's velocity on top.
-            velocity_rad_s: 0.0,
+            velocity: erad_per_s(0.0),
         }
     }
 
@@ -172,22 +185,22 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         };
 
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
-        let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus;
+        let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus.value;
         let (mod_a, mod_b) = Self::apply_dead_time_comp(
             v_alpha * volts_to_mod,
             v_beta * volts_to_mod,
-            i_alpha,
-            i_beta,
+            amps(i_alpha),
+            amps(i_beta),
             self.dead_time_comp,
-            self.dead_time_current_inv_a,
+            self.dead_time_current_inv,
         );
         let duties = self.legacy_duties_for(mod_a, mod_b, max_duty);
         FocOutput {
-            angle_rad,
-            vd,
-            vq,
-            v_alpha,
-            v_beta,
+            angle: erad(angle_rad),
+            vd: volts(vd),
+            vq: volts(vq),
+            v_alpha: volts(v_alpha),
+            v_beta: volts(v_beta),
             duties,
             ..Default::default()
         }
@@ -205,19 +218,19 @@ const _: () = {
 fn assert_output(actual: FocOutput, expected: FocOutput) {
     let floats = |out: FocOutput| {
         [
-            out.ia,
-            out.ib,
-            out.ic,
-            out.angle_rad,
-            out.i_alpha,
-            out.i_beta,
-            out.id,
-            out.iq,
-            out.vd,
-            out.vq,
-            out.v_alpha,
-            out.v_beta,
-            out.velocity_rad_s,
+            out.ia.value,
+            out.ib.value,
+            out.ic.value,
+            out.angle.value,
+            out.i_alpha.value,
+            out.i_beta.value,
+            out.id.value,
+            out.iq.value,
+            out.vd.value,
+            out.vq.value,
+            out.v_alpha.value,
+            out.v_beta.value,
+            out.velocity.value,
         ]
         .map(f32::to_bits)
     };
@@ -270,7 +283,7 @@ fn prepared_cap_preserves_rounding_for_every_period_and_invalid_setting() {
 #[test]
 fn setters_keep_effective_limit_coherent_at_equal_and_nonfinite_boundaries() {
     for fraction in [0.5, 0.95, 1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        let mut foc = Controller::new(24.0);
+        let mut foc = Controller::new(volts(24.0));
         foc.set_duty_cap(fraction);
         let cap_limit = foc.modulation.duty_fraction * FRAC_1_SQRT_3;
         for requested in [
@@ -287,9 +300,9 @@ fn setters_keep_effective_limit_coherent_at_equal_and_nonfinite_boundaries() {
         ] {
             foc = foc.with_modulation_limit(requested);
             for vbus in [0.0, -1.0, 0.5, 12.0, 24.0, 60.0, f32::NAN, f32::INFINITY] {
-                foc.set_vbus(vbus);
+                foc.set_vbus(volts(vbus));
                 assert_eq!(
-                    foc.voltage_limit().to_bits(),
+                    foc.voltage_limit().value.to_bits(),
                     foc.legacy_voltage_limit().to_bits()
                 );
             }
@@ -303,18 +316,23 @@ fn setters_keep_effective_limit_coherent_at_equal_and_nonfinite_boundaries() {
                 (0.73 * f32::from(period)) as u16
             );
             assert_eq!(
-                foc.voltage_limit().to_bits(),
+                foc.voltage_limit().value.to_bits(),
                 foc.legacy_voltage_limit().to_bits()
             );
         }
     }
     for foc in [
-        Controller::new(24.0),
-        Controller::from_motor_params(0.05, 0.0001, 24.0),
-        Controller::from_motor_params_with_bw(0.05, 0.0001, 24.0, 1500.0),
+        Controller::new(volts(24.0)),
+        Controller::from_motor_params(ohms(0.05), henries(0.0001), volts(24.0)),
+        Controller::from_motor_params_with_bw(
+            ohms(0.05),
+            henries(0.0001),
+            volts(24.0),
+            rad_per_s(1500.0),
+        ),
     ] {
         assert_eq!(
-            foc.voltage_limit().to_bits(),
+            foc.voltage_limit().value.to_bits(),
             foc.legacy_voltage_limit().to_bits()
         );
         assert_eq!(foc.modulation.pwm_cap(4199), 4199);
@@ -342,30 +360,33 @@ fn configure_cycle(foc: Controller, cycle: usize) -> Controller {
         foc.set_duty_cap(caps[(cycle / 19) % caps.len()]);
     }
     let buses = [0.0, 0.49, 0.5, 12.0, 24.0, 48.0, f32::NAN, f32::INFINITY];
-    foc.set_vbus(buses[(cycle / 23) % buses.len()]);
+    foc.set_vbus(volts(buses[(cycle / 23) % buses.len()]));
     if cycle.is_multiple_of(31) {
         foc.reset();
     }
     if cycle.is_multiple_of(37) {
         foc.set_dead_time_comp(800, 20_000);
         foc.set_dead_time_comp_factor(if cycle.is_multiple_of(74) { 0.0 } else { 0.016 });
-        foc.set_dead_time_comp_linear_region(1.0).unwrap();
-        assert!(foc.set_dead_time_comp_linear_region(f32::NAN).is_err());
+        foc.set_dead_time_comp_linear_region(amps(1.0)).unwrap();
+        assert!(
+            foc.set_dead_time_comp_linear_region(amps(f32::NAN))
+                .is_err()
+        );
     }
-    foc.set_actuation_advance(match cycle % 3 {
+    foc.set_actuation_advance(erad(match cycle % 3 {
         0 => 0.2,
         1 => -0.2,
         _ => f32::NAN,
-    });
+    }));
     foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
     foc.set_decoupling(if cycle.is_multiple_of(3) {
         None
     } else {
         Some(Decoupling {
-            ld_h: 0.00008,
-            lq_h: 0.00012,
-            flux_linkage_wb: 0.004,
-            resistance_ohm: 0.05,
+            ld: henries(0.00008),
+            lq: henries(0.00012),
+            flux_linkage: webers(0.004),
+            resistance: ohms(0.05),
         })
     });
     foc.set_current_sense_topology(if cycle.is_multiple_of(5) {
@@ -378,8 +399,8 @@ fn configure_cycle(foc: Controller, cycle: usize) -> Controller {
 
 #[test]
 fn differential_trajectories_keep_priority_antiwindup_duties_and_fresh_vbus() {
-    let mut cached = Controller::new(24.0);
-    let mut legacy = Controller::new(24.0);
+    let mut cached = Controller::new(volts(24.0));
+    let mut legacy = Controller::new(volts(24.0));
     for cycle in 0..4_000 {
         cached = configure_cycle(cached, cycle);
         legacy = configure_cycle(legacy, cycle);
@@ -408,19 +429,28 @@ fn differential_trajectories_keep_priority_antiwindup_duties_and_fresh_vbus() {
         } else {
             0.0001
         };
-        let actual =
-            cached.step_with_injection(currents, angle, 1500.0, id, iq, vd_inj, vq_inj, period, dt);
+        let actual = cached.step_with_injection(
+            (amps(currents.0), amps(currents.1), amps(currents.2)),
+            erad(angle),
+            erad_per_s(1500.0),
+            amps(id),
+            amps(iq),
+            volts(vd_inj),
+            volts(vq_inj),
+            period,
+            seconds(dt),
+        );
         let expected = legacy.legacy_step_with_injection(
             currents, angle, 1500.0, id, iq, vd_inj, vq_inj, period, dt,
         );
         assert_output(actual, expected);
         assert_eq!(
-            cached.id_pi.get_integral().to_bits(),
-            legacy.id_pi.get_integral().to_bits()
+            cached.id_pi.get_integral().value.to_bits(),
+            legacy.id_pi.get_integral().value.to_bits()
         );
         assert_eq!(
-            cached.iq_pi.get_integral().to_bits(),
-            legacy.iq_pi.get_integral().to_bits()
+            cached.iq_pi.get_integral().value.to_bits(),
+            legacy.iq_pi.get_integral().value.to_bits()
         );
         assert_eq!(
             cached.q_voltage_clip().to_bits(),
@@ -431,7 +461,14 @@ fn differential_trajectories_keep_priority_antiwindup_duties_and_fresh_vbus() {
             legacy.bus_mod_q().coefficient().to_bits()
         );
         assert_output(
-            cached.apply_dq(id, iq, angle, currents.0, currents.1, period),
+            cached.apply_dq(
+                volts(id),
+                volts(iq),
+                erad(angle),
+                amps(currents.0),
+                amps(currents.1),
+                period,
+            ),
             legacy.legacy_apply_dq(id, iq, angle, currents.0, currents.1, period),
         );
     }
@@ -439,7 +476,7 @@ fn differential_trajectories_keep_priority_antiwindup_duties_and_fresh_vbus() {
 
 #[test]
 fn concurrent_shared_voltage_calls_keep_distinct_periods_coherent() {
-    let mut foc = Controller::new(24.0).with_modulation_limit(0.4);
+    let mut foc = Controller::new(volts(24.0)).with_modulation_limit(0.4);
     foc.set_duty_cap(0.73);
     foc.set_dead_time_comp_factor(0.016);
     let periods = [0, 1, 2, 999, 4199, 8399, 32767, u16::MAX];
@@ -458,7 +495,14 @@ fn concurrent_shared_voltage_calls_keep_distinct_periods_coherent() {
                         (-40.0, 30.0)
                     };
                     assert_output(
-                        foc.apply_dq(vd, vq, angle, 2.0, -3.0, period),
+                        foc.apply_dq(
+                            volts(vd),
+                            volts(vq),
+                            erad(angle),
+                            amps(2.0),
+                            amps(-3.0),
+                            period,
+                        ),
                         foc.legacy_apply_dq(vd, vq, angle, 2.0, -3.0, period),
                     );
                 }

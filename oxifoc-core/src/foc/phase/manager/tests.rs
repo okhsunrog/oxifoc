@@ -7,6 +7,8 @@ use crate::foc::phase::provider::{PhaseInput, PhaseProvider};
 use crate::foc::phase::source::PhaseSourceError;
 use crate::foc::sensors::AngleSample;
 use crate::foc::wrap_angle;
+use crate::units::{ElectricalAngle, per_second, quantity};
+use crate::units::{amps, erad, erad_per_s, henries, ohms, seconds, volts, webers};
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::VirtualMotorOutput;
 use core::f32::consts::TAU;
@@ -17,10 +19,14 @@ fn startup_tracker_releases_a_prior_acquisition_on_a_flying_catch() {
 
     let dt = 1.0 / 20_000.0;
     let mut manager = PhaseManager::sensorless();
-    manager.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 50e-6, 0.005)));
+    manager.set_observer(Observer::BackEmf(BackEmfObserver::new(
+        ohms(0.1),
+        henries(50e-6),
+        webers(0.005),
+    )));
     manager.set_source(PhaseSource::Observer).unwrap();
-    manager.set_phase_tracker(100.0, 1.2);
-    manager.startup.begin_cold_start(1.0, 1.0);
+    manager.set_phase_tracker(per_second(100.0), 1.2);
+    manager.startup.begin_cold_start(erad(1.0), 1.0);
     manager.tracker.startup_tracking = true;
     manager.tracker.active = true;
     let (mut angle, mut alpha, mut beta) = (0.3_f32, 0.0, 0.0);
@@ -33,9 +39,9 @@ fn startup_tracker_releases_a_prior_acquisition_on_a_flying_catch() {
         }
         manager.update(
             &PhaseInput {
-                i_alpha: alpha,
-                i_beta: beta,
-                dt,
+                i_alpha: amps(alpha),
+                i_beta: amps(beta),
+                dt: seconds(dt),
                 ..Default::default()
             },
             cycle * 50,
@@ -44,7 +50,7 @@ fn startup_tracker_releases_a_prior_acquisition_on_a_flying_catch() {
             assert!(!manager.tracker.startup_tracking);
             assert!(
                 angle_difference(manager.output.angle, manager.observer.phase().unwrap()).abs()
-                    < 0.001
+                    < erad(0.001)
             );
             return;
         }
@@ -59,26 +65,37 @@ fn startup_tracker_leaves_the_initial_forced_ramp_direct() {
 
     let dt = 1.0 / 20_000.0;
     let mut manager = PhaseManager::sensorless();
-    manager.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 50e-6, 0.005)));
+    manager.set_observer(Observer::BackEmf(BackEmfObserver::new(
+        ohms(0.1),
+        henries(50e-6),
+        webers(0.005),
+    )));
     manager.set_source(PhaseSource::Observer).unwrap();
-    manager.set_phase_tracker(100.0, 1.2);
-    manager.startup.begin_cold_start(1.0, 1.0);
+    manager.set_phase_tracker(per_second(100.0), 1.2);
+    manager.startup.begin_cold_start(erad(1.0), 1.0);
     for _ in 0..32 {
         assert_eq!(
-            manager
-                .startup
-                .feed_deadshort(0.0, 0.0, dt, 0.1, 50e-6, 0.005),
+            manager.startup.feed_deadshort(
+                amps(0.0),
+                amps(0.0),
+                seconds(dt),
+                ohms(0.1),
+                henries(50e-6),
+                webers(0.005)
+            ),
             DeadshortResult::Probing
         );
     }
-    manager.startup.tick(dt, 1.5, false, 0.0);
+    manager
+        .startup
+        .tick(seconds(dt), amps(1.5), false, erad_per_s(0.0));
     manager.tracker.startup_tracking = true;
     let expected = PhaseOutput {
         angle: manager.startup.angle(),
         velocity: manager.startup.velocity(),
     };
     assert_eq!(
-        manager.compute_phase_with_fallback(None, None, None, dt, false),
+        manager.compute_phase_with_fallback(None, None, None, seconds(dt), false),
         expected
     );
     assert!(!manager.tracker.active);
@@ -88,24 +105,24 @@ fn startup_tracker_leaves_the_initial_forced_ramp_direct() {
 fn startup_tracker_acquires_across_wrap_without_reseeding_the_output() {
     let dt = 1.0 / 20_000.0;
     let mut manager = PhaseManager::sensorless();
-    manager.set_phase_tracker(100.0, 1.2);
+    manager.set_phase_tracker(per_second(100.0), 1.2);
     manager.output = PhaseOutput {
-        angle: 6.2,
-        velocity: 150.0,
+        angle: erad(6.2),
+        velocity: erad_per_s(150.0),
     };
     manager.tracker.startup_tracking = true;
     let mut raw = PhaseOutput {
-        angle: 1.2,
-        velocity: 150.0,
+        angle: erad(1.2),
+        velocity: erad_per_s(150.0),
     };
-    let first = manager.tracker_output(raw, dt);
-    assert!(angle_difference(first.angle, 6.2 + 150.0 * dt).abs() < 0.01);
+    let first = manager.tracker_output(raw, seconds(dt));
+    assert!(angle_difference(first.angle, erad(6.2 + 150.0 * dt)).abs() < erad(0.01));
     manager.output = first;
     for _ in 0..2_000 {
-        raw.angle = wrap_angle(raw.angle + raw.velocity * dt);
-        manager.output = manager.tracker_output(raw, dt);
+        raw.angle = wrap_angle(raw.angle + raw.velocity * seconds(dt));
+        manager.output = manager.tracker_output(raw, seconds(dt));
     }
-    assert!(angle_difference(manager.output.angle, raw.angle).abs() < 0.1);
+    assert!(angle_difference(manager.output.angle, raw.angle).abs() < erad(0.1));
     assert!(!manager.tracker.startup_tracking);
 }
 
@@ -137,7 +154,7 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
     use crate::foc::phase::{BackEmfObserver, Observer};
     use crate::storage::HallCalibrationConfig;
     let mut config = HallCalibrationConfig::default();
-    config.angles[1] = 1.1;
+    config.angles[1] = erad(1.1);
     let prepared = PreparedHallCalibration::from_config(&config).unwrap();
     for (source, hall_active) in [
         (PhaseSource::Hall, true),
@@ -145,8 +162,8 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
         (PhaseSource::Observer, false),
         (
             PhaseSource::HallToObserver {
-                blend_low: 100.0,
-                blend_high: 200.0,
+                blend_low: erad_per_s(100.0),
+                blend_high: erad_per_s(200.0),
             },
             true,
         ),
@@ -157,8 +174,8 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
         manager.source = source; // Exercise cached output independently of readiness admission.
         manager.source_usage = SourceUsage::new(source);
         let old = PhaseOutput {
-            angle: 2.0,
-            velocity: 3.0,
+            angle: erad(2.0),
+            velocity: erad_per_s(3.0),
         };
         manager.output = old;
         assert!(PhaseProvider::apply_hall_calibration(
@@ -170,8 +187,8 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
             manager.output,
             if hall_active {
                 PhaseOutput {
-                    angle: 1.1,
-                    velocity: 0.0,
+                    angle: erad(1.1),
+                    velocity: erad_per_s(0.0),
                 }
             } else {
                 old
@@ -184,33 +201,37 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
         let mut hall = HallSensor::new(1_000_000);
         hall.update(1, 0);
         let mut manager = PhaseManager::with_hall(hall);
-        let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
-        observer.force_phase(2.0);
-        observer.set_velocity(speed);
+        let mut observer = BackEmfObserver::new(ohms(0.1), henries(100e-6), webers(0.02));
+        observer.force_phase(erad(2.0));
+        observer.set_velocity(erad_per_s(speed));
         manager.set_observer(Observer::BackEmf(observer));
         let (sin, cos) = 2.0f32.sin_cos();
         manager.update(
             &PhaseInput {
-                v_alpha: -speed * 0.02 * sin,
-                v_beta: speed * 0.02 * cos,
-                dt: 0.00005,
+                v_alpha: volts(-speed * 0.02 * sin),
+                v_beta: volts(speed * 0.02 * cos),
+                dt: seconds(0.00005),
                 ..Default::default()
             },
             50,
         );
         assert!(manager.observer.is_ready());
         manager.source = PhaseSource::HallToObserver {
-            blend_low: 100.0,
-            blend_high: 200.0,
+            blend_low: erad_per_s(100.0),
+            blend_high: erad_per_s(200.0),
         };
         manager.source_usage = SourceUsage::new(manager.source);
         let old = PhaseOutput {
-            angle: 2.5,
-            velocity: speed,
+            angle: erad(2.5),
+            velocity: erad_per_s(speed),
         };
         manager.output = old;
         let observer_before = (manager.observer.phase(), manager.observer.velocity());
-        let weight = compute_blend(observer_before.1.unwrap().abs(), 100.0, 200.0);
+        let weight = compute_blend(
+            observer_before.1.unwrap().abs(),
+            erad_per_s(100.0),
+            erad_per_s(200.0),
+        );
         assert!(PhaseProvider::apply_hall_calibration(
             &mut manager,
             &prepared
@@ -223,11 +244,15 @@ fn hall_reference_reanchors_cached_hall_frame_and_preserves_other_sources() {
             assert_eq!(manager.output, old);
         } else {
             assert!(
-                (manager.output.angle - blend_angles(1.1, observer_before.0.unwrap(), weight))
-                    .abs()
-                    < 1e-5
+                (manager.output.angle
+                    - blend_angles(erad(1.1), observer_before.0.unwrap(), weight))
+                .abs()
+                    < erad(1e-5)
             );
-            assert!((manager.output.velocity - observer_before.1.unwrap() * weight).abs() < 1.0);
+            assert!(
+                (manager.output.velocity - observer_before.1.unwrap() * weight).abs()
+                    < erad_per_s(1.0)
+            );
         }
     }
 }
@@ -239,11 +264,11 @@ fn ready_background_observer_does_not_certify_a_cold_hfi_angle() {
     for source in [
         PhaseSource::Hfi,
         PhaseSource::HfiToObserver {
-            min_vel: 1000.0,
+            min_vel: erad_per_s(1000.0),
             min_confidence: 0.5,
         },
         PhaseSource::HfiToObserverVolts {
-            toggle_v: 10.0,
+            toggle: volts(10.0),
             min_confidence: 0.5,
         },
     ] {
@@ -286,7 +311,7 @@ fn partial_hfi_blend_requires_hfi_but_full_observer_crossover_does_not() {
         mgr.set_observer(Observer::BackEmf(observer));
         mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
         mgr.set_source(PhaseSource::HfiToObserver {
-            min_vel: 1000.0,
+            min_vel: erad_per_s(1000.0),
             min_confidence: 0.5,
         })
         .unwrap();
@@ -305,7 +330,7 @@ fn partial_hfi_blend_requires_hfi_but_full_observer_crossover_does_not() {
     }
 }
 
-/// Phase-tracker shape (see PhaseTracker, TRACKER_KD_TAU_S), measured
+/// Phase-tracker shape (see PhaseTracker, TRACKER_KD_TAU), measured
 /// as amplitude ratios of an injected estimate wobble: the 35-100 Hz
 /// mid-band wobble is attenuated, the unavoidable low-frequency
 /// resonant bump stays mild (a strong peak in the 5-25 Hz band would
@@ -321,10 +346,10 @@ fn phase_tracker_attenuates_wobble_without_resonance_and_bounds_lag() {
         let amp = 0.5f32;
         let omega0 = 1000.0f32;
         let mut m = PhaseManager::sensorless();
-        m.set_phase_tracker(60.0, 1.2);
+        m.set_phase_tracker(per_second(60.0), 1.2);
         m.output = PhaseOutput {
-            angle: 0.0,
-            velocity: omega0,
+            angle: erad(0.0),
+            velocity: erad_per_s(omega0),
         };
         let mut theta_clean = 0.0f32;
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
@@ -333,14 +358,14 @@ fn phase_tracker_attenuates_wobble_without_resonance_and_bounds_lag() {
             #[allow(clippy::cast_precision_loss)]
             let ph = TAU * f_hz * (k as f32) * dt;
             let raw = PhaseOutput {
-                angle: wrap_angle(theta_clean + amp * libm::sinf(ph)),
-                velocity: omega0 + amp * TAU * f_hz * libm::cosf(ph),
+                angle: wrap_angle(erad(theta_clean + amp * libm::sinf(ph))),
+                velocity: erad_per_s(omega0 + amp * TAU * f_hz * libm::cosf(ph)),
             };
-            let out = m.tracker_output(raw, dt);
+            let out = m.tracker_output(raw, seconds(dt));
             if k >= 12_000 {
-                let d = angle_difference(out.angle, theta_clean);
-                lo = lo.min(d);
-                hi = hi.max(d);
+                let d = angle_difference(out.angle, erad(theta_clean));
+                lo = lo.min(d.value);
+                hi = hi.max(d.value);
             }
         }
         (hi - lo) / 2.0 / amp
@@ -357,10 +382,10 @@ fn phase_tracker_attenuates_wobble_without_resonance_and_bounds_lag() {
 
     // Constant-acceleration lag (bench 0.3 A unloaded ~1500 rad/s² el).
     let mut m = PhaseManager::sensorless();
-    m.set_phase_tracker(60.0, 1.2);
+    m.set_phase_tracker(per_second(60.0), 1.2);
     m.output = PhaseOutput {
-        angle: 0.0,
-        velocity: 300.0,
+        angle: erad(0.0),
+        velocity: erad_per_s(300.0),
     };
     let mut theta_clean = 0.0f32;
     let mut vel = 300.0f32;
@@ -369,12 +394,12 @@ fn phase_tracker_attenuates_wobble_without_resonance_and_bounds_lag() {
         vel += 1500.0 * dt;
         theta_clean = wrap_angle(theta_clean + vel * dt);
         let raw = PhaseOutput {
-            angle: theta_clean,
-            velocity: vel,
+            angle: erad(theta_clean),
+            velocity: erad_per_s(vel),
         };
-        let out = m.tracker_output(raw, dt);
+        let out = m.tracker_output(raw, seconds(dt));
         if k >= 11_000 {
-            lag = lag.max(angle_difference(raw.angle, out.angle).abs());
+            lag = lag.max((angle_difference(raw.angle, out.angle).abs()).value);
         }
     }
     assert!(lag < 0.6, "acceleration lag must stay bounded, got {lag}");
@@ -386,10 +411,10 @@ fn phase_tracker_attenuates_wobble_without_resonance_and_bounds_lag() {
     // rad/s of standing frequency deficit; bench gap pinned
     // 0.62–0.67 rad all the way).
     let mut m = PhaseManager::sensorless();
-    m.set_phase_tracker(30.0, 1.2);
+    m.set_phase_tracker(per_second(30.0), 1.2);
     m.output = PhaseOutput {
-        angle: 0.0,
-        velocity: 300.0,
+        angle: erad(0.0),
+        velocity: erad_per_s(300.0),
     };
     let mut theta_clean = 0.0f32;
     let mut vel = 300.0f32;
@@ -398,14 +423,14 @@ fn phase_tracker_attenuates_wobble_without_resonance_and_bounds_lag() {
         vel += 9300.0 * dt;
         theta_clean = wrap_angle(theta_clean + vel * dt);
         let raw = PhaseOutput {
-            angle: theta_clean,
-            velocity: vel,
+            angle: erad(theta_clean),
+            velocity: erad_per_s(vel),
         };
-        let out = m.tracker_output(raw, dt);
+        let out = m.tracker_output(raw, seconds(dt));
         // 8000 steps = 400 ms; the last quarter is well past the
-        // a_est convergence (~3×TRACKER_FF_TAU_S = 90 ms).
+        // a_est convergence (~3×TRACKER_FF_TAU = 90 ms).
         if k >= 6_000 {
-            lag_late = lag_late.max(angle_difference(raw.angle, out.angle).abs());
+            lag_late = lag_late.max((angle_difference(raw.angle, out.angle).abs()).value);
         }
     }
     assert!(
@@ -426,42 +451,42 @@ fn test_sensorless_manager() {
 #[test]
 fn test_manual_angle() {
     let mut phase = PhaseManager::sensorless();
-    phase.set_manual_angle(1.0);
-    assert!((phase.manual_angle() - 1.0).abs() < 1e-6);
+    phase.set_manual_angle(erad(1.0));
+    assert!((phase.manual_angle() - erad(1.0)).abs() < erad(1e-6));
 }
 
 #[test]
 fn test_open_loop() {
     let mut phase = PhaseManager::sensorless();
     phase.set_source(PhaseSource::OpenLoop).unwrap();
-    phase.set_open_loop_velocity(100.0);
+    phase.set_open_loop_velocity(erad_per_s(100.0));
 
     let dt = 0.001;
     phase.update(
         &PhaseInput {
-            dt,
+            dt: seconds(dt),
             ..Default::default()
         },
         0,
     );
 
     // Angle should advance
-    assert!(phase.open_loop_angle() > 0.0);
+    assert!(phase.open_loop_angle() > erad(0.0));
 }
 
 #[test]
 fn test_blend_angles() {
     // Same angle
-    assert!((blend_angles(0.0, 0.0, 0.5) - 0.0).abs() < 1e-6);
+    assert!((blend_angles(erad(0.0), erad(0.0), 0.5) - erad(0.0)).abs() < erad(1e-6));
 
     // 50% blend
-    let result = blend_angles(0.0, 1.0, 0.5);
-    assert!((result - 0.5).abs() < 1e-6);
+    let result = blend_angles(erad(0.0), erad(1.0), 0.5);
+    assert!((result - erad(0.5)).abs() < erad(1e-6));
 
     // Wraparound case: blend from 6.0 to 0.5 (crossing 2π)
-    let result = blend_angles(6.0, 0.5, 0.5);
+    let result = blend_angles(erad(6.0), erad(0.5), 0.5);
     // Should interpolate through 0, not through 3
-    assert!(!(1.0..=5.0).contains(&result));
+    assert!(!(1.0..=5.0).contains(&result.value));
 }
 
 #[test]
@@ -496,7 +521,7 @@ fn injection_forwarded_only_in_hfi_regimes() {
     // (speed < min_vel·(1+CROSSOVER_HYSTERESIS)) and stops above it.
     phase
         .set_source(PhaseSource::HfiToObserver {
-            min_vel: 100.0,
+            min_vel: erad_per_s(100.0),
             min_confidence: 0.5,
         })
         .unwrap();
@@ -524,7 +549,9 @@ fn hfi_to_sensor_is_untrusted_until_hfi_ready_or_sensor_latched() {
     phase.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
 
     phase
-        .set_source(PhaseSource::HfiToEncoder { switch_vel: 100.0 })
+        .set_source(PhaseSource::HfiToEncoder {
+            switch_vel: erad_per_s(100.0),
+        })
         .unwrap();
     assert!(
         !phase.angle_trustworthy(),
@@ -549,7 +576,11 @@ fn hfi_source_rejected_without_hfi_observer() {
         phase.set_source(PhaseSource::Hfi),
         Err(PhaseSourceError::HfiNotConfigured)
     );
-    phase.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 1e-4, 0.01)));
+    phase.set_observer(Observer::BackEmf(BackEmfObserver::new(
+        ohms(0.1),
+        henries(1e-4),
+        webers(0.01),
+    )));
     assert_eq!(
         phase.set_source(PhaseSource::Hfi),
         Err(PhaseSourceError::HfiNotConfigured)
@@ -628,8 +659,8 @@ impl AngleSensor for MockHallSensor {
     fn sample(&self, _now_ticks: u64) -> Option<AngleSample> {
         if self.valid {
             Some(AngleSample {
-                angle: self.angle,
-                omega: self.omega,
+                angle: erad(self.angle),
+                omega: erad_per_s(self.omega),
                 direction: Direction::Clockwise,
             })
         } else {
@@ -637,8 +668,8 @@ impl AngleSensor for MockHallSensor {
         }
     }
 
-    fn read_angle(&self) -> f32 {
-        self.angle
+    fn read_angle(&self) -> ElectricalAngle {
+        erad(self.angle)
     }
 
     fn read_direction(&self) -> Direction {
@@ -654,16 +685,16 @@ impl AngleSensor for MockHallSensor {
 
 fn establish_mock_hall_velocity(phase: &mut PhaseManager<MockHallSensor>, angle: f32, speed: f32) {
     let input = PhaseInput {
-        dt: 0.00005,
+        dt: seconds(0.00005),
         ..Default::default()
     };
     for step in 0..=2000_u64 {
         #[allow(clippy::cast_precision_loss)]
-        let position = wrap_angle(angle + speed * (step as f32 - 2000.0) * input.dt);
+        let position = wrap_angle(angle + speed * (step as f32 - 2000.0) * input.dt.value);
         phase.hall_mut().set_reading(position, speed);
         phase.update(&input, step * 50);
     }
-    assert!((phase.get().velocity - speed).abs() < 0.1);
+    assert!((phase.get().velocity - erad_per_s(speed)).abs() < erad_per_s(0.1));
 }
 
 #[test]
@@ -679,15 +710,18 @@ fn hall_control_speed_and_prediction_do_not_follow_raw_edge_speed_steps() {
     phase.hall_mut().set_reading(1.005, 600.0);
     phase.update(
         &PhaseInput {
-            dt: 0.00005,
+            dt: seconds(0.00005),
             ..Default::default()
         },
         100_050,
     );
     let output = phase.get();
-    assert!((output.velocity - 100.0).abs() < 0.1);
-    assert!(angle_difference(output.angle, 1.01).abs() < 0.00001);
-    assert_eq!(phase.hall().sample(100_050).unwrap().omega, 600.0);
+    assert!((output.velocity - erad_per_s(100.0)).abs() < erad_per_s(0.1));
+    assert!(angle_difference(output.angle, erad(1.01)).abs() < erad(0.00001));
+    assert_eq!(
+        phase.hall().sample(100_050).unwrap().omega,
+        erad_per_s(600.0)
+    );
 }
 
 #[test]
@@ -696,7 +730,7 @@ fn hall_reentry_uses_current_manual_or_fallback_speed_without_differentiating_so
     establish_mock_hall_velocity(&mut phase, 1.0, 100.0);
     phase.hall_mut().set_valid(false);
     let input = PhaseInput {
-        dt: 0.00005,
+        dt: seconds(0.00005),
         ..Default::default()
     };
     phase.update(&input, 100_050);
@@ -710,12 +744,12 @@ fn hall_reentry_uses_current_manual_or_fallback_speed_without_differentiating_so
 
     phase.set_source(PhaseSource::Manual).unwrap();
     phase.update(&input, 100_150);
-    assert_eq!(phase.get().velocity, 0.0);
+    assert_eq!(phase.get().velocity, erad_per_s(0.0));
     phase.set_source(PhaseSource::Hall).unwrap();
     phase.hall_mut().set_reading(5.0, 900.0);
     phase.update(&input, 100_200);
-    assert_eq!(phase.get().velocity, 0.0);
-    assert!(angle_difference(phase.get().angle, 5.0).abs() < 0.00001);
+    assert_eq!(phase.get().velocity, erad_per_s(0.0));
+    assert!(angle_difference(phase.get().angle, erad(5.0)).abs() < erad(0.00001));
 }
 
 #[test]
@@ -726,24 +760,24 @@ fn hall_timebase_reset_is_cold_and_encoder_prediction_still_uses_encoder_speed()
     phase.hall_mut().set_reading(2.0, 100.0);
     phase.update(
         &PhaseInput {
-            dt: 0.00005,
+            dt: seconds(0.00005),
             ..Default::default()
         },
         200_100,
     );
-    assert_eq!(phase.get().velocity, 0.0);
-    assert_eq!(phase.get().angle, 2.0);
+    assert_eq!(phase.get().velocity, erad_per_s(0.0));
+    assert_eq!(phase.get().angle, erad(2.0));
 
     let mut encoder = PhaseManager::with_encoder_only(MockHallSensor::new());
     encoder.update(
         &PhaseInput {
-            dt: 0.0002,
+            dt: seconds(0.0002),
             ..Default::default()
         },
         200,
     );
-    assert_eq!(encoder.get().velocity, 100.0);
-    assert!((encoder.get().angle - 0.52).abs() < 0.00001);
+    assert_eq!(encoder.get().velocity, erad_per_s(100.0));
+    assert!((encoder.get().angle - erad(0.52)).abs() < erad(0.00001));
 }
 
 #[test]
@@ -753,51 +787,75 @@ fn successful_hall_calibration_resets_control_motion_but_rejected_calibration_do
     let mut phase = PhaseManager::with_hall(HallSensor::new(1_000_000));
     let sample = crate::foc::sensors::ControlAngleSample {
         sample: AngleSample {
-            angle: 0.0,
-            omega: 100.0,
+            angle: erad(0.0),
+            omega: erad_per_s(100.0),
             direction: Direction::Clockwise,
         },
         reference_epoch: 0,
     };
-    phase.hall_control_motion.observe(sample, 0, 0.0);
+    phase
+        .hall_control_motion
+        .observe(sample, 0, erad_per_s(0.0));
     let sample = crate::foc::sensors::ControlAngleSample {
         sample: AngleSample {
-            angle: 0.005,
+            angle: erad(0.005),
             ..sample.sample
         },
         ..sample
     };
-    let before = phase.hall_control_motion.observe(sample, 50, 0.0).unwrap();
-    assert!(before.velocity > 0.0);
+    let before = phase
+        .hall_control_motion
+        .observe(sample, 50, erad_per_s(0.0))
+        .unwrap();
+    assert!(before.velocity > erad_per_s(0.0));
     let mut calibration = HallCalibrationResult {
         geometry: None,
-        angles: [-1.0; 8],
+        angles: [erad(-1.0); 8],
         valid: [false; 8],
         valid_count: 0,
     };
     assert!(!phase.apply_hall_calibration(&calibration));
-    let unchanged = phase.hall_control_motion.observe(sample, 50, 20.0).unwrap();
+    let unchanged = phase
+        .hall_control_motion
+        .observe(sample, 50, erad_per_s(20.0))
+        .unwrap();
     assert_eq!(unchanged.velocity, before.velocity);
-    phase.set_hall_calibration([0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    phase.set_hall_calibration([
+        erad(0.0),
+        erad(1.0),
+        erad(2.0),
+        erad(3.0),
+        erad(4.0),
+        erad(5.0),
+    ]);
     assert_eq!(
         phase
             .hall_control_motion
-            .observe(sample, 100, 20.0)
+            .observe(sample, 100, erad_per_s(20.0))
             .unwrap()
             .velocity,
-        0.0
+        erad_per_s(0.0)
     );
-    calibration.angles = [-1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, -1.0];
+    calibration.angles = [
+        erad(-1.0),
+        erad(0.0),
+        erad(1.0),
+        erad(2.0),
+        erad(3.0),
+        erad(4.0),
+        erad(5.0),
+        erad(-1.0),
+    ];
     calibration.valid = [false, true, true, true, true, true, true, false];
     calibration.valid_count = 6;
     assert!(phase.apply_hall_calibration(&calibration));
     assert_eq!(
         phase
             .hall_control_motion
-            .observe(sample, 150, 20.0)
+            .observe(sample, 150, erad_per_s(20.0))
             .unwrap()
             .velocity,
-        0.0
+        erad_per_s(0.0)
     );
 }
 
@@ -842,9 +900,9 @@ fn test_hall_failure_uses_observer_when_available() {
     let mut phase = PhaseManager::with_hall(mock_hall);
 
     // Set up observer with known angle
-    let mut observer = BackEmfObserver::new(1.0, 0.001, 0.01);
-    observer.force_phase(1.5); // Force observer to have this phase
-    observer.set_velocity(200.0);
+    let mut observer = BackEmfObserver::new(ohms(1.0), henries(0.001), webers(0.01));
+    observer.force_phase(erad(1.5)); // Force observer to have this phase
+    observer.set_velocity(erad_per_s(200.0));
     phase.set_observer(Observer::BackEmf(observer));
 
     // Make Hall fail
@@ -853,8 +911,8 @@ fn test_hall_failure_uses_observer_when_available() {
 
     // Should have fallen back to observer
     let output = phase.get();
-    assert!((output.angle - 1.5).abs() < 0.01);
-    assert!((output.velocity - 200.0).abs() < 0.01);
+    assert!((output.angle - erad(1.5)).abs() < erad(0.01));
+    assert!((output.velocity - erad_per_s(200.0)).abs() < erad_per_s(0.01));
 
     // Should not have ObserverNotReady since observer was available
     assert!(!phase.has_fault(PhaseFault::ObserverNotReady));
@@ -875,7 +933,7 @@ fn test_open_loop_override_activates_on_failure() {
     // Continue with Hall failed
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         1000,
@@ -883,23 +941,23 @@ fn test_open_loop_override_activates_on_failure() {
 
     // Open-loop override should be active
     assert!(phase.is_open_loop_override_active());
-    assert!(phase.open_loop_override().timer > 0.0);
+    assert!(phase.open_loop_override().timer > seconds(0.0));
 
     // Output should still be valid (from open-loop override)
     let output = phase.get();
-    assert!(output.velocity > 0.0); // Should have minimum velocity
+    assert!(output.velocity > erad_per_s(0.0)); // Should have minimum velocity
 
     // After more updates, angle should advance
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         2000,
     );
     let output2 = phase.get();
     // Angle should have advanced
-    assert!(output2.angle != output.angle || output.velocity > 0.0);
+    assert!(output2.angle != output.angle || output.velocity > erad_per_s(0.0));
 }
 
 #[test]
@@ -913,12 +971,16 @@ fn unconverged_observer_does_not_take_over_on_hall_failure() {
     // and use the open-loop override instead.
     let mock_hall = MockHallSensor::new();
     let mut phase = PhaseManager::with_hall(mock_hall);
-    phase.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 1e-4, 0.01)));
+    phase.set_observer(Observer::BackEmf(BackEmfObserver::new(
+        ohms(0.1),
+        henries(1e-4),
+        webers(0.01),
+    )));
 
     phase.hall_mut().set_valid(false);
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         0,
@@ -952,7 +1014,7 @@ fn override_makes_angle_untrusted_until_hall_recovers() {
     phase.hall_mut().set_valid(false);
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         1_000,
@@ -968,7 +1030,7 @@ fn override_makes_angle_untrusted_until_hall_recovers() {
     phase.hall_mut().set_valid(true);
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         2_000,
@@ -988,9 +1050,9 @@ fn observer_fallback_keeps_angle_trusted() {
 
     let mock_hall = MockHallSensor::new();
     let mut phase = PhaseManager::with_hall(mock_hall);
-    let mut observer = BackEmfObserver::new(1.0, 0.001, 0.01);
-    observer.force_phase(1.5);
-    observer.set_velocity(200.0);
+    let mut observer = BackEmfObserver::new(ohms(1.0), henries(0.001), webers(0.01));
+    observer.force_phase(erad(1.5));
+    observer.set_velocity(erad_per_s(200.0));
     phase.set_observer(Observer::BackEmf(observer));
 
     phase.hall_mut().set_valid(false);
@@ -1022,7 +1084,7 @@ fn hall_fault_reports_health_kinds() {
     );
 
     // A non-hall source must not report an idle hall as a failure.
-    phase.set_manual_angle(0.0);
+    phase.set_manual_angle(erad(0.0));
     phase.set_source(PhaseSource::Manual).unwrap();
     phase.update(&PhaseInput::default(), 2_000);
     assert_eq!(phase.hall_fault(), None);
@@ -1044,20 +1106,20 @@ fn blend_reseeds_pi_flipped_observer_from_sensor() {
     let mut phase = PhaseManager::with_hall(mock_hall);
     establish_mock_hall_velocity(&mut phase, hall_angle, 400.0);
 
-    let mut observer = BackEmfObserver::new(0.1, 1e-4, 0.01);
-    observer.force_phase(hall_angle + PI); // flipped
-    observer.set_velocity(400.0);
+    let mut observer = BackEmfObserver::new(ohms(0.1), henries(1e-4), webers(0.01));
+    observer.force_phase(erad(hall_angle + PI)); // flipped
+    observer.set_velocity(erad_per_s(400.0));
     phase.set_observer(Observer::BackEmf(observer));
     phase
         .set_source(PhaseSource::HallToObserver {
-            blend_low: 300.0,
-            blend_high: 600.0,
+            blend_low: erad_per_s(300.0),
+            blend_high: erad_per_s(600.0),
         })
         .unwrap();
 
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         100_050,
@@ -1066,10 +1128,10 @@ fn blend_reseeds_pi_flipped_observer_from_sensor() {
     // The output predicts the next sample: hall extrapolated by ω·dt.
     let expected = hall_angle + 400.0 * 0.001;
     let out = phase.get();
-    let err = angle_difference(out.angle, expected).abs();
+    let err = angle_difference(out.angle, erad(expected)).abs();
     assert!(
-        err < 0.3,
-        "output {} drifted {} rad toward the flipped observer (hall predicts {})",
+        err < erad(0.3),
+        "output {:?} drifted {:?} rad toward the flipped observer (hall predicts {:?})",
         out.angle,
         err,
         expected
@@ -1088,17 +1150,21 @@ fn blend_ignores_unready_observer() {
     mock_hall.set_reading(hall_angle, 450.0); // mid blend band
     let mut phase = PhaseManager::with_hall(mock_hall);
     establish_mock_hall_velocity(&mut phase, hall_angle, 450.0);
-    phase.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 1e-4, 0.01)));
+    phase.set_observer(Observer::BackEmf(BackEmfObserver::new(
+        ohms(0.1),
+        henries(1e-4),
+        webers(0.01),
+    )));
     phase
         .set_source(PhaseSource::HallToObserver {
-            blend_low: 300.0,
-            blend_high: 600.0,
+            blend_low: erad_per_s(300.0),
+            blend_high: erad_per_s(600.0),
         })
         .unwrap();
 
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         100_050,
@@ -1107,10 +1173,10 @@ fn blend_ignores_unready_observer() {
     // The output predicts the next sample: hall extrapolated by ω·dt.
     let expected = hall_angle + 450.0 * 0.001;
     let out = phase.get();
-    let err = angle_difference(out.angle, expected).abs();
+    let err = angle_difference(out.angle, erad(expected)).abs();
     assert!(
-        err < 0.05,
-        "output {} must equal the predicted hall angle {} while observer is not ready (err {})",
+        err < erad(0.05),
+        "output {:?} must equal the predicted hall angle {:?} while observer is not ready (err {:?})",
         out.angle,
         expected,
         err
@@ -1150,8 +1216,11 @@ fn run_sensorless_sim(
     };
 
     let mut motor = VirtualMotor::new(params);
-    let mut foc =
-        FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(params.r, params.ld, VBUS);
+    let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+        ohms(params.r),
+        henries(params.ld),
+        volts(VBUS),
+    );
 
     // Prime the hall estimator with the initial rotor state so the
     // manager sees a working sensor from the start.
@@ -1162,13 +1231,13 @@ fn run_sensorless_sim(
 
     let mut mgr = PhaseManager::with_hall(hall);
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        params.lambda,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        webers(params.lambda),
     )));
     mgr.set_source(PhaseSource::HallToObserver {
-        blend_low: 150.0,
-        blend_high: 300.0,
+        blend_low: erad_per_s(150.0),
+        blend_high: erad_per_s(300.0),
     })
     .unwrap();
 
@@ -1187,17 +1256,24 @@ fn run_sensorless_sim(
         }
 
         let angle = mgr.get().angle;
-        let telem = foc.step((out.ia, out.ib, out.ic), angle, 0.0, iq_target, 1000, DT);
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        let telem = foc.step(
+            (amps(out.ia), amps(out.ib), amps(out.ic)),
+            erad(angle.value),
+            amps(0.0),
+            amps(iq_target),
+            1000,
+            seconds(DT),
+        );
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
                 v_alpha: telem.v_alpha,
                 v_beta: telem.v_beta,
-                i_alpha: i_a,
-                i_beta: i_b,
-                dt: DT,
+                i_alpha: amps(i_a),
+                i_beta: amps(i_b),
+                dt: seconds(DT),
             },
             t_us,
         );
@@ -1208,10 +1284,10 @@ fn run_sensorless_sim(
         let new_angle = mgr.get().angle;
         if out.omega_e > 100.0 {
             if let Some(prev) = prev_angle {
-                let jump = angle_difference(new_angle, prev).abs();
-                max_step_at_speed = max_step_at_speed.max(jump);
+                let jump = angle_difference(new_angle, erad(prev)).abs();
+                max_step_at_speed = max_step_at_speed.max(jump.value);
             }
-            prev_angle = Some(new_angle);
+            prev_angle = Some(new_angle.value);
         } else {
             prev_angle = None;
         }
@@ -1240,20 +1316,20 @@ fn closed_loop_hall_to_observer_crossover() {
 
     // Managed angle tracks the true rotor angle.
     let true_angle = wrap_angle(out.angle_rad);
-    let err = angle_difference(mgr.get().angle, true_angle).abs();
+    let err = angle_difference(mgr.get().angle, erad(true_angle)).abs();
     assert!(
-        err < 0.25,
-        "managed angle {} vs true {} (err {} rad)",
+        err < erad(0.25),
+        "managed angle {:?} vs true {:?} (err {:?} rad)",
         mgr.get().angle,
         true_angle,
         err
     );
 
     // Velocity estimate agrees with the true electrical speed.
-    let vel_err = (mgr.get().velocity - out.omega_e).abs() / out.omega_e;
+    let vel_err = (mgr.get().velocity - erad_per_s(out.omega_e)).abs() / out.omega_e;
     assert!(
-        vel_err < 0.10,
-        "managed velocity {} vs true {} ({}%)",
+        vel_err < erad_per_s(0.10),
+        "managed velocity {:?} vs true {:?} ({:?}%)",
         mgr.get().velocity,
         out.omega_e,
         vel_err * 100.0
@@ -1290,10 +1366,10 @@ fn closed_loop_hall_dropout_at_speed() {
 
     // Observer must be carrying the commutation accurately.
     let true_angle = wrap_angle(out.angle_rad);
-    let err = angle_difference(mgr.get().angle, true_angle).abs();
+    let err = angle_difference(mgr.get().angle, erad(true_angle)).abs();
     assert!(
-        err < 0.25,
-        "angle lost after hall dropout: managed {} vs true {} (err {})",
+        err < erad(0.25),
+        "angle lost after hall dropout: managed {:?} vs true {:?} (err {:?})",
         mgr.get().angle,
         true_angle,
         err
@@ -1336,8 +1412,11 @@ fn closed_loop_partial_hall_failure_rides_through_and_names_wire() {
 
     // Commutation stayed accurate and continuous on the observer.
     let true_angle = wrap_angle(out.angle_rad);
-    let err = angle_difference(mgr.get().angle, true_angle).abs();
-    assert!(err < 0.25, "angle err {err} rad with a dead hall wire");
+    let err = angle_difference(mgr.get().angle, erad(true_angle)).abs();
+    assert!(
+        err < erad(0.25),
+        "angle err {err:?} rad with a dead hall wire"
+    );
     let nominal_step = out.omega_e * (1.0 / 20_000.0);
     assert!(
         max_step_at_speed < nominal_step + 0.15,
@@ -1396,7 +1475,7 @@ fn closed_loop_hfi_to_observer_crossover() {
     )));
     mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
     mgr.set_source(PhaseSource::HfiToObserver {
-        min_vel: MIN_VEL,
+        min_vel: erad_per_s(MIN_VEL),
         min_confidence: 0.5,
     })
     .unwrap();
@@ -1443,13 +1522,13 @@ fn closed_loop_hfi_to_observer_crossover() {
             1000,
             DT,
         );
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha,
-                v_beta: telem.v_beta,
+                v_alpha: telem.v_alpha.value,
+                v_beta: telem.v_beta.value,
                 i_alpha: i_a,
                 i_beta: i_b,
                 dt: DT,
@@ -1602,7 +1681,7 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
     )));
     mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
     mgr.set_source(PhaseSource::HfiToObserver {
-        min_vel: MIN_VEL,
+        min_vel: erad_per_s(MIN_VEL),
         min_confidence: 0.5,
     })
     .unwrap();
@@ -1647,13 +1726,13 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
             1000,
             DT,
         );
-        out = motor.step(telem.v_alpha, telem.v_beta, load, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha,
-                v_beta: telem.v_beta,
+                v_alpha: telem.v_alpha.value,
+                v_beta: telem.v_beta.value,
                 i_alpha: i_a,
                 i_beta: i_b,
                 dt: DT,
@@ -1795,13 +1874,13 @@ fn closed_loop_hfi_saliency_collapse_loses_tracking_silently() {
                 1000,
                 DT,
             );
-            out = motor.step(telem.v_alpha, telem.v_beta, load, DT);
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
 
             let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
             mgr.update(
                 &PhaseInput {
-                    v_alpha: telem.v_alpha,
-                    v_beta: telem.v_beta,
+                    v_alpha: telem.v_alpha.value,
+                    v_beta: telem.v_beta.value,
                     i_alpha: i_a,
                     i_beta: i_b,
                     dt: DT,
@@ -1891,7 +1970,7 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
     )));
     mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
     mgr.set_source(PhaseSource::HfiToObserverVolts {
-        toggle_v: TOGGLE_V,
+        toggle: volts(TOGGLE_V),
         min_confidence: 0.5,
     })
     .unwrap();
@@ -1926,13 +2005,13 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
             1000,
             DT,
         );
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha,
-                v_beta: telem.v_beta,
+                v_alpha: telem.v_alpha.value,
+                v_beta: telem.v_beta.value,
                 i_alpha: i_a,
                 i_beta: i_b,
                 dt: DT,
@@ -1990,7 +2069,7 @@ fn no_hall_faults_in_sources_that_ignore_hall() {
 
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         1000,
@@ -2015,7 +2094,7 @@ fn test_open_loop_override_deactivates_when_observer_ready() {
     phase.hall_mut().set_valid(false);
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         0,
@@ -2024,15 +2103,15 @@ fn test_open_loop_override_deactivates_when_observer_ready() {
     assert!(phase.is_open_loop_override_active());
 
     // Now configure an observer with valid phase
-    let mut observer = BackEmfObserver::new(1.0, 0.001, 0.01);
-    observer.force_phase(2.0);
-    observer.set_velocity(300.0);
+    let mut observer = BackEmfObserver::new(ohms(1.0), henries(0.001), webers(0.01));
+    observer.force_phase(erad(2.0));
+    observer.set_velocity(erad_per_s(300.0));
     phase.set_observer(Observer::BackEmf(observer));
 
     // Update - observer should take over and deactivate open-loop override
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         1000,
@@ -2044,7 +2123,7 @@ fn test_open_loop_override_deactivates_when_observer_ready() {
     // Output should come from observer (velocity matches)
     // Note: angle may have drifted slightly due to update() but velocity should match
     let output = phase.get();
-    assert!((output.velocity - 300.0).abs() < 10.0); // Velocity should be from observer
+    assert!((output.velocity - erad_per_s(300.0)).abs() < erad_per_s(10.0)); // Velocity should be from observer
 }
 
 /// Switching to a non-hall source must clear a live open-loop override:
@@ -2061,7 +2140,7 @@ fn set_source_clears_stranded_open_loop_override() {
     phase.hall_mut().set_valid(false);
     phase.update(
         &PhaseInput {
-            dt: 0.001,
+            dt: seconds(0.001),
             ..Default::default()
         },
         0,
@@ -2092,10 +2171,10 @@ fn model_replacement_preserves_hardware_source_and_clears_partial_estimators() {
     use crate::storage::{MotorParamsConfig, RuntimeConfig};
     let mut config = RuntimeConfig {
         motor_params: Some(MotorParamsConfig {
-            resistance_ohm: 0.03,
-            inductance_d_h: 18e-6,
-            inductance_q_h: 28e-6,
-            flux_linkage_wb: 0.0032,
+            resistance: ohms(0.03),
+            inductance_d: henries(18e-6),
+            inductance_q: henries(28e-6),
+            flux_linkage: webers(0.0032),
             pole_pairs: 7,
             ..MotorParamsConfig::default()
         }),
@@ -2104,33 +2183,33 @@ fn model_replacement_preserves_hardware_source_and_clears_partial_estimators() {
     let mut manager = PhaseManager::with_hall(MockHallSensor::new());
     establish_mock_hall_velocity(&mut manager, 1.4, 25.0);
     manager.hall_mut().set_reading(1.4, 25.0);
-    manager.configure_observers_from_config(&config, 24.0);
+    manager.configure_observers_from_config(&config, volts(24.0));
     assert_eq!(manager.source(), PhaseSource::Hall);
-    assert_eq!(manager.hall().read_angle(), 1.4);
+    assert_eq!(manager.hall().read_angle(), erad(1.4));
     manager.set_source(PhaseSource::Manual).unwrap();
     manager.set_source(PhaseSource::Hall).unwrap();
     manager.update(&PhaseInput::default(), 100_050);
     assert_eq!(
         manager.get().velocity,
-        0.0,
+        erad_per_s(0.0),
         "a new model resets Hall control motion"
     );
-    assert_eq!(manager.tracker.kp, 10_000.0);
-    assert!((manager.tracker.kd - 240.0).abs() < 1e-4);
+    assert_eq!(manager.tracker.kp, quantity(10_000.0));
+    assert!((manager.tracker.kd - per_second(240.0)).abs() < per_second(1e-4));
     #[cfg(feature = "hfi")]
     {
         let first = manager.hfi_observer().unwrap().get_injection().0;
-        config.motor_params.as_mut().unwrap().inductance_d_h *= 0.5;
-        config.motor_params.as_mut().unwrap().inductance_q_h *= 0.5;
+        config.motor_params.as_mut().unwrap().inductance_d.value *= 0.5;
+        config.motor_params.as_mut().unwrap().inductance_q.value *= 0.5;
         manager.configure_observers_from_config(&config, 24.0);
         assert!((manager.hfi_observer().unwrap().get_injection().0 - first * 0.5).abs() < 1e-6);
     }
-    config.motor_params.as_mut().unwrap().flux_linkage_wb = 0.0;
-    manager.configure_observers_from_config(&config, 24.0);
+    config.motor_params.as_mut().unwrap().flux_linkage.value = 0.0;
+    manager.configure_observers_from_config(&config, volts(24.0));
     assert_eq!(manager.source(), PhaseSource::Hall);
-    assert_eq!(manager.hall().read_angle(), 1.4);
+    assert_eq!(manager.hall().read_angle(), erad(1.4));
     assert!(!manager.observer().is_configured());
-    assert_eq!(manager.tracker.kp, 0.0);
+    assert_eq!(manager.tracker.kp, quantity(0.0));
     #[cfg(feature = "hfi")]
     assert!(manager.hfi_observer().is_none());
 }

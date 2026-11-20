@@ -443,8 +443,8 @@ pub fn main() {
                                     {
                                         let _ = rt.cmd_tx.send(HostCommand::Motor(
                                             ControlMode::CurrentControl {
-                                                iq_target,
-                                                id_target,
+                                                iq_target: oxifoc_core::units::amps(iq_target),
+                                                id_target: oxifoc_core::units::amps(id_target),
                                             },
                                         ));
                                     }
@@ -1019,7 +1019,7 @@ pub fn main() {
                                 app.set_device_mcu(info.mcu.as_str().into());
                                 app.set_device_uuid(info.uuid.as_str().into());
                                 app.set_device_foc_hz(info.foc_freq_hz as i32);
-                                app.set_device_max_current(info.max_current_a);
+                                app.set_device_max_current(info.max_current_a.value);
                             });
                         }
                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}

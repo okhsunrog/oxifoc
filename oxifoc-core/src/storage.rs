@@ -13,6 +13,12 @@ pub use crate::foc::velocity::VelocityLoopConfig;
 pub use crate::motor::{derating::DeratingConfig, drive::DriveConfig};
 use crate::types::ConfigValue;
 pub use crate::types::VoltageFeedforwardMode;
+use crate::units::Sign;
+use crate::units::{
+    AngularVelocity, CurrentRate, ElectricCurrent, ElectricalAngle, ElectricalAngularAcceleration,
+    ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux, Power, amps,
+    amps_per_s, erad, erad_per_s, erad_per_s2, erpm, rad_per_s, watts,
+};
 use sequential_storage::map::{Key, PostcardValue, SerializationError};
 use serde::{Deserialize, Serialize};
 
@@ -191,33 +197,33 @@ impl StoredBoardCalibration {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MotorParamsConfig {
     /// Phase-to-neutral resistance (Ω)
-    pub resistance_ohm: f32,
+    pub resistance: ElectricalResistance,
     /// d-axis inductance (H)
-    pub inductance_d_h: f32,
+    pub inductance_d: Inductance,
     /// q-axis inductance (H)
-    pub inductance_q_h: f32,
+    pub inductance_q: Inductance,
     /// Permanent-magnet flux linkage (Wb)
-    pub flux_linkage_wb: f32,
+    pub flux_linkage: MagneticFlux,
     /// Number of pole pairs
     pub pole_pairs: u8,
     /// Optional manual continuous-current ceiling (A). Zero derives the
     /// rating from resistance and the motor's copper-loss budget, if known.
-    pub max_current_a: f32,
+    pub max_current: ElectricCurrent,
     /// Power-dissipation class (W) the rating was solved for — the
     /// "motor size" chosen at detection (VESC wizard equivalent),
     /// persisted so re-detection and derived defaults reuse it.
     /// 0 = unknown.
-    pub max_power_loss_w: f32,
+    pub max_power_loss: Power,
     /// Fundamental (voltage-pulse) d-axis inductance (H) — the
     /// dq-DECOUPLING value. Distinct from `inductance_d_h`, which is the
     /// AC/high-frequency plateau the ESTIMATION chain and PI gains use
     /// (the two-inductance rule; on eddy-current-heavy motors they
     /// differ several-fold — ZD2808: 86/129 µH fundamental vs ~24 µH
     /// AC). 0 = unknown → decoupling falls back to the AC values.
-    pub ld_fundamental_h: f32,
+    pub ld_fundamental: Inductance,
     /// Fundamental (voltage-pulse) q-axis inductance (H) — see
     /// [`Self::ld_fundamental_h`]. 0 = unknown.
-    pub lq_fundamental_h: f32,
+    pub lq_fundamental: Inductance,
 }
 
 impl PostcardValue<'_> for MotorParamsConfig {}
@@ -227,28 +233,28 @@ impl MotorParamsConfig {
     pub fn is_valid(&self) -> bool {
         // Positive infinity passes `> 0`; reject it before deriving PI
         // gains and observer state at either the config boundary or boot.
-        self.resistance_ohm.is_finite()
-            && self.inductance_d_h.is_finite()
-            && self.inductance_q_h.is_finite()
-            && self.resistance_ohm > 0.0
-            && self.inductance_d_h > 0.0
-            && self.inductance_q_h > 0.0
-            && self.flux_linkage_wb.is_finite()
-            && self.flux_linkage_wb >= 0.0
+        self.resistance.is_finite()
+            && self.inductance_d.is_finite()
+            && self.inductance_q.is_finite()
+            && self.resistance.is_positive()
+            && self.inductance_d.is_positive()
+            && self.inductance_q.is_positive()
+            && self.flux_linkage.is_finite()
+            && self.flux_linkage.is_non_negative()
             && self.pole_pairs > 0
     }
 
     /// Fundamental d/q inductances for the dq-decoupling feedforward,
-    /// when known (see [`Self::ld_fundamental_h`]): `None` for blobs
+    /// when known (see [`Self::ld_fundamental`]): `None` for blobs
     /// written before the fields existed or when detection has not
     /// measured them — callers then fall back to the AC values.
-    pub fn fundamental_ld_lq(&self) -> Option<(f32, f32)> {
-        if self.ld_fundamental_h.is_finite()
-            && self.ld_fundamental_h > 0.0
-            && self.lq_fundamental_h.is_finite()
-            && self.lq_fundamental_h > 0.0
+    pub fn fundamental_ld_lq(&self) -> Option<(Inductance, Inductance)> {
+        if self.ld_fundamental.is_finite()
+            && self.ld_fundamental.is_positive()
+            && self.lq_fundamental.is_finite()
+            && self.lq_fundamental.is_positive()
         {
-            Some((self.ld_fundamental_h, self.lq_fundamental_h))
+            Some((self.ld_fundamental, self.lq_fundamental))
         } else {
             None
         }
@@ -256,12 +262,14 @@ impl MotorParamsConfig {
 
     /// The continuous-current estimate from the configured copper-loss budget.
     pub fn thermal_current_a(&self) -> Option<f32> {
-        if self.resistance_ohm.is_finite()
-            && self.resistance_ohm > 0.0
-            && self.max_power_loss_w.is_finite()
-            && self.max_power_loss_w > 0.0
+        if self.resistance.is_finite()
+            && self.resistance.is_positive()
+            && self.max_power_loss.is_finite()
+            && self.max_power_loss.is_positive()
         {
-            let current = libm::sqrtf(self.max_power_loss_w / self.resistance_ohm / 1.5);
+            let current =
+                crate::motor::dissipation::heat_current_limit(self.max_power_loss, self.resistance)
+                    .value;
             (current.is_finite() && current > 0.0).then_some(current)
         } else {
             None
@@ -271,8 +279,8 @@ impl MotorParamsConfig {
     /// Continuous current allowed by both the estimate and a manual ceiling.
     pub fn rating_current_a(&self) -> Option<f32> {
         let thermal = self.thermal_current_a();
-        if self.max_current_a.is_finite() && self.max_current_a > 0.0 {
-            return Some(thermal.map_or(self.max_current_a, |a| a.min(self.max_current_a)));
+        if self.max_current.is_finite() && self.max_current.is_positive() {
+            return Some(thermal.map_or(self.max_current.value, |a| a.min(self.max_current.value)));
         }
         thermal
     }
@@ -285,7 +293,7 @@ pub use crate::types::measurement::HallTransitionGeometryConfig;
 impl HallTransitionGeometryConfig {
     pub fn validated(
         &self,
-        centroids: [f32; 8],
+        centroids: [ElectricalAngle; 8],
     ) -> Option<crate::foc::hall_calibration::HallTransitionGeometry> {
         crate::foc::hall_calibration::HallTransitionGeometry::try_from_raw_parts(
             self.entry_angles,
@@ -309,10 +317,12 @@ pub use crate::types::measurement::HallCalibrationConfig;
 
 // These flash layouts are frozen. Evolving the public/wire config requires a
 // new record variant and explicit conversions, never adding fields to V1.
+// A quantity serializes as its f32 SI value, so typed angle fields keep the
+// frozen bytes (pinned by `hall_record_freezes_legacy_bytes_...`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg(any(feature = "runtime", test))]
 struct LegacyHallCalibrationConfig {
-    angles: [f32; 8],
+    angles: [ElectricalAngle; 8],
     valid: [bool; 8],
 }
 #[cfg(any(feature = "runtime", test))]
@@ -329,7 +339,7 @@ impl PostcardValue<'_> for HallCalibrationRecord {}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg(any(feature = "runtime", test))]
 struct HallCalibrationV1 {
-    angles: [f32; 8],
+    angles: [ElectricalAngle; 8],
     valid: [bool; 8],
     geometry: Option<HallTransitionGeometryV1>,
 }
@@ -337,7 +347,7 @@ struct HallCalibrationV1 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg(any(feature = "runtime", test))]
 struct HallTransitionGeometryV1 {
-    entry_angles: [f32; 8],
+    entry_angles: [ElectricalAngle; 8],
     next_states: [u8; 8],
 }
 
@@ -409,7 +419,8 @@ impl Default for HallCalibrationConfig {
                 11.0 * TAU / 12.0, // state 5 — 330°
                 7.0 * TAU / 12.0,  // state 6 — 210°
                 0.0,               // state 7 — invalid
-            ],
+            ]
+            .map(erad),
             valid: [false, true, true, true, true, true, true, false],
             geometry: None,
         }
@@ -450,35 +461,35 @@ impl PostcardValue<'_> for DcOffsetsConfig {}
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CurrentLimitsConfig {
     /// Maximum q-axis (torque) current target (A)
-    pub max_iq_a: f32,
+    pub max_iq: ElectricCurrent,
     /// Maximum braking q current (A, magnitude): the torque limit whenever
     /// iq opposes the rotation — remote braking, the velocity loop, the
-    /// failsafe stop. Separate from `max_iq_a` because braking has its own
+    /// failsafe stop. Separate from `max_iq` because braking has its own
     /// reasons to be softer (rider balance, traction, belt skip), and at low
     /// speed the battery regen limit hardly bounds it. `<= 0` = not set:
-    /// same as `max_iq_a`. VESC's `l_current_min`.
-    pub max_brake_a: f32,
+    /// same as `max_iq`. VESC's `l_current_min`.
+    pub max_brake: ElectricCurrent,
     /// Maximum instantaneous phase current (A)
-    pub max_phase_current_a: f32,
+    pub max_phase_current: ElectricCurrent,
     /// Maximum supply (bus) current draw (A). `< 0` = unlimited.
     /// VESC's `l_in_current_max`: protects the battery/PSU and wiring —
     /// at low duty a large phase current is a small bus current.
-    pub bus_in_max_a: f32,
+    pub bus_in_max: ElectricCurrent,
     /// Maximum regen (charge) current pushed back into the supply (A,
     /// positive magnitude). `< 0` = unlimited, **0 = no regen at all** —
     /// the safe setting for a lab PSU, which cannot absorb reverse
     /// current. VESC's `l_in_current_min` (negated).
-    pub bus_regen_max_a: f32,
+    pub bus_regen_max: ElectricCurrent,
     /// Dissipative braking (W): regen the supply refuses (the
-    /// regen-overvoltage derate, `bus_regen_max_a`) is burned in the
+    /// regen-overvoltage derate, `bus_regen_max`) is burned in the
     /// windings — up to this much heat from the extra d current,
     /// `1.5·R·id²` — instead of cutting the brake torque
-    /// (`motor::dissipation`). The d current stays inside the `max_iq_a`
+    /// (`motor::dissipation`). The d current stays inside the `max_iq`
     /// circle, so the total copper loss never exceeds the motor's rating
     /// (`MotorParamsConfig::max_power_loss_w`); this sets how much of it a
     /// long descent may use. Needs detected motor params (R, λ).
     /// `<= 0` = off.
-    pub max_dissipation_w: f32,
+    pub max_dissipation: Power,
 }
 
 impl PostcardValue<'_> for CurrentLimitsConfig {}
@@ -499,14 +510,14 @@ impl CurrentLimitsConfig {
     /// [`OVERCURRENT_HEADROOM`]: crate::motor::foc_driver::OVERCURRENT_HEADROOM
     pub fn is_coherent(&self) -> bool {
         use crate::motor::foc_driver::OVERCURRENT_HEADROOM;
-        let finite = self.max_iq_a.is_finite()
-            && self.max_brake_a.is_finite()
-            && self.max_phase_current_a.is_finite()
-            && self.bus_in_max_a.is_finite()
-            && self.bus_regen_max_a.is_finite()
-            && self.max_dissipation_w.is_finite();
-        let headroom_ok = !(self.max_iq_a > 0.0 && self.max_phase_current_a > 0.0)
-            || self.max_phase_current_a >= OVERCURRENT_HEADROOM * self.max_iq_a;
+        let finite = self.max_iq.is_finite()
+            && self.max_brake.is_finite()
+            && self.max_phase_current.is_finite()
+            && self.bus_in_max.is_finite()
+            && self.bus_regen_max.is_finite()
+            && self.max_dissipation.is_finite();
+        let headroom_ok = !(self.max_iq.is_positive() && self.max_phase_current.is_positive())
+            || self.max_phase_current.value >= OVERCURRENT_HEADROOM * self.max_iq.value;
         finite && headroom_ok
     }
 }
@@ -514,24 +525,24 @@ impl CurrentLimitsConfig {
 impl CurrentLimitsConfig {
     /// All configurable limits inherit the board or motor budget.
     pub const AUTO: Self = Self {
-        max_iq_a: 0.0,
-        max_brake_a: 0.0,
-        max_phase_current_a: 0.0,
-        bus_in_max_a: -1.0,
-        bus_regen_max_a: -1.0,
-        max_dissipation_w: 0.0,
+        max_iq: amps(0.0),
+        max_brake: amps(0.0),
+        max_phase_current: amps(0.0),
+        bus_in_max: amps(-1.0),
+        bus_regen_max: amps(-1.0),
+        max_dissipation: watts(0.0),
     };
 }
 
 impl Default for CurrentLimitsConfig {
     fn default() -> Self {
         Self {
-            max_iq_a: 10.0,
-            max_brake_a: 0.0,
-            max_phase_current_a: 40.0,
-            bus_in_max_a: -1.0,
-            bus_regen_max_a: -1.0,
-            max_dissipation_w: 0.0,
+            max_iq: amps(10.0),
+            max_brake: amps(0.0),
+            max_phase_current: amps(40.0),
+            bus_in_max: amps(-1.0),
+            bus_regen_max: amps(-1.0),
+            max_dissipation: watts(0.0),
         }
     }
 }
@@ -608,7 +619,7 @@ pub struct PiGainsConfig {
     /// Integral gain
     pub ki: f32,
     /// Bandwidth used to compute gains (rad/s), for reference
-    pub bandwidth_rad_s: f32,
+    pub bandwidth: AngularVelocity,
 }
 
 impl PiGainsConfig {
@@ -629,7 +640,7 @@ impl Default for PiGainsConfig {
         Self {
             kp: 0.4,
             ki: 40.0,
-            bandwidth_rad_s: 1000.0,
+            bandwidth: rad_per_s(1000.0),
         }
     }
 }
@@ -639,7 +650,7 @@ impl Default for PiGainsConfig {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct HallTuningConfig {
     /// Minimum eRPM for angle interpolation
-    pub interp_min_erpm: f32,
+    pub interp_min_speed: ElectricalAngularVelocity,
     /// Rate limit factor (1.0 = no overshoot allowed)
     pub rate_limit_factor: f32,
 }
@@ -649,7 +660,7 @@ impl PostcardValue<'_> for HallTuningConfig {}
 impl Default for HallTuningConfig {
     fn default() -> Self {
         Self {
-            interp_min_erpm: 500.0,
+            interp_min_speed: erpm(500.0),
             rate_limit_factor: 1.5,
         }
     }
@@ -660,8 +671,11 @@ impl HallTuningConfig {
     /// limit that lets the angle keep up with the rotor (a factor below 1
     /// holds the commutation angle behind it at any steady speed).
     pub fn is_sane(&self) -> bool {
-        (0.0..=100_000.0).contains(&self.interp_min_erpm)
-            && (1.0..=10.0).contains(&self.rate_limit_factor)
+        (0.0..=100_000.0).contains(
+            &self
+                .interp_min_speed
+                .get::<crate::units::unit::electrical::erpm>(),
+        ) && (1.0..=10.0).contains(&self.rate_limit_factor)
     }
 }
 
@@ -678,13 +692,13 @@ pub struct FailsafeConfigStored {
     pub policy: u8,
     /// Brake current of the stop (A), within the general `max_brake_a`;
     /// 0 = the general limit alone.
-    pub brake_current_a: f32,
+    pub brake_current: ElectricCurrent,
     /// Rate (A/s) at which the stop changes the q current.
-    pub slew_a_per_s: f32,
+    pub slew: CurrentRate,
     /// |ω_e| (electrical rad/s) treated as stopped.
-    pub standstill_rad_s: f32,
+    pub standstill: ElectricalAngularVelocity,
     /// Upper bound on the stop's deceleration (electrical rad/s²).
-    pub decel_rad_s2: f32,
+    pub decel: ElectricalAngularAcceleration,
     /// Clean-stop terminal, as `FailsafeTerminal as u8` (0=HighZ,
     /// 1=ParkBrake; unknown → HighZ).
     pub terminal: u8,
@@ -709,10 +723,10 @@ impl Default for FailsafeConfigStored {
         Self {
             staleness_timeout_ms: (config.staleness_timeout_us / 1_000) as u32,
             policy: config.policy as u8,
-            brake_current_a: config.brake_current_a,
-            slew_a_per_s: config.slew_a_per_s,
-            standstill_rad_s: config.standstill_rad_s,
-            decel_rad_s2: config.decel_rad_s2,
+            brake_current: amps(config.brake_current_a),
+            slew: amps_per_s(config.slew_a_per_s),
+            standstill: erad_per_s(config.standstill_rad_s),
+            decel: erad_per_s2(config.decel_rad_s2),
             terminal: config.terminal as u8,
         }
     }
@@ -781,26 +795,26 @@ pub enum MotorFeedbackMode {
 #[serde(deny_unknown_fields)]
 pub struct MotorFeedbackConfig {
     pub mode: MotorFeedbackMode,
-    pub blend_low_erad_s: f32,
-    pub blend_high_erad_s: f32,
+    pub blend_low: ElectricalAngularVelocity,
+    pub blend_high: ElectricalAngularVelocity,
 }
 
 impl Default for MotorFeedbackConfig {
     fn default() -> Self {
         Self {
             mode: MotorFeedbackMode::Auto,
-            blend_low_erad_s: 150.0,
-            blend_high_erad_s: 300.0,
+            blend_low: erad_per_s(150.0),
+            blend_high: erad_per_s(300.0),
         }
     }
 }
 
 impl MotorFeedbackConfig {
     pub fn is_sane(self) -> bool {
-        self.blend_low_erad_s.is_finite()
-            && self.blend_high_erad_s.is_finite()
-            && self.blend_low_erad_s >= 0.0
-            && self.blend_high_erad_s > self.blend_low_erad_s
+        self.blend_low.is_finite()
+            && self.blend_high.is_finite()
+            && self.blend_low.is_non_negative()
+            && self.blend_high > self.blend_low
     }
 
     pub(crate) fn source(self, config: &RuntimeConfig) -> Option<crate::foc::phase::PhaseSource> {
@@ -821,10 +835,11 @@ impl MotorFeedbackConfig {
         if !self.is_sane() {
             return None;
         }
-        let observer = motor.is_some_and(|motor| motor.is_valid() && motor.flux_linkage_wb > 0.0);
+        let observer =
+            motor.is_some_and(|motor| motor.is_valid() && motor.flux_linkage.is_positive());
         let hall_with_observer = PhaseSource::HallToObserver {
-            blend_low: self.blend_low_erad_s,
-            blend_high: self.blend_high_erad_s,
+            blend_low: self.blend_low,
+            blend_high: self.blend_high,
         };
         match self.mode {
             MotorFeedbackMode::Auto | MotorFeedbackMode::Hall if hall && observer => {
@@ -991,26 +1006,26 @@ impl InstalledDriveV2 {
             motor,
             hall,
             source: InstalledSourceLimits {
-                input_a: limits.bus_in_max_a,
-                regen_a: limits.bus_regen_max_a,
+                input_a: limits.bus_in_max.value,
+                regen_a: limits.bus_regen_max.value,
             },
             phase: InstalledPhaseLimits {
-                drive_a: limits.max_iq_a,
-                brake_a: limits.max_brake_a,
-                dissipation_w: limits.max_dissipation_w,
+                drive_a: limits.max_iq.value,
+                brake_a: limits.max_brake.value,
+                dissipation_w: limits.max_dissipation.value,
             },
-            trip_a: limits.max_phase_current_a,
+            trip_a: limits.max_phase_current.value,
         }
     }
 
     fn limits(&self) -> CurrentLimitsConfig {
         CurrentLimitsConfig {
-            max_iq_a: self.phase.drive_a,
-            max_brake_a: self.phase.brake_a,
-            max_phase_current_a: self.trip_a,
-            bus_in_max_a: self.source.input_a,
-            bus_regen_max_a: self.source.regen_a,
-            max_dissipation_w: self.phase.dissipation_w,
+            max_iq: amps(self.phase.drive_a),
+            max_brake: amps(self.phase.brake_a),
+            max_phase_current: amps(self.trip_a),
+            bus_in_max: amps(self.source.input_a),
+            bus_regen_max: amps(self.source.regen_a),
+            max_dissipation: watts(self.phase.dissipation_w),
         }
     }
 }
@@ -1427,6 +1442,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{
+        amps, erad, erad_per_s, erpm, henries, ohms, rad_per_s, seconds, volts, watts, webers,
+    };
 
     #[test]
     fn feedback_requires_calibration_and_model_and_survives_other_edits() {
@@ -1442,10 +1460,10 @@ mod tests {
         assert!(!config.motor_feedback_is_valid());
         assert_eq!(config.boot_feedback_source(), PhaseSource::Manual);
         let motor = MotorParamsConfig {
-            resistance_ohm: 0.063,
-            inductance_d_h: 31e-6,
-            inductance_q_h: 51e-6,
-            flux_linkage_wb: 0.004,
+            resistance: ohms(0.063),
+            inductance_d: henries(31e-6),
+            inductance_q: henries(51e-6),
+            flux_linkage: webers(0.004),
             pole_pairs: 7,
             ..Default::default()
         };
@@ -1464,13 +1482,13 @@ mod tests {
         assert_eq!(
             config.boot_feedback_source(),
             PhaseSource::HallToObserver {
-                blend_low: 150.0,
-                blend_high: 300.0,
+                blend_low: erad_per_s(150.0),
+                blend_high: erad_per_s(300.0),
             }
         );
         assert!(
             !MotorFeedbackConfig {
-                blend_high_erad_s: 100.0,
+                blend_high: erad_per_s(100.0),
                 ..feedback
             }
             .is_sane()
@@ -1488,18 +1506,18 @@ mod tests {
 
         let setup = DriveSetup {
             motor: MotorParamsConfig {
-                resistance_ohm: 0.063,
-                inductance_d_h: 31e-6,
-                inductance_q_h: 51e-6,
-                flux_linkage_wb: 0.004,
+                resistance: ohms(0.063),
+                inductance_d: henries(31e-6),
+                inductance_q: henries(51e-6),
+                flux_linkage: webers(0.004),
                 pole_pairs: 7,
-                max_power_loss_w: 120.0,
+                max_power_loss: watts(120.0),
                 ..Default::default()
             },
             feedback: Feedback::Hall(measured_hall_config()),
             source: SourceLimits {
-                input_a: 5.0,
-                regen_a: 0.0,
+                input: amps(5.0),
+                regen: amps(0.0),
             },
             current: DriveCurrent::Auto,
         }
@@ -1509,8 +1527,8 @@ mod tests {
         assert!(InstalledDrive::new(&setup).project(&mut config, 70.0));
         assert_eq!(config.motor_feedback.unwrap().mode, MotorFeedbackMode::Hall);
         let crossover = PhaseSource::HallToObserver {
-            blend_low: 150.0,
-            blend_high: 300.0,
+            blend_low: erad_per_s(150.0),
+            blend_high: erad_per_s(300.0),
         };
         assert_eq!(config.boot_feedback_source(), crossover);
         config.motor_feedback = None;
@@ -1523,33 +1541,33 @@ mod tests {
         use crate::types::commissioning::SourceLimits;
         let mut legacy = RuntimeConfig {
             motor_params: Some(MotorParamsConfig {
-                resistance_ohm: 0.2,
+                resistance: ohms(0.2),
                 ..Default::default()
             }),
             hall_calibration: Some(measured_hall_config()),
             current_limits: Some(CurrentLimitsConfig {
-                bus_in_max_a: 20.0,
+                bus_in_max: amps(20.0),
                 ..Default::default()
             }),
             board_calibration: Some(BoardCalibrationConfig { vbus_gain: 1.01 }),
             ..Default::default()
         };
         assert!(load_installed_drive(&mut legacy, &Ok::<_, ()>(None), 70.0));
-        assert_eq!(legacy.motor_params.as_ref().unwrap().resistance_ohm, 0.2);
+        assert_eq!(legacy.motor_params.as_ref().unwrap().resistance.value, 0.2);
         let setup = DriveSetup {
             motor: MotorParamsConfig {
-                resistance_ohm: 0.063,
-                inductance_d_h: 31e-6,
-                inductance_q_h: 51e-6,
-                flux_linkage_wb: 0.004,
+                resistance: ohms(0.063),
+                inductance_d: henries(31e-6),
+                inductance_q: henries(51e-6),
+                flux_linkage: webers(0.004),
                 pole_pairs: 7,
-                max_power_loss_w: 120.0,
+                max_power_loss: watts(120.0),
                 ..Default::default()
             },
             feedback: Feedback::Sensorless,
             source: SourceLimits {
-                input_a: 5.0,
-                regen_a: 0.0,
+                input: amps(5.0),
+                regen: amps(0.0),
             },
             current: DriveCurrent::Auto,
         }
@@ -1574,7 +1592,7 @@ mod tests {
         );
         assert!(legacy.hall_calibration.is_none());
         let mut limits = setup.current_policy();
-        limits.bus_in_max_a = 8.0;
+        limits.bus_in_max.value = 8.0;
         let edited = installed
             .with_edit(&ConfigValue::CurrentLimits(limits.clone()), 70.0)
             .unwrap();
@@ -1588,7 +1606,7 @@ mod tests {
         assert_eq!(legacy.motor_params.as_ref(), Some(&setup.motor_policy()));
         assert!(legacy.hall_calibration.is_none());
         let mut motor = setup.motor_policy();
-        motor.resistance_ohm *= 2.5;
+        motor.resistance.value *= 2.5;
         let edited = edited
             .with_edit(&ConfigValue::MotorParams(motor.clone()), 70.0)
             .unwrap();
@@ -1620,14 +1638,14 @@ mod tests {
         HallCalibrationConfig {
             geometry: Some(HallTransitionGeometryConfig {
                 entry_angles: [
-                    0.0,
-                    0.0,
-                    TAU / 3.0,
-                    TAU / 6.0,
-                    2.0 * TAU / 3.0,
-                    5.0 * TAU / 6.0,
-                    TAU / 2.0,
-                    0.0,
+                    erad(0.0),
+                    erad(0.0),
+                    erad(TAU / 3.0),
+                    erad(TAU / 6.0),
+                    erad(2.0 * TAU / 3.0),
+                    erad(5.0 * TAU / 6.0),
+                    erad(TAU / 2.0),
+                    erad(0.0),
                 ],
                 next_states: [0, 3, 6, 2, 5, 1, 4, 0],
             }),
@@ -1639,7 +1657,7 @@ mod tests {
     fn hall_record_freezes_legacy_bytes_and_appends_versioned_storage_without_moving_wire_ids() {
         use crate::types::{ConfigGroupId, ConfigValue};
         let legacy = LegacyHallCalibrationConfig {
-            angles: [0.0; 8],
+            angles: [erad(0.0); 8],
             valid: [false, true, true, true, true, true, true, false],
         };
         let mut expected = [0u8; 40];
@@ -1717,10 +1735,10 @@ mod tests {
         assert!(!bad.is_calibrated());
         assert!(HallCalibrationRecord::from(bad).validated().is_none());
         let mut bad = good;
-        bad.geometry.as_mut().unwrap().entry_angles[1] = f32::NAN;
+        bad.geometry.as_mut().unwrap().entry_angles[1] = erad(f32::NAN);
         assert!(!bad.is_calibrated());
         let mut bad = good;
-        bad.angles[1] = core::f32::consts::PI;
+        bad.angles[1] = erad(core::f32::consts::PI);
         assert!(
             !bad.is_calibrated(),
             "a valid edge ring cannot belong to mismatched centroids"
@@ -2032,25 +2050,28 @@ mod tests {
     fn inductance_model_accessors_gate_on_valid_values() {
         let mut mp = MotorParamsConfig::default();
         assert!(mp.fundamental_ld_lq().is_none());
-        mp.ld_fundamental_h = 85.7e-6;
+        mp.ld_fundamental.value = 85.7e-6;
         assert!(
             mp.fundamental_ld_lq().is_none(),
             "one axis alone must not enable decoupling override"
         );
-        mp.lq_fundamental_h = 129.4e-6;
-        assert_eq!(mp.fundamental_ld_lq(), Some((85.7e-6, 129.4e-6)));
+        mp.lq_fundamental.value = 129.4e-6;
+        assert_eq!(
+            mp.fundamental_ld_lq(),
+            Some((henries(85.7e-6), henries(129.4e-6)))
+        );
     }
 
     #[test]
     fn motor_params_validity_rejects_non_finite() {
         let good = MotorParamsConfig {
-            resistance_ohm: 0.1,
-            inductance_d_h: 1e-4,
-            inductance_q_h: 3e-4,
-            flux_linkage_wb: 0.02,
+            resistance: ohms(0.1),
+            inductance_d: henries(1e-4),
+            inductance_q: henries(3e-4),
+            flux_linkage: webers(0.02),
             pole_pairs: 7,
-            max_current_a: 15.0,
-            max_power_loss_w: 50.0,
+            max_current: amps(15.0),
+            max_power_loss: watts(50.0),
             ..Default::default()
         };
         assert!(good.is_valid());
@@ -2058,14 +2079,14 @@ mod tests {
         // NaN anywhere numeric must invalidate — these feed PI tuning and
         // the observers directly.
         for f in [
-            |p: &mut MotorParamsConfig| p.resistance_ohm = f32::NAN,
-            |p: &mut MotorParamsConfig| p.resistance_ohm = f32::INFINITY,
-            |p: &mut MotorParamsConfig| p.inductance_d_h = f32::NAN,
-            |p: &mut MotorParamsConfig| p.inductance_d_h = f32::INFINITY,
-            |p: &mut MotorParamsConfig| p.inductance_q_h = f32::INFINITY,
-            |p: &mut MotorParamsConfig| p.inductance_q_h = 0.0,
-            |p: &mut MotorParamsConfig| p.flux_linkage_wb = f32::NAN,
-            |p: &mut MotorParamsConfig| p.flux_linkage_wb = f32::INFINITY,
+            |p: &mut MotorParamsConfig| p.resistance.value = f32::NAN,
+            |p: &mut MotorParamsConfig| p.resistance.value = f32::INFINITY,
+            |p: &mut MotorParamsConfig| p.inductance_d.value = f32::NAN,
+            |p: &mut MotorParamsConfig| p.inductance_d.value = f32::INFINITY,
+            |p: &mut MotorParamsConfig| p.inductance_q.value = f32::INFINITY,
+            |p: &mut MotorParamsConfig| p.inductance_q.value = 0.0,
+            |p: &mut MotorParamsConfig| p.flux_linkage.value = f32::NAN,
+            |p: &mut MotorParamsConfig| p.flux_linkage.value = f32::INFINITY,
         ] {
             let mut bad = good.clone();
             f(&mut bad);
@@ -2079,10 +2100,17 @@ mod tests {
                         motor_params: Some(bad),
                         ..Default::default()
                     },
-                    24.0,
+                    volts(24.0),
                 );
-                let out = controller.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, 0.00005);
-                assert!(out.vd.is_finite() && out.vq.is_finite());
+                let out = controller.step(
+                    (amps(0.0), amps(0.0), amps(0.0)),
+                    erad(0.0),
+                    amps(0.0),
+                    amps(1.0),
+                    1000,
+                    seconds(0.00005),
+                );
+                assert!(out.vd.value.is_finite() && out.vq.value.is_finite());
                 assert!(controller.decoupling().is_none());
             }
         }
@@ -2097,30 +2125,30 @@ mod tests {
 
         // Exactly at the headroom boundary: allowed.
         let at = CurrentLimitsConfig {
-            max_iq_a: 10.0,
-            max_phase_current_a: 13.0,
+            max_iq: amps(10.0),
+            max_phase_current: amps(13.0),
             ..base.clone()
         };
         assert!(at.is_coherent());
 
         // Inside the band: rejected (the foot-gun).
         let inside = CurrentLimitsConfig {
-            max_iq_a: 40.0,
-            max_phase_current_a: 40.0,
+            max_iq: amps(40.0),
+            max_phase_current: amps(40.0),
             ..base.clone()
         };
         assert!(!inside.is_coherent());
 
         // "Not set" sides are always coherent — ceilings fill in.
         let unset_iq = CurrentLimitsConfig {
-            max_iq_a: 0.0,
-            max_phase_current_a: 40.0,
+            max_iq: amps(0.0),
+            max_phase_current: amps(40.0),
             ..base.clone()
         };
         assert!(unset_iq.is_coherent());
         let unset_phase = CurrentLimitsConfig {
-            max_iq_a: 40.0,
-            max_phase_current_a: -1.0,
+            max_iq: amps(40.0),
+            max_phase_current: amps(-1.0),
             ..base.clone()
         };
         assert!(unset_phase.is_coherent());
@@ -2128,12 +2156,12 @@ mod tests {
         // Non-finite anywhere: rejected at the boundary (the builder's
         // NaN tolerance is for the boot path, not for explicit writes).
         for f in [
-            |c: &mut CurrentLimitsConfig| c.max_iq_a = f32::NAN,
-            |c: &mut CurrentLimitsConfig| c.max_brake_a = f32::NAN,
-            |c: &mut CurrentLimitsConfig| c.max_phase_current_a = f32::INFINITY,
-            |c: &mut CurrentLimitsConfig| c.bus_in_max_a = f32::NAN,
-            |c: &mut CurrentLimitsConfig| c.bus_regen_max_a = f32::NAN,
-            |c: &mut CurrentLimitsConfig| c.max_dissipation_w = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.max_iq.value = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.max_brake.value = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.max_phase_current.value = f32::INFINITY,
+            |c: &mut CurrentLimitsConfig| c.bus_in_max.value = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.bus_regen_max.value = f32::NAN,
+            |c: &mut CurrentLimitsConfig| c.max_dissipation.value = f32::NAN,
         ] {
             let mut bad = base.clone();
             f(&mut bad);
@@ -2145,7 +2173,7 @@ mod tests {
         let ok = PiGainsConfig {
             kp: 0.4,
             ki: 40.0,
-            bandwidth_rad_s: 1000.0,
+            bandwidth: rad_per_s(1000.0),
         };
         assert!(ok.is_sane());
         assert!(!PiGainsConfig { kp: 0.0, ..ok }.is_sane());
@@ -2176,7 +2204,7 @@ mod tests {
         );
         assert!(
             !HallTuningConfig {
-                interp_min_erpm: -1.0,
+                interp_min_speed: erpm(-1.0),
                 ..ok
             }
             .is_sane()
@@ -2199,7 +2227,7 @@ mod tests {
 
         for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut non_finite = good;
-            non_finite.angles[4] = invalid;
+            non_finite.angles[4] = erad(invalid);
             assert!(!non_finite.is_calibrated());
         }
     }

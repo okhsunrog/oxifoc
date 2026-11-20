@@ -608,6 +608,8 @@ mod tests {
     use crate::foc::pi_controller::PIController;
     use crate::foc::pwm::SvpwmModulator;
     use crate::foc::{angle_difference, wrap_angle};
+    use crate::units::erad;
+    use crate::units::{amps, ohms, seconds, si, volts};
 
     #[test]
     fn closed_loop_accelerates() {
@@ -616,17 +618,24 @@ mod tests {
         let kp = params.ld * 1000.0;
         let ki = params.r * 1000.0;
 
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki);
-        foc.iq_pi = PIController::new(kp, ki);
+        let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
+        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Run 500 steps = 25 ms.  Back-EMF is still small, so the FOC can
         // inject close to the target 2 A and the motor accelerates.
         for _ in 0..500 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(2.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         }
 
         // Motor should be spinning and producing torque.
@@ -645,8 +654,15 @@ mod tests {
         // Continue for a full second.  Viscous friction limits the terminal
         // speed, but ωe should still be well above zero.
         for _ in 0..20_000 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(2.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         }
         assert!(
             out.omega_e > 100.0,
@@ -667,16 +683,23 @@ mod tests {
         let kp = params.ld * 1000.0;
         let ki = params.r * 1000.0;
 
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki);
-        foc.iq_pi = PIController::new(kp, ki);
+        let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
+        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Run 500 steps with negative iq_target
         for _ in 0..500 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, -2.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(-2.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         }
 
         // Motor should spin in reverse
@@ -689,8 +712,15 @@ mod tests {
 
         // Continue for a full second to reach steady state
         for _ in 0..20_000 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, -2.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(-2.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         }
 
         assert!(
@@ -710,16 +740,23 @@ mod tests {
         let kp = params.ld * 1000.0;
         let ki = params.r * 1000.0;
 
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi = PIController::new(kp, ki);
-        foc.iq_pi = PIController::new(kp, ki);
+        let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
+        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Phase 1: spin up to steady state with no load (1 second)
         for _ in 0..20_000 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(2.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         }
         let speed_no_load = out.omega_e;
         assert!(
@@ -730,8 +767,15 @@ mod tests {
         // Phase 2: apply load torque step, settle for 1 second
         let load = 0.005; // N·m — significant but within controller capability
         for _ in 0..20_000 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, load, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(2.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
         }
         let speed_loaded = out.omega_e;
 
@@ -747,8 +791,15 @@ mod tests {
 
         // Phase 3: remove load, verify recovery (1 second)
         for _ in 0..20_000 {
-            let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 1000, DT);
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+            let telem = foc.step(
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                erad(out.angle_rad),
+                amps(0.0),
+                amps(2.0),
+                1000,
+                seconds(DT),
+            );
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         }
         let speed_recovered = out.omega_e;
 
@@ -800,7 +851,7 @@ mod tests {
             let out = cal_motor.step(0.0, 0.0, 0.0, 1e-9);
             // `HallCalibrator::record` expects angle in [0, 2π).
             let phi_cal = if phi_e < 0.0 { phi_e + TAU } else { phi_e };
-            calibrator.record(phi_cal, out.hall_state);
+            calibrator.record(erad(phi_cal), out.hall_state);
         }
 
         let cal_result = calibrator.finish().expect("calibration must succeed");
@@ -814,8 +865,8 @@ mod tests {
             let angle = cal_result.angle_for_raw_state(*raw).unwrap();
             let expected = k as f32 * PI / 3.0 + PI / 6.0;
             assert!(
-                angle_difference(angle, expected).abs() < 0.02,
-                "raw state {raw}: calibrated {angle:.4}, expected {expected:.4}"
+                angle_difference(angle, erad(expected)).abs() < erad(0.02),
+                "raw state {raw:?}: calibrated {angle:.4?}, expected {expected:.4?}"
             );
         }
 
@@ -825,9 +876,9 @@ mod tests {
         let run = |calibration: Option<&HallCalibrationResult>| {
             let kp = params.ld * 1_000.0;
             let ki = params.r * 1_000.0;
-            let mut foc = FocController::<SvpwmModulator>::new(24.0);
-            foc.id_pi = PIController::new(kp, ki);
-            foc.iq_pi = PIController::new(kp, ki);
+            let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
+            foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+            foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
 
             let mut motor = VirtualMotor::new(params);
             let mut out = VirtualMotorOutput::default();
@@ -843,19 +894,26 @@ mod tests {
                 let hs = out.hall_state;
                 if hs != prev_hall_state && hs != 0 {
                     if let Some(angle) = hall.update(hs, tick) {
-                        hall_angle = angle;
+                        hall_angle = angle.value;
                     }
                     prev_hall_state = hs;
                 }
                 if let Some(sample) = hall.sample_at_mut(tick) {
-                    hall_angle = sample.angle;
+                    hall_angle = sample.angle.value;
                 }
                 if tick >= 15_000 {
                     err_sum += angle_difference(hall_angle, out.angle_rad).abs();
                     err_n += 1;
                 }
-                let telem = foc.step((out.ia, out.ib, out.ic), hall_angle, 0.0, 2.0, 1000, DT);
-                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+                let telem = foc.step(
+                    (amps(out.ia), amps(out.ib), amps(out.ic)),
+                    erad(hall_angle),
+                    amps(0.0),
+                    amps(2.0),
+                    1000,
+                    seconds(DT),
+                );
+                out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
             }
             assert!(out.omega_e > 100.0, "must spin up: ωe={}", out.omega_e);
             err_sum / err_n as f32
@@ -923,18 +981,25 @@ mod tests {
                 substeps: 10,
                 ..MotorParams::default()
             });
-            let mut foc = FocController::<SvpwmModulator>::new(VBUS);
-            foc.id_pi = PIController::new(0.01, 10.0);
-            foc.iq_pi = PIController::new(0.01, 10.0);
+            let mut foc = FocController::<SvpwmModulator>::new(volts(VBUS));
+            foc.id_pi = PIController::with_gains(ohms(0.01), si(10.0));
+            foc.iq_pi = PIController::with_gains(ohms(0.01), si(10.0));
             foc.set_dead_time_comp(360, 20_000);
             if linear {
-                foc.set_dead_time_comp_linear_region(1.0).unwrap();
+                foc.set_dead_time_comp_linear_region(amps(1.0)).unwrap();
             }
             let mut out = VirtualMotorOutput::default();
             let mut peak = 0.0f32;
             for step in 0..4000 {
                 let target = if step < 400 { 0.0 } else { 0.06 };
-                let telem = foc.step((out.ia, out.ib, out.ic), 0.0, target, 0.0, ARR, DT);
+                let telem = foc.step(
+                    (amps(out.ia), amps(out.ib), amps(out.ic)),
+                    erad(0.0),
+                    amps(target),
+                    amps(0.0),
+                    ARR,
+                    seconds(DT),
+                );
                 let [a, b, c] = telem.duties.map(|d| f32::from(d) * VBUS / f32::from(ARR));
                 out = motor.step((2.0 * a - b - c) / 3.0, (b - c) * FRAC_1_SQRT_3, 0.0, DT);
                 peak = peak.max(motor.id.abs());
@@ -984,9 +1049,9 @@ mod tests {
             };
             let kp = params.ld * 1000.0;
             let ki = params.r * 1000.0;
-            let mut foc = FocController::<SvpwmModulator>::new(VBUS);
-            foc.id_pi = PIController::new(kp, ki);
-            foc.iq_pi = PIController::new(kp, ki);
+            let mut foc = FocController::<SvpwmModulator>::new(volts(VBUS));
+            foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+            foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
             if comp {
                 foc.set_dead_time_comp(DEAD_TIME_NS, 20_000);
             }
@@ -1000,12 +1065,12 @@ mod tests {
             let mut n = 0u32;
             for step in 0..30_000 {
                 let telem = foc.step(
-                    (out.ia, out.ib, out.ic),
-                    out.angle_rad,
-                    0.0,
-                    iq_target,
+                    (amps(out.ia), amps(out.ib), amps(out.ic)),
+                    erad(out.angle_rad),
+                    amps(0.0),
+                    amps(iq_target),
                     MAX_DUTY,
-                    DT,
+                    seconds(DT),
                 );
                 let scale = VBUS / f32::from(MAX_DUTY);
                 let va = f32::from(telem.duties[0]) * scale;
@@ -1078,9 +1143,9 @@ mod tests {
             };
             let kp = params.ld * 1000.0;
             let ki = params.r * 1000.0;
-            let mut foc = FocController::<SvpwmModulator>::new(VBUS);
-            foc.id_pi = PIController::new(kp, ki);
-            foc.iq_pi = PIController::new(kp, ki);
+            let mut foc = FocController::<SvpwmModulator>::new(volts(VBUS));
+            foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+            foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
             let mut motor = VirtualMotor::new(params);
             let mut out = VirtualMotorOutput::default();
             let mut id_sum = 0.0f32;
@@ -1096,9 +1161,16 @@ mod tests {
                     // the fixed path: raw Park + actuation-side rotation
                     (out.angle_rad, delta)
                 };
-                foc.set_actuation_advance(advance);
-                let telem = foc.step((out.ia, out.ib, out.ic), angle_cmd, 0.0, 2.0, 4250, DT);
-                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+                foc.set_actuation_advance(erad(advance));
+                let telem = foc.step(
+                    (amps(out.ia), amps(out.ib), amps(out.ic)),
+                    erad(angle_cmd),
+                    amps(0.0),
+                    amps(2.0),
+                    4250,
+                    seconds(DT),
+                );
+                out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
                 if step >= 20_000 {
                     let (i_alpha, i_beta) = transforms::clarke(out.ia, out.ib);
                     let (s, c) = (libm::sinf(out.angle_rad), libm::cosf(out.angle_rad));

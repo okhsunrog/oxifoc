@@ -1,5 +1,7 @@
 use super::*;
 use crate::foc::hall_calibration::HallTransitionGeometry;
+use crate::units::ToBits;
+use crate::units::{erad, erad_per_s, seconds};
 
 const RING: [u8; 6] = [3, 2, 6, 4, 5, 1];
 const ENTRIES_DEG: [f32; 8] = [0.0, 300.0, 70.0, 350.0, 200.0, 240.0, 110.0, 0.0];
@@ -11,13 +13,16 @@ fn measured_hall() -> HallSensor {
     for (i, raw) in RING.into_iter().enumerate() {
         next[usize::from(raw)] = RING[(i + 1) % 6];
     }
-    let geometry =
-        HallTransitionGeometry::try_from_raw_parts(ENTRIES_DEG.map(f32::to_radians), next, centers)
-            .unwrap();
+    let geometry = HallTransitionGeometry::try_from_raw_parts(
+        ENTRIES_DEG.map(f32::to_radians).map(erad),
+        next,
+        centers.map(erad),
+    )
+    .unwrap();
     let mut hall = HallSensor::new(1_000_000);
     assert!(
         hall.apply_calibration(&crate::foc::hall_calibration::HallCalibrationResult {
-            angles: centers,
+            angles: centers.map(erad),
             valid: [false, true, true, true, true, true, true, false],
             valid_count: 6,
             geometry: Some(geometry),
@@ -31,13 +36,13 @@ fn prepared_geometry_validates_the_current_frame_and_legacy_replaces_it() {
     let mut hall = measured_hall();
     hall.update(3, 100);
     let result = crate::foc::hall_calibration::HallCalibrationResult {
-        angles: CENTERS_DEG.map(f32::to_radians),
+        angles: CENTERS_DEG.map(f32::to_radians).map(erad),
         valid: [false, true, true, true, true, true, true, false],
         valid_count: 6,
         geometry: hall.geometry,
     };
     let mut inconsistent = result;
-    inconsistent.angles[3] = 180_f32.to_radians();
+    inconsistent.angles[3] = erad(180_f32.to_radians());
     assert!(PreparedHallCalibration::from_result(&inconsistent).is_none());
 
     let prepared = PreparedHallCalibration::from_result(&result).unwrap();
@@ -65,7 +70,7 @@ fn geometry_config_and_detection_install_the_same_reference() {
     let mut detected = measured_hall();
     detected.update(3, 100);
     let result = crate::foc::hall_calibration::HallCalibrationResult {
-        angles: CENTERS_DEG.map(f32::to_radians),
+        angles: CENTERS_DEG.map(f32::to_radians).map(erad),
         valid: [false, true, true, true, true, true, true, false],
         valid_count: 6,
         geometry: detected.geometry,
@@ -102,11 +107,14 @@ fn advance_to_measured_motion(hall: &mut HallSensor) {
     hall.update(2, 8_000);
     assert_eq!(
         hall.electrical_velocity(),
-        0.0,
+        erad_per_s(0.0),
         "boot interval was not a full sector"
     );
     hall.update(6, 12_000);
-    assert!((hall.electrical_velocity() - 40_f32.to_radians() / 0.004).abs() < 0.001);
+    assert!(
+        (hall.electrical_velocity() - erad_per_s(40_f32.to_radians() / 0.004)).abs()
+            < erad_per_s(0.001)
+    );
 }
 
 #[test]
@@ -123,7 +131,7 @@ fn unequal_sector_rotation_preserves_threshold_and_continuous_interpolation() {
             for _ in 0..36 {
                 let raw = RING[index];
                 events.push(((distance / omega * 1.0e6_f32).round() as u64, raw));
-                distance += geometry.sector_width(raw).unwrap();
+                distance += geometry.sector_width(raw).unwrap().value;
                 index = if sign > 0.0 {
                     (index + 1) % 6
                 } else {
@@ -151,8 +159,10 @@ fn unequal_sector_rotation_preserves_threshold_and_continuous_interpolation() {
                         if let Some(previous) = previous {
                             assert!(
                                 angle_difference(control.angle, previous).abs()
-                                    <= hall.interp_min_rad_s * 50.0e-6 * hall.rate_limit_factor
-                                        + 1.0e-6
+                                    <= hall.interp_min_speed
+                                        * seconds(50.0e-6)
+                                        * hall.rate_limit_factor
+                                        + erad(1.0e-6)
                             );
                         }
                         previous = Some(control.angle);
@@ -160,16 +170,18 @@ fn unequal_sector_rotation_preserves_threshold_and_continuous_interpolation() {
                     }
                     let physical = wrap_angle(start + sign * omega * now as f32 * 1.0e-6);
                     assert!(
-                        angle_difference(raw.angle, physical).abs() < 0.003,
-                        "raw error {} at{erpm}eRPM sign{sign}",
-                        angle_difference(raw.angle, physical)
+                        angle_difference(raw.angle, erad(physical)).abs() < erad(0.003),
+                        "raw error {:?} at{erpm:?}eRPM sign{sign:?}",
+                        angle_difference(raw.angle, erad(physical))
                     );
-                    assert!(angle_difference(control.angle, physical).abs() < 0.003);
-                    assert!((raw.omega - sign * omega).abs() < omega * 0.002);
+                    assert!(angle_difference(control.angle, erad(physical)).abs() < erad(0.003));
+                    assert!(
+                        (raw.omega - erad_per_s(sign * omega)).abs() < erad_per_s(omega * 0.002)
+                    );
                     if let Some(previous) = previous {
                         let progress = angle_difference(control.angle, previous) * sign;
                         assert!(
-                            progress > omega * 50.0e-6 * 0.5,
+                            progress > erad(omega * 50.0e-6 * 0.5),
                             "artificial flat/catchup at{erpm}eRPM sign{sign}"
                         );
                     }
@@ -194,7 +206,8 @@ fn below_threshold_centroids_remain_rate_limited_in_both_directions() {
             let sample = hall.sample_at_mut(now).unwrap();
             assert!(
                 angle_difference(sample.angle, previous).abs()
-                    <= hall.interp_min_rad_s * 50.0e-6 * hall.rate_limit_factor + 1.0e-6
+                    <= hall.interp_min_speed * seconds(50.0e-6) * hall.rate_limit_factor
+                        + erad(1.0e-6)
             );
             assert_eq!(
                 hall.sample_at(now).unwrap().angle.to_bits(),
@@ -212,14 +225,14 @@ fn current_measured_width_controls_stop_decay_and_stale_deadline() {
     // Currentraw6 is90°, previousraw2 was40°; neither nominal60° nor the
     // previous traversed width is the correct bound for waiting onraw6's exit.
     let width = 90_f32.to_radians();
-    assert!((hall.current_sector_width - width).abs() < 1.0e-6);
+    assert!((hall.current_sector_width - erad(width)).abs() < erad(1.0e-6));
     let within = hall.sample_at(19_000).unwrap();
-    assert!((within.omega - speed).abs() < 1.0e-5);
+    assert!((within.omega - speed).abs() < erad_per_s(1.0e-5));
     let late = hall.sample_at(24_000).unwrap();
-    assert!((late.omega - width / 0.012).abs() < 0.001);
+    assert!((late.omega - erad_per_s(width / 0.012)).abs() < erad_per_s(0.001));
     assert!(!hall.is_stale_at_speed(24_000, speed));
     assert!(hall.is_stale_at_speed(27_000, speed));
-    assert!(hall.sample_at(1_000_000).unwrap().omega < 2.0);
+    assert!(hall.sample_at(1_000_000).unwrap().omega < erad_per_s(2.0));
 }
 
 #[test]
@@ -229,11 +242,11 @@ fn reversal_uses_the_sector_just_left_for_bound_and_the_new_sector_for_decay() {
     let previous = hall.electrical_velocity();
     hall.update(2, 12_500); // turn back through the same110° boundary
     assert_eq!(hall.electrical_velocity().to_bits(), (-previous).to_bits());
-    assert!((hall.current_sector_width - 40_f32.to_radians()).abs() < 1.0e-6);
-    assert!((hall.angle - 110_f32.to_radians()).abs() < 1.0e-6);
+    assert!((hall.current_sector_width - erad(40_f32.to_radians())).abs() < erad(1.0e-6));
+    assert!((hall.angle - erad(110_f32.to_radians())).abs() < erad(1.0e-6));
     hall.update(6, 13_000);
     assert_eq!(hall.electrical_velocity().to_bits(), previous.to_bits());
-    assert!((hall.current_sector_width - 90_f32.to_radians()).abs() < 1.0e-6);
+    assert!((hall.current_sector_width - erad(90_f32.to_radians())).abs() < erad(1.0e-6));
 }
 
 #[test]
@@ -255,7 +268,9 @@ fn skipped_transition_withholds_frame_then_resynchronizes_on_known_adjacent_edge
         assert_eq!(hall.update(skipped, 13_200), None);
         assert!(hall.update(anchor, 14_000).is_some());
         assert!(hall.sample_at(14_000).is_some());
-        assert!((angle_difference(hall.angle, boundary_deg.to_radians())).abs() < 1.0e-6);
+        assert!(
+            (angle_difference(hall.angle, erad(boundary_deg.to_radians()))).abs() < erad(1.0e-6)
+        );
         let resumed_speed = old_speed * signed_width.signum();
         assert_eq!(
             hall.electrical_velocity().to_bits(),
@@ -263,20 +278,20 @@ fn skipped_transition_withholds_frame_then_resynchronizes_on_known_adjacent_edge
         );
         hall.update(next, 18_000);
         let expected = signed_width.to_radians() / 0.004;
-        assert!((hall.electrical_velocity() - expected).abs() < 0.001);
+        assert!((hall.electrical_velocity() - erad_per_s(expected)).abs() < erad_per_s(0.001));
     }
 }
 
 #[test]
 fn geometry_advance_and_legacy_reconfiguration_have_explicit_lifetimes() {
     let mut hall = measured_hall();
-    hall.set_advance(0.2);
+    hall.set_advance(erad(0.2));
     advance_to_measured_motion(&mut hall);
-    assert!(angle_difference(hall.angle, 110_f32.to_radians() + 0.2).abs() < 1.0e-6);
+    assert!(angle_difference(hall.angle, erad(110_f32.to_radians() + 0.2)).abs() < erad(1.0e-6));
     let width = hall.current_sector_width;
-    hall.set_advance(-0.3);
+    hall.set_advance(erad(-0.3));
     assert_eq!(hall.current_sector_width.to_bits(), width.to_bits());
-    hall.set_calibration_raw(CENTERS_DEG.map(f32::to_radians));
+    hall.set_calibration_raw(CENTERS_DEG.map(f32::to_radians).map(erad));
     assert!(hall.geometry.is_none());
     assert_eq!(
         hall.current_sector_width.to_bits(),
@@ -302,12 +317,12 @@ fn invalid_state_glitch_uses_measured_current_width_and_keeps_trusted_speed() {
     assert!((20_998..=21_002).contains(&recovered));
     assert!(hall.sample_at(22_000).is_some());
     assert!(!hall.geometry_resync);
-    assert!((hall.angle - 200_f32.to_radians()).abs() < 1.0e-6);
+    assert!((hall.angle - erad(200_f32.to_radians())).abs() < erad(1.0e-6));
     assert_eq!(hall.electrical_velocity().to_bits(), speed.to_bits());
     hall.update(5, 25_000);
     assert_eq!(hall.electrical_velocity().to_bits(), speed.to_bits());
     hall.update(1, 31_000);
-    assert!((hall.electrical_velocity() - speed).abs() < 0.001);
+    assert!((hall.electrical_velocity() - speed).abs() < erad_per_s(0.001));
 }
 
 #[test]
@@ -318,19 +333,21 @@ fn measured_topology_controls_direction_even_when_adjacent_centroids_are_far_apa
     let centers = [0_f32, 357.0, 339.0, 1.0, 347.0, 352.0, 342.0, 0.0].map(f32::to_radians);
     let mut hall = measured_hall();
     let next = hall.geometry.unwrap().next_states();
-    hall.set_calibration_raw(centers);
-    hall.geometry =
-        Some(HallTransitionGeometry::try_from_raw_parts(entries, next, centers).unwrap());
+    hall.set_calibration_raw(centers.map(erad));
+    hall.geometry = Some(
+        HallTransitionGeometry::try_from_raw_parts(entries.map(erad), next, centers.map(erad))
+            .unwrap(),
+    );
     assert!(angle_difference(centers[2], centers[3]) < 0.0);
     hall.update(3, 0);
     hall.update(2, 17_000);
     assert_eq!(hall.direction(), Direction::Clockwise);
     hall.update(6, 34_000);
     let expected = 170_f32.to_radians() / 0.017;
-    assert!((hall.electrical_velocity() - expected).abs() < 0.001);
+    assert!((hall.electrical_velocity() - erad_per_s(expected)).abs() < erad_per_s(0.001));
     hall.update(2, 35_000);
     assert_eq!(hall.direction(), Direction::CounterClockwise);
-    assert!(hall.electrical_velocity() < 0.0);
+    assert!(hall.electrical_velocity() < erad_per_s(0.0));
 }
 
 #[test]
@@ -343,10 +360,10 @@ fn reverse_edge_hidden_by_invalid_state_preserves_speed_magnitude_with_new_direc
     assert_eq!(hall.direction(), Direction::CounterClockwise);
     assert_eq!(hall.electrical_velocity().to_bits(), (-speed).to_bits());
     let sample = hall.sample_at(13_250).unwrap();
-    assert!(angle_difference(sample.angle, 110_f32.to_radians()) < 0.0);
+    assert!(angle_difference(sample.angle, erad(110_f32.to_radians())) < erad(0.0));
     assert_eq!(sample.omega.to_bits(), (-speed).to_bits());
     hall.update(3, 17_200);
     assert_eq!(hall.electrical_velocity().to_bits(), (-speed).to_bits());
     hall.update(1, 25_200);
-    assert!((hall.electrical_velocity() + speed).abs() < 0.001);
+    assert!((hall.electrical_velocity() + speed).abs() < erad_per_s(0.001));
 }

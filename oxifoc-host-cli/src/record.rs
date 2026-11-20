@@ -638,7 +638,10 @@ fn write_parquet(
         meta.push(kv("oxifoc.mcu", h.mcu.to_string()));
         meta.push(kv("oxifoc.uuid", h.uuid.to_string()));
         meta.push(kv("oxifoc.foc_freq_hz", h.foc_freq_hz.to_string()));
-        meta.push(kv("oxifoc.max_current_a", h.max_current_a.to_string()));
+        meta.push(kv(
+            "oxifoc.max_current_a",
+            h.max_current_a.value.to_string(),
+        ));
     }
 
     let schema = Arc::new(parse_message_type(SCHEMA).context("parquet schema")?);
@@ -808,7 +811,7 @@ mod tests {
             capabilities: CurrentSenseTopology::ThreeShunt.capability_bits(),
             foc_freq_hz: 20_000,
             calib: BoardCalib {
-                shunt_ohms: 0.002,
+                shunt_ohms: oxifoc_core::units::ohms(0.002),
                 amp_gain: 1.0,
                 adc_vref_mv: 1000,
                 adc_max_counts: 1000,

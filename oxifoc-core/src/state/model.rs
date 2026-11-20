@@ -8,6 +8,7 @@
 
 use super::{CMD_CHANNEL, DriverCommand};
 use crate::motor::drive::DriveConfig;
+use crate::units::si;
 use crate::{
     motor::foc_driver::PreparedMotorModel,
     storage::{HallCalibrationConfig, MotorParamsConfig, RuntimeConfig, VoltageFeedforwardConfig},
@@ -697,7 +698,7 @@ pub(super) fn apply<P, C, Ph, S>(
                             ),
                         );
                     }
-                    TuningUpdate::PiGains(v) => foc.set_current_pi_gains(v.kp, v.ki),
+                    TuningUpdate::PiGains(v) => foc.set_current_pi_gains(si(v.kp), si(v.ki)),
                     TuningUpdate::HallTuning(_) => {}
                     TuningUpdate::DcOffsets(v) => {
                         foc.set_current_offsets((v.phase_a, v.phase_b, v.phase_c));

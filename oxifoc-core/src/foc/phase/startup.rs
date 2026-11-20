@@ -20,10 +20,15 @@
 //! [`READY_MIN_VELOCITY`]: super::observer::READY_MIN_VELOCITY
 
 use crate::foc::clamp_f32;
-use crate::foc::fast_math::{atan2f, sqrtf};
+use crate::foc::fast_math::sqrtf;
 use crate::foc::wrap_angle;
+use crate::units::{
+    ConstZero, ELECTRICAL_RADIAN, ElectricCurrent, ElectricPotential, ElectricalAngle,
+    ElectricalAngularVelocity, ElectricalResistance, Inductance, Linear, MagneticFlux, Sign, Time,
+    amps, erad, erad_per_s, seconds, vector_angle, webers,
+};
 
-/// Ramp current soft-start (s): the torque command scales 0 → 1 over this
+/// Ramp current soft-start: the torque command scales 0 → 1 over this
 /// window at ramp entry (see [`SensorlessStartup::current_scale`]).
 ///
 /// There is deliberately NO align phase (VESC's default `align time = 0`):
@@ -36,9 +41,9 @@ use crate::foc::wrap_angle;
 /// fixed anchor to oscillate around — the rotor slips into sync during the
 /// slow early ramp instead. The soft-start keeps the initial pull gentle
 /// for unlucky initial rotor angles.
-pub const RAMP_CURRENT_SOFT_START_S: f32 = 0.15;
+pub const RAMP_CURRENT_SOFT_START: Time = seconds(0.15);
 
-/// Ramp duration (s): linear `0 → ceiling` open-loop velocity.
+/// Ramp duration: linear `0 → ceiling` open-loop velocity.
 ///
 /// Scaled with [`DEFAULT_HANDOFF_VEL`] to keep the ramp acceleration at the
 /// hardware-validated ~150 rad/s² el (60 rad/s over 0.4 s): the open-loop
@@ -46,9 +51,9 @@ pub const RAMP_CURRENT_SOFT_START_S: f32 = 0.15;
 /// scales with the slip acceleration — at 3× the acceleration a light
 /// 0.3 A ramp fails to capture the rotor at all (sim: cold start never
 /// hands off). The longer open-loop dwell is affordable post-shave.
-pub const DEFAULT_RAMP_TIME_S: f32 = 1.2;
+pub const DEFAULT_RAMP_TIME: Time = seconds(1.2);
 
-/// Target electrical velocity (rad/s) to hand off to the observer at.
+/// Target electrical velocity to hand off to the observer at.
 ///
 /// The binding constraint is the inverter distortion floor, not the
 /// observer's nominal speed floor ([`super::observer::READY_MIN_VELOCITY`],
@@ -61,23 +66,23 @@ pub const DEFAULT_RAMP_TIME_S: f32 = 1.2;
 /// (~1720 eRPM ≈ 250 mech RPM on the 7-pp bench motor). The longer dwell
 /// in the open-loop startup path is affordable since the tier-2 ISR shave
 /// (startup path ~87% load, command pump alive throughout).
-pub const DEFAULT_HANDOFF_VEL: f32 = 180.0;
+pub const DEFAULT_HANDOFF_VEL: ElectricalAngularVelocity = erad_per_s(180.0);
 
-/// Hall-dropout recovery velocity (rad/s, ~500 eRPM). A *fast* nudge from the
+/// Hall-dropout recovery velocity (~500 eRPM). A *fast* nudge from the
 /// last known angle — not a ramp — because there a real angle history exists
 /// and the rotor is already moving; we only bridge to observer re-lock.
-pub const DEFAULT_RECOVERY_VEL: f32 = 52.0;
+pub const DEFAULT_RECOVERY_VEL: ElectricalAngularVelocity = erad_per_s(52.0);
 
-/// Informational dwell (s) reported by [`SensorlessStartup::timer`]. Does NOT
+/// Informational dwell reported by [`SensorlessStartup::timer`]. Does NOT
 /// terminate the sequence (dropping to a dead estimator at its expiry is worse
 /// than continuing open loop — VESC keeps its override running for the same
 /// reason); handoff is gated solely on the observer converging.
-pub const DEFAULT_OPENLOOP_TIME_S: f32 = 0.5;
+pub const DEFAULT_OPENLOOP_TIME: Time = seconds(0.5);
 
-/// Current (A, |i_αβ|) at which the ramp ceiling reaches its max. Below it the
+/// Current (|i_αβ|) at which the ramp ceiling reaches its max. Below it the
 /// ceiling scales down toward [`DEFAULT_HANDOFF_VEL`] so a gentle throttle
 /// ramps gently (VESC `openloop_rpm_max = map(iq, 0..I_max, …)`).
-const CURRENT_REF_A: f32 = 5.0;
+const CURRENT_REF: ElectricCurrent = amps(5.0);
 
 /// Max ramp ceiling as a multiple of the handoff velocity at full current.
 const CEILING_MAX_FACTOR: f32 = 2.0;
@@ -102,7 +107,7 @@ pub const DEADSHORT_SETTLE_CYCLES: u16 = 16;
 /// 2nd and 3rd samples is certain to be fully shorted.
 const PROBE_PIPELINE_SAMPLES: u16 = 2;
 
-/// Minimum |ω| (rad/s elec) the deadshort must resolve to declare the rotor
+/// Minimum electrical |ω| the deadshort must resolve to declare the rotor
 /// "spinning" and seed the observer for a flying restart. Below it (standstill
 /// or too slow to RIDE), fall through to the ramp cold start.
 ///
@@ -118,9 +123,9 @@ const PROBE_PIPELINE_SAMPLES: u16 = 2;
 /// into closed loop reliably (the distortion floor is ~120 on the ZD2808).
 /// The bench false-catch (enable transient, see
 /// [`DEADSHORT_SETTLE_CYCLES`]) resolved to ω≈46 — far below this bar.
-pub const DEADSHORT_MIN_CATCH_VEL: f32 = 140.0;
+pub const DEADSHORT_MIN_CATCH_VEL: ElectricalAngularVelocity = erad_per_s(140.0);
 
-/// Minimum probe-measured |ω| (rad/s elec) for a confirm probe to count as
+/// Minimum probe-measured electrical |ω| for a confirm probe to count as
 /// "strong" toward the [`CONFIRM_SEED_PROBES`] hold-ratchet escape.
 /// Deliberately SEPARATE from (and lower than) [`DEADSHORT_MIN_CATCH_VEL`]:
 /// during the escape the drive is still holding the rotor at the handoff
@@ -129,9 +134,9 @@ pub const DEADSHORT_MIN_CATCH_VEL: f32 = 140.0;
 /// here". The 2026-07-06 hold-ratchet escape measured 32–108 rad/s on a
 /// genuinely captured rotor (probes sample random phases of the capture
 /// hunt); a floor at the catch bound would have starved the escape.
-const CONFIRM_STRONG_PROBE_VEL: f32 = 60.0;
+const CONFIRM_STRONG_PROBE_VEL: ElectricalAngularVelocity = erad_per_s(60.0);
 
-/// Abort the probe early if |i_αβ| exceeds this (A): the back-EMF drives the
+/// Abort the probe early if |i_αβ| exceeds this: the back-EMF drives the
 /// shorted winding toward `e/|Z|`, which on a low-R motor is large — stop and
 /// estimate from the intervals measured so far rather than build current
 /// without bound. Mirrors MESC's `DEADSHORT_CURRENT`.
@@ -147,11 +152,11 @@ const CONFIRM_STRONG_PROBE_VEL: f32 = 60.0;
 /// transient; a cap-ended window still yields a valid estimate from the
 /// intervals it measured. TODO: derive from the live `CurrentLimits`
 /// instead of a const once the probe plumbing carries them.
-const DEADSHORT_MAX_CURRENT_A: f32 = 8.0;
+const DEADSHORT_MAX_CURRENT: ElectricCurrent = amps(8.0);
 
 /// Confirm probes enter from active commutation, so leave more room for
 /// current growth while the resumed command traverses the PWM pipeline.
-const CONFIRM_MAX_CURRENT_A: f32 = 2.0;
+const CONFIRM_MAX_CURRENT: ElectricCurrent = amps(2.0);
 
 /// Probe-completion scheduling and PWM actuation latency, in sample periods.
 const CONFIRM_CURRENT_LOOKAHEAD: f32 = 3.0;
@@ -188,7 +193,7 @@ const CONFIRM_MIN_VEL_FRACTION: f32 = 0.5;
 /// the right owner of "the rotor is real but the claim is wrong".
 const CONFIRM_MAX_VEL_MULTIPLE: f32 = 2.0;
 
-/// A single probe reading at/above this |ω| (el rad/s) that also fails the
+/// A single probe reading at/above this electrical |ω| that also fails the
 /// velocity check HIGH (probe > [`CONFIRM_MAX_VEL_MULTIPLE`]×claim) seeds
 /// the observer immediately — no [`CONFIRM_SEED_PROBES`] streak. Two
 /// reasons. (1) The streak guards against LOW misreads (a probe sampling
@@ -204,23 +209,23 @@ const CONFIRM_MAX_VEL_MULTIPLE: f32 = 2.0;
 /// 300 ≈ 1.7× the handoff velocity: unreachable by any known artifact,
 /// modest enough to catch the ratchet before the probe-current danger
 /// zone (i_short ≈ λω/|Z| ≈ 6.7 A at 750).
-const CONFIRM_FAST_SEED_VEL: f32 = 300.0;
+const CONFIRM_FAST_SEED_VEL: ElectricalAngularVelocity = erad_per_s(300.0);
 
-/// Handoff-confirm probe: max |angle| disagreement (rad) between the probe's
+/// Handoff-confirm probe: max |angle| disagreement between the probe's
 /// rotor estimate and the observer's. A converged observer is within ~0.3
 /// rad of truth and the probe within ~0.1; a rotor freewheeling AGAINST the
 /// commanded direction (which the probe's ±90° convention cannot sign) shows
 /// up here as a ~π disagreement and is rejected.
-const CONFIRM_MAX_ANGLE_ERR_RAD: f32 = 1.0;
+const CONFIRM_MAX_ANGLE_ERR: ElectricalAngle = erad(1.0);
 
-/// Cooldown (s) between confirm probes. A rotor being captured by the ramp
+/// Cooldown between confirm probes. A rotor being captured by the ramp
 /// HUNTS around the synchronous speed (undamped ±40 rad/s swings in the
 /// sims); a single 0.35 ms probe samples an instant of that hunt and can
 /// honestly read near-zero on a genuinely captured rotor. An unconfirmed
 /// probe therefore returns to Hold and retries — the hunt period is
 /// ~200–300 ms, so successive probes land on different hunt phases and a
 /// real capture confirms within a few tries. A phantom never does.
-const CONFIRM_RETRY_S: f32 = 0.1;
+const CONFIRM_RETRY: Time = seconds(0.1);
 
 /// Consecutive confirm probes that must each measure a genuinely spinning
 /// rotor (probe |ω| ≥ [`CONFIRM_STRONG_PROBE_VEL`]) before the sequencer
@@ -231,14 +236,14 @@ const CONFIRM_RETRY_S: f32 = 0.1;
 /// 219→756 rad/s el (~+54 per retry, internal gates all green) while the
 /// probe consistently measured a real captured rotor at 32–108 —
 /// confirmation against the runaway claim is structurally unreachable, and
-/// waiting for the `HOLD_GIVEUP_S` recycle throws away a good capture
+/// waiting for the `HOLD_GIVEUP` recycle throws away a good capture
 /// the probe has already measured. Three consecutive strong reads make a
 /// standing-rotor false positive implausible: each probe follows a
 /// [`CONFIRM_SETTLE_CYCLES`] decay window, and the bench enable-transient
 /// artifact resolves to ω≈46, below the catch floor.
 const CONFIRM_SEED_PROBES: u8 = 3;
 
-/// Hold-phase give-up (s): if the observer cannot pass a confirm probe for
+/// Hold-phase give-up: if the observer cannot pass a confirm probe for
 /// this long at the ceiling, recycle the whole start (deadshort → ramp) and
 /// have the caller reset the observer. This is what finally breaks a
 /// phantom lock (the observer restarts from scratch while the ramp
@@ -248,7 +253,13 @@ const CONFIRM_SEED_PROBES: u8 = 3;
 /// on it (sim: a runaway under a never-ready observer builds toward the
 /// dq overcurrent within ~1.5 s). Still several confirm retries above the
 /// ~0.3 s a healthy capture needs to damp its hunt and confirm.
-const HOLD_GIVEUP_S: f32 = 1.0;
+const HOLD_GIVEUP: Time = seconds(1.0);
+
+/// 90°: the back-EMF leads the rotor flux by this, signed by the direction.
+const QUARTER_TURN: ElectricalAngle = erad(core::f32::consts::FRAC_PI_2);
+
+/// Below this flux linkage the probe has no motor model to estimate with.
+const MIN_PROBE_LAMBDA: MagneticFlux = webers(1e-9);
 
 /// Where the open-loop sequencer is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,7 +272,7 @@ pub enum StartupPhase {
     Deadshort,
     /// Linearly ramping the open-loop velocity 0 → ceiling (from a cold
     /// start this begins at velocity 0 from the last output angle — there
-    /// is no align phase, see `RAMP_CURRENT_SOFT_START_S`).
+    /// is no align phase, see `RAMP_CURRENT_SOFT_START`).
     Ramp,
     /// Holding at the ceiling, waiting for the observer to converge.
     Hold,
@@ -295,10 +306,10 @@ impl StartupPhase {
 /// What the manager should drive this cycle.
 #[derive(Clone, Copy, Debug)]
 pub struct StartupOutput {
-    /// Open-loop commutation angle (rad).
-    pub angle: f32,
-    /// Open-loop commutation velocity (rad/s, signed by direction).
-    pub velocity: f32,
+    /// Open-loop commutation angle.
+    pub angle: ElectricalAngle,
+    /// Open-loop commutation velocity (signed by direction).
+    pub velocity: ElectricalAngularVelocity,
     /// The observer passed its readiness gates this cycle — the machine has
     /// entered the [`StartupPhase::Confirm`] probe (informational; the
     /// actual handoff happens when the probe confirms).
@@ -313,7 +324,10 @@ pub enum DeadshortResult {
     Probing,
     /// Caught a spinning rotor: seed the observer from `(angle, velocity)` and
     /// go straight to closed loop (the sequencer has deactivated itself).
-    Caught { angle: f32, velocity: f32 },
+    Caught {
+        angle: ElectricalAngle,
+        velocity: ElectricalAngularVelocity,
+    },
 }
 
 /// Outcome of feeding one cycle of shorted-winding current to the
@@ -325,13 +339,13 @@ pub enum ConfirmResult {
     /// The measured back-EMF corroborates the observer: hand off (the
     /// sequencer has deactivated itself). `velocity` is the probe's own
     /// |ω| estimate, for logging.
-    Confirmed { velocity: f32 },
+    Confirmed { velocity: ElectricalAngularVelocity },
     /// The probe could not corroborate the claimed rotation THIS time —
     /// either a phantom lock, or a genuinely captured rotor sampled at the
     /// slow phase of its capture hunt. The sequencer returned to Hold and
-    /// will re-probe after [`CONFIRM_RETRY_S`]; a phantom that never
-    /// confirms is broken up by the `HOLD_GIVEUP_S` recycle.
-    Unconfirmed { velocity: f32 },
+    /// will re-probe after [`CONFIRM_RETRY`]; a phantom that never
+    /// confirms is broken up by the `HOLD_GIVEUP` recycle.
+    Unconfirmed { velocity: ElectricalAngularVelocity },
     /// The probe disagrees with the observer's claim, but it has measured a
     /// genuinely spinning rotor ([`CONFIRM_SEED_PROBES`] consecutive reads
     /// ≥ the deadshort catch floor): the rotor is real and the OBSERVER is
@@ -339,25 +353,28 @@ pub enum ConfirmResult {
     /// [`CONFIRM_SEED_PROBES`]). Seed the observer from `(angle, velocity)`
     /// and go straight to closed loop — the sequencer has deactivated
     /// itself; same contract as [`DeadshortResult::Caught`].
-    SeedAndHandoff { angle: f32, velocity: f32 },
+    SeedAndHandoff {
+        angle: ElectricalAngle,
+        velocity: ElectricalAngularVelocity,
+    },
 }
 
 /// Cold-start / recovery open-loop sequencer. See the module docs.
 #[derive(Clone, Copy, Debug)]
 pub struct SensorlessStartup {
     phase: StartupPhase,
-    angle: f32,
-    velocity: f32,
+    angle: ElectricalAngle,
+    velocity: ElectricalAngularVelocity,
     /// Commanded direction (+1 / −1); the ramp and recovery are signed by it.
     dir: f32,
-    /// Target handoff speed magnitude (rad/s).
-    handoff_vel: f32,
-    timer: f32,
-    /// Time spent in Hold without a confirmed handoff (s) — drives the
-    /// `HOLD_GIVEUP_S` recycle.
-    hold_time: f32,
-    /// Remaining cooldown (s) before the next confirm probe may start.
-    confirm_cooldown: f32,
+    /// Target handoff speed magnitude.
+    handoff_vel: ElectricalAngularVelocity,
+    timer: Time,
+    /// Time spent in Hold without a confirmed handoff — drives the
+    /// `HOLD_GIVEUP` recycle.
+    hold_time: Time,
+    /// Remaining cooldown before the next confirm probe may start.
+    confirm_cooldown: Time,
     /// Consecutive confirm probes that measured a genuinely spinning rotor
     /// while still failing the observer-claim comparison — the hold-ratchet
     /// escape counter (see [`CONFIRM_SEED_PROBES`]). Reset by any weak
@@ -376,23 +393,23 @@ pub struct SensorlessStartup {
     ds_cycles: u16,
     /// Running sums of the α/β BACK-EMF over the probe window, one term per
     /// sample interval (see `backemf_from_short`).
-    ds_sum_alpha: f32,
-    ds_sum_beta: f32,
+    ds_sum_alpha: ElectricPotential,
+    ds_sum_beta: ElectricPotential,
     /// Back-EMF terms in those sums.
     ds_emf_terms: u16,
-    ds_elapsed: f32,
+    ds_elapsed: Time,
     /// Previous current sample (settle included), for the interval model.
-    ds_prev: Option<(f32, f32)>,
+    ds_prev: Option<(ElectricCurrent, ElectricCurrent)>,
     // ── ISR log rate limit (token bucket) ──
     /// Log frames still allowed in the current window.
     log_tokens: u8,
-    /// Elapsed time in the current window (s).
-    log_window_t: f32,
+    /// Elapsed time in the current window.
+    log_window_t: Time,
     /// Frames dropped in the current window.
     log_suppressed: u16,
 }
 
-/// ISR log rate limit: window length (s) and frames allowed per window.
+/// ISR log rate limit: window length and frames allowed per window.
 ///
 /// Every startup transition logs multi-arg defmt frames straight from the
 /// current-loop ISR. One clean start emits a handful over seconds — free
@@ -404,32 +421,32 @@ pub struct SensorlessStartup {
 /// bucket bounds the sustained frame rate; [`SensorlessStartup::log_tick`]
 /// reports what was dropped once per window so the churn itself stays
 /// visible in the log.
-const LOG_WINDOW_S: f32 = 1.0;
+const LOG_WINDOW: Time = seconds(1.0);
 const LOG_TOKENS_PER_WINDOW: u8 = 10;
 
 impl Default for SensorlessStartup {
     fn default() -> Self {
         Self {
             phase: StartupPhase::Inactive,
-            angle: 0.0,
-            velocity: 0.0,
+            angle: ElectricalAngle::ZERO,
+            velocity: ElectricalAngularVelocity::ZERO,
             dir: 1.0,
             handoff_vel: DEFAULT_HANDOFF_VEL,
-            timer: 0.0,
-            hold_time: 0.0,
-            confirm_cooldown: 0.0,
+            timer: Time::ZERO,
+            hold_time: Time::ZERO,
+            confirm_cooldown: Time::ZERO,
             strong_probes: 0,
             recycled: false,
             ds_settle: 0,
             ds_settle_done: 0,
             ds_cycles: 0,
-            ds_sum_alpha: 0.0,
-            ds_sum_beta: 0.0,
+            ds_sum_alpha: ElectricPotential::ZERO,
+            ds_sum_beta: ElectricPotential::ZERO,
             ds_emf_terms: 0,
-            ds_elapsed: 0.0,
+            ds_elapsed: Time::ZERO,
             ds_prev: None,
             log_tokens: LOG_TOKENS_PER_WINDOW,
-            log_window_t: 0.0,
+            log_window_t: Time::ZERO,
             log_suppressed: 0,
         }
     }
@@ -441,16 +458,16 @@ impl SensorlessStartup {
     /// probe (Phase B): if the rotor is already spinning it is caught and
     /// handed straight to the observer; otherwise the machine falls through to
     /// the ramp→handoff cold start (Phase A; no align — see
-    /// `RAMP_CURRENT_SOFT_START_S`).
-    pub fn begin_cold_start(&mut self, angle0: f32, direction: f32) {
+    /// `RAMP_CURRENT_SOFT_START`).
+    pub fn begin_cold_start(&mut self, angle0: ElectricalAngle, direction: f32) {
         self.phase = StartupPhase::Deadshort;
         self.angle = wrap_angle(angle0);
-        self.velocity = 0.0;
+        self.velocity = ElectricalAngularVelocity::ZERO;
         self.dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.handoff_vel = DEFAULT_HANDOFF_VEL;
-        self.timer = DEFAULT_OPENLOOP_TIME_S + DEFAULT_RAMP_TIME_S;
-        self.hold_time = 0.0;
-        self.confirm_cooldown = 0.0;
+        self.timer = DEFAULT_OPENLOOP_TIME + DEFAULT_RAMP_TIME;
+        self.hold_time = Time::ZERO;
+        self.confirm_cooldown = Time::ZERO;
         self.strong_probes = 0;
         self.start_probe(DEADSHORT_SETTLE_CYCLES);
     }
@@ -461,10 +478,10 @@ impl SensorlessStartup {
         self.ds_settle = settle;
         self.ds_settle_done = 0;
         self.ds_cycles = 0;
-        self.ds_sum_alpha = 0.0;
-        self.ds_sum_beta = 0.0;
+        self.ds_sum_alpha = ElectricPotential::ZERO;
+        self.ds_sum_beta = ElectricPotential::ZERO;
         self.ds_emf_terms = 0;
-        self.ds_elapsed = 0.0;
+        self.ds_elapsed = Time::ZERO;
         self.ds_prev = None;
     }
 
@@ -472,15 +489,22 @@ impl SensorlessStartup {
     /// drives the current past the cap — see below), then accumulates the
     /// back-EMF of every sample interval. Returns `true` once the window is
     /// done (full, or ended early by the current cap).
-    fn probe_sample(&mut self, i_alpha: f32, i_beta: f32, dt: f32, r: f32, l: f32) -> bool {
+    fn probe_sample(
+        &mut self,
+        i_alpha: ElectricCurrent,
+        i_beta: ElectricCurrent,
+        dt: Time,
+        r: ElectricalResistance,
+        l: Inductance,
+    ) -> bool {
         let current_cap = if self.phase == StartupPhase::Confirm {
-            CONFIRM_MAX_CURRENT_A
+            CONFIRM_MAX_CURRENT
         } else {
-            DEADSHORT_MAX_CURRENT_A
+            DEADSHORT_MAX_CURRENT
         };
         let prev = self.ds_prev.replace((i_alpha, i_beta));
         let i_sq = i_alpha * i_alpha + i_beta * i_beta;
-        let i_mag = sqrtf(i_sq);
+        let i_mag = i_sq.sqrt_with(sqrtf);
         let predicted_cap = self.phase == StartupPhase::Confirm
             && self.ds_settle_done >= PROBE_PIPELINE_SAMPLES
             && i_mag < current_cap
@@ -522,7 +546,12 @@ impl SensorlessStartup {
     }
 
     /// Rotor estimate from the probe window (see `backemf_estimate`).
-    fn probe_estimate(&self, dt: f32, lambda: f32, min_vel: f32) -> Option<(f32, f32)> {
+    fn probe_estimate(
+        &self,
+        dt: Time,
+        lambda: MagneticFlux,
+        min_vel: ElectricalAngularVelocity,
+    ) -> Option<(ElectricalAngle, ElectricalAngularVelocity)> {
         if self.ds_emf_terms == 0 {
             return None;
         }
@@ -546,15 +575,15 @@ impl SensorlessStartup {
     }
 
     /// Advance the ISR log rate-limit window (call once per control cycle,
-    /// active or not — see `LOG_WINDOW_S`). Returns the number of frames
+    /// active or not — see `LOG_WINDOW`). Returns the number of frames
     /// dropped in the window that just closed (0 while a window is still
     /// open) so the caller can log a one-frame suppression summary.
-    pub fn log_tick(&mut self, dt: f32) -> u16 {
+    pub fn log_tick(&mut self, dt: Time) -> u16 {
         self.log_window_t += dt;
-        if self.log_window_t < LOG_WINDOW_S {
+        if self.log_window_t < LOG_WINDOW {
             return 0;
         }
-        self.log_window_t = 0.0;
+        self.log_window_t = Time::ZERO;
         self.log_tokens = LOG_TOKENS_PER_WINDOW;
         core::mem::take(&mut self.log_suppressed)
     }
@@ -574,15 +603,15 @@ impl SensorlessStartup {
     /// Begin a hall-dropout recovery: a fast fixed-velocity nudge from the last
     /// known `angle0`, signed by `direction` (the last known velocity sign — a
     /// board rolling backward must not be spun forward).
-    pub fn begin_recovery(&mut self, angle0: f32, direction: f32) {
+    pub fn begin_recovery(&mut self, angle0: ElectricalAngle, direction: f32) {
         self.phase = StartupPhase::Recover;
         self.angle = wrap_angle(angle0);
         self.dir = if direction < 0.0 { -1.0 } else { 1.0 };
         self.velocity = self.dir * DEFAULT_RECOVERY_VEL;
         self.handoff_vel = DEFAULT_RECOVERY_VEL;
-        self.timer = DEFAULT_OPENLOOP_TIME_S;
-        self.hold_time = 0.0;
-        self.confirm_cooldown = 0.0;
+        self.timer = DEFAULT_OPENLOOP_TIME;
+        self.hold_time = Time::ZERO;
+        self.confirm_cooldown = Time::ZERO;
         self.strong_probes = 0;
     }
 
@@ -599,73 +628,73 @@ impl SensorlessStartup {
     /// Stop sequencing (handed off to the observer, or source changed).
     pub fn deactivate(&mut self) {
         self.phase = StartupPhase::Inactive;
-        self.timer = 0.0;
-        self.velocity = 0.0;
-        self.hold_time = 0.0;
-        self.confirm_cooldown = 0.0;
+        self.timer = Time::ZERO;
+        self.velocity = ElectricalAngularVelocity::ZERO;
+        self.hold_time = Time::ZERO;
+        self.confirm_cooldown = Time::ZERO;
     }
 
     /// Whether the give-up recycle fired since the last call (one-shot).
     /// The caller must reset the observer when it did: the recycle exists
-    /// because the observer spent `HOLD_GIVEUP_S` failing to confirm —
+    /// because the observer spent `HOLD_GIVEUP` failing to confirm —
     /// its state is presumed to be a phantom lock.
     pub fn take_recycled(&mut self) -> bool {
         core::mem::take(&mut self.recycled)
     }
 
-    /// Current open-loop angle (rad).
-    pub fn angle(&self) -> f32 {
+    /// Current open-loop angle.
+    pub fn angle(&self) -> ElectricalAngle {
         self.angle
     }
 
-    /// Current open-loop velocity (rad/s, signed).
-    pub fn velocity(&self) -> f32 {
+    /// Current open-loop velocity (signed).
+    pub fn velocity(&self) -> ElectricalAngularVelocity {
         self.velocity
     }
 
-    /// Informational dwell remaining (s). Does not gate handoff.
-    pub fn timer(&self) -> f32 {
+    /// Informational dwell remaining. Does not gate handoff.
+    pub fn timer(&self) -> Time {
         self.timer
     }
 
     /// Torque-command scale (0..=1) for the current cycle: ramps in over
-    /// `RAMP_CURRENT_SOFT_START_S` at ramp entry, full command everywhere
+    /// `RAMP_CURRENT_SOFT_START` at ramp entry, full command everywhere
     /// else (Deadshort holds the bridge shorted, so the value is moot there).
     pub fn current_scale(&self) -> f32 {
         match self.phase {
             StartupPhase::Ramp => {
-                let ramp_elapsed = (DEFAULT_OPENLOOP_TIME_S + DEFAULT_RAMP_TIME_S) - self.timer;
-                clamp_f32(ramp_elapsed / RAMP_CURRENT_SOFT_START_S, 0.0, 1.0)
+                let ramp_elapsed = (DEFAULT_OPENLOOP_TIME + DEFAULT_RAMP_TIME) - self.timer;
+                clamp_f32(ramp_elapsed.ratio_to(RAMP_CURRENT_SOFT_START), 0.0, 1.0)
             }
             _ => 1.0,
         }
     }
 
     /// Ramp ceiling for the measured current magnitude — at least the handoff
-    /// speed, scaled up toward `CEILING_MAX_FACTOR×` at `CURRENT_REF_A`.
-    fn ramp_ceiling(&self, current_mag: f32) -> f32 {
-        let frac = clamp_f32(current_mag / CURRENT_REF_A, 0.0, 1.0);
+    /// speed, scaled up toward `CEILING_MAX_FACTOR×` at `CURRENT_REF`.
+    fn ramp_ceiling(&self, current_mag: ElectricCurrent) -> ElectricalAngularVelocity {
+        let frac = clamp_f32(current_mag.ratio_to(CURRENT_REF), 0.0, 1.0);
         self.handoff_vel * (1.0 + frac * (CEILING_MAX_FACTOR - 1.0))
     }
 
     /// Advance one control cycle.
     ///
-    /// * `current_mag` — measured |i_αβ| (A), for the current-scheduled ceiling.
+    /// * `current_mag` — measured |i_αβ|, for the current-scheduled ceiling.
     /// * `observer_ready` — `Observer::is_ready()`.
-    /// * `observer_vel` — observer's velocity estimate (rad/s), for the handoff
+    /// * `observer_vel` — observer's velocity estimate, for the handoff
     ///   speed gate (the open-loop velocity alone can outrun a not-yet-locked
     ///   observer).
     ///
     /// Returns the `(angle, velocity)` to commutate at and whether to hand off.
     pub fn tick(
         &mut self,
-        dt: f32,
-        current_mag: f32,
+        dt: Time,
+        current_mag: ElectricCurrent,
         observer_ready: bool,
-        observer_vel: f32,
+        observer_vel: ElectricalAngularVelocity,
     ) -> StartupOutput {
-        self.timer = (self.timer - dt).max(0.0);
-        self.confirm_cooldown = (self.confirm_cooldown - dt).max(0.0);
+        self.timer = (self.timer - dt).max(Time::ZERO);
+        self.confirm_cooldown = (self.confirm_cooldown - dt).max(Time::ZERO);
 
         match self.phase {
             // The probes are driven by `feed_deadshort`/`feed_confirm`, not
@@ -674,13 +703,13 @@ impl SensorlessStartup {
             StartupPhase::Inactive | StartupPhase::Deadshort | StartupPhase::Confirm => {
                 return StartupOutput {
                     angle: self.angle,
-                    velocity: 0.0,
+                    velocity: ElectricalAngularVelocity::ZERO,
                     handoff: false,
                 };
             }
             StartupPhase::Ramp => {
                 let ceiling = self.ramp_ceiling(current_mag);
-                let rate = ceiling / DEFAULT_RAMP_TIME_S;
+                let rate = ceiling / DEFAULT_RAMP_TIME;
                 let target = self.dir * ceiling;
                 // Step the magnitude toward the ceiling; sign stays `dir`.
                 let next = self.velocity + self.dir * rate * dt;
@@ -691,23 +720,23 @@ impl SensorlessStartup {
                 };
                 if self.velocity.abs() >= ceiling {
                     self.phase = StartupPhase::Hold;
-                    self.hold_time = 0.0;
+                    self.hold_time = Time::ZERO;
                 }
             }
             StartupPhase::Hold => {
                 // Velocity at the ceiling; hold it. A hold that cannot get
-                // a confirmed handoff within HOLD_GIVEUP_S is recycled
+                // a confirmed handoff within HOLD_GIVEUP is recycled
                 // through a fresh deadshort→ramp start: a phantom-locked
                 // observer never confirms (the caller resets it, see
                 // take_recycled), and a genuinely spinning rotor is
                 // re-caught by the deadshort.
                 self.hold_time += dt;
-                if self.hold_time >= HOLD_GIVEUP_S {
+                if self.hold_time >= HOLD_GIVEUP {
                     self.phase = StartupPhase::Deadshort;
-                    self.velocity = 0.0;
-                    self.timer = DEFAULT_OPENLOOP_TIME_S + DEFAULT_RAMP_TIME_S;
-                    self.hold_time = 0.0;
-                    self.confirm_cooldown = 0.0;
+                    self.velocity = ElectricalAngularVelocity::ZERO;
+                    self.timer = DEFAULT_OPENLOOP_TIME + DEFAULT_RAMP_TIME;
+                    self.hold_time = Time::ZERO;
+                    self.confirm_cooldown = Time::ZERO;
                     self.strong_probes = 0;
                     self.recycled = true;
                     // The ramp/hold drive current decays into this short;
@@ -717,7 +746,7 @@ impl SensorlessStartup {
                     self.start_probe(DEADSHORT_SETTLE_CYCLES);
                     return StartupOutput {
                         angle: self.angle,
-                        velocity: 0.0,
+                        velocity: ElectricalAngularVelocity::ZERO,
                         handoff: false,
                     };
                 }
@@ -752,7 +781,7 @@ impl SensorlessStartup {
         let fast_enough = (self.velocity.abs() >= self.handoff_vel
             && observer_vel.abs() >= self.handoff_vel * 0.5)
             || (ramp_moving && observer_vel.abs() >= self.handoff_vel);
-        let handoff = observer_ready && fast_enough && self.confirm_cooldown <= 0.0;
+        let handoff = observer_ready && fast_enough && self.confirm_cooldown.is_non_positive();
         let velocity = self.velocity;
         if handoff {
             // Gates passed → confirm before engaging closed loop: short the
@@ -782,12 +811,12 @@ impl SensorlessStartup {
     /// → it falls through to the cold-start ramp, returning `Probing`.
     pub fn feed_deadshort(
         &mut self,
-        i_alpha: f32,
-        i_beta: f32,
-        dt: f32,
-        r: f32,
-        l: f32,
-        lambda: f32,
+        i_alpha: ElectricCurrent,
+        i_beta: ElectricCurrent,
+        dt: Time,
+        r: ElectricalResistance,
+        l: Inductance,
+        lambda: MagneticFlux,
     ) -> DeadshortResult {
         if self.phase != StartupPhase::Deadshort {
             return DeadshortResult::Probing;
@@ -804,7 +833,7 @@ impl SensorlessStartup {
                 // Standstill / too slow → ramp cold start from here (no
                 // align — the soft-started rotating field catches the rotor).
                 self.phase = StartupPhase::Ramp;
-                self.velocity = 0.0;
+                self.velocity = ElectricalAngularVelocity::ZERO;
                 DeadshortResult::Probing
             }
         }
@@ -821,12 +850,12 @@ impl SensorlessStartup {
     #[allow(clippy::too_many_arguments)] // motor params travel as plain scalars, same as the estimator
     pub fn feed_confirm(
         &mut self,
-        i_alpha: f32,
-        i_beta: f32,
-        dt: f32,
-        r: f32,
-        l: f32,
-        lambda: f32,
+        i_alpha: ElectricCurrent,
+        i_beta: ElectricCurrent,
+        dt: Time,
+        r: ElectricalResistance,
+        l: Inductance,
+        lambda: MagneticFlux,
         claim: super::provider::PhaseOutput,
     ) -> ConfirmResult {
         if self.phase != StartupPhase::Confirm {
@@ -842,21 +871,22 @@ impl SensorlessStartup {
         // Window complete (no catch floor here: the question is agreement
         // with the observer, not absolute speed; a standing rotor honestly
         // estimates ~0).
-        let (angle, omega) = match self.probe_estimate(dt, lambda, 0.0) {
+        let (angle, omega) = match self.probe_estimate(dt, lambda, ElectricalAngularVelocity::ZERO)
+        {
             Some((angle, velocity)) => (angle, velocity.abs()),
             // Degenerate parameters (no motor params baked) — cannot
             // corroborate anything; behave like a failed probe.
-            None => (claim.angle, 0.0),
+            None => (claim.angle, ElectricalAngularVelocity::ZERO),
         };
         if self.log_allow() {
             let n = f32::from(self.ds_emf_terms.max(1));
             info!(
-                "probe: e_avg=({},{}) -> omega={} angle={} (window_us={})",
+                "probe: e_avg=({:?},{:?}) V -> omega={:?} rad/s angle={:?} rad (window={:?} s)",
                 self.ds_sum_alpha / n,
                 self.ds_sum_beta / n,
                 omega,
                 angle,
-                self.ds_elapsed * 1e6
+                self.ds_elapsed
             );
         }
 
@@ -869,7 +899,7 @@ impl SensorlessStartup {
         let vel_ok = omega >= CONFIRM_MIN_VEL_FRACTION * claim_vel
             && omega <= CONFIRM_MAX_VEL_MULTIPLE * claim_vel;
         let angle_ok =
-            crate::foc::angle_difference(angle, claim.angle).abs() <= CONFIRM_MAX_ANGLE_ERR_RAD;
+            crate::foc::angle_difference(angle, claim.angle).abs() <= CONFIRM_MAX_ANGLE_ERR;
         if vel_ok && angle_ok {
             self.deactivate();
             return ConfirmResult::Confirmed { velocity: omega };
@@ -913,10 +943,10 @@ impl SensorlessStartup {
         // Unconfirmed: back to Hold, keep dragging, re-probe after the
         // cooldown — a genuinely captured rotor sampled at the slow
         // phase of its hunt confirms on a later try; a phantom never
-        // does and the HOLD_GIVEUP_S recycle breaks it up.
+        // does and the HOLD_GIVEUP recycle breaks it up.
         self.phase = StartupPhase::Hold;
         self.velocity = self.dir * self.handoff_vel.max(self.velocity.abs());
-        self.confirm_cooldown = CONFIRM_RETRY_S;
+        self.confirm_cooldown = CONFIRM_RETRY;
         ConfirmResult::Unconfirmed { velocity: omega }
     }
 }
@@ -930,7 +960,13 @@ impl SensorlessStartup {
 /// replacement) needed a steady state a low-τ motor at speed never reaches
 /// before the current cap (seeds 30–90% low; a 5065 tripped overcurrent
 /// right after catching a 2000 rad/s rotor).
-fn backemf_from_short(prev: (f32, f32), now: (f32, f32), dt: f32, r: f32, l: f32) -> (f32, f32) {
+fn backemf_from_short(
+    prev: (ElectricCurrent, ElectricCurrent),
+    now: (ElectricCurrent, ElectricCurrent),
+    dt: Time,
+    r: ElectricalResistance,
+    l: Inductance,
+) -> (ElectricPotential, ElectricPotential) {
     let k = l / dt;
     (
         -r * 0.5 * (prev.0 + now.0) - k * (now.0 - prev.0),
@@ -949,21 +985,21 @@ fn backemf_from_short(prev: (f32, f32), now: (f32, f32), dt: f32, r: f32, l: f32
 /// pull a ±180° seed, which it can't). Returns `None` below `min_vel`
 /// (standstill / too slow) or with degenerate parameters.
 fn backemf_estimate(
-    e_alpha: f32,
-    e_beta: f32,
-    lag_s: f32,
-    lambda: f32,
+    e_alpha: ElectricPotential,
+    e_beta: ElectricPotential,
+    lag: Time,
+    lambda: MagneticFlux,
     dir: f32,
-    min_vel: f32,
-) -> Option<(f32, f32)> {
-    if lambda <= 1e-9 {
+    min_vel: ElectricalAngularVelocity,
+) -> Option<(ElectricalAngle, ElectricalAngularVelocity)> {
+    if lambda <= MIN_PROBE_LAMBDA {
         return None;
     }
-    let omega = sqrtf(e_alpha * e_alpha + e_beta * e_beta) / lambda;
+    let omega = (e_alpha * e_alpha + e_beta * e_beta).sqrt_with(sqrtf) / lambda * ELECTRICAL_RADIAN;
     if omega < min_vel {
         return None;
     }
-    let angle = atan2f(e_beta, e_alpha) - dir * core::f32::consts::FRAC_PI_2 + dir * omega * lag_s;
+    let angle = vector_angle(e_alpha, e_beta) - dir * QUARTER_TURN + dir * omega * lag;
     Some((wrap_angle(angle), dir * omega))
 }
 
@@ -972,6 +1008,7 @@ mod tests {
     use super::*;
     use crate::foc::angle_difference;
     use crate::foc::phase::PhaseOutput;
+    use crate::units::{amps, erad, erad_per_s, henries, ohms, seconds, webers};
 
     const DT: f32 = 1.0 / 20_000.0;
 
@@ -980,7 +1017,14 @@ mod tests {
     /// this to get past the Phase B probe that now opens every cold start.
     fn skip_deadshort(sm: &mut SensorlessStartup) {
         for _ in 0..=(DEADSHORT_SETTLE_CYCLES + DEADSHORT_CYCLES) {
-            sm.feed_deadshort(0.0, 0.0, DT, 0.1, 200e-6, 0.01);
+            sm.feed_deadshort(
+                amps(0.0),
+                amps(0.0),
+                seconds(DT),
+                ohms(0.1),
+                henries(200e-6),
+                webers(0.01),
+            );
             if sm.phase() != StartupPhase::Deadshort {
                 break;
             }
@@ -991,7 +1035,7 @@ mod tests {
     /// Begin a cold start and skip straight to the Ramp phase.
     fn cold_start_to_ramp(angle: f32, dir: f32) -> SensorlessStartup {
         let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(angle, dir);
+        sm.begin_cold_start(erad(angle), dir);
         skip_deadshort(&mut sm);
         sm
     }
@@ -1001,13 +1045,13 @@ mod tests {
     fn run(sm: &mut SensorlessStartup, secs: f32, current: f32) -> Vec<(StartupPhase, f32)> {
         let mut out = Vec::new();
         let mut last = sm.phase();
-        out.push((last, sm.velocity()));
+        out.push((last, sm.velocity().value));
         let steps = (secs / DT) as usize;
         for _ in 0..steps {
-            sm.tick(DT, current, false, 0.0);
+            sm.tick(seconds(DT), amps(current), false, erad_per_s(0.0));
             if sm.phase() != last {
                 last = sm.phase();
-                out.push((last, sm.velocity()));
+                out.push((last, sm.velocity().value));
             }
         }
         out
@@ -1018,7 +1062,7 @@ mod tests {
         let mut sm = cold_start_to_ramp(1.0, 1.0);
         assert!(sm.is_active());
 
-        let hist = run(&mut sm, DEFAULT_RAMP_TIME_S + 0.3, 3.0);
+        let hist = run(&mut sm, (DEFAULT_RAMP_TIME + seconds(0.3)).value, 3.0);
         let phases: Vec<_> = hist.iter().map(|(p, _)| *p).collect();
         assert_eq!(phases, vec![StartupPhase::Ramp, StartupPhase::Hold]);
         // Settles at or above the handoff velocity.
@@ -1030,15 +1074,15 @@ mod tests {
         let mut sm = cold_start_to_ramp(0.0, 1.0);
         // Ramp entry: command fully suppressed, ramps in linearly.
         assert!(sm.current_scale() < 0.1, "got {}", sm.current_scale());
-        let half = (RAMP_CURRENT_SOFT_START_S / 2.0 / DT) as usize;
+        let half = (RAMP_CURRENT_SOFT_START.value / 2.0 / DT) as usize;
         for _ in 0..half {
-            sm.tick(DT, 1.0, false, 0.0);
+            sm.tick(seconds(DT), amps(1.0), false, erad_per_s(0.0));
         }
         let s = sm.current_scale();
         assert!((0.3..0.7).contains(&s), "mid-soft-start scale {s}");
         // Past the soft-start window (still ramping): full command.
         for _ in 0..half + 400 {
-            sm.tick(DT, 1.0, false, 0.0);
+            sm.tick(seconds(DT), amps(1.0), false, erad_per_s(0.0));
         }
         assert_eq!(sm.phase(), StartupPhase::Ramp);
         assert_eq!(sm.current_scale(), 1.0);
@@ -1052,12 +1096,15 @@ mod tests {
         // No align: the field must start moving immediately — a fixed-angle
         // dwell is exactly the undamped-spring resonance this design removes.
         let mut sm = cold_start_to_ramp(0.5, 1.0);
-        let mut o = sm.tick(DT, 2.0, false, 0.0);
+        let mut o = sm.tick(seconds(DT), amps(2.0), false, erad_per_s(0.0));
         for _ in 0..200 {
-            o = sm.tick(DT, 2.0, false, 0.0);
+            o = sm.tick(seconds(DT), amps(2.0), false, erad_per_s(0.0));
         }
-        assert!(o.velocity > 0.0, "field velocity must grow from tick one");
-        assert!(o.angle != 0.5, "angle must advance");
+        assert!(
+            o.velocity > erad_per_s(0.0),
+            "field velocity must grow from tick one"
+        );
+        assert!(o.angle != erad(0.5), "angle must advance");
     }
 
     #[test]
@@ -1066,12 +1113,15 @@ mod tests {
         assert_eq!(sm.phase(), StartupPhase::Ramp);
         let mut prev = sm.velocity();
         for _ in 0..100 {
-            sm.tick(DT, 5.0, false, 0.0);
+            sm.tick(seconds(DT), amps(5.0), false, erad_per_s(0.0));
             assert!(
-                sm.velocity() <= prev + 1e-3,
+                sm.velocity() <= prev + erad_per_s(1e-3),
                 "velocity must not reverse-jump"
             );
-            assert!(sm.velocity() <= 0.0, "reverse start stays negative");
+            assert!(
+                sm.velocity() <= erad_per_s(0.0),
+                "reverse start stays negative"
+            );
             prev = sm.velocity();
         }
     }
@@ -1080,10 +1130,14 @@ mod tests {
     fn higher_current_raises_the_ceiling() {
         let mut lo = cold_start_to_ramp(0.0, 1.0);
         let mut hi = cold_start_to_ramp(0.0, 1.0);
-        run(&mut lo, DEFAULT_RAMP_TIME_S + 0.2, 0.0); // no current → floor ceiling
-        run(&mut hi, DEFAULT_RAMP_TIME_S + 0.2, CURRENT_REF_A); // full current → max ceiling
-        assert!(hi.velocity() > lo.velocity() + 1.0);
-        assert!((lo.velocity() - DEFAULT_HANDOFF_VEL).abs() < 1.0);
+        run(&mut lo, (DEFAULT_RAMP_TIME + seconds(0.2)).value, 0.0); // no current → floor ceiling
+        run(
+            &mut hi,
+            (DEFAULT_RAMP_TIME + seconds(0.2)).value,
+            CURRENT_REF.value,
+        ); // full current → max ceiling
+        assert!(hi.velocity() > lo.velocity() + erad_per_s(1.0));
+        assert!((lo.velocity() - DEFAULT_HANDOFF_VEL).abs() < erad_per_s(1.0));
     }
 
     #[test]
@@ -1091,17 +1145,17 @@ mod tests {
         let mut sm = cold_start_to_ramp(0.0, 1.0);
         // Run past the ramp with the observer NOT ready — never hands
         // off, and ends solidly in Hold above the handoff speed.
-        for _ in 0..((DEFAULT_RAMP_TIME_S / DT) as usize + 4_000) {
-            let o = sm.tick(DT, 5.0, false, 0.0);
+        for _ in 0..((DEFAULT_RAMP_TIME.value / DT) as usize + 4_000) {
+            let o = sm.tick(seconds(DT), amps(5.0), false, erad_per_s(0.0));
             assert!(!o.handoff);
         }
         assert_eq!(sm.phase(), StartupPhase::Hold);
         assert!(sm.velocity() >= DEFAULT_HANDOFF_VEL);
         // Observer ready but slow estimate → still no handoff.
-        let o = sm.tick(DT, 5.0, true, 5.0);
+        let o = sm.tick(seconds(DT), amps(5.0), true, erad_per_s(5.0));
         assert!(!o.handoff);
         // Observer ready AND tracking at speed → handoff.
-        let o = sm.tick(DT, 5.0, true, DEFAULT_HANDOFF_VEL);
+        let o = sm.tick(seconds(DT), amps(5.0), true, DEFAULT_HANDOFF_VEL);
         assert!(o.handoff);
     }
 
@@ -1117,7 +1171,7 @@ mod tests {
         run(&mut sm, 0.005, 5.0); // ramp just started
         assert_eq!(sm.phase(), StartupPhase::Ramp);
         assert!(sm.velocity() < DEFAULT_HANDOFF_VEL * 0.2);
-        let o = sm.tick(DT, 5.0, true, 400.0);
+        let o = sm.tick(seconds(DT), amps(5.0), true, erad_per_s(400.0));
         assert!(
             !o.handoff,
             "align-swing false-ready must not hand off at ramp entry"
@@ -1125,10 +1179,10 @@ mod tests {
         // Ramp genuinely dragging → the runaway path fires below the
         // nominal handoff velocity. Duration scaled to the ramp: past the
         // 35% ramp_moving gate, still below the handoff velocity.
-        run(&mut sm, DEFAULT_RAMP_TIME_S * 0.25, 5.0);
+        run(&mut sm, (DEFAULT_RAMP_TIME * 0.25).value, 5.0);
         assert!(sm.velocity() >= DEFAULT_HANDOFF_VEL * 0.2);
         assert!(sm.velocity() < DEFAULT_HANDOFF_VEL);
-        let o = sm.tick(DT, 5.0, true, 400.0);
+        let o = sm.tick(seconds(DT), amps(5.0), true, erad_per_s(400.0));
         assert!(
             o.handoff,
             "ready+fast observer must take over a runaway rotor"
@@ -1206,7 +1260,14 @@ mod tests {
         for n in 1..=(DEADSHORT_SETTLE_CYCLES + DEADSHORT_CYCLES + 1) {
             let ((ia, ib), theta) = w.sample();
             peak = peak.max(ia.hypot(ib));
-            let res = sm.feed_deadshort(ia, ib, DT, r, l, lambda);
+            let res = sm.feed_deadshort(
+                amps(ia),
+                amps(ib),
+                seconds(DT),
+                ohms(r),
+                henries(l),
+                webers(lambda),
+            );
             if res != DeadshortResult::Probing || sm.phase() != StartupPhase::Deadshort {
                 return (res, theta, n, peak);
             }
@@ -1234,17 +1295,17 @@ mod tests {
         for (name, motor, omega, dir) in cases {
             let mut w = ShortedWinding::new(motor, omega, 1.2);
             let mut sm = SensorlessStartup::default();
-            sm.begin_cold_start(0.0, dir);
+            sm.begin_cold_start(erad(0.0), dir);
             assert!(sm.wants_short());
             match run_deadshort(&mut sm, &mut w, motor) {
                 (DeadshortResult::Caught { angle, velocity }, theta, _, _) => {
                     assert!(
-                        (velocity - omega).abs() < 0.03 * omega.abs(),
-                        "{name} at {omega}: velocity {velocity}"
+                        (velocity - erad_per_s(omega)).abs() < erad_per_s(0.03 * omega.abs()),
+                        "{name:?} at {omega:?}: velocity {velocity:?}"
                     );
                     assert!(
-                        angle_difference(angle, theta).abs() < 0.05,
-                        "{name} at {omega}: angle {angle} vs rotor {theta}"
+                        angle_difference(angle, erad(theta)).abs() < erad(0.05),
+                        "{name:?} at {omega:?}: angle {angle:?} vs rotor {theta:?}"
                     );
                 }
                 other => panic!("{name} at {omega}: expected Caught, got {other:?}"),
@@ -1263,7 +1324,7 @@ mod tests {
     fn deadshort_measures_at_once_when_back_emf_drives_the_cap() {
         let mut w = ShortedWinding::new(FLIPSKY_5065, 2000.0, 0.3);
         let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.0, 1.0);
+        sm.begin_cold_start(erad(0.0), 1.0);
         let (res, _, samples, peak) = run_deadshort(&mut sm, &mut w, FLIPSKY_5065);
         assert!(matches!(res, DeadshortResult::Caught { .. }), "{res:?}");
         assert_eq!(samples, PROBE_PIPELINE_SAMPLES + 1);
@@ -1272,9 +1333,9 @@ mod tests {
 
     #[test]
     fn deadshort_sends_a_slow_rotor_to_the_ramp() {
-        let mut w = ShortedWinding::new(ZD2808, 0.6 * DEADSHORT_MIN_CATCH_VEL, 0.0);
+        let mut w = ShortedWinding::new(ZD2808, (0.6 * DEADSHORT_MIN_CATCH_VEL).value, 0.0);
         let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.0, 1.0);
+        sm.begin_cold_start(erad(0.0), 1.0);
         let (res, ..) = run_deadshort(&mut sm, &mut w, ZD2808);
         assert_eq!(res, DeadshortResult::Probing);
         assert_eq!(sm.phase(), StartupPhase::Ramp);
@@ -1283,11 +1344,18 @@ mod tests {
     #[test]
     fn deadshort_standstill_falls_through_to_ramp() {
         let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.7, 1.0);
+        sm.begin_cold_start(erad(0.7), 1.0);
         // No back-EMF (zero dI) over the whole settle+probe → no catch →
         // cold start.
         for _ in 0..=(DEADSHORT_SETTLE_CYCLES + DEADSHORT_CYCLES) {
-            sm.feed_deadshort(0.0, 0.0, DT, 0.1, 200e-6, 0.01);
+            sm.feed_deadshort(
+                amps(0.0),
+                amps(0.0),
+                seconds(DT),
+                ohms(0.1),
+                henries(200e-6),
+                webers(0.01),
+            );
         }
         assert_eq!(sm.phase(), StartupPhase::Ramp);
         assert!(sm.is_active());
@@ -1297,23 +1365,23 @@ mod tests {
     #[test]
     fn recovery_is_a_fixed_nudge_from_known_angle() {
         let mut sm = SensorlessStartup::default();
-        sm.begin_recovery(2.0, 1.0);
+        sm.begin_recovery(erad(2.0), 1.0);
         assert_eq!(sm.phase(), StartupPhase::Recover);
         assert_eq!(sm.velocity(), DEFAULT_RECOVERY_VEL);
-        assert!(sm.timer() > 0.0);
+        assert!(sm.timer() > seconds(0.0));
         // No align/ramp — straight to the nudge speed, angle advances.
-        let o = sm.tick(DT, 0.0, false, 0.0);
+        let o = sm.tick(seconds(DT), amps(0.0), false, erad_per_s(0.0));
         assert_eq!(o.velocity, DEFAULT_RECOVERY_VEL);
-        assert!(o.angle > 2.0);
+        assert!(o.angle > erad(2.0));
     }
 
     #[test]
     fn recovery_reverse_does_not_spin_forward() {
         let mut sm = SensorlessStartup::default();
-        sm.begin_recovery(0.0, -1.0);
+        sm.begin_recovery(erad(0.0), -1.0);
         assert_eq!(sm.velocity(), -DEFAULT_RECOVERY_VEL);
-        let o = sm.tick(DT, 0.0, false, 0.0);
-        assert!(o.velocity < 0.0);
+        let o = sm.tick(seconds(DT), amps(0.0), false, erad_per_s(0.0));
+        assert!(o.velocity < erad_per_s(0.0));
     }
 
     // ── Handoff-confirm probe ──
@@ -1322,7 +1390,7 @@ mod tests {
     /// the handoff gate.
     fn ramp_to_hold() -> SensorlessStartup {
         let mut sm = cold_start_to_ramp(0.0, 1.0);
-        run(&mut sm, DEFAULT_RAMP_TIME_S + 0.2, 3.0);
+        run(&mut sm, (DEFAULT_RAMP_TIME + seconds(0.2)).value, 3.0);
         assert_eq!(sm.phase(), StartupPhase::Hold);
         sm
     }
@@ -1344,10 +1412,18 @@ mod tests {
         for _ in 0..=(CONFIRM_SETTLE_CYCLES + DEADSHORT_CYCLES) {
             let ((ia, ib), theta) = w.sample();
             let claim = PhaseOutput {
-                angle: wrap_angle(theta + claim_offset),
-                velocity: claim_vel,
+                angle: wrap_angle(erad(theta + claim_offset)),
+                velocity: erad_per_s(claim_vel),
             };
-            let res = sm.feed_confirm(ia, ib, DT, r, l, lambda, claim);
+            let res = sm.feed_confirm(
+                amps(ia),
+                amps(ib),
+                seconds(DT),
+                ohms(r),
+                henries(l),
+                webers(lambda),
+                claim,
+            );
             if res != ConfirmResult::Probing {
                 return (res, theta);
             }
@@ -1359,7 +1435,7 @@ mod tests {
     /// then the handoff gate fires: the confirm probe is running.
     fn hold_to_confirm(claim_vel: f32) -> SensorlessStartup {
         let mut sm = ramp_to_hold();
-        sm.tick(DT, 3.0, true, claim_vel);
+        sm.tick(seconds(DT), amps(3.0), true, erad_per_s(claim_vel));
         assert_eq!(sm.phase(), StartupPhase::Confirm);
         sm
     }
@@ -1367,7 +1443,7 @@ mod tests {
     #[test]
     fn handoff_gate_runs_confirm_probe_not_instant_handoff() {
         let mut sm = ramp_to_hold();
-        let o = sm.tick(DT, 3.0, true, DEFAULT_HANDOFF_VEL);
+        let o = sm.tick(seconds(DT), amps(3.0), true, DEFAULT_HANDOFF_VEL);
         assert!(o.handoff, "gates passed must be reported");
         assert_eq!(sm.phase(), StartupPhase::Confirm);
         assert!(sm.wants_short(), "confirm probe needs the bridge shorted");
@@ -1376,22 +1452,22 @@ mod tests {
 
     #[test]
     fn confirm_rejects_still_rotor_and_retries_after_cooldown() {
-        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL);
+        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL.value);
         // Standing rotor, drive current decaying into the short: no
         // back-EMF where the observer claims rotation → unconfirmed, back
         // to Hold.
         let mut w = ShortedWinding::new(ZD2808, 0.0, 1.0).with_q_current(DRIVE_A);
-        let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL);
+        let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL.value);
         assert!(matches!(res, ConfirmResult::Unconfirmed { .. }), "{res:?}");
         assert_eq!(sm.phase(), StartupPhase::Hold);
         assert!(sm.is_active());
         // Cooldown: the gate must not refire immediately...
-        let o = sm.tick(DT, 3.0, true, DEFAULT_HANDOFF_VEL);
+        let o = sm.tick(seconds(DT), amps(3.0), true, DEFAULT_HANDOFF_VEL);
         assert!(!o.handoff);
         assert_eq!(sm.phase(), StartupPhase::Hold);
         // ...but does after it expires.
-        run(&mut sm, CONFIRM_RETRY_S + 0.01, 3.0);
-        let o = sm.tick(DT, 3.0, true, DEFAULT_HANDOFF_VEL);
+        run(&mut sm, (CONFIRM_RETRY + seconds(0.01)).value, 3.0);
+        let o = sm.tick(seconds(DT), amps(3.0), true, DEFAULT_HANDOFF_VEL);
         assert!(o.handoff, "cooldown expiry must allow a retry");
         assert_eq!(sm.phase(), StartupPhase::Confirm);
     }
@@ -1405,14 +1481,14 @@ mod tests {
     #[test]
     fn confirm_waits_out_a_decaying_drive_current() {
         let (r, l, lambda) = ZD2808;
-        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL);
+        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL.value);
         let mut w = ShortedWinding::new(ZD2808, 0.0, 1.0).with_q_current(10.0);
         let (res, _) = run_confirm(
             &mut sm,
             &mut w,
             (r, 1.2 * l, lambda),
             0.0,
-            DEFAULT_HANDOFF_VEL,
+            DEFAULT_HANDOFF_VEL.value,
         );
         assert!(matches!(res, ConfirmResult::Unconfirmed { .. }), "{res:?}");
         assert_eq!(sm.phase(), StartupPhase::Hold);
@@ -1424,7 +1500,7 @@ mod tests {
     fn recycled_deadshort_waits_out_a_decaying_drive_current() {
         let (r, l, lambda) = ZD2808;
         let mut sm = ramp_to_hold();
-        run(&mut sm, HOLD_GIVEUP_S + 0.01, 3.0);
+        run(&mut sm, (HOLD_GIVEUP + seconds(0.01)).value, 3.0);
         assert_eq!(sm.phase(), StartupPhase::Deadshort);
         assert!(sm.take_recycled());
         let mut w = ShortedWinding::new(ZD2808, 0.0, 1.0).with_q_current(10.0);
@@ -1438,13 +1514,13 @@ mod tests {
         // Rotor speed relative to the handoff gate (observer_vel must be
         // ≥ 0.5 × handoff_vel for the hold to fire a probe at all).
         let omega = DEFAULT_HANDOFF_VEL * 1.2;
-        let mut sm = hold_to_confirm(omega);
-        let mut w = ShortedWinding::new(ZD2808, omega, 0.9).with_q_current(DRIVE_A);
-        match run_confirm(&mut sm, &mut w, ZD2808, 0.0, omega) {
+        let mut sm = hold_to_confirm(omega.value);
+        let mut w = ShortedWinding::new(ZD2808, omega.value, 0.9).with_q_current(DRIVE_A);
+        match run_confirm(&mut sm, &mut w, ZD2808, 0.0, omega.value) {
             (ConfirmResult::Confirmed { velocity }, _) => {
                 assert!(
                     (velocity - omega).abs() < 0.03 * omega,
-                    "probe velocity {velocity} vs rotor {omega}"
+                    "probe velocity {velocity:?} vs rotor {omega:?}"
                 );
             }
             other => panic!("expected Confirmed, got {other:?}"),
@@ -1458,9 +1534,9 @@ mod tests {
         // Back-EMF present at the claimed SPEED but ~π away in angle (e.g.
         // a rotor freewheeling against the commanded direction).
         let omega = DEFAULT_HANDOFF_VEL * 1.2;
-        let mut sm = hold_to_confirm(omega);
-        let mut w = ShortedWinding::new(ZD2808, omega, 0.9).with_q_current(DRIVE_A);
-        let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, core::f32::consts::PI, omega);
+        let mut sm = hold_to_confirm(omega.value);
+        let mut w = ShortedWinding::new(ZD2808, omega.value, 0.9).with_q_current(DRIVE_A);
+        let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, core::f32::consts::PI, omega.value);
         assert!(
             matches!(res, ConfirmResult::Unconfirmed { .. }),
             "π-off angle must not confirm, got {res:?}"
@@ -1481,28 +1557,28 @@ mod tests {
         let (claim_offset, claim_vel) = (2.0, omega_r * 2.5);
         let mut sm = ramp_to_hold();
         for attempt in 0..CONFIRM_SEED_PROBES {
-            sm.tick(DT, 3.0, true, claim_vel);
+            sm.tick(seconds(DT), amps(3.0), true, claim_vel);
             assert_eq!(sm.phase(), StartupPhase::Confirm, "attempt {attempt}");
-            let mut w = ShortedWinding::new(ZD2808, omega_r, 0.9).with_q_current(DRIVE_A);
-            let (res, theta) = run_confirm(&mut sm, &mut w, ZD2808, claim_offset, claim_vel);
+            let mut w = ShortedWinding::new(ZD2808, omega_r.value, 0.9).with_q_current(DRIVE_A);
+            let (res, theta) = run_confirm(&mut sm, &mut w, ZD2808, claim_offset, claim_vel.value);
             if attempt + 1 < CONFIRM_SEED_PROBES {
                 assert!(
                     matches!(res, ConfirmResult::Unconfirmed { .. }),
                     "attempt {attempt}: {res:?}"
                 );
                 assert_eq!(sm.phase(), StartupPhase::Hold);
-                run(&mut sm, CONFIRM_RETRY_S + 0.01, 3.0);
+                run(&mut sm, (CONFIRM_RETRY + seconds(0.01)).value, 3.0);
                 continue;
             }
             match res {
                 ConfirmResult::SeedAndHandoff { angle, velocity } => {
                     assert!(
                         (velocity - omega_r).abs() < 0.03 * omega_r,
-                        "seed velocity {velocity} vs rotor {omega_r}"
+                        "seed velocity {velocity:?} vs rotor {omega_r:?}"
                     );
                     assert!(
-                        angle_difference(angle, theta).abs() < 0.05,
-                        "seed angle {angle} vs rotor {theta}"
+                        angle_difference(angle, erad(theta)).abs() < erad(0.05),
+                        "seed angle {angle:?} vs rotor {theta:?}"
                     );
                 }
                 other => panic!("expected SeedAndHandoff on the 3rd strong probe, got {other:?}"),
@@ -1525,18 +1601,18 @@ mod tests {
         // probes an ever-faster rotor whose short current walks into the
         // OC trip (bench confirm2-2; see CONFIRM_FAST_SEED_VEL).
         let omega_r = DEFAULT_HANDOFF_VEL * 2.8; // real rotor, fast
-        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL);
-        let mut w = ShortedWinding::new(ZD2808, omega_r, 0.9).with_q_current(DRIVE_A);
+        let mut sm = hold_to_confirm(DEFAULT_HANDOFF_VEL.value);
+        let mut w = ShortedWinding::new(ZD2808, omega_r.value, 0.9).with_q_current(DRIVE_A);
         // The claim's angle agrees — velocity alone must reject.
-        match run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL) {
+        match run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL.value) {
             (ConfirmResult::SeedAndHandoff { angle, velocity }, theta) => {
                 assert!(
                     (velocity - omega_r).abs() < 0.03 * omega_r,
-                    "seed velocity {velocity} vs rotor {omega_r}"
+                    "seed velocity {velocity:?} vs rotor {omega_r:?}"
                 );
                 assert!(
-                    angle_difference(angle, theta).abs() < 0.05,
-                    "seed angle {angle} vs rotor {theta}"
+                    angle_difference(angle, erad(theta)).abs() < erad(0.05),
+                    "seed angle {angle:?} vs rotor {theta:?}"
                 );
             }
             other => panic!("expected immediate SeedAndHandoff from the fast rotor, got {other:?}"),
@@ -1551,15 +1627,15 @@ mod tests {
         // claims; the hold breaks up via the give-up recycle instead.
         let mut sm = ramp_to_hold();
         for attempt in 0..=CONFIRM_SEED_PROBES {
-            sm.tick(DT, 3.0, true, DEFAULT_HANDOFF_VEL);
+            sm.tick(seconds(DT), amps(3.0), true, DEFAULT_HANDOFF_VEL);
             assert_eq!(sm.phase(), StartupPhase::Confirm, "attempt {attempt}");
             let mut w = ShortedWinding::new(ZD2808, 0.0, 1.0).with_q_current(DRIVE_A);
-            let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL);
+            let (res, _) = run_confirm(&mut sm, &mut w, ZD2808, 0.0, DEFAULT_HANDOFF_VEL.value);
             assert!(
                 matches!(res, ConfirmResult::Unconfirmed { .. }),
                 "attempt {attempt} must stay unconfirmed, got {res:?}"
             );
-            run(&mut sm, CONFIRM_RETRY_S + 0.01, 3.0);
+            run(&mut sm, (CONFIRM_RETRY + seconds(0.01)).value, 3.0);
         }
         assert!(sm.is_active(), "a standing rotor must never seed a handoff");
     }
@@ -1569,7 +1645,7 @@ mod tests {
         let mut sm = ramp_to_hold();
         assert!(!sm.take_recycled());
         // Observer never ready: the hold cannot confirm and must recycle.
-        run(&mut sm, HOLD_GIVEUP_S + 0.05, 3.0);
+        run(&mut sm, (HOLD_GIVEUP + seconds(0.05)).value, 3.0);
         assert_eq!(sm.phase(), StartupPhase::Deadshort);
         assert!(sm.wants_short());
         assert!(sm.take_recycled(), "recycle must be reported (once)");
@@ -1582,7 +1658,7 @@ mod tests {
     #[test]
     fn deactivate_goes_inactive() {
         let mut sm = SensorlessStartup::default();
-        sm.begin_cold_start(0.0, 1.0);
+        sm.begin_cold_start(erad(0.0), 1.0);
         sm.deactivate();
         assert!(!sm.is_active());
         assert_eq!(sm.phase(), StartupPhase::Inactive);

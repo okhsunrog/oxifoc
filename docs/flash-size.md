@@ -91,20 +91,10 @@ remaining "compiler flag" win; everything below is about code.
 
 ## Rules when adding firmware code
 
-1. **Never call `libm::sinf/cosf` (or anything trig) from
-   firmware-reachable code.** The hardware-required `-fp64` rustflag
-   makes every f64 op a softfloat call, and libm's `sinf/cosf` do
-   argument reduction in f64 (`rem_pio2f`): the first reachable call
-   site pays ~5 KB of flash (rem_pio2f + k_sinf/k_cosf + the entire
-   f64 softfloat runtime) and ~6200 cycles/pair at runtime. Use the
-   `SinCos` trait backends (`FastSinCos`, `CordicSinCos`) or
-   `fast_math`. As of 2026-06-11 the only libm left in firmware is
-   `atanf` + `remainderf` (602 B, pure f32, kept for exactness) —
-   check it stays that way:
-
-   ```sh
-   arm-none-eabi-nm --size-sort --print-size <elf> | grep -i libm
-   ```
+1. **No f64 in firmware.** The M4F FPU is single precision, so f64 is
+   soft-float; libm `sinf/cosf` reduce in f64 and cost ~12 KB. Use the
+   `SinCos` backends or `fast_math`. Pure-f32 libm only from the allowlist
+   in `scripts/check_bloat.sh`, never in the control ISR. CI enforces both.
 
 2. **`libm::sqrtf` → `crate::foc::fast_math::sqrtf`** everywhere in
    oxifoc-core: it is `vsqrt.f32` on target (bit-identical IEEE, 4.4×

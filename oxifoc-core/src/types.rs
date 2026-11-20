@@ -12,6 +12,10 @@
 //! ```
 
 use crate::foc::phase::PhaseSource;
+use crate::units::{
+    ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
+    ElectricalResistance, Inductance, MagneticFlux, Power, amps,
+};
 use heapless::String;
 use heapless::Vec;
 use postcard_schema::Schema;
@@ -95,19 +99,19 @@ pub enum ControlMode {
     /// Current control mode (torque control)
     CurrentControl {
         /// Target q-axis current (torque) in Amps
-        iq_target: f32,
+        iq_target: ElectricCurrent,
         /// Target d-axis current (field weakening) in Amps
-        id_target: f32,
+        id_target: ElectricCurrent,
     },
     /// Velocity control mode
     VelocityControl {
         /// Target velocity in rad/s
-        target_vel: f32,
+        target_vel: ElectricalAngularVelocity,
     },
     /// Position control mode
     PositionControl {
         /// Target position in radians
-        target_pos: f32,
+        target_pos: ElectricalAngle,
     },
     /// Open-loop mode — drive motor at commanded electrical angle.
     ///
@@ -119,11 +123,11 @@ pub enum ControlMode {
     /// (open-loop spinning without hall sensors).
     OpenLoop {
         /// Initial electrical angle (radians, 0 to 2π)
-        angle_rad: f32,
+        angle: ElectricalAngle,
         /// Current magnitude (Amps) - applied as q-current
-        current: f32,
+        current: ElectricCurrent,
         /// Electrical velocity (rad/s) — 0 = lock, nonzero = spin
-        velocity_rad_s: f32,
+        velocity: ElectricalAngularVelocity,
         /// Temporary PI gains (kp, ki) for detection. `None` retains the
         /// current bench tuning through OpenLoop/DirectVoltage steps; leaving
         /// that sequence restores the working d/q gains and clears PI state.
@@ -136,11 +140,11 @@ pub enum ControlMode {
     /// PI interference is undesirable.
     DirectVoltage {
         /// d-axis voltage (V)
-        vd: f32,
+        vd: ElectricPotential,
         /// q-axis voltage (V)
-        vq: f32,
+        vq: ElectricPotential,
         /// Electrical angle (radians)
-        angle_rad: f32,
+        angle: ElectricalAngle,
     },
     /// Coast mode — all FETs off (high-impedance), motor spins freely.
     ///
@@ -188,9 +192,9 @@ impl ControlMode {
             Self::Throttle { fraction } => (-1.0..=1.0).contains(&fraction),
             Self::PositionControl { target_pos } => target_pos.is_finite(),
             Self::OpenLoop {
-                angle_rad,
+                angle: angle_rad,
                 current,
-                velocity_rad_s,
+                velocity: velocity_rad_s,
                 pi_gains,
             } => {
                 angle_rad.is_finite()
@@ -198,9 +202,11 @@ impl ControlMode {
                     && velocity_rad_s.is_finite()
                     && pi_gains.is_none_or(|(kp, ki)| kp.is_finite() && ki.is_finite())
             }
-            Self::DirectVoltage { vd, vq, angle_rad } => {
-                vd.is_finite() && vq.is_finite() && angle_rad.is_finite()
-            }
+            Self::DirectVoltage {
+                vd,
+                vq,
+                angle: angle_rad,
+            } => vd.is_finite() && vq.is_finite() && angle_rad.is_finite(),
         }
     }
 
@@ -631,7 +637,14 @@ pub struct TelemetryConfigAck {
 /// response shape itself is frozen so a future semantic version mismatch still
 /// reaches this field instead of merely changing the schema-hashed endpoint
 /// key. See `docs/notes/protocol-versioning.md`.
-pub const ICD_PROTO_VERSION: u16 = 23;
+///
+/// v24: physical fields are typed `uom` quantities in SI base units and lose
+/// their unit suffixes (`max_iq_a` -> `max_iq`, `resistance_ohm` ->
+/// `resistance`, ...). Wire bytes per value are unchanged, but field renames
+/// change schema keys. Speeds formerly in eRPM (`openloop_erpm`,
+/// `flux_target_erpm`, `interp_min_erpm`) are now electrical rad/s. The
+/// frozen bootstrap (`HardwareInfo`, `BoardCalib`) keeps its field names.
+pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.
 pub const CAP_THREE_SHUNT_CURRENT: u32 = 1 << 0;
@@ -710,7 +723,7 @@ pub struct HardwareInfo {
     /// Requested/nominal FOC frequency. The telemetry ACK carries actual timing.
     pub foc_freq_hz: u32,
     /// Hardware peak current limit in Amps
-    pub max_current_a: f32,
+    pub max_current_a: ElectricCurrent,
     /// Static current-sense / vbus constants for host-side telemetry
     /// enrichment (raw frame → engineering units). See [`BoardCalib`].
     pub calib: BoardCalib,
@@ -728,7 +741,7 @@ impl Default for HardwareInfo {
             mcu: String::new(),
             uuid: String::new(),
             foc_freq_hz: 0,
-            max_current_a: 0.0,
+            max_current_a: amps(0.0),
             calib: BoardCalib::default(),
         }
     }
@@ -788,7 +801,7 @@ impl HardwareInfo {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct BoardCalib {
     /// Shunt resistance in Ohms.
-    pub shunt_ohms: f32,
+    pub shunt_ohms: ElectricalResistance,
     /// Current amplifier gain (V/V).
     pub amp_gain: f32,
     /// ADC reference voltage in millivolts.
@@ -882,34 +895,34 @@ pub enum DetectRequest {
     /// Measure phase-to-neutral resistance.
     MeasureResistance {
         /// Max power dissipation during test (W). Controls safe test current.
-        max_power_loss_w: f32,
+        max_power_loss: Power,
         /// Advanced override, further limiting excitation in amps.
-        current_limit_a: Option<f32>,
+        current_limit: Option<ElectricCurrent>,
     },
     /// Measure d/q-axis inductance via HFI.
     MeasureInductance {
         /// Max power dissipation during test (W).
-        max_power_loss_w: f32,
+        max_power_loss: Power,
         /// Advanced override, further limiting peak DC + AC current.
-        current_limit_a: Option<f32>,
+        current_limit: Option<ElectricCurrent>,
         /// Previously measured resistance (Ω). GUI provides this.
-        resistance_ohm: f32,
+        resistance: ElectricalResistance,
     },
     /// Measure flux linkage via open-loop spin.
     MeasureFlux {
         /// Max power dissipation during test (W).
-        max_power_loss_w: f32,
+        max_power_loss: Power,
         /// Advanced override, further limiting spin-up current.
-        current_limit_a: Option<f32>,
+        current_limit: Option<ElectricCurrent>,
         /// Previously measured resistance (Ω). GUI provides this.
-        resistance_ohm: f32,
+        resistance: ElectricalResistance,
         /// Previously measured average inductance (H), 0.0 = unknown.
         /// Trims the ωL·i reactance term of the back-EMF-vector method.
-        inductance_h: f32,
+        inductance: Inductance,
         /// Number of pole pairs.
         pole_pairs: u8,
         /// Open-loop ERPM for spin-up.
-        openloop_erpm: f32,
+        openloop_speed: ElectricalAngularVelocity,
     },
     /// Calibrate Hall sensors by sweeping electrical angle.
     /// Needs a measured resistance so the sweep current can be derived
@@ -918,11 +931,11 @@ pub enum DetectRequest {
     /// through the sweep, found on the Flipsky 5065, 2026-07-08).
     CalibrateHall {
         /// Max power dissipation during the sweep (W).
-        max_power_loss_w: f32,
+        max_power_loss: Power,
         /// Advanced override, further limiting the alignment current.
-        current_limit_a: Option<f32>,
+        current_limit: Option<ElectricCurrent>,
         /// Previously measured resistance (Ω). GUI/CLI provides this.
-        resistance_ohm: f32,
+        resistance: ElectricalResistance,
     },
     /// Measure raw current-sensor zero offsets without applying them.
     MeasureCurrentOffsets {
@@ -939,17 +952,21 @@ impl DetectRequest {
     pub fn current_limit_a(self) -> Option<f32> {
         match self {
             Self::MeasureResistance {
-                current_limit_a, ..
+                current_limit: current_limit_a,
+                ..
             }
             | Self::MeasureInductance {
-                current_limit_a, ..
+                current_limit: current_limit_a,
+                ..
             }
             | Self::MeasureFlux {
-                current_limit_a, ..
+                current_limit: current_limit_a,
+                ..
             }
             | Self::CalibrateHall {
-                current_limit_a, ..
-            } => current_limit_a,
+                current_limit: current_limit_a,
+                ..
+            } => current_limit_a.map(|limit| limit.value),
             Self::MeasureCurrentOffsets { .. } => None,
         }
     }
@@ -962,19 +979,19 @@ pub enum DetectResponse {
     /// Resistance measurement result.
     Resistance {
         /// Phase-to-neutral resistance (Ohms)
-        resistance_ohm: f32,
+        resistance: ElectricalResistance,
     },
     /// Inductance measurement result.
     Inductance {
         /// d-axis inductance (Henries)
-        inductance_d_h: f32,
+        inductance_d: Inductance,
         /// q-axis inductance (Henries)
-        inductance_q_h: f32,
+        inductance_q: Inductance,
     },
     /// Flux linkage measurement result.
     FluxLinkage {
         /// Flux linkage (Weber)
-        flux_linkage_wb: f32,
+        flux_linkage: MagneticFlux,
         /// Motor Kv (RPM/V)
         kv_rpm_per_v: f32,
     },
@@ -1269,6 +1286,7 @@ impl MotorState {
 
 #[cfg(test)]
 mod tests {
+    use crate::units::amps;
     #[test]
     fn control_timing_keeps_fractional_rate_and_explicit_decimation() {
         let timing = ControlTiming {
@@ -1323,8 +1341,8 @@ mod tests {
                 session,
                 seq,
                 MotorCommand::SetMode(ControlMode::CurrentControl {
-                    iq_target: 1.0,
-                    id_target: 0.0,
+                    iq_target: amps(1.0),
+                    id_target: amps(0.0),
                 }),
             )
         };
@@ -1352,8 +1370,8 @@ mod tests {
             7,
             u32::MAX,
             MotorCommand::SetMode(ControlMode::CurrentControl {
-                iq_target: 1.0,
-                id_target: 0.0,
+                iq_target: amps(1.0),
+                id_target: amps(0.0),
             }),
         );
         let mut ownership = DriveOwnership::new();
@@ -1374,8 +1392,8 @@ mod tests {
                     8,
                     0,
                     MotorCommand::SetMode(ControlMode::CurrentControl {
-                        iq_target: 1.0,
-                        id_target: 0.0,
+                        iq_target: amps(1.0),
+                        id_target: amps(0.0),
                     })
                 )),
                 Ok(())

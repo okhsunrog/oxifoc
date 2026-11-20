@@ -289,6 +289,8 @@ pub struct RichSample {
 
 #[cfg(test)]
 mod tests {
+    use crate::units::erad;
+    use crate::units::{amps, ohms, seconds, volts};
     #[test]
     fn hall_angle_has_explicit_absence_and_bounded_modular_error() {
         use crate::types::HallAngle;
@@ -316,11 +318,11 @@ mod tests {
             runtime::streaming::build_fast_telemetry,
         };
         let foc = FocOutput {
-            angle_rad: 1.0,
+            angle: erad(1.0),
             ..Default::default()
         };
         let hall = HallSnapshot {
-            angle_rad: 2.5,
+            angle: erad(2.5),
             ..Default::default()
         };
         let frame = build_fast_telemetry(&AdcSnapshot::empty(), &foc, Some(hall), 7, 0);
@@ -338,7 +340,7 @@ mod tests {
     // A representative board calibration (B-G431B-ESC1-ish, generic values).
     fn calib() -> BoardCalib {
         BoardCalib {
-            shunt_ohms: 0.003,
+            shunt_ohms: ohms(0.003),
             amp_gain: 16.0,
             adc_vref_mv: 3300,
             adc_max_counts: 4095,
@@ -495,7 +497,7 @@ mod tests {
         // Captured at 20 kHz, row 89457 of the first MK5 R test. Keep the
         // ADC counts and calibration so the regression includes conversion.
         let calib = BoardCalib {
-            shunt_ohms: 0.0005,
+            shunt_ohms: ohms(0.0005),
             amp_gain: 20.0,
             adc_vref_mv: 3323,
             adc_max_counts: 4095,
@@ -535,7 +537,7 @@ mod tests {
 
         // 0.5 A/count: physical (3, -1.5, -1.5) plus a common +2 A offset.
         let calib = BoardCalib {
-            shunt_ohms: 0.002,
+            shunt_ohms: ohms(0.002),
             amp_gain: 1.0,
             adc_vref_mv: 1000,
             adc_max_counts: 1000,
@@ -551,14 +553,21 @@ mod tests {
         let offsets = (500.0, 500.0, 500.0);
         let ctx = EnrichCtx::new(&calib, offsets, 7, CurrentSenseTopology::ThreeShunt);
         let rich = frame.enrich(&ctx);
-        let mut controller = FocController::<SvpwmModulator>::new(24.0);
+        let mut controller = FocController::<SvpwmModulator>::new(volts(24.0));
         controller.set_current_sense_topology(ctx.topology);
-        let output = controller.step((rich.ia, rich.ib, rich.ic), 0.0, 3.0, 0.0, 1000, 0.00005);
+        let output = controller.step(
+            (amps(rich.ia), amps(rich.ib), amps(rich.ic)),
+            erad(0.0),
+            amps(3.0),
+            amps(0.0),
+            1000,
+            seconds(0.00005),
+        );
         assert!((rich.ia - 5.0).abs() < 1e-5);
         assert!((rich.ib - 0.5).abs() < 1e-5 && (rich.ic - 0.5).abs() < 1e-5);
         assert!((rich.i_sum.unwrap() - 6.0).abs() < 1e-5);
         assert!((rich.id - 3.0).abs() < 1e-5 && rich.iq.abs() < 1e-5);
-        assert_eq!((rich.id, rich.iq), (output.id, output.iq));
+        assert_eq!((rich.id, rich.iq), (output.id.value, output.iq.value));
 
         let two = frame.enrich(&EnrichCtx::new(
             &calib,
@@ -738,8 +747,8 @@ mod tests {
             CurrentSenseTopology::TwoShunt,
         );
         let counts_per_mv = f32::from(c.adc_max_counts) / c.adc_vref_mv as f32;
-        let d_a = (10.0 * c.shunt_ohms * c.amp_gain * 1000.0 * counts_per_mv) as i32;
-        let d_b = (-5.0 * c.shunt_ohms * c.amp_gain * 1000.0 * counts_per_mv) as i32;
+        let d_a = (10.0 * c.shunt_ohms.value * c.amp_gain * 1000.0 * counts_per_mv) as i32;
+        let d_b = (-5.0 * c.shunt_ohms.value * c.amp_gain * 1000.0 * counts_per_mv) as i32;
         let f = FastTelemetry {
             ia: (2048 + d_a) as u16,
             ib: (2048 + d_b) as u16,
@@ -775,7 +784,7 @@ mod tests {
         // `calib` is a genuine sub-struct field now (no bridge method): the same
         // BoardCalib the firmware sense path and the host enrichment both use.
         assert_eq!(bc.calib, calib());
-        assert_eq!(bc.calib.shunt_ohms, 0.003);
+        assert_eq!(bc.calib.shunt_ohms.value, 0.003);
         assert_eq!(bc.calib.amp_gain, 16.0);
     }
 }

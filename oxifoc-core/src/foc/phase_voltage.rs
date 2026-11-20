@@ -180,12 +180,13 @@ pub fn observer_voltage_source(
 mod tests {
     use super::*;
     use crate::foc::config::{BoardConfig, PhaseSense};
+    use crate::units::ohms;
 
     const fn board(phase_sense: Option<PhaseSense>) -> BoardConfig {
         BoardConfig {
             current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
             calib: crate::types::BoardCalib {
-                shunt_ohms: 0.0005,
+                shunt_ohms: ohms(0.0005),
                 amp_gain: 10.0,
                 adc_vref_mv: 3300,
                 adc_max_counts: 4095,

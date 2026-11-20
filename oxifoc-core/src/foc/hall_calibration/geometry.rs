@@ -2,15 +2,18 @@
 
 use super::CalibrationError;
 use crate::foc::{angle_difference, wrap_angle};
+use crate::units::{AngleRepr, ConstZero, ElectricalAngle, erad};
 use core::f32::consts::{PI, TAU};
 
 // Three repeats with 5° RMS spread already have uncertain edge geometry.
 const MIN_DIRECTION_CONCENTRATION: f32 = 0.995;
 // A direct repeat bound catches outliers hidden by otherwise concentrated data.
-const MAX_REPEAT_DIFFERENCE_RAD: f32 = 10.0 * TAU / 360.0;
+const MAX_REPEAT_DIFFERENCE: ElectricalAngle = erad(10.0 * TAU / 360.0);
 // Includes friction/tracking lag; weak alignment must not become commutation data.
-const MAX_DIRECTION_SEPARATION_RAD: f32 = TAU / 8.0;
-const COMMAND_BIN_RAD: f32 = TAU / 360.0;
+const MAX_DIRECTION_SEPARATION: ElectricalAngle = erad(TAU / 8.0);
+const COMMAND_BIN: ElectricalAngle = erad(TAU / 360.0);
+const HALF_TURN: ElectricalAngle = erad(PI);
+const FULL_TURN: ElectricalAngle = erad(TAU);
 
 /// Validated geometry of one positive electrical revolution.
 ///
@@ -20,21 +23,21 @@ const COMMAND_BIN_RAD: f32 = TAU / 360.0;
 /// Construct through `try_from_raw_parts`; deserialization must not bypass it.
 #[derive(Clone, Copy, Debug)]
 pub struct HallTransitionGeometry {
-    entry_angles: [f32; 8],
+    entry_angles: [ElectricalAngle; 8],
     next_states: [u8; 8],
-    sector_widths: [f32; 8],
+    sector_widths: [ElectricalAngle; 8],
 }
 
 impl HallTransitionGeometry {
     pub fn try_from_raw_parts(
-        mut entry_angles: [f32; 8],
+        mut entry_angles: [ElectricalAngle; 8],
         mut next_states: [u8; 8],
-        centroids: [f32; 8],
+        centroids: [ElectricalAngle; 8],
     ) -> Option<Self> {
         let mut seen = 0_u8;
         let mut raw = 1_u8;
-        let mut total = 0.0;
-        let mut sector_widths = [0.0; 8];
+        let mut total = ElectricalAngle::ZERO;
+        let mut sector_widths = [ElectricalAngle::ZERO; 8];
         for _ in 0..6 {
             if !(1..=6).contains(&raw) || seen & (1 << raw) != 0 {
                 return None;
@@ -52,7 +55,10 @@ impl HallTransitionGeometry {
             }
             let width = angle_difference(exit, entry);
             let center_offset = wrap_angle(centroid - entry);
-            if !(0.0..PI).contains(&width) || width == 0.0 || center_offset > width + 1.0e-5 {
+            if !(ElectricalAngle::ZERO..HALF_TURN).contains(&width)
+                || width == ElectricalAngle::ZERO
+                || center_offset > width + erad(1.0e-5)
+            {
                 return None;
             }
             entry_angles[usize::from(raw)] = wrap_angle(entry);
@@ -60,12 +66,12 @@ impl HallTransitionGeometry {
             total += width;
             raw = next;
         }
-        if raw != 1 || seen != 0b0111_1110 || (total - TAU).abs() > 1.0e-4 {
+        if raw != 1 || seen != 0b0111_1110 || (total - FULL_TURN).abs() > erad(1.0e-4) {
             return None;
         }
         // Invalid raw states carry no geometry, regardless of DTO contents.
-        entry_angles[0] = 0.0;
-        entry_angles[7] = 0.0;
+        entry_angles[0] = ElectricalAngle::ZERO;
+        entry_angles[7] = ElectricalAngle::ZERO;
         next_states[0] = 0;
         next_states[7] = 0;
         Some(Self {
@@ -75,7 +81,7 @@ impl HallTransitionGeometry {
         })
     }
 
-    pub fn entry_angles(&self) -> [f32; 8] {
+    pub fn entry_angles(&self) -> [ElectricalAngle; 8] {
         self.entry_angles
     }
 
@@ -83,19 +89,19 @@ impl HallTransitionGeometry {
         self.next_states
     }
 
-    pub fn boundary_for_positive_entry(&self, raw: u8) -> Option<f32> {
+    pub fn boundary_for_positive_entry(&self, raw: u8) -> Option<ElectricalAngle> {
         (1..=6)
             .contains(&raw)
             .then(|| self.entry_angles[usize::from(raw)])
     }
 
-    pub fn sector_width(&self, raw: u8) -> Option<f32> {
+    pub fn sector_width(&self, raw: u8) -> Option<ElectricalAngle> {
         (1..=6)
             .contains(&raw)
             .then(|| self.sector_widths[usize::from(raw)])
     }
 
-    pub fn boundary_for_transition(&self, previous: u8, raw: u8) -> Option<f32> {
+    pub fn boundary_for_transition(&self, previous: u8, raw: u8) -> Option<ElectricalAngle> {
         if !(1..=6).contains(&previous) || !(1..=6).contains(&raw) {
             return None;
         }
@@ -123,9 +129,9 @@ struct Moments {
     count: [u16; 8],
     // Track the observed range relative to the first edge, so the final mean
     // can be checked against every extreme without retaining all observations.
-    first: [f32; 8],
-    min_delta: [f32; 8],
-    max_delta: [f32; 8],
+    first: [ElectricalAngle; 8],
+    min_delta: [ElectricalAngle; 8],
+    max_delta: [ElectricalAngle; 8],
 }
 
 impl Moments {
@@ -137,7 +143,7 @@ impl Moments {
         expected > 0 && (expected - 1..=expected).contains(&total)
     }
 
-    fn record(&mut self, raw: u8, angle: f32) {
+    fn record(&mut self, raw: u8, angle: ElectricalAngle) {
         use crate::foc::trig::{FastSinCos, SinCos};
         let i = usize::from(raw);
         if self.count[i] == 0 {
@@ -146,13 +152,13 @@ impl Moments {
         let delta = angle_difference(angle, self.first[i]);
         self.min_delta[i] = self.min_delta[i].min(delta);
         self.max_delta[i] = self.max_delta[i].max(delta);
-        let (sin, cos) = FastSinCos::sin_cos(angle);
+        let (sin, cos) = FastSinCos::sin_cos(angle.radians());
         self.sin[i] += sin;
         self.cos[i] += cos;
         self.count[i] = self.count[i].saturating_add(1);
     }
 
-    fn mean(&self, raw: u8, sweeps: u8) -> Option<f32> {
+    fn mean(&self, raw: u8, sweeps: u8) -> Option<ElectricalAngle> {
         let i = usize::from(raw);
         let count = self.count[i];
         // An open-ended N-turn block can miss its initial boundary once.
@@ -166,12 +172,12 @@ impl Moments {
         if length_squared < threshold * threshold {
             return None;
         }
-        let mean = wrap_angle(libm::atan2f(self.sin[i], self.cos[i]));
+        let mean = wrap_angle(erad(libm::atan2f(self.sin[i], self.cos[i])));
         let mean_delta = angle_difference(mean, self.first[i]);
         if (self.min_delta[i] - mean_delta)
             .abs()
             .max((self.max_delta[i] - mean_delta).abs())
-            > MAX_REPEAT_DIFFERENCE_RAD
+            > MAX_REPEAT_DIFFERENCE
         {
             return None;
         }
@@ -184,12 +190,17 @@ pub(super) struct DirectedTransitions {
     positive: Moments,
     negative: Moments,
     next_states: [u8; 8],
-    previous: Option<(f32, u8, HallSweepDirection)>,
+    previous: Option<(ElectricalAngle, u8, HallSweepDirection)>,
     invalid: bool,
 }
 
 impl DirectedTransitions {
-    pub(super) fn record(&mut self, angle: f32, raw: u8, direction: HallSweepDirection) {
+    pub(super) fn record(
+        &mut self,
+        angle: ElectricalAngle,
+        raw: u8,
+        direction: HallSweepDirection,
+    ) {
         if !angle.is_finite() || !(1..=6).contains(&raw) {
             self.invalid = true;
             self.previous = None;
@@ -210,7 +221,7 @@ impl DirectedTransitions {
         };
         // Bracket actual transitions by adjacent commands: the midpoint has
         // at most half a one-degree command bin of angular discretization.
-        if step * sign < -1.0e-6 || step.abs() > COMMAND_BIN_RAD + 1.0e-5 {
+        if step * sign < erad(-1.0e-6) || step.abs() > COMMAND_BIN + erad(1.0e-5) {
             self.invalid = true;
             return;
         }
@@ -237,7 +248,7 @@ impl DirectedTransitions {
 
     pub(super) fn finish(
         self,
-        centroids: [f32; 8],
+        centroids: [ElectricalAngle; 8],
         positive_sweeps: u8,
         negative_sweeps: u8,
     ) -> Result<HallTransitionGeometry, CalibrationError> {
@@ -248,14 +259,14 @@ impl DirectedTransitions {
         {
             return Err(invalid);
         }
-        let mut boundaries = [0.0; 8];
+        let mut boundaries = [ElectricalAngle::ZERO; 8];
         for raw in 1..=6 {
             let positive = self.positive.mean(raw, positive_sweeps).ok_or(invalid)?;
             let negative = self.negative.mean(raw, negative_sweeps).ok_or(invalid)?;
             let separation = angle_difference(positive, negative);
             // This includes friction and field-tracking lag as well as Hall
             // hysteresis; equal directional weight cancels only its mean.
-            if separation.abs() > MAX_DIRECTION_SEPARATION_RAD {
+            if separation.abs() > MAX_DIRECTION_SEPARATION {
                 return Err(invalid);
             }
             boundaries[usize::from(raw)] = wrap_angle(negative + separation / 2.0);
@@ -269,6 +280,7 @@ impl DirectedTransitions {
 mod tests {
     use super::*;
     use crate::foc::hall_calibration::HallCalibrator;
+    use crate::units::erad;
 
     const RING: [u8; 6] = [3, 2, 6, 4, 5, 1];
     const ENTRIES_DEG: [f32; 8] = [0.0, 300.0, 70.0, 350.0, 200.0, 240.0, 110.0, 0.0];
@@ -310,7 +322,7 @@ mod tests {
                         HallSweepDirection::Negative => ((359 - step) as f32, -lag_deg),
                     };
                     cal.record_directed(
-                        degrees * TAU / 360.0,
+                        erad(degrees * TAU / 360.0),
                         physical_state(degrees - lag),
                         direction,
                     );
@@ -323,9 +335,9 @@ mod tests {
     #[test]
     fn unequal_geometry_is_wiring_independent_and_maps_both_directions() {
         let g = HallTransitionGeometry::try_from_raw_parts(
-            radians(ENTRIES_DEG),
+            radians(ENTRIES_DEG).map(erad),
             successors(),
-            radians(CENTERS_DEG),
+            radians(CENTERS_DEG).map(erad),
         )
         .unwrap();
         let expected = [80.0, 40.0, 90.0, 40.0, 60.0, 50.0];
@@ -334,7 +346,10 @@ mod tests {
             let boundary = g.boundary_for_positive_entry(raw).unwrap();
             assert_eq!(g.boundary_for_transition(previous, raw), Some(boundary));
             assert_eq!(g.boundary_for_transition(raw, previous), Some(boundary));
-            assert!((g.sector_width(raw).unwrap() * 360.0 / TAU - expected[i]).abs() < 0.001);
+            assert!(
+                (g.sector_width(raw).unwrap() * 360.0 / TAU - erad(expected[i])).abs()
+                    < erad(0.001)
+            );
         }
         assert_eq!(g.boundary_for_transition(3, 6), None);
         assert_eq!(g.sector_width(0), None);
@@ -343,7 +358,7 @@ mod tests {
             HallTransitionGeometry::try_from_raw_parts(
                 g.entry_angles(),
                 g.next_states(),
-                radians(CENTERS_DEG),
+                radians(CENTERS_DEG).map(erad),
             )
             .is_some()
         );
@@ -355,19 +370,44 @@ mod tests {
         let centers = radians(CENTERS_DEG);
         let mut bad = entries;
         bad[2] = f32::NAN;
-        assert!(HallTransitionGeometry::try_from_raw_parts(bad, successors(), centers).is_none());
+        assert!(
+            HallTransitionGeometry::try_from_raw_parts(
+                bad.map(erad),
+                successors(),
+                centers.map(erad)
+            )
+            .is_none()
+        );
         let mut bad_ring = successors();
         bad_ring[3] = 1; // closes a two-state cycle, not a full electrical turn
-        assert!(HallTransitionGeometry::try_from_raw_parts(entries, bad_ring, centers).is_none());
+        assert!(
+            HallTransitionGeometry::try_from_raw_parts(
+                entries.map(erad),
+                bad_ring,
+                centers.map(erad)
+            )
+            .is_none()
+        );
         let mut bad_centers = centers;
         bad_centers[2] = 180.0 * TAU / 360.0;
         assert!(
-            HallTransitionGeometry::try_from_raw_parts(entries, successors(), bad_centers)
-                .is_none()
+            HallTransitionGeometry::try_from_raw_parts(
+                entries.map(erad),
+                successors(),
+                bad_centers.map(erad)
+            )
+            .is_none()
         );
         let mut bad = entries;
         bad[2] = entries[3]; // zero width
-        assert!(HallTransitionGeometry::try_from_raw_parts(bad, successors(), centers).is_none());
+        assert!(
+            HallTransitionGeometry::try_from_raw_parts(
+                bad.map(erad),
+                successors(),
+                centers.map(erad)
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -381,16 +421,19 @@ mod tests {
         let result = cal.finish_bidirectional(4, 3).unwrap();
         let geometry = result.geometry.unwrap();
         for raw in 1..=6 {
-            let error = angle_difference(geometry.entry_angles()[raw], radians(ENTRIES_DEG)[raw]);
+            let error = angle_difference(
+                geometry.entry_angles()[raw],
+                erad(radians(ENTRIES_DEG)[raw]),
+            );
             assert!(
-                error.abs() <= COMMAND_BIN_RAD / 2.0 + 1.0e-5,
-                "raw{raw}: {error}"
+                error.abs() <= COMMAND_BIN / 2.0 + erad(1.0e-5),
+                "raw{raw:?}: {error:?}"
             );
         }
         // The legacy sin/cos sector centers are still supplied and lie inside
         // the measured sectors, rather than being replaced with edge angles.
         assert!(result.is_valid());
-        assert!(angle_difference(result.angles[2], geometry.entry_angles()[2]).abs() > 0.2);
+        assert!(angle_difference(result.angles[2], geometry.entry_angles()[2]).abs() > erad(0.2));
     }
 
     #[test]
@@ -432,33 +475,40 @@ mod tests {
     fn concentration_and_repeat_limits_are_independent() {
         let mut spread = Moments::default();
         for degrees in [0.0_f32, -9.0, 9.0] {
-            spread.record(1, degrees.to_radians());
+            spread.record(1, erad(degrees.to_radians()));
         }
         assert!(spread.mean(1, 3).is_none()); // concentrated range, poor resultant
         let mut outlier = Moments::default();
         for i in 0..20 {
-            outlier.record(1, if i == 19 { 11.0_f32.to_radians() } else { 0.0 });
+            outlier.record(
+                1,
+                if i == 19 {
+                    erad(11.0_f32.to_radians())
+                } else {
+                    erad(0.0)
+                },
+            );
         }
         assert!(outlier.mean(1, 20).is_none()); // resultant passes, outlier does not
         let mut good = Moments::default();
         for degrees in [359.0_f32, 0.0, 1.0] {
-            good.record(1, degrees.to_radians());
+            good.record(1, erad(degrees.to_radians()));
         }
-        assert!(angle_difference(good.mean(1, 3).unwrap(), 0.0).abs() < 0.001);
+        assert!(angle_difference(good.mean(1, 3).unwrap(), erad(0.0)).abs() < erad(0.001));
     }
 
     #[test]
     fn command_gaps_invalid_states_and_inconsistent_direction_ring_are_rejected() {
         let mut transitions = DirectedTransitions::default();
-        transitions.record(0.0, 3, HallSweepDirection::Positive);
-        transitions.record(2.0 * COMMAND_BIN_RAD, 2, HallSweepDirection::Positive);
+        transitions.record(erad(0.0), 3, HallSweepDirection::Positive);
+        transitions.record(2.0 * COMMAND_BIN, 2, HallSweepDirection::Positive);
         assert!(transitions.invalid);
         let mut transitions = DirectedTransitions::default();
-        transitions.record(0.0, 0, HallSweepDirection::Positive);
+        transitions.record(erad(0.0), 0, HallSweepDirection::Positive);
         assert!(transitions.invalid);
         let mut transitions = DirectedTransitions::default();
-        transitions.record(0.0, 3, HallSweepDirection::Positive);
-        transitions.record(COMMAND_BIN_RAD, 6, HallSweepDirection::Positive);
+        transitions.record(erad(0.0), 3, HallSweepDirection::Positive);
+        transitions.record(COMMAND_BIN, 6, HallSweepDirection::Positive);
         assert!(transitions.invalid); // two inputs changed between samples
     }
 

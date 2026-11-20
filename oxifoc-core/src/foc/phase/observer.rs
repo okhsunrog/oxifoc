@@ -23,9 +23,16 @@
 
 // TAU (carrier advance), PhantomData (`HfiObserver<S>` marker) and the SinCos
 // backend are HFI-only; BackEmf's `force_phase` imports SinCos locally.
+use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "hfi")]
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
+use crate::units::{
+    AngleRepr, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
+    ElectricalAngularAcceleration, ElectricalAngularVelocity, ElectricalResistance, Fraction,
+    Frequency, Inductance, Linear, MagneticFlux, PllIntegralGain, Scalar, Sign, Time, ToBits, amps,
+    erad, erad_per_s, per_second, quantity, seconds, vector_angle, webers,
+};
 use core::f32::consts::TAU;
 #[cfg(feature = "hfi")]
 use core::marker::PhantomData;
@@ -33,16 +40,16 @@ use core::marker::PhantomData;
 /// Input for observer update
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ObserverInput {
-    /// α-axis voltage (V)
-    pub v_alpha: f32,
-    /// β-axis voltage (V)
-    pub v_beta: f32,
-    /// α-axis current (A)
-    pub i_alpha: f32,
-    /// β-axis current (A)
-    pub i_beta: f32,
-    /// Time step (seconds)
-    pub dt: f32,
+    /// α-axis voltage
+    pub v_alpha: ElectricPotential,
+    /// β-axis voltage
+    pub v_beta: ElectricPotential,
+    /// α-axis current
+    pub i_alpha: ElectricCurrent,
+    /// β-axis current
+    pub i_beta: ElectricCurrent,
+    /// Time step
+    pub dt: Time,
 }
 
 /// Runtime-switchable observer implementations
@@ -75,16 +82,16 @@ impl Observer {
         }
     }
 
-    /// Get estimated electrical phase (radians)
-    pub fn phase(&self) -> Option<f32> {
+    /// Get estimated electrical phase
+    pub fn phase(&self) -> Option<ElectricalAngle> {
         match self {
             Self::None => None,
             Self::BackEmf(o) => Some(o.phase()),
         }
     }
 
-    /// Get estimated electrical velocity (rad/s)
-    pub fn velocity(&self) -> Option<f32> {
+    /// Get estimated electrical velocity
+    pub fn velocity(&self) -> Option<ElectricalAngularVelocity> {
         match self {
             Self::None => None,
             Self::BackEmf(o) => Some(o.velocity()),
@@ -93,7 +100,7 @@ impl Observer {
 
     /// Raw flux-vector angle from the last update (pre-PLL) — see
     /// [`BackEmfObserver::phase_raw`].
-    pub fn phase_raw(&self) -> Option<f32> {
+    pub fn phase_raw(&self) -> Option<ElectricalAngle> {
         match self {
             Self::None => None,
             Self::BackEmf(o) => Some(o.phase_raw()),
@@ -102,16 +109,20 @@ impl Observer {
 
     /// Configure the physics acceleration prior — see
     /// [`BackEmfObserver::set_accel_prior`].
-    pub fn set_accel_prior(&mut self, floor_el: f32, per_amp_el: f32) {
+    pub fn set_accel_prior(
+        &mut self,
+        floor: ElectricalAngularAcceleration,
+        per_amp: ElectricalAngularAcceleration,
+    ) {
         match self {
             Self::None => {}
-            Self::BackEmf(o) => o.set_accel_prior(floor_el, per_amp_el),
+            Self::BackEmf(o) => o.set_accel_prior(floor, per_amp),
         }
     }
 
     /// Feed the measured |iq| for the acceleration prior — see
     /// [`BackEmfObserver::note_torque_current`].
-    pub fn note_torque_current(&mut self, iq_abs: f32, dt: f32) {
+    pub fn note_torque_current(&mut self, iq_abs: ElectricCurrent, dt: Time) {
         match self {
             Self::None => {}
             Self::BackEmf(o) => o.note_torque_current(iq_abs, dt),
@@ -137,7 +148,7 @@ impl Observer {
     /// rotor at the NEXT sampling instant (the PhaseProvider timing
     /// contract) — a measurement taken at this cycle's sample must be
     /// advanced by `velocity·dt` first.
-    pub fn seed(&mut self, angle: f32, velocity: f32) {
+    pub fn seed(&mut self, angle: ElectricalAngle, velocity: ElectricalAngularVelocity) {
         match self {
             Self::None => {}
             Self::BackEmf(o) => {
@@ -157,7 +168,7 @@ impl Observer {
 
     /// External-validity diagnostics of the underlying estimator, if any —
     /// see [`BackEmfObserver::validity`].
-    pub fn validity(&self) -> Option<(f32, f32)> {
+    pub fn validity(&self) -> Option<(ElectricPotential, ElectricalAngle)> {
         match self {
             Self::None => None,
             Self::BackEmf(o) => Some(o.validity()),
@@ -166,7 +177,7 @@ impl Observer {
 
     /// Effective readiness lock-quality error — see
     /// [`BackEmfObserver::readiness_phase_err`].
-    pub fn readiness_phase_err(&self) -> Option<f32> {
+    pub fn readiness_phase_err(&self) -> Option<ElectricalAngle> {
         match self {
             Self::None => None,
             Self::BackEmf(o) => Some(o.readiness_phase_err()),
@@ -180,7 +191,7 @@ impl Observer {
 
     /// Phase resistance of the underlying motor model, if any — used by
     /// voltage-based crossover criteria (|vq − R·iq| back-EMF proxy).
-    pub fn resistance(&self) -> Option<f32> {
+    pub fn resistance(&self) -> Option<ElectricalResistance> {
         match self {
             Self::None => None,
             Self::BackEmf(o) => Some(o.resistance()),
@@ -189,7 +200,7 @@ impl Observer {
 
     /// d/q-average inductance of the model, if any (deadshort flying restart:
     /// `e = −L·dI/dt`).
-    pub fn inductance(&self) -> Option<f32> {
+    pub fn inductance(&self) -> Option<Inductance> {
         match self {
             Self::None => None,
             Self::BackEmf(o) => Some(o.inductance()),
@@ -198,7 +209,7 @@ impl Observer {
 
     /// Flux linkage λ of the model, if any (deadshort speed estimate `|ω| =
     /// |e|/λ`).
-    pub fn lambda(&self) -> Option<f32> {
+    pub fn lambda(&self) -> Option<MagneticFlux> {
         match self {
             Self::None => None,
             Self::BackEmf(o) => Some(o.lambda()),
@@ -235,75 +246,75 @@ impl Observer {
 #[derive(Clone, Debug)]
 pub struct BackEmfObserver {
     // Flux integrator state
-    x1: f32, // α-axis rotor flux estimate (Wb)
-    x2: f32, // β-axis rotor flux estimate (Wb)
+    x1: MagneticFlux, // α-axis rotor flux estimate
+    x2: MagneticFlux, // β-axis rotor flux estimate
 
     // Previous currents for the incremental −L·Δi stator-flux removal
-    i_alpha_last: f32,
-    i_beta_last: f32,
+    i_alpha_last: ElectricCurrent,
+    i_beta_last: ElectricCurrent,
 
     // PLL state
-    phase_pll: f32,    // PLL-filtered phase
-    velocity_pll: f32, // PLL-filtered velocity
+    phase_pll: ElectricalAngle,              // PLL-filtered phase
+    velocity_pll: ElectricalAngularVelocity, // PLL-filtered velocity
 
     // Motor parameters
-    r: f32, // Phase resistance (Ω)
-    /// Inductance subtracted from the flux integral (H): Lq in the salient
+    r: ElectricalResistance, // Phase resistance
+    /// Inductance subtracted from the flux integral: Lq in the salient
     /// "active flux" configuration (`with_saliency`), the plain phase
     /// inductance otherwise.
-    l: f32,
-    /// Lq − Ld (H), informational (active-flux magnitude shift under
+    l: Inductance,
+    /// Lq − Ld, informational (active-flux magnitude shift under
     /// d-current). 0 = round-rotor.
-    l_delta: f32,
-    /// Physics acceleration prior (el rad/s² per A of |iq|) and floor —
-    /// see [`Self::set_accel_prior`]. 0 = clamp off.
-    accel_per_amp: f32,
-    accel_floor: f32,
+    l_delta: Inductance,
+    /// Physics acceleration prior (per ampere of |iq|) and floor — see
+    /// [`Self::set_accel_prior`]. 0 = clamp off.
+    accel_per_amp: ElectricalAngularAcceleration,
+    accel_floor: ElectricalAngularAcceleration,
     /// Low-passed |iq| feeding the prior (τ ≈ 10 ms).
-    iq_abs_filt: f32,
+    iq_abs_filt: ElectricCurrent,
     /// Velocity-magnitude envelope for the prior: slews at the allowed
     /// rate in both directions; |ω̂| is clamped to it. Ringing below the
     /// envelope is untouched (a per-step Δv clamp asymmetrically clips
     /// PLL ringing and biases tracking down).
-    vel_cap: f32,
+    vel_cap: ElectricalAngularVelocity,
     /// Low-passed |ω̂| (τ = 50 ms) the envelope acts on — see the
     /// filtered-trend note in the envelope block of `update`.
-    vel_mag_filt: f32,
-    lambda: f32, // Flux linkage (Wb); adapted online when lambda_gain > 0
+    vel_mag_filt: ElectricalAngularVelocity,
+    lambda: MagneticFlux, // Flux linkage; adapted online when lambda_gain > 0
 
     // Online λ adaptation (MESC/VESC lambda-comp): first-order tracker of
     // the raw flux magnitude. 0 = off. Bounds keep a transient from
     // dragging λ to nonsense.
-    lambda_gain: f32, // 1/s
-    lambda_min: f32,
-    lambda_max: f32,
+    lambda_gain: Frequency, // 1/s
+    lambda_min: MagneticFlux,
+    lambda_max: MagneticFlux,
 
     /// Nonlinear centering gain (1/s, normalized): radial pull of the flux
     /// vector toward the λ circle. The component-wise hard clamp alone
     /// distorts the trajectory near the ±λ square's corners (angle bias);
     /// the radial pull bleeds integrator drift without bending the angle.
     /// The clamp stays as a backstop. 0 = clamp only.
-    centering_gain: f32,
+    centering_gain: Frequency,
 
     // Observer tuning
-    pll_kp: f32, // PLL proportional gain
-    pll_ki: f32, // PLL integral gain
+    pll_kp: Frequency,       // PLL proportional gain
+    pll_ki: PllIntegralGain, // PLL integral gain
 
     // State
-    confidence: f32,     // Confidence estimate (0-1)
-    phase_err_filt: f32, // Low-passed |PLL phase error| (rad), for readiness
+    confidence: f32,                 // Confidence estimate (0-1)
+    phase_err_filt: ElectricalAngle, // Low-passed |PLL phase error|, for readiness
     /// Last raw flux-vector angle (atan2 of the integrator, pre-PLL) —
     /// debug telemetry (`obs-debug-telem`) and divergence forensics.
-    phase_raw_last: f32,
+    phase_raw_last: ElectricalAngle,
 
     // External-validity state (see `is_ready`): low-passed back-EMF proxy
     // along the estimated q axis (V, signed by the rotation direction), the
     // phase travel (rad) accumulated while that proxy corroborated the
     // claimed velocity, and how long (s) the corroboration has been
     // continuously violated while validity was granted.
-    bemf_q_filt: f32,
-    valid_travel: f32,
-    invalid_time: f32,
+    bemf_q_filt: ElectricPotential,
+    valid_travel: ElectricalAngle,
+    invalid_time: Time,
     /// Phase travel (rad) of EARNED corroboration since the last
     /// reset/seed — unlike `valid_travel` this is never credited by
     /// `force_phase`. λ adaptation gates on it: a seed grants validity so
@@ -313,10 +324,10 @@ pub struct BackEmfObserver {
     /// walked λ to its λ₀/2 clamp on it (bench 2026-07-06 late). Requiring
     /// the corroboration to be re-earned after every seed starves the
     /// tracker in churn while costing a real cruise ~2 revolutions.
-    lambda_learn_travel: f32,
+    lambda_learn_travel: ElectricalAngle,
     /// Schmitt latch for [`Self::is_ready`]: true once readiness was
     /// acquired with the STRICT lock-quality bound, relaxing the held
-    /// bound to `READY_HOLD_MAX_PHASE_ERR_RAD`. Updated at the end of
+    /// bound to `READY_HOLD_MAX_PHASE_ERR`. Updated at the end of
     /// every `update` (evaluated against the previous latch state).
     ready_latched: bool,
     /// Cached [`Self::is_ready`] decision. Its inputs (confidence, readiness
@@ -324,16 +335,15 @@ pub struct BackEmfObserver {
     /// `update`, `reset` and the seed setters; each of them refreshes it.
     /// Debug builds compare every read with the live evaluation.
     ready: bool,
-    /// PLL velocity of the previous update (rad/s) and its low-passed
-    /// slope (rad/s², τ = [`ACCEL_LAG_FILTER_TAU_S`]) — the acceleration
-    /// estimate behind the readiness lag compensation (see
-    /// [`Self::readiness_phase_err`]).
-    vel_pll_prev: f32,
-    accel_filt: f32,
+    /// PLL velocity of the previous update and its low-passed slope
+    /// (τ = [`ACCEL_LAG_FILTER_TAU`]) — the acceleration estimate behind
+    /// the readiness lag compensation (see [`Self::readiness_phase_err`]).
+    vel_pll_prev: ElectricalAngularVelocity,
+    accel_filt: ElectricalAngularAcceleration,
     /// Lag-compensated readiness error, computed ONCE per `update` (the
     /// trust gate consults `is_ready` several times per FOC cycle and
     /// this board's ISR budget has no room for a division per call).
-    readiness_err: f32,
+    readiness_err: ElectricalAngle,
     /// Coefficients for the most recent observer timestep. Torque samples
     /// have an independent timestep and therefore an independent cache.
     filter_coefficients: BackEmfFilterCoefficients,
@@ -362,13 +372,14 @@ impl BackEmfFilterCoefficients {
         }
     }
 
-    fn refresh(&mut self, dt: f32) {
-        if self.dt_bits != dt.to_bits() {
-            self.velocity_magnitude = (dt / 0.05).min(1.0);
-            self.acceleration = (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0);
-            self.phase_error = (dt / PHASE_ERR_FILTER_TAU_S).min(1.0);
-            self.bemf = (dt / BEMF_PROXY_TAU_S).min(1.0);
-            self.dt_bits = dt.to_bits();
+    fn refresh(&mut self, dt: Time) {
+        let bits = dt.to_bits();
+        if self.dt_bits != bits {
+            self.velocity_magnitude = dt.ratio_to(VELOCITY_MAGNITUDE_TAU).min(1.0);
+            self.acceleration = dt.ratio_to(ACCEL_LAG_FILTER_TAU).min(1.0);
+            self.phase_error = dt.ratio_to(PHASE_ERR_FILTER_TAU).min(1.0);
+            self.bemf = dt.ratio_to(BEMF_PROXY_TAU).min(1.0);
+            self.dt_bits = bits;
         }
     }
 }
@@ -387,10 +398,11 @@ impl TorqueFilterCoefficient {
         }
     }
 
-    fn for_dt(&mut self, dt: f32) -> f32 {
-        if self.dt_bits != dt.to_bits() {
-            self.alpha = (dt / 0.01).min(1.0);
-            self.dt_bits = dt.to_bits();
+    fn for_dt(&mut self, dt: Time) -> f32 {
+        let bits = dt.to_bits();
+        if self.dt_bits != bits {
+            self.alpha = dt.ratio_to(TORQUE_FILTER_TAU).min(1.0);
+            self.dt_bits = bits;
         }
         self.alpha
     }
@@ -402,7 +414,7 @@ pub const READY_MIN_CONFIDENCE: f32 = 0.5;
 /// Maximum filtered PLL phase error (rad) for "locked" in
 /// [`BackEmfObserver::is_ready`]. ~11°: a converged PLL tracks well under
 /// this; a diverging one sits near π.
-pub const READY_MAX_PHASE_ERR_RAD: f32 = 0.2;
+pub const READY_MAX_PHASE_ERR: ElectricalAngle = erad(0.2);
 
 /// Hysteresis bound on the lock-quality criterion while readiness is HELD
 /// (see the Schmitt latch in [`BackEmfObserver::is_ready`]). Bench
@@ -414,26 +426,32 @@ pub const READY_MAX_PHASE_ERR_RAD: f32 = 0.2;
 /// (~34°) clears the observed wobble ceiling 2× while a genuinely
 /// diverging PLL (filtered error → ~π/2) still trips it with 2.5× margin.
 /// Acquire stays strict: handoff quality is unchanged.
-pub const READY_HOLD_MAX_PHASE_ERR_RAD: f32 = 0.6;
+pub const READY_HOLD_MAX_PHASE_ERR: ElectricalAngle = erad(0.6);
 
-/// Minimum |electrical velocity| (rad/s) for [`BackEmfObserver::is_ready`].
+/// Minimum |electrical velocity| for [`BackEmfObserver::is_ready`].
 ///
 /// Below this the back-EMF is too small to observe — flux magnitude and a
 /// locked PLL can both look fine at standstill on pure integrator memory.
 /// ~286 eRPM; well under typical sensor→observer crossover bands.
-pub const READY_MIN_VELOCITY: f32 = 30.0;
+pub const READY_MIN_VELOCITY: ElectricalAngularVelocity = erad_per_s(30.0);
 
-/// Time constant (s) of the PLL phase-error low-pass used for readiness.
+/// Time constant of the PLL phase-error low-pass used for readiness.
 /// Slow enough to ride out per-revolution ripple at crossover speeds.
-const PHASE_ERR_FILTER_TAU_S: f32 = 0.01;
+const PHASE_ERR_FILTER_TAU: Time = seconds(0.01);
 
-/// Time constant (s) of the PLL-velocity slope estimate feeding the
+/// Time constant of the |ω̂| trend the acceleration envelope acts on.
+const VELOCITY_MAGNITUDE_TAU: Time = seconds(0.05);
+
+/// Time constant of the |iq| low-pass feeding the acceleration prior.
+const TORQUE_FILTER_TAU: Time = seconds(0.01);
+
+/// Time constant of the PLL-velocity slope estimate feeding the
 /// readiness lag compensation. Fast enough to track the onset of a real
 /// spin-up within a few filter periods; the Schmitt hold bound covers the
 /// transient before the compensation catches up.
-const ACCEL_LAG_FILTER_TAU_S: f32 = 0.02;
+const ACCEL_LAG_FILTER_TAU: Time = seconds(0.02);
 
-/// Ceiling (rad) on the acceleration-lag compensation in
+/// Ceiling on the acceleration-lag compensation in
 /// [`BackEmfObserver::readiness_phase_err`].
 ///
 /// A type-2 PLL under constant acceleration α carries a STRUCTURAL
@@ -449,13 +467,20 @@ const ACCEL_LAG_FILTER_TAU_S: f32 = 0.02;
 /// diverging PLL (raw error → π/2, and a railing velocity estimate can
 /// fake a huge α̂) still trips the readiness bounds with margin:
 /// 0.4 (cap) + 0.6 (hold bound) = 1.0 < π/2.
-pub const ACCEL_LAG_COMP_MAX_RAD: f32 = 0.4;
+pub const ACCEL_LAG_COMP_MAX: ElectricalAngle = erad(0.4);
 
 /// External validity: how many electrical revolutions the back-EMF proxy
 /// must corroborate the claimed velocity before [`BackEmfObserver::is_ready`]
 /// reports true (see `is_ready` for the physics). 2 revolutions ≈ 210 ms at
 /// the 60 rad/s handoff speed, 31 ms for a 400 rad/s runaway catch.
 pub const READY_MIN_VALID_REVS: f32 = 2.0;
+
+/// [`READY_MIN_VALID_REVS`] as phase travel.
+const READY_MIN_VALID_TRAVEL: ElectricalAngle = erad(READY_MIN_VALID_REVS * TAU);
+
+/// Travel at which validity counts as granted: the saturation value minus a
+/// rounding margin.
+const VALID_TRAVEL_GRANTED: ElectricalAngle = erad(READY_MIN_VALID_REVS * TAU - 1e-3);
 
 /// External validity: acceptance window for `e_q / (λ·ω̂)`. Real rotation
 /// sits near 1 (the L·di/dt rotation term pushes it above; PLL lag and
@@ -466,7 +491,7 @@ pub const READY_MIN_VALID_REVS: f32 = 2.0;
 /// 0.4 → 0.25 (2026-07-08): the 2 kHz spectra of the mid-band ride
 /// (captures/trk-damp-2k-1) exposed the "limit cycle" as a PROTECTION
 /// relaxation oscillator — the 30–90 Hz estimate wobble transiently dips
-/// the ratio below the floor, validity revokes after VALID_REVOKE_S, the
+/// the ratio below the floor, validity revokes after VALID_REVOKE, the
 /// iq gate chops torque, the rotor coasts, corroboration returns,
 /// re-grant, torque transient re-excites the wobble: a 2–6 Hz envelope
 /// (±90 rad/s ω̂ swings, the visible jerk) with iq beats at 5–25 Hz.
@@ -475,15 +500,15 @@ pub const READY_MIN_VALID_REVS: f32 = 2.0;
 const VALID_BEMF_RATIO_MIN: f32 = 0.25;
 const VALID_BEMF_RATIO_MAX: f32 = 2.5;
 
-/// Time constant (s) of the back-EMF proxy low-pass. A few electrical
+/// Time constant of the back-EMF proxy low-pass. A few electrical
 /// ripple periods at handoff speeds: long enough to average the 6th-harmonic
 /// dead-time residue out of the rotating-frame projection, short enough to
 /// track a spin-up.
 /// 10 → 25 ms (2026-07-08): average the mid-band wobble (30–90 Hz) out
 /// of the corroboration ratio itself — see VALID_BEMF_RATIO_MIN.
-const BEMF_PROXY_TAU_S: f32 = 0.025;
+const BEMF_PROXY_TAU: Time = seconds(0.025);
 
-/// External validity: once granted, how long (s) the corroboration must be
+/// External validity: once granted, how long the corroboration must be
 /// violated CONTINUOUSLY before validity is revoked. Grant and revoke are
 /// deliberately asymmetric: granting demands `READY_MIN_VALID_REVS`
 /// coherent revolutions, but revoking on the first bad sample turned the
@@ -499,7 +524,7 @@ const BEMF_PROXY_TAU_S: f32 = 0.025;
 /// for 15 s) violate for seconds, so doubling the debounce costs the
 /// failure case nothing and pushes the relaxation cycle below the
 /// mid-band ride's violation windows.
-const VALID_REVOKE_S: f32 = 0.4;
+const VALID_REVOKE: Time = seconds(0.4);
 
 /// Default nonlinear centering gain (1/s, normalized error): drains a
 /// radius error with τ ≈ 2 ms — orders of magnitude faster than
@@ -507,19 +532,32 @@ const VALID_REVOKE_S: f32 = 0.4;
 /// transients (an aggressive pull there measurably perturbs the
 /// hall→observer handoff timing in the closed-loop sims; 5000 broke
 /// their continuity assertions, 500 does not).
-pub const DEFAULT_CENTERING_GAIN: f32 = 500.0;
+pub const DEFAULT_CENTERING_GAIN: Frequency = per_second(500.0);
 
 /// Acceleration-envelope governor gain (1/s): how hard the PLL velocity
 /// is pulled back per rad/s of filtered-trend excess over the envelope.
 /// Sized so a phantom's maximum rebuild rate (ki·err ≲ 60 k rad/s² at
 /// err ≈ π) balances at a few hundred rad/s of excess, while normal
 /// tracking (excess ≈ 0) never feels it.
-const ACCEL_GOVERNOR_GAIN: f32 = 300.0;
+const ACCEL_GOVERNOR_GAIN: Frequency = per_second(300.0);
 
 /// Default λ-tracking gain (1/s): τ = 0.2 s. λ moves with saturation and
 /// magnet temperature on the timescale of seconds; tracking must stay far
 /// slower than the flux/PLL dynamics or it eats the error signal itself.
-pub const DEFAULT_LAMBDA_GAIN: f32 = 5.0;
+pub const DEFAULT_LAMBDA_GAIN: Frequency = per_second(5.0);
+
+/// One ampere: the acceleration prior's per-ampere slope times `|iq| / AMPERE`.
+const AMPERE: ElectricCurrent = amps(1.0);
+
+/// Floor of the configured flux linkage (keeps `1/λ` finite).
+const MIN_LAMBDA: MagneticFlux = webers(1e-6);
+
+/// π: the PLL error of an unlocked estimate, and the HFI polarity flip.
+const HALF_TURN: ElectricalAngle = erad(core::f32::consts::PI);
+
+/// 2π: one carrier period of the HFI carrier phase.
+#[cfg(feature = "hfi")]
+const FULL_TURN: ElectricalAngle = erad(TAU);
 
 impl BackEmfObserver {
     /// Create a new back-EMF observer with motor parameters.
@@ -530,28 +568,28 @@ impl BackEmfObserver {
     /// and online λ adaptation.
     ///
     /// # Arguments
-    /// * `r` - Phase resistance (Ω)
-    /// * `l` - Phase inductance (H)
-    /// * `lambda` - Flux linkage (Wb)
-    pub fn new(r: f32, l: f32, lambda: f32) -> Self {
-        let lambda = lambda.max(1e-6);
+    /// * `r` - Phase resistance
+    /// * `l` - Phase inductance
+    /// * `lambda` - Flux linkage
+    pub fn new(r: ElectricalResistance, l: Inductance, lambda: MagneticFlux) -> Self {
+        let lambda = lambda.max(MIN_LAMBDA);
         Self {
-            x1: 0.0,
-            x2: 0.0,
-            i_alpha_last: 0.0,
-            i_beta_last: 0.0,
-            phase_pll: 0.0,
-            velocity_pll: 0.0,
+            x1: MagneticFlux::ZERO,
+            x2: MagneticFlux::ZERO,
+            i_alpha_last: ElectricCurrent::ZERO,
+            i_beta_last: ElectricCurrent::ZERO,
+            phase_pll: ElectricalAngle::ZERO,
+            velocity_pll: ElectricalAngularVelocity::ZERO,
             r,
             l,
-            l_delta: 0.0,
-            accel_per_amp: 0.0,
-            accel_floor: 0.0,
-            iq_abs_filt: 0.0,
-            vel_cap: 0.0,
-            vel_mag_filt: 0.0,
+            l_delta: Inductance::ZERO,
+            accel_per_amp: ElectricalAngularAcceleration::ZERO,
+            accel_floor: ElectricalAngularAcceleration::ZERO,
+            iq_abs_filt: ElectricCurrent::ZERO,
+            vel_cap: ElectricalAngularVelocity::ZERO,
+            vel_mag_filt: ElectricalAngularVelocity::ZERO,
             lambda,
-            lambda_gain: 0.0,
+            lambda_gain: Frequency::ZERO,
             // Bounds are inert until with_lambda_tracking() rebinds them.
             lambda_min: lambda,
             lambda_max: lambda,
@@ -559,22 +597,22 @@ impl BackEmfObserver {
             // PLL: ωn = √ki ≈ 140 rad/s, ζ = kp/(2·ωn) ≈ 3.5 — heavily
             // overdamped tracker, sim-validated to lock through spin-up
             // without overshooting into the π-flip guard's >90° zone.
-            pll_kp: 1000.0,
-            pll_ki: 20000.0,
+            pll_kp: per_second(1000.0),
+            pll_ki: quantity(20000.0),
             confidence: 0.0,
             // Start "unlocked": a fresh observer must not look ready until
             // the PLL has actually tracked something.
-            phase_err_filt: core::f32::consts::PI,
-            bemf_q_filt: 0.0,
-            phase_raw_last: 0.0,
-            valid_travel: 0.0,
-            invalid_time: 0.0,
-            lambda_learn_travel: 0.0,
+            phase_err_filt: HALF_TURN,
+            bemf_q_filt: ElectricPotential::ZERO,
+            phase_raw_last: ElectricalAngle::ZERO,
+            valid_travel: ElectricalAngle::ZERO,
+            invalid_time: Time::ZERO,
+            lambda_learn_travel: ElectricalAngle::ZERO,
             ready_latched: false,
             ready: false,
-            vel_pll_prev: 0.0,
-            accel_filt: 0.0,
-            readiness_err: core::f32::consts::PI,
+            vel_pll_prev: ElectricalAngularVelocity::ZERO,
+            accel_filt: ElectricalAngularAcceleration::ZERO,
+            readiness_err: HALF_TURN,
             filter_coefficients: BackEmfFilterCoefficients::new(),
             torque_coefficient: TorqueFilterCoefficient::new(),
         }
@@ -593,8 +631,8 @@ impl BackEmfObserver {
     /// angle feeds the angle error back into itself (loop gain ≈ ΔL·I/λ).
     /// The active-flux form has no angle-dependent terms, so no feedback
     /// path exists. Sim result: < 0.05 rad under the same load.
-    pub fn with_saliency(mut self, ld: f32, lq: f32) -> Self {
-        if ld > 0.0 && lq > 0.0 {
+    pub fn with_saliency(mut self, ld: Inductance, lq: Inductance) -> Self {
+        if ld.is_positive() && lq.is_positive() {
             self.l = lq;
             self.l_delta = lq - ld;
         }
@@ -611,8 +649,8 @@ impl BackEmfObserver {
     /// tens of percent at most, so hitting a bound means the stored value
     /// is wrong outright (re-run detection) — and the bound is what keeps
     /// a fault transient from dragging λ to nonsense meanwhile.
-    pub fn with_lambda_tracking(mut self, gain: f32) -> Self {
-        if gain > 0.0 {
+    pub fn with_lambda_tracking(mut self, gain: Frequency) -> Self {
+        if gain.is_positive() {
             self.lambda_gain = gain;
             self.lambda_min = self.lambda * 0.5;
             self.lambda_max = self.lambda * 2.0;
@@ -621,30 +659,30 @@ impl BackEmfObserver {
     }
 
     /// Override the nonlinear centering gain (1/s; 0 = hard clamp only).
-    pub fn with_centering_gain(mut self, gain: f32) -> Self {
-        self.centering_gain = gain.max(0.0);
+    pub fn with_centering_gain(mut self, gain: Frequency) -> Self {
+        self.centering_gain = gain.max(Frequency::ZERO);
         self
     }
 
-    /// Phase resistance (Ω) — used by voltage-based crossover criteria.
-    pub fn resistance(&self) -> f32 {
+    /// Phase resistance — used by voltage-based crossover criteria.
+    pub fn resistance(&self) -> ElectricalResistance {
         self.r
     }
 
-    /// d/q-average inductance (H) of the model — deadshort flying restart.
-    pub fn inductance(&self) -> f32 {
+    /// d/q-average inductance of the model — deadshort flying restart.
+    pub fn inductance(&self) -> Inductance {
         self.l
     }
 
-    /// Current (possibly adapted) flux-linkage estimate (Wb).
-    pub fn lambda(&self) -> f32 {
+    /// Current (possibly adapted) flux-linkage estimate.
+    pub fn lambda(&self) -> MagneticFlux {
         self.lambda
     }
 
     /// Update observer with new measurements
     pub fn update(&mut self, input: &ObserverInput) {
         let dt = input.dt;
-        if dt <= 0.0 {
+        if dt.is_non_positive() {
             return;
         }
         self.filter_coefficients.refresh(dt);
@@ -676,7 +714,7 @@ impl BackEmfObserver {
         // Raw (pre-correction) flux magnitude: the honest amplitude signal
         // for λ tracking and confidence, taken before centering/clamping
         // pull it onto the configured circle.
-        let flux_mag = crate::foc::fast_math::sqrtf(self.x1 * self.x1 + self.x2 * self.x2);
+        let flux_mag = (self.x1 * self.x1 + self.x2 * self.x2).sqrt_with(sqrtf);
 
         // Online λ adaptation (MESC MXLEMMING_LAMBDA / VESC lambda-comp):
         // slow first-order tracker, bounded. Adapts the clamp/centering
@@ -694,13 +732,13 @@ impl BackEmfObserver {
         // slow — only learn it while the rotation is externally
         // corroborated; the [0.4, 2.5] corroboration window tolerates a
         // stored λ far more wrong than physical drift can make it.
-        let validity_granted = self.valid_travel >= READY_MIN_VALID_REVS * TAU - 1e-3;
+        let validity_granted = self.valid_travel >= VALID_TRAVEL_GRANTED;
         // λ learning additionally requires EARNED corroboration travel (see
         // the field doc): seeded validity engages torque, not the tracker.
-        let lambda_learn_ok = self.lambda_learn_travel >= READY_MIN_VALID_REVS * TAU - 1e-3;
-        if self.lambda_gain > 0.0 && validity_granted && lambda_learn_ok {
+        let lambda_learn_ok = self.lambda_learn_travel >= VALID_TRAVEL_GRANTED;
+        if self.lambda_gain.is_positive() && validity_granted && lambda_learn_ok {
             self.lambda += self.lambda_gain * (flux_mag - self.lambda) * dt;
-            self.lambda = crate::foc::clamp_f32(self.lambda, self.lambda_min, self.lambda_max);
+            self.lambda = self.lambda.clamp_to(self.lambda_min, self.lambda_max);
         }
 
         // Nonlinear centering (MESC-inspired, one-sided): radial pull back
@@ -714,12 +752,13 @@ impl BackEmfObserver {
         // e_q projection, confidence) — λ ≥ 1e-6 by construction.
         let inv_lambda = 1.0 / self.lambda;
 
-        if self.centering_gain > 0.0 && flux_mag > self.lambda {
-            let mag_norm = flux_mag * inv_lambda;
+        if self.centering_gain.is_positive() && flux_mag > self.lambda {
+            let mag_norm = (flux_mag * inv_lambda).fraction();
             let err_norm = 1.0 - mag_norm * mag_norm;
             // Clamp: never drain more than half the radius in one cycle,
             // whatever gain·dt·overshoot multiplies out to.
-            let pull = crate::foc::clamp_f32(err_norm * self.centering_gain * dt, -0.5, 0.0);
+            let pull =
+                crate::foc::clamp_f32((err_norm * self.centering_gain * dt).fraction(), -0.5, 0.0);
             self.x1 += self.x1 * pull;
             self.x2 += self.x2 * pull;
         }
@@ -727,13 +766,13 @@ impl BackEmfObserver {
         // Component-wise truncation to ±λ stays as the hard backstop
         // (original MXLEMMING mechanism): the true rotor flux components
         // never exceed λ, whatever the centering gain is doing.
-        self.x1 = crate::foc::clamp_f32(self.x1, -self.lambda, self.lambda);
-        self.x2 = crate::foc::clamp_f32(self.x2, -self.lambda, self.lambda);
+        self.x1 = self.x1.clamp_to(-self.lambda, self.lambda);
+        self.x2 = self.x2.clamp_to(-self.lambda, self.lambda);
 
         // Extract phase from the rotor flux vector. The polynomial atan2's
         // ≤0.011 rad error feeds a PLL that low-passes it — negligible next
         // to dead-time distortion, and 3.7× cheaper than libm in the ISR.
-        let phase_raw = crate::foc::fast_math::atan2f(self.x2, self.x1);
+        let phase_raw = vector_angle(self.x1, self.x2);
         self.phase_raw_last = phase_raw;
 
         // PLL tracking. The error must be the SIGNED shortest angular distance
@@ -757,7 +796,7 @@ impl BackEmfObserver {
         // load-driven deceleration is never fought), and PLL ringing below
         // it stays untouched (a per-step Δv clamp asymmetrically clips the
         // ringing and biases legitimate tracking down).
-        if self.accel_per_amp > 0.0 || self.accel_floor > 0.0 {
+        if self.accel_per_amp.is_positive() || self.accel_floor.is_positive() {
             // Envelope clamp with a RECTIFIER FIX (2026-07-08,
             // captures/trk-damp-2k-1 vs noprior-2k-1): the up-branch stays
             // hard on the instantaneous |ω̂| (the slow-phantom wind-up must
@@ -776,7 +815,8 @@ impl BackEmfObserver {
             // before.
             let a_m = self.filter_coefficients.velocity_magnitude;
             self.vel_mag_filt += a_m * (self.velocity_pll.abs() - self.vel_mag_filt);
-            let step = (self.accel_floor + self.accel_per_amp * self.iq_abs_filt) * dt;
+            let step =
+                (self.accel_floor + self.accel_per_amp * self.iq_abs_filt.ratio_to(AMPERE)) * dt;
             if self.vel_mag_filt > self.vel_cap {
                 self.vel_cap += step;
                 if self.vel_mag_filt > self.vel_cap {
@@ -793,7 +833,7 @@ impl BackEmfObserver {
                     // leaked ~4× the envelope rate).
                     let excess = self.vel_mag_filt - self.vel_cap;
                     let pull = ACCEL_GOVERNOR_GAIN * excess * dt;
-                    if self.velocity_pll > 0.0 {
+                    if self.velocity_pll.is_positive() {
                         self.velocity_pll -= pull;
                     } else {
                         self.velocity_pll += pull;
@@ -864,41 +904,41 @@ impl BackEmfObserver {
         let speed_ok = self.velocity_pll.abs() >= READY_MIN_VELOCITY;
         let bemf_expected = self.lambda * self.velocity_pll;
         let corroborated = speed_ok
-            && self.bemf_q_filt * bemf_expected > 0.0
+            && (self.bemf_q_filt * bemf_expected).is_positive()
             && (VALID_BEMF_RATIO_MIN * bemf_expected.abs()
                 ..=VALID_BEMF_RATIO_MAX * bemf_expected.abs())
                 .contains(&self.bemf_q_filt.abs());
         let granted = validity_granted;
         if corroborated {
-            self.invalid_time = 0.0;
+            self.invalid_time = Time::ZERO;
             // Saturate at the threshold: no unbounded growth.
             self.valid_travel =
-                (self.valid_travel + self.velocity_pll.abs() * dt).min(READY_MIN_VALID_REVS * TAU);
+                (self.valid_travel + self.velocity_pll.abs() * dt).min(READY_MIN_VALID_TRAVEL);
             self.lambda_learn_travel = (self.lambda_learn_travel + self.velocity_pll.abs() * dt)
-                .min(READY_MIN_VALID_REVS * TAU);
+                .min(READY_MIN_VALID_TRAVEL);
         } else if granted {
             // Sticky once granted: revoke only on a SUSTAINED violation
-            // (see VALID_REVOKE_S) so accel/decel transients don't chop
+            // (see VALID_REVOKE) so accel/decel transients don't chop
             // the torque path.
             self.invalid_time += dt;
-            if self.invalid_time >= VALID_REVOKE_S {
-                self.valid_travel = 0.0;
-                self.lambda_learn_travel = 0.0;
-                self.invalid_time = 0.0;
+            if self.invalid_time >= VALID_REVOKE {
+                self.valid_travel = ElectricalAngle::ZERO;
+                self.lambda_learn_travel = ElectricalAngle::ZERO;
+                self.invalid_time = Time::ZERO;
             }
         } else {
             // Still earning: any violation restarts the accrual, so grant
             // means N *consecutive* coherent revolutions.
-            self.valid_travel = 0.0;
-            self.lambda_learn_travel = 0.0;
-            self.invalid_time = 0.0;
+            self.valid_travel = ElectricalAngle::ZERO;
+            self.lambda_learn_travel = ElectricalAngle::ZERO;
+            self.invalid_time = Time::ZERO;
         }
 
         // Confidence: how close the (raw, pre-correction) flux magnitude is
         // to λ. A weak heuristic — measurement offsets can also saturate the
         // integrator — but cheap and monotonic during real spin-up. With λ
         // tracking enabled the normalization adapts along with the clamp.
-        self.confidence = crate::foc::clamp_f32(flux_mag * inv_lambda, 0.0, 1.0);
+        self.confidence = crate::foc::clamp_f32((flux_mag * inv_lambda).fraction(), 0.0, 1.0);
 
         // Advance the readiness Schmitt latch: evaluated against the
         // PREVIOUS latch state (that is what makes it hysteresis), stored
@@ -912,20 +952,20 @@ impl BackEmfObserver {
         crate::isr_prof::add(&crate::isr_prof::OBS_TAIL, prof_t2, crate::isr_prof::now());
     }
 
-    /// Get estimated electrical phase (radians)
-    pub fn phase(&self) -> f32 {
+    /// Get estimated electrical phase
+    pub fn phase(&self) -> ElectricalAngle {
         self.phase_pll
     }
 
-    /// Get estimated electrical velocity (rad/s)
-    pub fn velocity(&self) -> f32 {
+    /// Get estimated electrical velocity
+    pub fn velocity(&self) -> ElectricalAngularVelocity {
         self.velocity_pll
     }
 
     /// Raw flux-vector angle from the last update (pre-PLL) — the signal
     /// the PLL tracks; `angle_difference(phase_raw, phase_pll)` is the
     /// instantaneous PLL error (debug telemetry / divergence forensics).
-    pub fn phase_raw(&self) -> f32 {
+    pub fn phase_raw(&self) -> ElectricalAngle {
         self.phase_raw_last
     }
 
@@ -935,35 +975,35 @@ impl BackEmfObserver {
     }
 
     /// External-validity diagnostics: `(bemf_q_filt, valid_travel)` — the
-    /// low-passed q-axis back-EMF proxy (V, signed) and the coherent phase
-    /// travel accumulated toward `READY_MIN_VALID_REVS` (rad). For bench
+    /// low-passed q-axis back-EMF proxy (signed) and the coherent phase
+    /// travel accumulated toward `READY_MIN_VALID_REVS`. For bench
     /// telemetry and sims; `is_ready` is the consumer that matters.
-    pub fn validity(&self) -> (f32, f32) {
+    pub fn validity(&self) -> (ElectricPotential, ElectricalAngle) {
         (self.bemf_q_filt, self.valid_travel)
     }
 
-    /// The EFFECTIVE lock-quality error (rad) gating [`Self::is_ready`]:
+    /// The EFFECTIVE lock-quality error gating [`Self::is_ready`]:
     /// low-passed |PLL phase error| minus the expected acceleration lag
-    /// `min(|α̂|/ki, ACCEL_LAG_COMP_MAX_RAD)`. A type-2 PLL lags a real
+    /// `min(|α̂|/ki, ACCEL_LAG_COMP_MAX)`. A type-2 PLL lags a real
     /// spin-up by α/ki while tracking it perfectly well — counting that
     /// structural lag as lock loss made the trust gate a bang-bang speed
-    /// governor (see `ACCEL_LAG_COMP_MAX_RAD`). Computed once per
+    /// governor (see `ACCEL_LAG_COMP_MAX`). Computed once per
     /// `update` (cached — see the field); for bench telemetry: the trust
     /// gate zeroes iq on this signal, so chop forensics need it next to
     /// the current columns.
-    pub fn readiness_phase_err(&self) -> f32 {
+    pub fn readiness_phase_err(&self) -> ElectricalAngle {
         self.readiness_err
     }
 
     /// Recompute the cached readiness error and decision (end of every
     /// `update`, and eagerly by state-jamming test/seed paths).
     fn refresh_readiness_err(&mut self) {
-        let lag = if self.pll_ki > 0.0 {
-            (self.accel_filt.abs() / self.pll_ki).min(ACCEL_LAG_COMP_MAX_RAD)
+        let lag = if self.pll_ki.is_positive() {
+            (self.accel_filt.abs() / self.pll_ki).min(ACCEL_LAG_COMP_MAX)
         } else {
-            0.0
+            ElectricalAngle::ZERO
         };
-        self.readiness_err = (self.phase_err_filt - lag).max(0.0);
+        self.readiness_err = (self.phase_err_filt - lag).max(ElectricalAngle::ZERO);
         self.refresh_ready();
     }
 
@@ -997,8 +1037,8 @@ impl BackEmfObserver {
     /// The lock-quality bound rides the acceleration-lag-COMPENSATED error
     /// (see [`Self::readiness_phase_err`] — a type-2 PLL structurally lags
     /// a real spin-up by α/ki) and is a Schmitt trigger: ACQUIRE demands
-    /// `READY_MAX_PHASE_ERR_RAD` (strict — handoff quality), HOLD relaxes
-    /// to `READY_HOLD_MAX_PHASE_ERR_RAD` (residual wobble rides the
+    /// `READY_MAX_PHASE_ERR` (strict — handoff quality), HOLD relaxes
+    /// to `READY_HOLD_MAX_PHASE_ERR` (residual wobble rides the
     /// strict threshold and a chattering gate chops torque, which itself
     /// pumps the oscillation — see the hold constant's dossier). The other
     /// three criteria have their own slow dynamics and stay un-hysteresed.
@@ -1014,64 +1054,69 @@ impl BackEmfObserver {
 
     fn ready_now(&self) -> bool {
         // `update` reuses one evaluation for both latch states.
-        const { assert!(READY_HOLD_MAX_PHASE_ERR_RAD >= READY_MAX_PHASE_ERR_RAD) };
+        const { assert!(READY_HOLD_MAX_PHASE_ERR.value >= READY_MAX_PHASE_ERR.value) };
         let err_bound = if self.ready_latched {
-            READY_HOLD_MAX_PHASE_ERR_RAD
+            READY_HOLD_MAX_PHASE_ERR
         } else {
-            READY_MAX_PHASE_ERR_RAD
+            READY_MAX_PHASE_ERR
         };
         self.confidence >= READY_MIN_CONFIDENCE
             && self.readiness_phase_err() < err_bound
             && self.velocity_pll.abs() >= READY_MIN_VELOCITY
-            && self.valid_travel >= READY_MIN_VALID_REVS * TAU - 1e-3
+            && self.valid_travel >= VALID_TRAVEL_GRANTED
     }
 
     /// Reset observer state. The adapted λ is kept — it is a physical
     /// parameter estimate, more current than the stored configuration.
     pub fn reset(&mut self) {
-        self.x1 = 0.0;
-        self.x2 = 0.0;
-        self.i_alpha_last = 0.0;
-        self.i_beta_last = 0.0;
-        self.phase_pll = 0.0;
-        self.velocity_pll = 0.0;
+        self.x1 = MagneticFlux::ZERO;
+        self.x2 = MagneticFlux::ZERO;
+        self.i_alpha_last = ElectricCurrent::ZERO;
+        self.i_beta_last = ElectricCurrent::ZERO;
+        self.phase_pll = ElectricalAngle::ZERO;
+        self.velocity_pll = ElectricalAngularVelocity::ZERO;
         self.confidence = 0.0;
-        self.phase_err_filt = core::f32::consts::PI;
-        self.phase_raw_last = 0.0;
-        self.vel_cap = 0.0;
-        self.vel_mag_filt = 0.0;
-        self.bemf_q_filt = 0.0;
-        self.valid_travel = 0.0;
-        self.invalid_time = 0.0;
-        self.lambda_learn_travel = 0.0;
+        self.phase_err_filt = HALF_TURN;
+        self.phase_raw_last = ElectricalAngle::ZERO;
+        self.vel_cap = ElectricalAngularVelocity::ZERO;
+        self.vel_mag_filt = ElectricalAngularVelocity::ZERO;
+        self.bemf_q_filt = ElectricPotential::ZERO;
+        self.valid_travel = ElectricalAngle::ZERO;
+        self.invalid_time = Time::ZERO;
+        self.lambda_learn_travel = ElectricalAngle::ZERO;
         self.ready_latched = false;
-        self.vel_pll_prev = 0.0;
-        self.accel_filt = 0.0;
-        self.readiness_err = core::f32::consts::PI;
+        self.vel_pll_prev = ElectricalAngularVelocity::ZERO;
+        self.accel_filt = ElectricalAngularAcceleration::ZERO;
+        self.readiness_err = HALF_TURN;
         self.refresh_ready();
     }
 
     /// Set motor parameters (re-anchors the λ-tracking bounds; resets the
     /// round-rotor model — re-apply saliency via the builder if needed)
-    pub fn set_motor_params(&mut self, r: f32, l: f32, lambda: f32) {
+    pub fn set_motor_params(
+        &mut self,
+        r: ElectricalResistance,
+        l: Inductance,
+        lambda: MagneticFlux,
+    ) {
         self.r = r;
         self.l = l;
-        self.l_delta = 0.0;
-        self.lambda = lambda.max(1e-6);
-        if self.lambda_gain > 0.0 {
+        self.l_delta = Inductance::ZERO;
+        self.lambda = lambda.max(MIN_LAMBDA);
+        if self.lambda_gain.is_positive() {
             self.lambda_min = self.lambda * 0.5;
             self.lambda_max = self.lambda * 2.0;
         }
     }
 
     /// Set PLL gains
-    pub fn set_pll_gains(&mut self, kp: f32, ki: f32) {
+    pub fn set_pll_gains(&mut self, kp: Frequency, ki: PllIntegralGain) {
         self.pll_kp = kp;
         self.pll_ki = ki;
     }
 
     /// Physics acceleration prior: cap the GROWTH RATE of |ω̂| at
-    /// `floor + per_amp·|iq|` (el rad/s²; |iq| low-passed at τ ≈ 10 ms).
+    /// `floor + per_amp·|iq|/A` (|iq| low-passed at τ ≈ 10 ms).
     ///
     /// Guards the slow coherent phantom (bench 2026-07-07,
     /// captures/slipgate-1,2) — currents
@@ -1085,28 +1130,36 @@ impl BackEmfObserver {
     /// the floor keeps modest load-driven acceleration (downhill) inside
     /// the cap. `per_amp = margin·1.5·pp²·λ/J` — needs the rotor inertia,
     /// which detection does not measure yet, hence configured per bench.
-    pub fn set_accel_prior(&mut self, floor_el: f32, per_amp_el: f32) {
-        if floor_el >= 0.0 && per_amp_el >= 0.0 && floor_el.is_finite() && per_amp_el.is_finite() {
-            self.accel_floor = floor_el;
-            self.accel_per_amp = per_amp_el;
+    pub fn set_accel_prior(
+        &mut self,
+        floor: ElectricalAngularAcceleration,
+        per_amp: ElectricalAngularAcceleration,
+    ) {
+        if floor.is_non_negative()
+            && per_amp.is_non_negative()
+            && floor.is_finite()
+            && per_amp.is_finite()
+        {
+            self.accel_floor = floor;
+            self.accel_per_amp = per_amp;
         }
     }
 
     /// Feed the measured |iq| for the acceleration prior (driver, per
     /// cycle; low-passed internally).
-    pub fn note_torque_current(&mut self, iq_abs: f32, dt: f32) {
+    pub fn note_torque_current(&mut self, iq_abs: ElectricCurrent, dt: Time) {
         let a = self.torque_coefficient.for_dt(dt);
         self.iq_abs_filt += a * (iq_abs - self.iq_abs_filt);
     }
 
     /// Force phase to specific value (for testing or handoff from other source)
-    pub fn force_phase(&mut self, phase: f32) {
+    pub fn force_phase(&mut self, phase: ElectricalAngle) {
         use crate::foc::trig::{FastSinCos, SinCos};
         self.phase_pll = wrap_angle(phase);
         // Also set flux state to match. FastSinCos (not libm): this runs in
         // the ISR on crossover reseed, and libm's f64-softfloat sinf would
         // blow the cycle budget on its own (-fp64 targets).
-        let (s, c) = FastSinCos::sin_cos(phase);
+        let (s, c) = FastSinCos::sin_cos(phase.radians());
         self.x1 = self.lambda * c;
         self.x2 = self.lambda * s;
         // Seeded from a trusted source: flux magnitude is exactly λ and the
@@ -1116,20 +1169,20 @@ impl BackEmfObserver {
         // evidence, and a crossover reseed must not stall for two
         // revolutions re-proving it.
         self.confidence = 1.0;
-        self.phase_err_filt = 0.0;
+        self.phase_err_filt = ElectricalAngle::ZERO;
         self.refresh_readiness_err();
-        self.valid_travel = READY_MIN_VALID_REVS * TAU;
+        self.valid_travel = READY_MIN_VALID_TRAVEL;
         self.bemf_q_filt = self.lambda * self.velocity_pll;
-        self.invalid_time = 0.0;
+        self.invalid_time = Time::ZERO;
         // Seeded validity is NOT learning credit: λ adaptation stays frozen
         // until the corroboration is re-earned on the live flux integrator
         // (see `lambda_learn_travel`).
-        self.lambda_learn_travel = 0.0;
+        self.lambda_learn_travel = ElectricalAngle::ZERO;
         self.refresh_ready();
     }
 
     /// Set velocity estimate (for testing or handoff from other source)
-    pub fn set_velocity(&mut self, velocity: f32) {
+    pub fn set_velocity(&mut self, velocity: ElectricalAngularVelocity) {
         self.velocity_pll = velocity;
         // Seed the slope tracker too, or the seed jump reads as a huge
         // acceleration and over-excuses the readiness error for ~τ.
@@ -1168,33 +1221,33 @@ impl BackEmfObserver {
 #[cfg(feature = "hfi")]
 pub struct HfiObserver<S: SinCos = LibmSinCos> {
     // Injection parameters
-    frequency: f32,     // Injection frequency (Hz)
-    amplitude: f32,     // Injection amplitude (V)
-    carrier_phase: f32, // Carrier phase of the sample get_injection() returns
+    frequency: Frequency,           // Injection frequency
+    amplitude: ElectricPotential,   // Injection amplitude
+    carrier_phase: ElectricalAngle, // Carrier phase of the sample get_injection() returns
 
     // Demodulation state (see update() for the math)
-    id_lp: f32,       // slow (fundamental) d-current tracker
-    iq_lp: f32,       // slow (fundamental) q-current tracker
-    eps_filt: f32,    // demodulated q-channel error (A)
-    amp_d_filt: f32,  // demodulated d-channel carrier amplitude (A)
-    err_quality: f32, // LPF of |normalized error|, for confidence
+    id_lp: ElectricCurrent,      // slow (fundamental) d-current tracker
+    iq_lp: ElectricCurrent,      // slow (fundamental) q-current tracker
+    eps_filt: ElectricCurrent,   // demodulated q-channel error
+    amp_d_filt: ElectricCurrent, // demodulated d-channel carrier amplitude
+    err_quality: f32,            // LPF of |normalized error|, for confidence
 
-    phase_est: f32,    // Estimated rotor phase
-    velocity_est: f32, // Estimated velocity
+    phase_est: ElectricalAngle,              // Estimated rotor phase
+    velocity_est: ElectricalAngularVelocity, // Estimated velocity
 
     // Tuning
-    pll_kp: f32,
-    pll_ki: f32,
-    min_hf_current: f32, // d-channel carrier amplitude floor (A)
+    pll_kp: Frequency,
+    pll_ki: PllIntegralGain,
+    min_hf_current: ElectricCurrent, // d-channel carrier amplitude floor
 
     // State
     confidence: f32,
 
     // Polarity probe state (π-ambiguity resolution, see update())
     polarity: HfiPolarity,
-    probe_step: u32, // cycle index into the probe schedule
-    probe_acc: f32,  // Σ sign·|id| over the probe pulses
-    probe_ref: f32,  // Σ |id| (significance reference)
+    probe_step: u32,            // cycle index into the probe schedule
+    probe_acc: ElectricCurrent, // Σ sign·|id| over the probe pulses
+    probe_ref: ElectricCurrent, // Σ |id| (significance reference)
 
     // sin/cos backend marker (ZST)
     _sincos: PhantomData<S>,
@@ -1217,43 +1270,43 @@ enum HfiPolarity {
     Done,
 }
 
-/// Fundamental-tracker low-pass time constant (s). Its cutoff must sit well
+/// Fundamental-tracker low-pass time constant. Its cutoff must sit well
 /// below the carrier so the high-pass residual keeps the carrier content.
 #[cfg(feature = "hfi")]
-const HFI_FUND_TAU_S: f32 = 0.005;
+const HFI_FUND_TAU: Time = seconds(0.005);
 
-/// Demodulation low-pass time constant (s) — a few carrier periods.
+/// Demodulation low-pass time constant — a few carrier periods.
 #[cfg(feature = "hfi")]
-const HFI_DEMOD_TAU_S: f32 = 0.002;
+const HFI_DEMOD_TAU: Time = seconds(0.002);
 
-/// Error-quality low-pass time constant (s), for confidence/readiness.
+/// Error-quality low-pass time constant, for confidence/readiness.
 #[cfg(feature = "hfi")]
-const HFI_QUALITY_TAU_S: f32 = 0.01;
+const HFI_QUALITY_TAU: Time = seconds(0.01);
 
-/// Default d-channel carrier-amplitude floor (A): below this no injection
+/// Default d-channel carrier-amplitude floor: below this no injection
 /// response is measurably flowing and the estimate is meaningless.
 #[cfg(feature = "hfi")]
-pub const HFI_MIN_HF_CURRENT_A: f32 = 0.05;
+pub const HFI_MIN_HF_CURRENT: ElectricCurrent = amps(0.05);
 
 /// Confidence threshold for [`HfiObserver::is_ready`] and for starting
 /// the polarity probe.
 #[cfg(feature = "hfi")]
 pub const HFI_READY_CONFIDENCE: f32 = 0.5;
 
-/// Default HFI carrier frequency (Hz) when configuring from stored params.
+/// Default HFI carrier frequency when configuring from stored params.
 #[cfg(feature = "hfi")]
-pub const HFI_DEFAULT_FREQ_HZ: f32 = 1000.0;
+pub const HFI_DEFAULT_FREQ: Frequency = crate::units::hertz(1000.0);
 
 /// Default HFI carrier amplitude as a fraction of vbus (3 V at 24 V — the
 /// operating point validated in the closed-loop sims; bench-tune per motor).
 /// Acts as the CEILING when the amplitude is solved from measured motor
-/// inductance (see `HFI_CARRIER_RIPPLE_TARGET_A`) — on low-L motors the
+/// inductance (see `HFI_CARRIER_RIPPLE_TARGET`) — on low-L motors the
 /// raw ratio is dangerously large (3 V across an eskate outrunner's ~25 µH
 /// at 1 kHz would drive tens of amps of carrier ripple).
 #[cfg(feature = "hfi")]
 pub const HFI_DEFAULT_AMPLITUDE_RATIO: f32 = 0.125;
 
-/// Target peak carrier ripple current (A) when the HFI amplitude is solved
+/// Target peak carrier ripple current when the HFI amplitude is solved
 /// from measured motor inductance: `V = I_target · ω_c · L`. Large enough
 /// to clear a real ADC noise floor, small enough to stay a perturbation —
 /// the same reasoning as the detection-side adaptive amplitude
@@ -1262,13 +1315,13 @@ pub const HFI_DEFAULT_AMPLITUDE_RATIO: f32 = 0.125;
 // Sole consumer (configure_observers_from_config) is storage-gated.
 #[cfg(feature = "storage")]
 #[cfg(feature = "hfi")]
-pub const HFI_CARRIER_RIPPLE_TARGET_A: f32 = 2.0;
+pub const HFI_CARRIER_RIPPLE_TARGET: ElectricCurrent = amps(2.0);
 
 /// Fraction of the motor's continuous-current RATING used as the carrier
 /// ripple target when the rating is known (detection's thermal solve,
 /// stored in the MotorParams group). Scales the perturbation to the
 /// motor: ~2 A on a 15 A eskate outrunner, ~0.2 A on a 1.3 A gimbal —
-/// capped by `HFI_CARRIER_RIPPLE_TARGET_A`. Deliberately scaled from
+/// capped by `HFI_CARRIER_RIPPLE_TARGET`. Deliberately scaled from
 /// the RATING, not the session current limit: a bench config capping iq
 /// at 2 A must not shrink the carrier SNR on a 30 A motor (the carrier
 /// is a perturbation the MOTOR has to tolerate, not the session).
@@ -1304,32 +1357,32 @@ impl HfiObserver {
     /// rebind via [`with_sincos`](Self::with_sincos) for firmware).
     ///
     /// # Arguments
-    /// * `frequency` - Injection frequency (Hz), typically 500-2000 Hz
-    /// * `amplitude` - Injection voltage amplitude (V)
-    pub fn new(frequency: f32, amplitude: f32) -> Self {
+    /// * `frequency` - Injection frequency, typically 500-2000 Hz
+    /// * `amplitude` - Injection voltage amplitude
+    pub fn new(frequency: Frequency, amplitude: ElectricPotential) -> Self {
         Self {
             frequency,
             amplitude,
-            carrier_phase: 0.0,
-            id_lp: 0.0,
-            iq_lp: 0.0,
-            eps_filt: 0.0,
-            amp_d_filt: 0.0,
+            carrier_phase: ElectricalAngle::ZERO,
+            id_lp: ElectricCurrent::ZERO,
+            iq_lp: ElectricCurrent::ZERO,
+            eps_filt: ElectricCurrent::ZERO,
+            amp_d_filt: ElectricCurrent::ZERO,
             err_quality: 1.0, // start "unlocked"
-            phase_est: 0.0,
-            velocity_est: 0.0,
+            phase_est: ElectricalAngle::ZERO,
+            velocity_est: ElectricalAngularVelocity::ZERO,
             // PLL: ωn = √ki ≈ 45 rad/s, ζ ≈ 1.1 — an order slower than the
             // back-EMF PLL, because the input (demodulated saliency error)
-            // is already low-passed by HFI_DEMOD_TAU_S and only needs to
+            // is already low-passed by HFI_DEMOD_TAU and only needs to
             // track low-speed motion by design.
-            pll_kp: 100.0,
-            pll_ki: 2000.0,
-            min_hf_current: HFI_MIN_HF_CURRENT_A,
+            pll_kp: per_second(100.0),
+            pll_ki: quantity(2000.0),
+            min_hf_current: HFI_MIN_HF_CURRENT,
             confidence: 0.0,
             polarity: HfiPolarity::Pending,
             probe_step: 0,
-            probe_acc: 0.0,
-            probe_ref: 0.0,
+            probe_acc: ElectricCurrent::ZERO,
+            probe_ref: ElectricCurrent::ZERO,
             _sincos: PhantomData,
         }
     }
@@ -1395,16 +1448,16 @@ impl<S: SinCos> HfiObserver<S> {
     /// [`set_phase`](Self::set_phase).
     pub fn update(&mut self, input: &ObserverInput) {
         let dt = input.dt;
-        if dt <= 0.0 {
+        if dt.is_non_positive() {
             return;
         }
 
         // Measured currents into the estimated rotor frame.
-        let (s_est, c_est) = S::sin_cos(self.phase_est);
+        let (s_est, c_est) = S::sin_cos(self.phase_est.radians());
         let (id, iq) = crate::foc::transforms::park(input.i_alpha, input.i_beta, s_est, c_est);
 
         // Split carrier content from the fundamental.
-        let a_f = (dt / HFI_FUND_TAU_S).min(1.0);
+        let a_f = dt.ratio_to(HFI_FUND_TAU).min(1.0);
         self.id_lp += a_f * (id - self.id_lp);
         self.iq_lp += a_f * (iq - self.iq_lp);
         let hf_id = id - self.id_lp;
@@ -1422,8 +1475,8 @@ impl<S: SinCos> HfiObserver<S> {
 
         // Synchronous demodulation with the carrier sample that generated
         // this response (see the call contract above).
-        let dem = S::sin_cos(self.carrier_phase).0;
-        let a_d = (dt / HFI_DEMOD_TAU_S).min(1.0);
+        let dem = S::sin_cos(self.carrier_phase.radians()).0;
+        let a_d = dt.ratio_to(HFI_DEMOD_TAU).min(1.0);
         self.eps_filt += a_d * (hf_iq * dem - self.eps_filt);
         self.amp_d_filt += a_d * (hf_id * dem - self.amp_d_filt);
 
@@ -1434,15 +1487,17 @@ impl<S: SinCos> HfiObserver<S> {
         // locks exactly 90° off). Inverse-saliency machines (Ld > Lq)
         // would need it inverted — not supported yet.
         let norm = self.amp_d_filt.abs().max(self.min_hf_current * 0.5);
-        let err = self.eps_filt / norm;
+        // The PLL tracks this proxy as the angle error.
+        let err = erad(self.eps_filt.ratio_to(norm));
 
         // PLL tracking.
         self.velocity_est += self.pll_ki * err * dt;
         self.phase_est = wrap_angle(self.phase_est + (self.velocity_est + self.pll_kp * err) * dt);
+        let err = err.radians();
 
         // Confidence: a real carrier response is flowing AND the error
         // channel has settled near zero (locked).
-        let a_q = (dt / HFI_QUALITY_TAU_S).min(1.0);
+        let a_q = dt.ratio_to(HFI_QUALITY_TAU).min(1.0);
         self.err_quality += a_q * (err.abs() - self.err_quality);
         self.confidence = if self.amp_d_filt.abs() > self.min_hf_current * 0.5 {
             crate::foc::clamp_f32(1.0 - 2.0 * self.err_quality, 0.0, 1.0)
@@ -1451,14 +1506,14 @@ impl<S: SinCos> HfiObserver<S> {
         };
 
         // Advance the carrier for the next get_injection().
-        self.carrier_phase = wrap_angle(self.carrier_phase + TAU * self.frequency * dt);
+        self.carrier_phase = wrap_angle(self.carrier_phase + FULL_TURN * self.frequency * dt);
 
         // First PLL lock → resolve the π ambiguity before reporting ready.
         if self.polarity == HfiPolarity::Pending && self.confidence >= HFI_READY_CONFIDENCE {
             self.polarity = HfiPolarity::Probing;
             self.probe_step = 0;
-            self.probe_acc = 0.0;
-            self.probe_ref = 0.0;
+            self.probe_acc = ElectricCurrent::ZERO;
+            self.probe_ref = ElectricCurrent::ZERO;
         }
     }
 
@@ -1469,7 +1524,7 @@ impl<S: SinCos> HfiObserver<S> {
     /// lower incremental Ld → larger current for the same volt-seconds.
     /// If the pulses along −d̂ consistently draw more current than +d̂,
     /// the estimated d axis points at the magnet's south pole: flip π.
-    fn update_polarity_probe(&mut self, id: f32) {
+    fn update_polarity_probe(&mut self, id: ElectricCurrent) {
         const SLOT: u32 = HFI_POLARITY_PULSE_CYCLES + HFI_POLARITY_GAP_CYCLES;
         let slot = (self.probe_step / SLOT) as usize;
         let pos = self.probe_step % SLOT;
@@ -1482,10 +1537,10 @@ impl<S: SinCos> HfiObserver<S> {
 
         self.probe_step += 1;
         if self.probe_step >= HFI_POLARITY_PATTERN.len() as u32 * SLOT {
-            let significant = self.probe_ref > 0.0
+            let significant = self.probe_ref.is_positive()
                 && self.probe_acc.abs() > HFI_POLARITY_MIN_RATIO * self.probe_ref;
-            if significant && self.probe_acc < 0.0 {
-                self.phase_est = wrap_angle(self.phase_est + core::f32::consts::PI);
+            if significant && self.probe_acc.is_negative() {
+                self.phase_est = wrap_angle(self.phase_est + HALF_TURN);
             }
             // A 2θ saliency lock alone cannot distinguish north from south.
             // Keep injecting without repeatedly probing an unobservable
@@ -1498,13 +1553,13 @@ impl<S: SinCos> HfiObserver<S> {
         }
     }
 
-    /// Get estimated electrical phase (radians)
-    pub fn phase(&self) -> f32 {
+    /// Get estimated electrical phase
+    pub fn phase(&self) -> ElectricalAngle {
         self.phase_est
     }
 
-    /// Get estimated electrical velocity (rad/s)
-    pub fn velocity(&self) -> f32 {
+    /// Get estimated electrical velocity
+    pub fn velocity(&self) -> ElectricalAngularVelocity {
         self.velocity_est
     }
 
@@ -1523,19 +1578,19 @@ impl<S: SinCos> HfiObserver<S> {
 
     /// Reset observer state
     pub fn reset(&mut self) {
-        self.carrier_phase = 0.0;
-        self.id_lp = 0.0;
-        self.iq_lp = 0.0;
-        self.eps_filt = 0.0;
-        self.amp_d_filt = 0.0;
+        self.carrier_phase = ElectricalAngle::ZERO;
+        self.id_lp = ElectricCurrent::ZERO;
+        self.iq_lp = ElectricCurrent::ZERO;
+        self.eps_filt = ElectricCurrent::ZERO;
+        self.amp_d_filt = ElectricCurrent::ZERO;
         self.err_quality = 1.0;
-        self.phase_est = 0.0;
-        self.velocity_est = 0.0;
+        self.phase_est = ElectricalAngle::ZERO;
+        self.velocity_est = ElectricalAngularVelocity::ZERO;
         self.confidence = 0.0;
         self.polarity = HfiPolarity::Pending;
         self.probe_step = 0;
-        self.probe_acc = 0.0;
-        self.probe_ref = 0.0;
+        self.probe_acc = ElectricCurrent::ZERO;
+        self.probe_ref = ElectricCurrent::ZERO;
     }
 
     /// Get the injection voltage for the current FOC cycle.
@@ -1547,28 +1602,29 @@ impl<S: SinCos> HfiObserver<S> {
     ///
     /// During the polarity probe this returns the ±d saturation pulses
     /// instead of the carrier.
-    pub fn get_injection(&self) -> (f32, f32) {
+    pub fn get_injection(&self) -> (ElectricPotential, ElectricPotential) {
+        let zero = ElectricPotential::ZERO;
         if self.polarity == HfiPolarity::Probing {
             const SLOT: u32 = HFI_POLARITY_PULSE_CYCLES + HFI_POLARITY_GAP_CYCLES;
             let slot = (self.probe_step / SLOT) as usize;
             let pos = self.probe_step % SLOT;
             if slot < HFI_POLARITY_PATTERN.len() && pos < HFI_POLARITY_PULSE_CYCLES {
-                return (HFI_POLARITY_PATTERN[slot] * self.amplitude, 0.0);
+                return (HFI_POLARITY_PATTERN[slot] * self.amplitude, zero);
             }
-            return (0.0, 0.0);
+            return (zero, zero);
         }
-        let vd = self.amplitude * S::sin_cos(self.carrier_phase).1;
-        (vd, 0.0)
+        let vd = self.amplitude * S::sin_cos(self.carrier_phase.radians()).1;
+        (vd, zero)
     }
 
     /// Set injection parameters
-    pub fn set_injection(&mut self, frequency: f32, amplitude: f32) {
+    pub fn set_injection(&mut self, frequency: Frequency, amplitude: ElectricPotential) {
         self.frequency = frequency;
         self.amplitude = amplitude;
     }
 
     /// Set PLL gains
-    pub fn set_pll_gains(&mut self, kp: f32, ki: f32) {
+    pub fn set_pll_gains(&mut self, kp: Frequency, ki: PllIntegralGain) {
         self.pll_kp = kp;
         self.pll_ki = ki;
     }
@@ -1583,13 +1639,13 @@ impl<S: SinCos> HfiObserver<S> {
     ///
     /// A trusted external angle carries no π ambiguity, so this also marks
     /// polarity as resolved — no saturation probe needed.
-    pub fn set_phase(&mut self, phase: f32) {
+    pub fn set_phase(&mut self, phase: ElectricalAngle) {
         self.phase_est = wrap_angle(phase);
         self.polarity = HfiPolarity::Done;
     }
 
     /// Set initial velocity estimate (for handoff from other source)
-    pub fn set_velocity(&mut self, velocity: f32) {
+    pub fn set_velocity(&mut self, velocity: ElectricalAngularVelocity) {
         self.velocity_est = velocity;
     }
 
@@ -1607,8 +1663,8 @@ impl<S: SinCos> HfiObserver<S> {
     /// ([`set_phase`](Self::set_phase)/[`set_velocity`](Self::set_velocity)),
     /// not demod state.
     pub fn restart_demod(&mut self) {
-        self.eps_filt = 0.0;
-        self.amp_d_filt = 0.0;
+        self.eps_filt = ElectricCurrent::ZERO;
+        self.amp_d_filt = ElectricCurrent::ZERO;
         self.err_quality = 1.0;
         self.confidence = 0.0;
     }
@@ -1622,6 +1678,11 @@ impl<S: SinCos> HfiObserver<S> {
 mod tests {
     use super::*;
     use crate::foc::angle_difference;
+    use crate::units::si;
+    use crate::units::{
+        amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, volts,
+        webers,
+    };
 
     // Reference coefficients are the former per-update expressions. Loading
     // them before update bypasses the cache while sharing unchanged dynamics.
@@ -1629,17 +1690,17 @@ mod tests {
         let dt = input.dt;
         obs.filter_coefficients = BackEmfFilterCoefficients {
             dt_bits: dt.to_bits(),
-            velocity_magnitude: (dt / 0.05).min(1.0),
-            acceleration: (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0),
-            phase_error: (dt / PHASE_ERR_FILTER_TAU_S).min(1.0),
-            bemf: (dt / BEMF_PROXY_TAU_S).min(1.0),
+            velocity_magnitude: (dt.value / 0.05).min(1.0),
+            acceleration: (dt.value / ACCEL_LAG_FILTER_TAU.value).min(1.0),
+            phase_error: (dt.value / PHASE_ERR_FILTER_TAU.value).min(1.0),
+            bemf: (dt.value / BEMF_PROXY_TAU.value).min(1.0),
         };
         obs.update(input);
     }
 
     fn note_torque_uncached(obs: &mut BackEmfObserver, iq_abs: f32, dt: f32) {
         let a = (dt / 0.01).min(1.0);
-        obs.iq_abs_filt += a * (iq_abs - obs.iq_abs_filt);
+        obs.iq_abs_filt += a * (amps(iq_abs) - obs.iq_abs_filt);
     }
 
     fn assert_observer_bits(actual: &BackEmfObserver, expected: &BackEmfObserver) {
@@ -1717,20 +1778,20 @@ mod tests {
         for dt in intervals {
             let dt = core::hint::black_box(dt);
             for _ in 0..2 {
-                coefficients.refresh(dt);
+                coefficients.refresh(seconds(dt));
                 assert_eq!(coefficients.dt_bits, dt.to_bits());
                 for (actual, expected) in [
                     (coefficients.velocity_magnitude, (dt / 0.05).min(1.0)),
                     (
                         coefficients.acceleration,
-                        (dt / ACCEL_LAG_FILTER_TAU_S).min(1.0),
+                        (dt / ACCEL_LAG_FILTER_TAU.value).min(1.0),
                     ),
                     (
                         coefficients.phase_error,
-                        (dt / PHASE_ERR_FILTER_TAU_S).min(1.0),
+                        (dt / PHASE_ERR_FILTER_TAU.value).min(1.0),
                     ),
-                    (coefficients.bemf, (dt / BEMF_PROXY_TAU_S).min(1.0)),
-                    (torque.for_dt(dt), (dt / 0.01).min(1.0)),
+                    (coefficients.bemf, (dt / BEMF_PROXY_TAU.value).min(1.0)),
+                    (torque.for_dt(seconds(dt)), (dt / 0.01).min(1.0)),
                 ] {
                     assert_eq!(
                         actual.to_bits(),
@@ -1747,7 +1808,8 @@ mod tests {
     fn cached_observer_matches_uncached_trajectories() {
         let (r, l, lambda) = (0.1, 50e-6, 0.005);
         for alternating in [false, true] {
-            let mut cached = BackEmfObserver::new(r, l, lambda).with_lambda_tracking(5.0);
+            let mut cached = BackEmfObserver::new(ohms(r), henries(l), webers(lambda))
+                .with_lambda_tracking(per_second(5.0));
             let mut reference = cached.clone();
             let mut theta = 0.0;
             let mut was_ready = false;
@@ -1761,28 +1823,28 @@ mod tests {
                 for obs in [&mut cached, &mut reference] {
                     match step {
                         6_000 => {
-                            obs.force_phase(theta);
-                            obs.set_velocity(omega);
-                            obs.set_accel_prior(500.0, 3400.0);
+                            obs.force_phase(erad(theta));
+                            obs.set_velocity(erad_per_s(omega));
+                            obs.set_accel_prior(erad_per_s2(500.0), erad_per_s2(3400.0));
                         }
                         10_000 => {
                             obs.reset();
-                            obs.set_accel_prior(0.0, 0.0);
+                            obs.set_accel_prior(erad_per_s2(0.0), erad_per_s2(0.0));
                         }
                         14_000 => {
-                            obs.set_motor_params(r, l, lambda);
-                            obs.set_pll_gains(800.0, 16_000.0);
+                            obs.set_motor_params(ohms(r), henries(l), webers(lambda));
+                            obs.set_pll_gains(per_second(800.0), quantity(16_000.0));
                         }
                         18_000 => {
-                            obs.force_phase(theta);
-                            obs.set_velocity(omega);
+                            obs.force_phase(erad(theta));
+                            obs.set_velocity(erad_per_s(omega));
                         }
                         _ => {}
                     }
                 }
                 // Torque updates intentionally use a different timestep.
                 let torque_dt = if step % 2 == 0 { 2.5e-5 } else { 2e-4 };
-                cached.note_torque_current(2.0, torque_dt);
+                cached.note_torque_current(amps(2.0), seconds(torque_dt));
                 note_torque_uncached(&mut reference, 2.0, torque_dt);
                 let theta_next = wrap_angle(theta + omega * dt);
                 let (ia, ib) = (-2.0 * libm::sinf(theta), 2.0 * libm::cosf(theta));
@@ -1790,18 +1852,18 @@ mod tests {
                     (-2.0 * libm::sinf(theta_next), 2.0 * libm::cosf(theta_next));
                 let input = ObserverInput {
                     v_alpha: if step >= 18_000 {
-                        0.0
+                        volts(0.0)
                     } else {
-                        r * ia + l * (ia_next - ia) / dt - omega * lambda * libm::sinf(theta)
+                        volts(r * ia + l * (ia_next - ia) / dt - omega * lambda * libm::sinf(theta))
                     },
                     v_beta: if step >= 18_000 {
-                        0.0
+                        volts(0.0)
                     } else {
-                        r * ib + l * (ib_next - ib) / dt + omega * lambda * libm::cosf(theta)
+                        volts(r * ib + l * (ib_next - ib) / dt + omega * lambda * libm::cosf(theta))
                     },
-                    i_alpha: ia,
-                    i_beta: ib,
-                    dt,
+                    i_alpha: amps(ia),
+                    i_beta: amps(ib),
+                    dt: seconds(dt),
                 };
                 cached.update(&input);
                 update_uncached(&mut reference, &input);
@@ -1830,20 +1892,20 @@ mod tests {
             0.1,
             f32::MAX,
         ] {
-            let mut cached = BackEmfObserver::new(0.1, 50e-6, 0.005);
-            cached.force_phase(1.0);
-            cached.set_velocity(300.0);
-            cached.set_accel_prior(500.0, 3400.0);
+            let mut cached = BackEmfObserver::new(ohms(0.1), henries(50e-6), webers(0.005));
+            cached.force_phase(erad(1.0));
+            cached.set_velocity(erad_per_s(300.0));
+            cached.set_accel_prior(erad_per_s2(500.0), erad_per_s2(3400.0));
             let mut reference = cached.clone();
             for interval in [5e-5, 5e-5, dt, dt] {
-                cached.note_torque_current(2.0, interval);
+                cached.note_torque_current(amps(2.0), seconds(interval));
                 note_torque_uncached(&mut reference, 2.0, interval);
                 let input = ObserverInput {
-                    v_alpha: 1.0,
-                    v_beta: -2.0,
-                    i_alpha: 0.3,
-                    i_beta: -0.2,
-                    dt: interval,
+                    v_alpha: volts(1.0),
+                    v_beta: volts(-2.0),
+                    i_alpha: amps(0.3),
+                    i_beta: amps(-0.2),
+                    dt: seconds(interval),
                 };
                 cached.update(&input);
                 update_uncached(&mut reference, &input);
@@ -1878,11 +1940,11 @@ mod tests {
             let v_a = r * i_a + l * (i_a_next - i_a) / dt - omega * lambda * libm::sinf(theta);
             let v_b = r * i_b + l * (i_b_next - i_b) / dt + omega * lambda * libm::cosf(theta);
             obs.update(&ObserverInput {
-                v_alpha: v_a,
-                v_beta: v_b,
-                i_alpha: i_a,
-                i_beta: i_b,
-                dt,
+                v_alpha: volts(v_a),
+                v_beta: volts(v_b),
+                i_alpha: amps(i_a),
+                i_beta: amps(i_b),
+                dt: seconds(dt),
             });
             theta = theta_next;
         }
@@ -1898,17 +1960,17 @@ mod tests {
         let (r, l, lambda) = (0.1, 50e-6, 0.005);
         let omega = 300.0; // rad/s electrical
         let dt = 5e-5; // 20 kHz
-        let mut obs = BackEmfObserver::new(r, l, lambda);
+        let mut obs = BackEmfObserver::new(ohms(r), henries(l), webers(lambda));
         let theta = run_observer(&mut obs, r, l, lambda, omega, 0.0, 40_000, dt);
 
         assert!(
-            (obs.velocity() - omega).abs() < 0.05 * omega,
-            "velocity {} did not lock to {}",
+            (obs.velocity() - erad_per_s(omega)).abs() < erad_per_s(0.05 * omega),
+            "velocity {:?} did not lock to {:?}",
             obs.velocity(),
             omega
         );
-        let err = angle_difference(obs.phase(), theta);
-        assert!(err.abs() < 0.1, "phase error {err} rad too large");
+        let err = angle_difference(obs.phase(), erad(theta));
+        assert!(err.abs() < erad(0.1), "phase error {err:?} rad too large");
         assert!(obs.confidence() > 0.5, "confidence {}", obs.confidence());
     }
 
@@ -1939,11 +2001,11 @@ mod tests {
             let (pa, pb) = psi(theta);
             let (pa_n, pb_n) = psi(theta_next);
             obs.update(&ObserverInput {
-                v_alpha: r * i_a + (pa_n - pa) / dt,
-                v_beta: r * i_b + (pb_n - pb) / dt,
-                i_alpha: i_a,
-                i_beta: i_b,
-                dt,
+                v_alpha: volts(r * i_a + (pa_n - pa) / dt),
+                v_beta: volts(r * i_b + (pb_n - pb) / dt),
+                i_alpha: amps(i_a),
+                i_beta: amps(i_b),
+                dt: seconds(dt),
             });
             theta = theta_next;
         }
@@ -1965,28 +2027,28 @@ mod tests {
                 let w = w0 + alpha * k as f32 * dt;
                 let e = w * lambda_true;
                 obs.update(&ObserverInput {
-                    v_alpha: -e * libm::sinf(theta),
-                    v_beta: e * libm::cosf(theta),
-                    i_alpha: 0.0,
-                    i_beta: 0.0,
-                    dt,
+                    v_alpha: volts(-e * libm::sinf(theta)),
+                    v_beta: volts(e * libm::cosf(theta)),
+                    i_alpha: amps(0.0),
+                    i_beta: amps(0.0),
+                    dt: seconds(dt),
                 });
                 theta = wrap_angle(theta + w * dt);
             }
         };
         // Lock at 300, then the source accelerates at 5000 el/s² with ZERO
         // torque current: growth must be capped at the 500 floor.
-        let mut obs = BackEmfObserver::new(r, l, lambda_true);
-        obs.set_accel_prior(500.0, 3400.0);
+        let mut obs = BackEmfObserver::new(ohms(r), henries(l), webers(lambda_true));
+        obs.set_accel_prior(erad_per_s2(500.0), erad_per_s2(3400.0));
         // Seed at speed (the cap would otherwise pace the from-zero lock-in
         // itself — with zero measured torque that is exactly the intended
         // behavior, but here we test the locked regime).
-        obs.force_phase(0.0);
-        obs.set_velocity(300.0);
+        obs.force_phase(erad(0.0));
+        obs.set_velocity(erad_per_s(300.0));
         run_accel(&mut obs, 300.0, 0.0, 0.5);
         assert!(
-            (obs.velocity() - 300.0).abs() < 5.0,
-            "lock: {}",
+            (obs.velocity() - erad_per_s(300.0)).abs() < erad_per_s(5.0),
+            "lock: {:?}",
             obs.velocity()
         );
         run_accel(&mut obs, 300.0, 5000.0, 0.1);
@@ -1996,8 +2058,8 @@ mod tests {
         // wobble — see the envelope block); the protection property is
         // the SUSTAINED rate below.
         assert!(
-            capped1 < 300.0 + 500.0 * 0.1 + 5000.0 * 0.05 + 20.0,
-            "phantom transient must stay bounded: {capped1}"
+            capped1 < erad_per_s(300.0 + 500.0 * 0.1 + 5000.0 * 0.05 + 20.0),
+            "phantom transient must stay bounded: {capped1:?}"
         );
         run_accel(&mut obs, 300.0 + 500.0, 5000.0, 0.2);
         let capped2 = obs.velocity();
@@ -2006,49 +2068,49 @@ mod tests {
         // governor pull) — vs the unbounded 2–3× physics of the bench
         // slow-phantom this exists to stop.
         assert!(
-            capped2 - capped1 < 500.0 * 0.2 * 2.0,
-            "sustained phantom growth must be rate-capped: {capped1} -> {capped2}"
+            capped2 - capped1 < erad_per_s(500.0 * 0.2 * 2.0),
+            "sustained phantom growth must be rate-capped: {capped1:?} -> {capped2:?}"
         );
         // Same acceleration with 2 A of measured iq (cap 500+6800): tracks.
-        let mut obs2 = BackEmfObserver::new(r, l, lambda_true);
-        obs2.set_accel_prior(500.0, 3400.0);
-        obs2.force_phase(0.0);
-        obs2.set_velocity(300.0);
+        let mut obs2 = BackEmfObserver::new(ohms(r), henries(l), webers(lambda_true));
+        obs2.set_accel_prior(erad_per_s2(500.0), erad_per_s2(3400.0));
+        obs2.force_phase(erad(0.0));
+        obs2.set_velocity(erad_per_s(300.0));
         run_accel(&mut obs2, 300.0, 0.0, 0.5);
         for _ in 0..400 {
-            obs2.note_torque_current(2.0, dt);
+            obs2.note_torque_current(amps(2.0), seconds(dt));
         }
         let mut theta: f32 = 0.0;
         let steps = (0.1 / dt) as usize;
         for k in 0..steps {
             let w = 300.0 + 5000.0 * k as f32 * dt;
             let e = w * lambda_true;
-            obs2.note_torque_current(2.0, dt);
+            obs2.note_torque_current(amps(2.0), seconds(dt));
             obs2.update(&ObserverInput {
-                v_alpha: -e * libm::sinf(theta),
-                v_beta: e * libm::cosf(theta),
-                i_alpha: 0.0,
-                i_beta: 0.0,
-                dt,
+                v_alpha: volts(-e * libm::sinf(theta)),
+                v_beta: volts(e * libm::cosf(theta)),
+                i_alpha: amps(0.0),
+                i_beta: amps(0.0),
+                dt: seconds(dt),
             });
             theta = wrap_angle(theta + w * dt);
         }
         // Control: same profile with the prior OFF — isolates whether a
         // shortfall is the clamp or plain PLL dynamics.
-        let mut obs3 = BackEmfObserver::new(r, l, lambda_true);
-        obs3.force_phase(0.0);
-        obs3.set_velocity(300.0);
+        let mut obs3 = BackEmfObserver::new(ohms(r), henries(l), webers(lambda_true));
+        obs3.force_phase(erad(0.0));
+        obs3.set_velocity(erad_per_s(300.0));
         run_accel(&mut obs3, 300.0, 0.0, 0.5);
         let mut theta: f32 = 0.0;
         for k in 0..steps {
             let w = 300.0 + 5000.0 * k as f32 * dt;
             let e = w * lambda_true;
             obs3.update(&ObserverInput {
-                v_alpha: -e * libm::sinf(theta),
-                v_beta: e * libm::cosf(theta),
-                i_alpha: 0.0,
-                i_beta: 0.0,
-                dt,
+                v_alpha: volts(-e * libm::sinf(theta)),
+                v_beta: volts(e * libm::cosf(theta)),
+                i_alpha: amps(0.0),
+                i_beta: amps(0.0),
+                dt: seconds(dt),
             });
             theta = wrap_angle(theta + w * dt);
         }
@@ -2059,8 +2121,8 @@ mod tests {
         // the PLL's velocity pole ki/kp ≈ 20 rad/s — that lag is PLL
         // dynamics, not the prior).
         assert!(
-            (obs2.velocity() - obs3.velocity()).abs() < 5.0,
-            "prior must not impede justified tracking: {} vs control {}",
+            (obs2.velocity() - obs3.velocity()).abs() < erad_per_s(5.0),
+            "prior must not impede justified tracking: {:?} vs control {:?}",
             obs2.velocity(),
             obs3.velocity()
         );
@@ -2076,14 +2138,14 @@ mod tests {
         let lambda_cfg = lambda_true * 1.8;
         let omega = 300.0;
         let dt = 5e-5;
-        let mut obs =
-            BackEmfObserver::new(r, l, lambda_cfg).with_lambda_tracking(DEFAULT_LAMBDA_GAIN);
+        let mut obs = BackEmfObserver::new(ohms(r), henries(l), webers(lambda_cfg))
+            .with_lambda_tracking(DEFAULT_LAMBDA_GAIN);
         // 2 s of sim: λ tracker has τ = 0.2 s.
         run_observer(&mut obs, r, l, lambda_true, omega, 0.0, 40_000, dt);
 
         assert!(
-            (obs.lambda() - lambda_true).abs() < 0.1 * lambda_true,
-            "λ estimate {} did not converge to true {}",
+            (obs.lambda() - webers(lambda_true)).abs() < webers(0.1 * lambda_true),
+            "λ estimate {:?} did not converge to true {:?}",
             obs.lambda(),
             lambda_true
         );
@@ -2106,23 +2168,24 @@ mod tests {
         let (omega, i_q, dt) = (300.0, 15.0, 5e-5); // Lq·I = 4.5 mWb ≈ λ
         let l_avg = (ld + lq) / 2.0;
 
-        let mut scalar = BackEmfObserver::new(r, l_avg, lambda);
+        let mut scalar = BackEmfObserver::new(ohms(r), henries(l_avg), webers(lambda));
         let theta_s = run_observer_salient(&mut scalar, r, lq, lambda, omega, i_q, 40_000, dt);
-        let err_scalar = angle_difference(scalar.phase(), theta_s).abs();
+        let err_scalar = angle_difference(scalar.phase(), erad(theta_s)).abs();
 
-        let mut salient = BackEmfObserver::new(r, l_avg, lambda).with_saliency(ld, lq);
+        let mut salient = BackEmfObserver::new(ohms(r), henries(l_avg), webers(lambda))
+            .with_saliency(henries(ld), henries(lq));
         let theta_x = run_observer_salient(&mut salient, r, lq, lambda, omega, i_q, 40_000, dt);
-        let err_salient = angle_difference(salient.phase(), theta_x).abs();
+        let err_salient = angle_difference(salient.phase(), erad(theta_x)).abs();
 
         // Active flux is exact for this plant (id = 0): only numerical and
         // PLL-lag residue remains.
         assert!(
-            err_salient < 0.05,
-            "active-flux observer error {err_salient} rad (scalar comparison: {err_scalar})"
+            err_salient < erad(0.05),
+            "active-flux observer error {err_salient:?} rad (scalar comparison: {err_scalar:?})"
         );
         assert!(
             err_salient < err_scalar * 0.25,
-            "active flux should slash the load bias: scalar {err_scalar} rad, salient {err_salient} rad"
+            "active flux should slash the load bias: scalar {err_scalar:?} rad, salient {err_salient:?} rad"
         );
     }
 
@@ -2135,7 +2198,7 @@ mod tests {
         // component clamp causes at the ±λ square's corners.
         let (r, l, lambda) = (0.1, 50e-6, 0.005);
         let (omega, dt) = (300.0, 5e-5);
-        let mut obs = BackEmfObserver::new(r, l, lambda);
+        let mut obs = BackEmfObserver::new(ohms(r), henries(l), webers(lambda));
 
         let mut theta: f32 = 1.0;
         let mut max_err = 0.0f32;
@@ -2144,16 +2207,16 @@ mod tests {
             let v_a = -omega * lambda * libm::sinf(theta) + 0.05; // ADC-scale DC offset
             let v_b = omega * lambda * libm::cosf(theta);
             obs.update(&ObserverInput {
-                v_alpha: v_a,
-                v_beta: v_b,
-                i_alpha: 0.0,
-                i_beta: 0.0,
-                dt,
+                v_alpha: volts(v_a),
+                v_beta: volts(v_b),
+                i_alpha: amps(0.0),
+                i_beta: amps(0.0),
+                dt: seconds(dt),
             });
             theta = theta_next;
             // Measure over the last electrical revolution.
             if step > 40_000 - 420 {
-                max_err = max_err.max(angle_difference(obs.phase(), theta).abs());
+                max_err = max_err.max((angle_difference(obs.phase(), erad(theta)).abs()).value);
             }
         }
         assert!(
@@ -2173,13 +2236,13 @@ mod tests {
         let omega = 300.0;
         let i_q = 10.0; // L·I = 0.005 = λ
         let dt = 5e-5;
-        let mut obs = BackEmfObserver::new(r, l, lambda);
+        let mut obs = BackEmfObserver::new(ohms(r), henries(l), webers(lambda));
         let theta = run_observer(&mut obs, r, l, lambda, omega, i_q, 40_000, dt);
 
-        let err = angle_difference(obs.phase(), theta);
+        let err = angle_difference(obs.phase(), erad(theta));
         assert!(
-            err.abs() < 0.15,
-            "phase error {err} rad under load (L·I = λ) — missing −L·Δi term?"
+            err.abs() < erad(0.15),
+            "phase error {err:?} rad under load (L·I = λ) — missing −L·Δi term?"
         );
     }
 
@@ -2246,11 +2309,11 @@ mod tests {
             let (vd_inj, vq_inj) = obs.get_injection();
             let (i_a_m, i_b_m) = transforms::clarke(out.ia, out.ib);
             let telem = foc.apply_dq(vd_inj, vq_inj, obs.phase(), i_a_m, i_b_m, 1000);
-            out = motor.step(telem.v_alpha, telem.v_beta, load_torque, DT);
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, load_torque, DT);
             let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
             obs.update(&ObserverInput {
-                v_alpha: telem.v_alpha,
-                v_beta: telem.v_beta,
+                v_alpha: telem.v_alpha.value,
+                v_beta: telem.v_beta.value,
                 i_alpha: i_a,
                 i_beta: i_b,
                 dt: DT,
@@ -2452,39 +2515,51 @@ mod tests {
             };
             let kp = params.ld * 1000.0;
             let ki = params.r * 1000.0;
-            let mut foc = FocController::<SvpwmModulator>::new(VBUS);
-            foc.id_pi = PIController::new(kp, ki);
-            foc.iq_pi = PIController::new(kp, ki);
+            let mut foc = FocController::<SvpwmModulator>::new(volts(VBUS));
+            foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
+            foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
             let mut motor = VirtualMotor::new(params);
             let mut out = VirtualMotorOutput::default();
-            let mut obs =
-                BackEmfObserver::new(params.r, (params.ld + params.lq) / 2.0, params.lambda);
+            let mut obs = BackEmfObserver::new(
+                ohms(params.r),
+                henries((params.ld + params.lq) / 2.0),
+                webers(params.lambda),
+            );
             let (mut pva, mut pvb) = (0.0f32, 0.0f32);
             let mut err_sum = 0.0f32;
             let mut n = 0u32;
             for step in 0..30_000 {
                 // commutation from the true rotor state (perfect estimator);
                 // the observer under test runs passively
-                foc.set_actuation_advance(out.omega_e * DT);
-                let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad, 0.0, 2.0, 4250, DT);
-                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+                foc.set_actuation_advance(erad(out.omega_e * DT));
+                let telem = foc.step(
+                    (amps(out.ia), amps(out.ib), amps(out.ic)),
+                    erad(out.angle_rad),
+                    amps(0.0),
+                    amps(2.0),
+                    4250,
+                    seconds(DT),
+                );
+                out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
                 let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
                 let (va, vb) = if prev_pairing {
                     (pva, pvb)
                 } else {
-                    (telem.v_alpha, telem.v_beta)
+                    (telem.v_alpha.value, telem.v_beta.value)
                 };
                 obs.update(&ObserverInput {
-                    v_alpha: va,
-                    v_beta: vb,
-                    i_alpha: i_a,
-                    i_beta: i_b,
-                    dt: DT,
+                    v_alpha: volts(va),
+                    v_beta: volts(vb),
+                    i_alpha: amps(i_a),
+                    i_beta: amps(i_b),
+                    dt: seconds(DT),
                 });
-                pva = telem.v_alpha;
-                pvb = telem.v_beta;
+                pva = telem.v_alpha.value;
+                pvb = telem.v_beta.value;
                 if step >= 20_000 {
-                    err_sum += angle_difference(obs.phase(), wrap_angle(out.angle_rad)).abs();
+                    err_sum += angle_difference(obs.phase(), wrap_angle(erad(out.angle_rad)))
+                        .abs()
+                        .value;
                     n += 1;
                 }
             }
@@ -2506,31 +2581,31 @@ mod tests {
 
     #[test]
     fn ready_lock_quality_is_a_schmitt_trigger() {
-        // Acquire strict (< READY_MAX_PHASE_ERR_RAD), hold relaxed
-        // (< READY_HOLD_MAX_PHASE_ERR_RAD), re-acquire strict after a real
+        // Acquire strict (< READY_MAX_PHASE_ERR), hold relaxed
+        // (< READY_HOLD_MAX_PHASE_ERR), re-acquire strict after a real
         // divergence. Bench 2026-07-07 (gate-dbg-1): the mid-band wobble
         // parks the filtered PLL error exactly on the strict threshold and
         // a non-hysteresed gate chattered torque off 54% of the hold.
-        let mut obs = BackEmfObserver::new(0.1, 0.0001, 0.01);
+        let mut obs = BackEmfObserver::new(ohms(0.1), henries(0.0001), webers(0.01));
         // Satisfy the other three criteria directly (their dynamics are
         // not under test here).
         obs.confidence = 1.0;
-        obs.velocity_pll = 200.0;
-        obs.valid_travel = READY_MIN_VALID_REVS * TAU;
+        obs.velocity_pll = erad_per_s(200.0);
+        obs.valid_travel = erad(READY_MIN_VALID_REVS * TAU);
 
         // Wobble-grade error before ever acquiring: NOT ready (strict).
-        obs.phase_err_filt = 0.3;
+        obs.phase_err_filt = erad(0.3);
         obs.refresh_readiness_err();
         assert!(!obs.is_ready(), "must not acquire above the strict bound");
 
         // Clean lock: acquires; latch advances as update()'s tail does.
-        obs.phase_err_filt = 0.1;
+        obs.phase_err_filt = erad(0.1);
         obs.refresh_readiness_err();
         assert!(obs.is_ready());
         obs.ready_latched = obs.is_ready();
 
         // Wobble pushes the error over the strict bound: readiness HELD.
-        obs.phase_err_filt = 0.3;
+        obs.phase_err_filt = erad(0.3);
         obs.refresh_readiness_err();
         assert!(
             obs.is_ready(),
@@ -2539,14 +2614,14 @@ mod tests {
         obs.ready_latched = obs.is_ready();
 
         // Real divergence: past the hold bound, readiness drops...
-        obs.phase_err_filt = READY_HOLD_MAX_PHASE_ERR_RAD + 0.1;
+        obs.phase_err_filt = READY_HOLD_MAX_PHASE_ERR + erad(0.1);
         obs.refresh_readiness_err();
         assert!(!obs.is_ready(), "a diverging PLL must still trip the gate");
         obs.ready_latched = obs.is_ready();
 
         // ...and wobble-grade error is no longer good enough: re-acquire
         // demands the strict bound again.
-        obs.phase_err_filt = 0.3;
+        obs.phase_err_filt = erad(0.3);
         obs.refresh_readiness_err();
         assert!(
             !obs.is_ready(),
@@ -2561,25 +2636,25 @@ mod tests {
         // chattering the 0.2 gate into a torque limit cycle). The
         // compensated error must excuse exactly that lag, capped so a
         // diverging PLL (huge apparent α̂, error → π/2) still trips.
-        let mut obs = BackEmfObserver::new(0.1, 0.0001, 0.01);
+        let mut obs = BackEmfObserver::new(ohms(0.1), henries(0.0001), webers(0.01));
         obs.confidence = 1.0;
-        obs.velocity_pll = 500.0;
-        obs.valid_travel = READY_MIN_VALID_REVS * TAU;
+        obs.velocity_pll = erad_per_s(500.0);
+        obs.valid_travel = erad(READY_MIN_VALID_REVS * TAU);
 
         // Spin-up: raw error 0.38 = the structural lag at this α̂ → ready.
-        obs.accel_filt = 7700.0; // α̂/ki = 0.385
-        obs.phase_err_filt = 0.38;
+        obs.accel_filt = erad_per_s2(7700.0); // α̂/ki = 0.385
+        obs.phase_err_filt = erad(0.38);
         obs.refresh_readiness_err();
         assert!(
             obs.is_ready(),
             "structural acceleration lag must not read as lock loss \
-             (residual {})",
+             (residual {:?})",
             obs.readiness_phase_err()
         );
 
         // Same α̂ but the error is far beyond the lag: divergence on top of
         // acceleration → the residual counts and the strict bound trips.
-        obs.phase_err_filt = 0.7;
+        obs.phase_err_filt = erad(0.7);
         obs.refresh_readiness_err();
         assert!(!obs.is_ready(), "error beyond the structural lag must trip");
 
@@ -2587,13 +2662,13 @@ mod tests {
         // keeps err_eff = err − 0.4 and a near-π/2 error still trips even
         // the relaxed hold bound.
         obs.ready_latched = true;
-        obs.accel_filt = 100_000.0; // uncapped excuse would be 5 rad
-        obs.phase_err_filt = 1.5;
+        obs.accel_filt = erad_per_s2(100_000.0); // uncapped excuse would be 5 rad
+        obs.phase_err_filt = erad(1.5);
         obs.refresh_readiness_err();
         assert!(
             !obs.is_ready(),
             "a diverging PLL must trip through the capped compensation \
-             (residual {})",
+             (residual {:?})",
             obs.readiness_phase_err()
         );
     }
@@ -2609,9 +2684,9 @@ mod tests {
 
     #[test]
     fn test_back_emf_observer_creation() {
-        let obs = BackEmfObserver::new(0.1, 0.0001, 0.01);
-        assert_eq!(obs.phase(), 0.0);
-        assert_eq!(obs.velocity(), 0.0);
+        let obs = BackEmfObserver::new(ohms(0.1), henries(0.0001), webers(0.01));
+        assert_eq!(obs.phase(), erad(0.0));
+        assert_eq!(obs.velocity(), erad_per_s(0.0));
         assert_eq!(obs.confidence(), 0.0);
     }
 
@@ -2625,11 +2700,15 @@ mod tests {
 
     #[test]
     fn test_observer_enum() {
-        let mut obs = Observer::BackEmf(BackEmfObserver::new(0.1, 0.0001, 0.01));
+        let mut obs = Observer::BackEmf(BackEmfObserver::new(
+            ohms(0.1),
+            henries(0.0001),
+            webers(0.01),
+        ));
         assert!(obs.is_configured());
         assert!(obs.phase().is_some());
 
         obs.reset();
-        assert_eq!(obs.phase(), Some(0.0));
+        assert_eq!(obs.phase(), Some(erad(0.0)));
     }
 }

@@ -4,6 +4,7 @@
 use super::types::DetectionError;
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
+use crate::units::{amps, erad, erad_per_s, volts};
 
 pub const MAX_BURST_SAMPLES: usize = 256;
 #[cfg(any(feature = "hfi-detect", all(feature = "embassy", feature = "runtime")))]
@@ -117,17 +118,17 @@ impl VoltageBurst {
     pub fn command<S: SinCos>(&self, index: usize) -> ControlMode {
         let (vd, vq) = self.injection::<S>(index);
         ControlMode::DirectVoltage {
-            vd: self.vd_hold + vd,
-            vq: self.vq_hold + vq,
-            angle_rad: self.angle,
+            vd: volts(self.vd_hold + vd),
+            vq: volts(self.vq_hold + vq),
+            angle: erad(self.angle),
         }
     }
 
     pub fn hold_mode(&self) -> ControlMode {
         ControlMode::OpenLoop {
-            angle_rad: self.angle,
-            current: self.hold_current,
-            velocity_rad_s: 0.0,
+            angle: erad(self.angle),
+            current: amps(self.hold_current),
+            velocity: erad_per_s(0.0),
             pi_gains: None,
         }
     }

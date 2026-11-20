@@ -122,8 +122,8 @@ pub(super) fn bind(
                 &weak,
                 &generation,
                 ControlMode::CurrentControl {
-                    iq_target,
-                    id_target,
+                    iq_target: oxifoc_core::units::amps(iq_target),
+                    id_target: oxifoc_core::units::amps(id_target),
                 },
                 "Starting...",
             );

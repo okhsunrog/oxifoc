@@ -2,6 +2,9 @@
 //!
 //! Defines which angle source to use and how to blend between sources.
 
+use crate::units::Sign;
+use crate::units::{ElectricPotential, ElectricalAngularVelocity};
+
 /// Phase source selection
 ///
 /// Specifies where the electrical angle comes from for FOC control.
@@ -50,23 +53,23 @@ pub enum PhaseSource {
     ///   open-loop recovery override.
     HallToObserver {
         /// Start blending (electrical rad/s)
-        blend_low: f32,
+        blend_low: ElectricalAngularVelocity,
         /// Full observer (electrical rad/s)
-        blend_high: f32,
+        blend_high: ElectricalAngularVelocity,
     },
 
     /// Encoder at low speed, transition to observer at high speed
     EncoderToObserver {
         /// Start blending (electrical rad/s)
-        blend_low: f32,
+        blend_low: ElectricalAngularVelocity,
         /// Full observer (electrical rad/s)
-        blend_high: f32,
+        blend_high: ElectricalAngularVelocity,
     },
 
     /// HFI at startup, transition to back-EMF observer
     HfiToObserver {
         /// Minimum velocity for observer (rad/s)
-        min_vel: f32,
+        min_vel: ElectricalAngularVelocity,
         /// Minimum observer confidence (0.0-1.0)
         min_confidence: f32,
     },
@@ -74,7 +77,7 @@ pub enum PhaseSource {
     /// HFI at startup, transition to encoder
     HfiToEncoder {
         /// Velocity threshold for switching (rad/s)
-        switch_vel: f32,
+        switch_vel: ElectricalAngularVelocity,
     },
 
     // =========================================================================
@@ -105,7 +108,7 @@ pub enum PhaseSource {
     HfiToObserverVolts {
         /// Drive-voltage threshold (V) above which the observer carries
         /// commutation alone. MESC default ≈ 5% of vbus, min 1.5 V.
-        toggle_v: f32,
+        toggle: ElectricPotential,
         /// Minimum observer confidence (0.0-1.0)
         min_confidence: f32,
     },
@@ -138,15 +141,15 @@ impl PhaseSource {
                 | Self::EncoderToObserver {
                     blend_low,
                     blend_high,
-                } => blend_low >= 0.0 && blend_high > blend_low,
+                } => blend_low.is_non_negative() && blend_high > blend_low,
                 Self::HfiToObserver {
                     min_vel,
                     min_confidence,
-                } => min_vel > 0.0 && (0.0..=1.0).contains(&min_confidence),
+                } => min_vel.is_positive() && (0.0..=1.0).contains(&min_confidence),
                 Self::HfiToObserverVolts { min_confidence, .. } => {
                     (0.0..=1.0).contains(&min_confidence)
                 }
-                Self::HfiToEncoder { switch_vel } => switch_vel > 0.0,
+                Self::HfiToEncoder { switch_vel } => switch_vel.is_positive(),
                 _ => true,
             }
     }
@@ -173,9 +176,9 @@ impl PhaseSource {
                 min_confidence,
             } => min_vel.is_finite() && min_confidence.is_finite(),
             Self::HfiToObserverVolts {
-                toggle_v,
+                toggle: toggle_v,
                 min_confidence,
-            } => toggle_v.is_finite() && toggle_v > 0.0 && min_confidence.is_finite(),
+            } => toggle_v.is_finite() && toggle_v.is_positive() && min_confidence.is_finite(),
             Self::HfiToEncoder { switch_vel } => switch_vel.is_finite(),
         }
     }

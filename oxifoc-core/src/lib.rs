@@ -115,6 +115,9 @@ pub mod isr_work;
 /// High-level motor driver combining FOC with sensors and PWM
 pub mod motor;
 
+/// Typed SI quantities (uom) for motor-model arithmetic
+pub mod units;
+
 /// Race-free clear of selected **rc_w0** status flags (STM32 `TIMx_SR` and
 /// friends: "write 0 to clear, writing 1 has no effect").
 ///
@@ -219,6 +222,7 @@ pub mod runtime;
 
 /// Field-Oriented Control algorithms
 pub mod foc {
+    use crate::units::AngleRepr;
     use core::f32::consts::TAU;
 
     /// Panic-free f32 clamp. Equivalent to `f32::clamp()` but without the
@@ -250,8 +254,13 @@ pub mod foc {
     /// above 2π and take the general path. On the F405 each float constant
     /// is a flash literal load that usually misses the 8-line ART data
     /// cache (PC profile 2026-11-14: 30–40 cycles per call before this).
+    #[inline(always)]
+    pub fn wrap_angle<A: AngleRepr>(angle: A) -> A {
+        A::from_radians(wrap_radians(angle.radians()))
+    }
+
     #[inline]
-    pub fn wrap_angle(angle: f32) -> f32 {
+    fn wrap_radians(angle: f32) -> f32 {
         if angle.to_bits() < TAU.to_bits() {
             return angle;
         }
@@ -333,8 +342,13 @@ pub mod foc {
     /// of the magnitude bits (NaN and infinities fall through), for the
     /// same flash-literal reason as [`wrap_angle`] (40–70 cycles per call
     /// before this).
+    #[inline(always)]
+    pub fn angle_difference<A: AngleRepr>(a: A, b: A) -> A {
+        A::from_radians(radians_difference(a.radians(), b.radians()))
+    }
+
     #[inline]
-    pub fn angle_difference(a: f32, b: f32) -> f32 {
+    fn radians_difference(a: f32, b: f32) -> f32 {
         let diff = a - b;
         if diff.to_bits() & 0x7fff_ffff < core::f32::consts::PI.to_bits() {
             return diff;
@@ -345,7 +359,14 @@ pub mod foc {
     /// Bench policy retaining the exact general-path boundary conventions.
     #[cfg(feature = "bench-hall-single-turn")]
     #[inline(always)]
-    pub fn angle_difference_single_turn(a: f32, b: f32) -> f32 {
+    pub fn angle_difference_single_turn<A: AngleRepr>(a: A, b: A) -> A {
+        let (a, b) = (a.radians(), b.radians());
+        A::from_radians(single_turn_difference(a, b))
+    }
+
+    #[cfg(feature = "bench-hall-single-turn")]
+    #[inline(always)]
+    fn single_turn_difference(a: f32, b: f32) -> f32 {
         let diff = a - b;
         let magnitude = diff.to_bits() & 0x7fff_ffff;
         if magnitude < core::f32::consts::PI.to_bits() {
@@ -370,7 +391,13 @@ pub mod foc {
 
     #[cfg(feature = "bench-hall-single-turn")]
     #[inline(always)]
-    pub fn wrap_angle_single_turn(angle: f32) -> f32 {
+    pub fn wrap_angle_single_turn<A: AngleRepr>(angle: A) -> A {
+        A::from_radians(single_turn_wrap(angle.radians()))
+    }
+
+    #[cfg(feature = "bench-hall-single-turn")]
+    #[inline(always)]
+    fn single_turn_wrap(angle: f32) -> f32 {
         if angle.to_bits() < TAU.to_bits() {
             return angle;
         }
@@ -402,7 +429,13 @@ pub mod foc {
     /// [`angle_difference`] bit for bit; other inputs keep the fallback.
     #[cfg(feature = "observer-turn")]
     #[inline(always)]
-    pub fn angle_difference_signed_minus_wrapped(a: f32, b: f32) -> f32 {
+    pub fn angle_difference_signed_minus_wrapped<A: AngleRepr>(a: A, b: A) -> A {
+        A::from_radians(signed_minus_wrapped(a.radians(), b.radians()))
+    }
+
+    #[cfg(feature = "observer-turn")]
+    #[inline(always)]
+    fn signed_minus_wrapped(a: f32, b: f32) -> f32 {
         let diff = a - b;
         let bits = diff.to_bits();
         let magnitude = bits & 0x7fff_ffff;

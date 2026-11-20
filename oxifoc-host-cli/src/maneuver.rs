@@ -184,10 +184,12 @@ impl Cmd {
     fn to_mode(&self) -> ControlMode {
         match *self {
             Self::Start { iq, id } => ControlMode::CurrentControl {
-                iq_target: iq,
-                id_target: id,
+                iq_target: oxifoc_core::units::amps(iq),
+                id_target: oxifoc_core::units::amps(id),
             },
-            Self::Velocity { rad_s } => ControlMode::VelocityControl { target_vel: rad_s },
+            Self::Velocity { rad_s } => ControlMode::VelocityControl {
+                target_vel: oxifoc_core::units::erad_per_s(rad_s),
+            },
             Self::Throttle { fraction } => ControlMode::Throttle { fraction },
             Self::Openloop {
                 current,
@@ -195,15 +197,15 @@ impl Cmd {
                 angle,
                 pi_gains,
             } => ControlMode::OpenLoop {
-                angle_rad: angle,
-                current,
-                velocity_rad_s: velocity,
+                angle: oxifoc_core::units::erad(angle),
+                current: oxifoc_core::units::amps(current),
+                velocity: oxifoc_core::units::erad_per_s(velocity),
                 pi_gains,
             },
             Self::Voltage { vd, vq, angle } => ControlMode::DirectVoltage {
-                vd,
-                vq,
-                angle_rad: angle,
+                vd: oxifoc_core::units::volts(vd),
+                vq: oxifoc_core::units::volts(vq),
+                angle: oxifoc_core::units::erad(angle),
             },
             Self::Stop {} => ControlMode::Stopped,
             Self::Coast {} => ControlMode::Coast,
@@ -303,7 +305,7 @@ fn check_effective_limits(snapshot: &ConfigSnapshot, m: &Maneuver) -> Result<()>
     let Some(ConfigValue::CurrentLimits(limits)) = &snapshot.effective else {
         bail!("controller did not report effective current limits");
     };
-    let max_iq = limits.max_iq_a;
+    let max_iq = limits.max_iq.value;
     if !snapshot.valid || !max_iq.is_finite() || max_iq <= 0.0 {
         bail!("controller reported invalid effective current limits");
     }
@@ -312,7 +314,7 @@ fn check_effective_limits(snapshot: &ConfigSnapshot, m: &Maneuver) -> Result<()>
             && demand > max_iq
         {
             bail!(
-                "step {i} demands {demand:.1} A > device max_iq_a {max_iq:.1} A \
+                "step {i} demands {demand:.1} A > device max_iq {max_iq:.1} A \
                  (config set current-limits, or --force to let the device clamp)"
             );
         }
@@ -550,7 +552,7 @@ mod tests {
         .unwrap();
         let mut snapshot = ConfigSnapshot {
             effective: Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                max_iq_a: 3.0,
+                max_iq: oxifoc_core::units::amps(3.0),
                 ..CurrentLimitsConfig::AUTO
             })),
             default: None,
@@ -729,7 +731,7 @@ mod tests {
         else {
             panic!("wrong control mode");
         };
-        assert_eq!(current, 0.6);
+        assert_eq!(current.value, 0.6);
         assert_eq!(pi_gains, Some((0.01, 10.0)));
         let invalid = Cmd::Openloop {
             current: 0.6,

@@ -1,19 +1,20 @@
 //! One prepared model for boot and live configuration.
 
 use super::{CurrentLimits, FocDriver, MotorModelError};
-use crate::foc::controller::{Decoupling, FocController};
+use crate::foc::controller::{CurrentKi, CurrentKp, Decoupling, FocController};
 use crate::foc::phase::{PhaseProvider, PhaseSource, PreparedPhaseModel};
 use crate::foc::pwm::{PhasePwm, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::storage::RuntimeConfig;
 use crate::types::VoltageFeedforwardMode;
+use crate::units::volts;
 
 /// Model construction can evaluate filter coefficients; installing this value
 /// only replaces prepared state and scalar settings. Keep it out of ISR queues.
 pub struct PreparedMotorModel {
     phase: Option<PreparedPhaseModel>,
-    gains: (f32, f32),
+    gains: (CurrentKp, CurrentKi),
     decoupling: Option<Decoupling>,
     voltage_feedforward_mode: VoltageFeedforwardMode,
     limits: CurrentLimits,
@@ -38,10 +39,10 @@ impl PreparedMotorModel {
 
     pub fn from_config(config: &RuntimeConfig, vbus: f32, board_max_current_a: f32) -> Self {
         let controller =
-            FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(config, vbus);
+            FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(config, volts(vbus));
         let motor = config.motor_params.as_ref().filter(|mp| mp.is_valid());
         Self {
-            phase: Some(PreparedPhaseModel::from_config(config, vbus)),
+            phase: Some(PreparedPhaseModel::from_config(config, volts(vbus))),
             gains: controller.id_pi.gains(),
             decoupling: controller.decoupling(),
             voltage_feedforward_mode: controller.voltage_feedforward_mode(),

@@ -4,6 +4,7 @@ use super::PhaseManager;
 use crate::foc::sensors::AngleSensor;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
+use crate::units::{ConstZero, Time};
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Update open-loop override state (advance angle, decrement timer).
@@ -14,13 +15,13 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// the override, because dropping to a dead sensor at its expiry would
     /// be strictly worse than continuing open loop (VESC keeps its
     /// observer-override running for the same reason).
-    pub(super) fn update_open_loop_override(&mut self, dt: f32) {
+    pub(super) fn update_open_loop_override(&mut self, dt: Time) {
         if self.open_loop_override.active {
             // Advance angle based on velocity
             self.open_loop_override.angle += self.open_loop_override.velocity * dt;
             self.open_loop_override.angle = wrap_angle(self.open_loop_override.angle);
 
-            self.open_loop_override.timer = (self.open_loop_override.timer - dt).max(0.0);
+            self.open_loop_override.timer = (self.open_loop_override.timer - dt).max(Time::ZERO);
         }
     }
 }

@@ -47,6 +47,10 @@ use crate::motor::failsafe::{FailsafePolicy, FailsafeTerminal};
 use crate::state::CMD_CHANNEL;
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
+use crate::units::{
+    amps, erad, erad_per_s, erad_per_s2, henries, ohms, seconds, volts, watts, webers,
+};
+use crate::units::{per_second, quantity};
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 #[cfg(feature = "virtual-motor")]
@@ -54,17 +58,25 @@ use core::f32::consts::{FRAC_PI_3, FRAC_PI_6};
 
 /// A driver for exercising the torque grant, which reads no plant
 /// state — only the limits, the derating, the motor model and vbus.
+/// PI tuning as the protocol carries it (plain kp, ki).
+fn pi_gains(
+    pi: &crate::foc::pi_controller::PIController<crate::foc::controller::CurrentPi>,
+) -> (f32, f32) {
+    let (kp, ki) = pi.gains();
+    (kp.value, ki.value)
+}
+
 fn grant_driver(
     limits: CurrentLimits,
     scales: DeratingScales,
 ) -> FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSensor>> {
-    let mut foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let mut foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
-        ld_h: 22e-6,
-        lq_h: 22e-6,
-        flux_linkage_wb: 2.92e-3,
-        resistance_ohm: 0.036,
+        ld: henries(22e-6),
+        lq: henries(22e-6),
+        flux_linkage: webers(2.92e-3),
+        resistance: ohms(0.036),
     }));
     let mut driver = FocDriver::new(
         foc,
@@ -90,7 +102,7 @@ fn detection_freezes_only_inverter_correction_and_still_trips_on_real_current() 
     driver.controller.set_dead_time_comp_factor(0.0072);
     driver
         .controller
-        .set_dead_time_comp_linear_region(1.0)
+        .set_dead_time_comp_linear_region(amps(1.0))
         .unwrap();
     driver.current_limits.overcurrent_threshold_a = 6.0;
     driver.current_sensor.currents = (1.0, -0.5, -0.5);
@@ -103,13 +115,13 @@ fn detection_freezes_only_inverter_correction_and_still_trips_on_real_current() 
         "ripple/noise cannot modulate frozen correction"
     );
     assert!(
-        (second.id - 0.2).abs() < 1e-6,
+        (second.id.value - 0.2).abs() < 1e-6,
         "telemetry still measures actual current"
     );
     driver.set_mode(ControlMode::DirectVoltage {
-        vd: -0.1,
-        vq: 0.003,
-        angle_rad: 0.0,
+        vd: volts(-0.1),
+        vq: volts(0.003),
+        angle: erad(0.0),
     });
     assert!(driver.detection_compensation_current.is_none());
     assert_ne!(driver.step(150).unwrap().duties, first.duties);
@@ -278,7 +290,7 @@ fn bridge_rearm_discards_old_current_pi_but_running_retargets_preserve_it() {
     for off in [ControlMode::Stopped, ControlMode::Coast] {
         for step_while_off in [false, true] {
             let mut driver = FocDriver::new(
-                FocController::<SvpwmModulator>::new(24.0),
+                FocController::<SvpwmModulator>::new(volts(24.0)),
                 GatedPwm {
                     enabled: false,
                     applied: [0; 3],
@@ -289,15 +301,15 @@ fn bridge_rearm_discards_old_current_pi_but_running_retargets_preserve_it() {
                 PhaseManager::sensorless(),
                 1.0 / 20_000.0,
             );
-            driver.phase_mut().set_manual_angle(0.0);
+            driver.phase_mut().set_manual_angle(erad(0.0));
             driver.phase_mut().set_source(PhaseSource::Manual).unwrap();
             let drive = ControlMode::CurrentControl {
-                iq_target: 1.0,
-                id_target: 0.0,
+                iq_target: amps(1.0),
+                id_target: amps(0.0),
             };
             driver.set_mode(drive);
-            driver.controller_mut().id_pi.preload(0.5);
-            driver.controller_mut().iq_pi.preload(0.75);
+            driver.controller_mut().id_pi.preload(volts(0.5));
+            driver.controller_mut().iq_pi.preload(volts(0.75));
             driver.set_mode(off);
             if step_while_off {
                 driver.step(1_000).unwrap();
@@ -305,25 +317,25 @@ fn bridge_rearm_discards_old_current_pi_but_running_retargets_preserve_it() {
             driver.set_mode(drive);
             assert_eq!(
                 driver.controller().id_pi.get_integral(),
-                0.0,
+                volts(0.0),
                 "{off:?}, stepped={step_while_off}"
             );
             assert_eq!(
                 driver.controller().iq_pi.get_integral(),
-                0.0,
+                volts(0.0),
                 "{off:?}, stepped={step_while_off}"
             );
             assert!(driver.pwm().enabled);
 
             // A normal command update with continuous actuation must retain PI.
-            driver.controller_mut().id_pi.preload(0.5);
-            driver.controller_mut().iq_pi.preload(0.75);
+            driver.controller_mut().id_pi.preload(volts(0.5));
+            driver.controller_mut().iq_pi.preload(volts(0.75));
             driver.set_mode(ControlMode::CurrentControl {
-                iq_target: 0.5,
-                id_target: 0.0,
+                iq_target: amps(0.5),
+                id_target: amps(0.0),
             });
-            assert_eq!(driver.controller().id_pi.get_integral(), 0.5);
-            assert_eq!(driver.controller().iq_pi.get_integral(), 0.75);
+            assert_eq!(driver.controller().id_pi.get_integral(), volts(0.5));
+            assert_eq!(driver.controller().iq_pi.get_integral(), volts(0.75));
         }
     }
 }
@@ -334,7 +346,7 @@ fn bridge_rearm_discards_old_current_pi_but_running_retargets_preserve_it() {
 #[test]
 fn driving_modes_reenable_the_bridge_after_coast_and_stop() {
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator>::new(24.0),
+        FocController::<SvpwmModulator>::new(volts(24.0)),
         GatedPwm {
             enabled: false,
             applied: [0; 3],
@@ -345,11 +357,11 @@ fn driving_modes_reenable_the_bridge_after_coast_and_stop() {
         PhaseManager::sensorless(),
         1.0 / 20_000.0,
     );
-    driver.phase_mut().set_manual_angle(0.0);
+    driver.phase_mut().set_manual_angle(erad(0.0));
     driver.phase_mut().set_source(PhaseSource::Manual).unwrap();
     let drive = ControlMode::CurrentControl {
-        iq_target: 2.0,
-        id_target: 0.0,
+        iq_target: amps(2.0),
+        id_target: amps(0.0),
     };
     for (step, from) in [ControlMode::Stopped, ControlMode::Coast]
         .into_iter()
@@ -425,7 +437,7 @@ fn topology_driver(
     currents: (f32, f32, f32),
 ) -> FocDriver<GatedPwm, TopologySensor, FeedbackProbe> {
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator>::new(24.0),
+        FocController::<SvpwmModulator>::new(volts(24.0)),
         GatedPwm {
             enabled: false,
             applied: [0; 3],
@@ -447,19 +459,19 @@ fn topology_driver(
 fn feedback_modes() -> [ControlMode; 3] {
     [
         ControlMode::CurrentControl {
-            id_target: 3.0,
-            iq_target: 0.0,
+            id_target: amps(3.0),
+            iq_target: amps(0.0),
         },
         ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current: 3.0,
-            velocity_rad_s: 0.0,
+            angle: erad(0.0),
+            current: amps(3.0),
+            velocity: erad_per_s(0.0),
             pi_gains: None,
         },
         ControlMode::DirectVoltage {
-            vd: 0.1,
-            vq: 0.0,
-            angle_rad: 0.0,
+            vd: volts(0.1),
+            vq: volts(0.0),
+            angle: erad(0.0),
         },
     ]
 }
@@ -475,12 +487,12 @@ fn three_shunt_feedback_rejects_common_mode_and_feeds_observers() {
             .step(0)
             .expect("common-mode error must not become dq overcurrent");
         assert_eq!(
-            (output.ia, output.ib, output.ic),
+            (output.ia.value, output.ib.value, output.ic.value),
             currents,
             "retain raw phases for protection"
         );
-        assert!((output.id - 3.0).abs() < 1e-5);
-        assert!(output.iq.abs() < 1e-5);
+        assert!((output.id.value - 3.0).abs() < 1e-5);
+        assert!(output.iq.value.abs() < 1e-5);
         assert_eq!(
             (driver.phase().input.i_alpha, driver.phase().input.i_beta),
             (output.i_alpha, output.i_beta)
@@ -556,12 +568,12 @@ fn raw_phase_protection_survives_zero_sequence_rejection() {
     // Pure common mode projects to zero, but each raw phase exceeds ABS.
     let mut driver = topology_driver(CurrentSenseTopology::ThreeShunt, (7.0, 7.0, 7.0));
     driver.set_mode(ControlMode::DirectVoltage {
-        vd: 0.1,
-        vq: 0.0,
-        angle_rad: 0.0,
+        vd: volts(0.1),
+        vq: volts(0.0),
+        angle: erad(0.0),
     });
     let out = run_foc_cycle(&state, &registry, &mut driver, 24.0, 0, &board).unwrap();
-    assert_eq!((out.id, out.iq), (0.0, 0.0));
+    assert_eq!((out.id.value, out.iq.value), (0.0, 0.0));
     assert!(registry.has_category(FaultCategory::OverCurrent));
     run_foc_cycle(&state, &registry, &mut driver, 24.0, 50, &board);
     assert!(
@@ -602,7 +614,7 @@ fn coast_observer_tracks_measured_bemf() {
     const BASE_BOARD: BoardConfig = BoardConfig {
         current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
         calib: crate::types::BoardCalib {
-            shunt_ohms: 0.0005,
+            shunt_ohms: ohms(0.0005),
             amp_gain: 10.0,
             adc_vref_mv: 3300,
             adc_max_counts: 4095,
@@ -637,9 +649,13 @@ fn coast_observer_tracks_measured_bemf() {
 
     let build = |board: &BoardConfig| {
         let mut pm = PhaseManager::sensorless();
-        pm.set_observer(Observer::BackEmf(BackEmfObserver::new(r, l, lambda)));
+        pm.set_observer(Observer::BackEmf(BackEmfObserver::new(
+            ohms(r),
+            henries(l),
+            webers(lambda),
+        )));
         let mut d = FocDriver::new(
-            FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+            FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
             MockPwm { duties: [0; 3] },
             MockCurrentSensor {
                 currents: (0.0, 0.0, 0.0),
@@ -677,7 +693,8 @@ fn coast_observer_tracks_measured_bemf() {
 
     let obs = sensing.phase().observer();
     assert!(
-        (obs.velocity().unwrap_or(0.0) - omega).abs() < 0.05 * omega,
+        (obs.velocity().unwrap_or(erad_per_s(0.0)) - erad_per_s(omega)).abs()
+            < erad_per_s(0.05 * omega),
         "coast observer velocity {:?} did not lock to {omega}",
         obs.velocity()
     );
@@ -689,7 +706,7 @@ fn coast_observer_tracks_measured_bemf() {
     // Fed 0 V in Coast (commanded path), it integrates no flux — velocity
     // stays at standstill, well below the observer's readiness floor.
     assert!(
-        blind_obs.velocity().unwrap_or(0.0).abs() < 30.0,
+        blind_obs.velocity().unwrap_or(erad_per_s(0.0)).abs() < erad_per_s(30.0),
         "no-sensing board must not track from phase samples, got {:?}",
         blind_obs.velocity()
     );
@@ -813,8 +830,8 @@ fn process_commands_switches_phase_source() {
         MotorCommandOutcome::AlreadyApplied
     );
     let drive = ControlMode::CurrentControl {
-        iq_target: 0.1,
-        id_target: 0.0,
+        iq_target: amps(0.1),
+        id_target: amps(0.0),
     };
     assert_eq!(
         send(11, 3, MotorCommand::SetMode(drive)),
@@ -881,7 +898,7 @@ fn process_commands_rejects_non_finite_payloads() {
     let state: CriticalSectionMutex<RefCell<MotorControlState>> =
         CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
     let registry: FaultRegistry<TestFault> = FaultRegistry::new();
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -895,8 +912,8 @@ fn process_commands_rejects_non_finite_payloads() {
 
     // NaN current target must be dropped — driver stays Stopped.
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-        iq_target: f32::NAN,
-        id_target: 0.0,
+        iq_target: amps(f32::NAN),
+        id_target: amps(0.0),
     }));
     process_commands(&state, &mut driver, &registry);
     assert_eq!(
@@ -907,9 +924,9 @@ fn process_commands_rejects_non_finite_payloads() {
 
     // Infinite direct voltage likewise.
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::DirectVoltage {
-        vd: f32::INFINITY,
-        vq: 0.0,
-        angle_rad: 0.0,
+        vd: volts(f32::INFINITY),
+        vq: volts(0.0),
+        angle: erad(0.0),
     }));
     process_commands(&state, &mut driver, &registry);
     assert_eq!(driver.mode(), ControlMode::Stopped);
@@ -929,24 +946,24 @@ fn process_commands_rejects_non_finite_payloads() {
 
     // A finite command still works.
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-        iq_target: 1.0,
-        id_target: 0.0,
+        iq_target: amps(1.0),
+        id_target: amps(0.0),
     }));
     process_commands(&state, &mut driver, &registry);
     assert_eq!(
         driver.mode(),
         ControlMode::CurrentControl {
-            iq_target: 1.0,
-            id_target: 0.0
+            iq_target: amps(1.0),
+            id_target: amps(0.0)
         }
     );
 
     // Permanent tuning through the real command path must supersede a bench
     // override: the next Stop cannot restore the previous working gains.
     driver.set_mode(ControlMode::OpenLoop {
-        angle_rad: 0.0,
-        current: 1.0,
-        velocity_rad_s: 0.0,
+        angle: erad(0.0),
+        current: amps(1.0),
+        velocity: erad_per_s(0.0),
         pi_gains: Some((0.01, 10.0)),
     });
     CMD_CHANNEL
@@ -956,8 +973,8 @@ fn process_commands_rejects_non_finite_payloads() {
         .try_send(DriverCommand::SetMode(ControlMode::Stopped))
         .unwrap();
     process_commands(&state, &mut driver, &registry);
-    assert_eq!(driver.controller().id_pi.gains(), (0.7, 70.0));
-    assert_eq!(driver.controller().iq_pi.gains(), (0.7, 70.0));
+    assert_eq!(pi_gains(&driver.controller().id_pi), (0.7, 70.0));
+    assert_eq!(pi_gains(&driver.controller().iq_pi), (0.7, 70.0));
 }
 
 /// Motor start must be refused while a flash operation is in flight:
@@ -993,7 +1010,7 @@ fn process_commands_blocks_start_during_flash_op() {
     let state: CriticalSectionMutex<RefCell<MotorControlState>> =
         CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
     let registry: FaultRegistry<TestFault> = FaultRegistry::new();
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -1006,8 +1023,8 @@ fn process_commands_blocks_start_during_flash_op() {
     critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
 
     let run_cmd = DriverCommand::SetMode(ControlMode::CurrentControl {
-        iq_target: 1.0,
-        id_target: 0.0,
+        iq_target: amps(1.0),
+        id_target: amps(0.0),
     });
 
     // Flash op in flight: the start must be refused.
@@ -1032,8 +1049,8 @@ fn process_commands_blocks_start_during_flash_op() {
     assert_eq!(
         driver.mode(),
         ControlMode::CurrentControl {
-            iq_target: 1.0,
-            id_target: 0.0
+            iq_target: amps(1.0),
+            id_target: amps(0.0)
         }
     );
 }
@@ -1052,7 +1069,7 @@ fn internal_stops_preserve_the_failsafe_latch() {
     use crate::foc::phase::PhaseManager;
     use crate::foc::trig::LibmSinCos;
 
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -1111,7 +1128,7 @@ fn link_loss_arms_failsafe_policy() {
     let state: CriticalSectionMutex<RefCell<MotorControlState>> =
         CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
     let registry: FaultRegistry<TestFault> = FaultRegistry::new();
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -1129,8 +1146,8 @@ fn link_loss_arms_failsafe_policy() {
     // Link up, start running.
     critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-        iq_target: 2.0,
-        id_target: 0.0,
+        iq_target: amps(2.0),
+        id_target: amps(0.0),
     }));
     process_commands(&state, &mut driver, &registry);
     assert!(!driver.failsafe_active());
@@ -1149,8 +1166,8 @@ fn link_loss_arms_failsafe_policy() {
     critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
     assert!(driver.failsafe_latched());
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-        iq_target: 5.0,
-        id_target: 0.0,
+        iq_target: amps(5.0),
+        id_target: amps(0.0),
     }));
     process_commands(&state, &mut driver, &registry);
     assert!(
@@ -1168,8 +1185,8 @@ fn link_loss_arms_failsafe_policy() {
 
     // …and a fresh running command is accepted again.
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-        iq_target: 2.0,
-        id_target: 0.0,
+        iq_target: amps(2.0),
+        id_target: amps(0.0),
     }));
     process_commands(&state, &mut driver, &registry);
     assert!(matches!(driver.mode(), ControlMode::CurrentControl { .. }));
@@ -1182,7 +1199,7 @@ fn link_loss_arms_failsafe_policy() {
 fn deadman_exempts_bench_modes() {
     use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
 
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -1201,15 +1218,15 @@ fn deadman_exempts_bench_modes() {
 
     for mode in [
         ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current: 3.0,
-            velocity_rad_s: 0.0,
+            angle: erad(0.0),
+            current: amps(3.0),
+            velocity: erad_per_s(0.0),
             pi_gains: None,
         },
         ControlMode::DirectVoltage {
-            vd: 1.0,
-            vq: 0.0,
-            angle_rad: 0.0,
+            vd: volts(1.0),
+            vq: volts(0.0),
+            angle: erad(0.0),
         },
     ] {
         driver.set_mode(mode);
@@ -1220,8 +1237,8 @@ fn deadman_exempts_bench_modes() {
     }
 
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 2.0,
-        id_target: 0.0,
+        iq_target: amps(2.0),
+        id_target: amps(0.0),
     });
     assert!(
         driver.deadman_expired(1_000_000),
@@ -1258,7 +1275,7 @@ fn safe_off_floats_bridge_immediately() {
         }
     }
 
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         OffPwm { enabled: true },
@@ -1270,8 +1287,8 @@ fn safe_off_floats_bridge_immediately() {
     );
 
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 1.0,
-        id_target: 0.0,
+        iq_target: amps(1.0),
+        id_target: amps(0.0),
     });
     assert!(driver.pwm().enabled, "a running mode arms the bridge");
 
@@ -1293,8 +1310,8 @@ fn safe_off_floats_bridge_immediately() {
 
     driver.acknowledge_failsafe();
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 1.0,
-        id_target: 0.0,
+        iq_target: amps(1.0),
+        id_target: amps(0.0),
     });
     driver.emergency_stop();
     assert!(!driver.pwm().enabled);
@@ -1351,7 +1368,7 @@ fn current_offset_calibration_applies_then_floats() {
     }
 
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
         CalibrationPwm::default(),
         CalibrationSensor {
             offsets: (0.0, 0.0, 0.0),
@@ -1382,7 +1399,7 @@ fn current_offset_calibration_applies_then_floats() {
 #[test]
 fn all_phase_offset_requires_explicit_stationary_confirmation() {
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
         MockPwm { duties: [0; 3] },
         MockCurrentSensor {
             currents: (0.0, 0.0, 0.0),
@@ -1434,13 +1451,13 @@ fn brake_speed_gated_and_survives_link_loss() {
     }
     impl PhaseProvider for MockPhase {
         fn rotor_velocity(&self) -> Option<crate::foc::phase::RotorVelocityEstimate> {
-            crate::foc::phase::RotorVelocityEstimate::new(self.vel)
+            crate::foc::phase::RotorVelocityEstimate::new(erad_per_s(self.vel))
         }
 
         fn get(&self) -> PhaseOutput {
             PhaseOutput {
-                angle: 0.0,
-                velocity: self.vel,
+                angle: erad(0.0),
+                velocity: erad_per_s(self.vel),
             }
         }
         fn update(&mut self, _input: &PhaseInput, _now_ticks: u64) {}
@@ -1449,7 +1466,7 @@ fn brake_speed_gated_and_survives_link_loss() {
     let state: CriticalSectionMutex<RefCell<MotorControlState>> =
         CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
     let registry: FaultRegistry<TestFault> = FaultRegistry::new();
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -1462,8 +1479,8 @@ fn brake_speed_gated_and_survives_link_loss() {
 
     critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
     let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-        iq_target: 2.0,
-        id_target: 0.0,
+        iq_target: amps(2.0),
+        id_target: amps(0.0),
     }));
     process_commands(&state, &mut driver, &registry);
 
@@ -1504,12 +1521,12 @@ fn config_limits_clamp_to_hardware_ceiling() {
     // to the board defaults instead of disabling protection.
     let hw_max = 10.0;
     let cfg = |iq: f32, ph: f32, bus_in: f32, bus_regen: f32| CurrentLimitsConfig {
-        max_iq_a: iq,
-        max_brake_a: 0.0,
-        max_phase_current_a: ph,
-        bus_in_max_a: bus_in,
-        bus_regen_max_a: bus_regen,
-        max_dissipation_w: 0.0,
+        max_iq: amps(iq),
+        max_brake: amps(0.0),
+        max_phase_current: amps(ph),
+        bus_in_max: amps(bus_in),
+        bus_regen_max: amps(bus_regen),
+        max_dissipation: watts(0.0),
     };
 
     // Normal config below the ceiling: passes through.
@@ -1545,7 +1562,7 @@ fn config_limits_clamp_to_hardware_ceiling() {
     // what it buys); unset, negative or NaN is off.
     let dissipation = |v: f32| {
         let c = CurrentLimitsConfig {
-            max_dissipation_w: v,
+            max_dissipation: watts(v),
             ..cfg(5.0, 8.0, -1.0, -1.0)
         };
         CurrentLimits::from_config_clamped(&c, hw_max, 0.0).max_dissipation_w
@@ -1570,12 +1587,12 @@ fn cross_field_headroom_enforced() {
     let hw_max = 80.0;
     let l = CurrentLimits::from_config_clamped(
         &CurrentLimitsConfig {
-            max_iq_a: 40.0,
-            max_brake_a: 0.0,
-            max_phase_current_a: 40.0,
-            bus_in_max_a: -1.0,
-            bus_regen_max_a: -1.0,
-            max_dissipation_w: 0.0,
+            max_iq: amps(40.0),
+            max_brake: amps(0.0),
+            max_phase_current: amps(40.0),
+            bus_in_max: amps(-1.0),
+            bus_regen_max: amps(-1.0),
+            max_dissipation: watts(0.0),
         },
         hw_max,
         0.0,
@@ -1599,12 +1616,12 @@ fn cross_field_headroom_enforced() {
 fn rating_caps_operational_limits() {
     let hw_max = 30.0;
     let cfg = |iq: f32, phase: f32| CurrentLimitsConfig {
-        max_iq_a: iq,
-        max_brake_a: 0.0,
-        max_phase_current_a: phase,
-        bus_in_max_a: -1.0,
-        bus_regen_max_a: -1.0,
-        max_dissipation_w: 0.0,
+        max_iq: amps(iq),
+        max_brake: amps(0.0),
+        max_phase_current: amps(phase),
+        bus_in_max: amps(-1.0),
+        bus_regen_max: amps(-1.0),
+        max_dissipation: watts(0.0),
     };
     let rating = 10.0;
 
@@ -1664,7 +1681,7 @@ fn rating_caps_operational_limits() {
 fn bus_limit_clamps_iq() {
     use crate::foc::trig::LibmSinCos;
 
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -1709,7 +1726,7 @@ fn bus_limit_uses_final_pwm_when_deadtime_compensation_reverses_pi_voltage_sign(
     use crate::foc::trig::{LibmSinCos, SinCos};
 
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
         MockPwm { duties: [0; 3] },
         MockCurrentSensor {
             currents: (0.0, 0.0, 0.0),
@@ -1722,37 +1739,37 @@ fn bus_limit_uses_final_pwm_when_deadtime_compensation_reverses_pi_voltage_sign(
     driver.controller.set_dead_time_comp_factor(0.02);
     driver
         .controller
-        .set_dead_time_comp_linear_region(1.0)
+        .set_dead_time_comp_linear_region(amps(1.0))
         .unwrap();
     for direction in [-1.0, 1.0] {
         for degrees in (0..360).step_by(30) {
             let angle = (degrees as f32).to_radians();
             let (sin, cos) = LibmSinCos::sin_cos(angle);
             let iq = 0.6 * direction;
-            let (alpha, beta) = transforms::inverse_park(0.0, iq, sin, cos);
+            let (alpha, beta) = transforms::inverse_park(amps(0.0), amps(iq), sin, cos);
             let currents = transforms::inverse_clarke(alpha, beta);
             driver.controller.reset();
             let out = driver.controller.step_with_injection(
                 currents,
-                angle,
-                0.0,
-                0.0,
-                iq,
-                0.0,
-                -0.05 * direction,
+                erad(angle),
+                erad_per_s(0.0),
+                amps(0.0),
+                amps(iq),
+                volts(0.0),
+                volts(-0.05 * direction),
                 10_000,
-                0.00005,
+                seconds(0.00005),
             );
             assert!(
-                out.vq * iq < 0.0,
+                out.vq.value * iq < 0.0,
                 "pre-compensation voltage looks regenerative"
             );
             let (ia, ib, ic) = currents;
             let [a, b, c] = out.duties.map(f32::from);
             let duty_current = (a * ia + b * ib + c * ic) / 10_000.0;
             let mod_q = driver.controller.bus_mod_q();
-            assert!((mod_q.coefficient() * iq - duty_current).abs() < 1e-6);
-            assert!(duty_current > 0.0);
+            assert!((mod_q.coefficient() * amps(iq) - duty_current).abs() < amps(1e-6));
+            assert!(crate::units::Sign::is_positive(&duty_current));
             driver.update_bus_mod_q(mod_q, 0.002);
             assert_eq!(
                 driver.clamp_iq_for_bus(iq),
@@ -1777,7 +1794,7 @@ fn bus_limit_uses_final_pwm_when_deadtime_compensation_reverses_pi_voltage_sign(
 fn direct_voltage_trips_overcurrent() {
     use crate::foc::trig::LibmSinCos;
 
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -1790,9 +1807,9 @@ fn direct_voltage_trips_overcurrent() {
     );
     driver.set_current_limits(CurrentLimits::from_max_current(10.0));
     driver.set_mode(ControlMode::DirectVoltage {
-        vd: 1.0,
-        vq: 0.0,
-        angle_rad: 0.0,
+        vd: volts(1.0),
+        vq: volts(0.0),
+        angle: erad(0.0),
     });
 
     let res = driver.step(0);
@@ -1866,15 +1883,15 @@ fn current_control_drives_hfi_estimator() {
     // limits — give the test the board-scale ceiling explicitly.
     driver.set_current_limits(CurrentLimits::from_max_current(40.0));
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 0.0,
-        id_target: 0.0,
+        iq_target: amps(0.0),
+        id_target: amps(0.0),
     });
 
     let mut out = VirtualMotorOutput::default();
     for step in 1..20_000u64 {
         driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
         let telem = driver.step(step * 50).expect("FOC step failed");
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
     }
 
     // Full-circle match: the polarity probe must have corrected the
@@ -1940,15 +1957,15 @@ fn sensorless_cold_start_ramps_then_hands_off() {
     motor.set_angle(0.5);
 
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        params.lambda,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        webers(params.lambda),
     )));
     mgr.set_source(PhaseSource::Observer).unwrap();
 
@@ -1965,8 +1982,8 @@ fn sensorless_cold_start_ramps_then_hands_off() {
 
     // Torque from standstill → the cold-start sequence engages.
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 6.0,
-        id_target: 0.0,
+        iq_target: amps(6.0),
+        id_target: amps(0.0),
     });
     assert!(
         driver.phase().is_starting(),
@@ -1980,7 +1997,7 @@ fn sensorless_cold_start_ramps_then_hands_off() {
     for step in 1..40_000u64 {
         driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
         let telem = driver.step(step * 50).expect("FOC step failed");
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
     }
 
     // Handed off (not stuck open-loop), spinning forward, observer locked.
@@ -1997,10 +2014,10 @@ fn sensorless_cold_start_ramps_then_hands_off() {
         "motor must spin up forward, got omega_e {}",
         out.omega_e
     );
-    let err = angle_difference(driver.phase().get().angle, wrap_angle(out.angle_rad)).abs();
+    let err = angle_difference(driver.phase().get().angle, wrap_angle(erad(out.angle_rad))).abs();
     assert!(
-        err < 0.25,
-        "observer angle {} vs rotor {} (err {} rad)",
+        err < erad(0.25),
+        "observer angle {:?} vs rotor {:?} (err {:?} rad)",
         driver.phase().get().angle,
         wrap_angle(out.angle_rad),
         err
@@ -2042,15 +2059,15 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
     motor.set_velocity(200.0);
 
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        params.lambda,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        webers(params.lambda),
     )));
     mgr.set_source(PhaseSource::Observer).unwrap();
 
@@ -2067,8 +2084,8 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
 
     // Torque from rest (driver is Stopped) while the rotor spins → probe.
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 4.0,
-        id_target: 0.0,
+        iq_target: amps(4.0),
+        id_target: amps(0.0),
     });
 
     let mut out = VirtualMotorOutput::default();
@@ -2076,7 +2093,7 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
     for step in 1..200u64 {
         driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
         let telem = driver.step(step * 50).expect("FOC step failed");
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         if caught_cycle.is_none() && !driver.phase().is_starting() {
             caught_cycle = Some(step);
         }
@@ -2099,10 +2116,10 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
         "rotor must keep spinning, got {}",
         out.omega_e
     );
-    let err = angle_difference(driver.phase().get().angle, wrap_angle(out.angle_rad)).abs();
+    let err = angle_difference(driver.phase().get().angle, wrap_angle(erad(out.angle_rad))).abs();
     assert!(
-        err < 0.3,
-        "observer angle {} vs rotor {} (err {err} rad)",
+        err < erad(0.3),
+        "observer angle {:?} vs rotor {:?} (err {err:?} rad)",
         driver.phase().get().angle,
         wrap_angle(out.angle_rad)
     );
@@ -2161,17 +2178,17 @@ fn run_bench_spin_with_decoupling(
     motor.set_angle(initial_rotor_angle);
 
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        0.127,
-        (LD + LQ) / 2.0,
-        12.0,
+        ohms(0.127),
+        henries((LD + LQ) / 2.0),
+        volts(12.0),
     );
     foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(decoupling));
 
     let mut mgr = PhaseManager::sensorless();
-    let mut obs = BackEmfObserver::new(0.127, observer_l, LAMBDA);
+    let mut obs = BackEmfObserver::new(ohms(0.127), henries(observer_l), webers(LAMBDA));
     if observer_salient {
-        obs = obs.with_saliency(LD, LQ);
+        obs = obs.with_saliency(henries(LD), henries(LQ));
     }
     mgr.set_observer(Observer::BackEmf(obs));
     // Cannot fail with an observer installed; mapped instead of unwrapped
@@ -2192,8 +2209,8 @@ fn run_bench_spin_with_decoupling(
     driver.set_current_limits(CurrentLimits::from_max_current(10.0));
     driver.set_actuation_delay(actuation_delay);
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 1.5,
-        id_target: 0.0,
+        iq_target: amps(1.5),
+        id_target: amps(0.0),
     });
 
     let mut out = VirtualMotorOutput::default();
@@ -2204,9 +2221,9 @@ fn run_bench_spin_with_decoupling(
             Ok(t) => t,
             Err(e) => return Err((step, e)),
         };
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         if !driver.phase().is_starting() {
-            let idq = (telem.id * telem.id + telem.iq * telem.iq).sqrt();
+            let idq = (telem.id.value * telem.id.value + telem.iq.value * telem.iq.value).sqrt();
             max_idq = max_idq.max(idq);
         }
         // Stop well past the bench trip zone (~800 rad/s) but well below
@@ -2347,31 +2364,31 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
 
     // Baked-config current loop: bw 1000 rad/s against `controller_l`.
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        0.127,
-        cfg.controller_l,
-        VBUS,
+        ohms(0.127),
+        henries(cfg.controller_l),
+        volts(VBUS),
     );
     foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
-        ld_h: 86e-6,
-        lq_h: 129e-6,
-        flux_linkage_wb: LAMBDA,
-        resistance_ohm: 0.127,
+        ld: henries(86e-6),
+        lq: henries(129e-6),
+        flux_linkage: webers(LAMBDA),
+        resistance: ohms(0.127),
     }));
     if cfg.dead_time {
         foc.set_dead_time_comp(DEAD_TIME_NS as u32, 20_000);
     }
 
     let mut mgr = PhaseManager::sensorless();
-    let mut obs = BackEmfObserver::new(0.127, cfg.observer_l, LAMBDA)
+    let mut obs = BackEmfObserver::new(ohms(0.127), henries(cfg.observer_l), webers(LAMBDA))
         .with_lambda_tracking(crate::foc::phase::DEFAULT_LAMBDA_GAIN);
-    obs.set_pll_gains(cfg.pll_ki / 20.0, cfg.pll_ki);
+    obs.set_pll_gains(per_second(cfg.pll_ki / 20.0), quantity(cfg.pll_ki));
     if cfg.observer_salient {
-        obs = obs.with_saliency(86e-6, 129e-6);
+        obs = obs.with_saliency(henries(86e-6), henries(129e-6));
     }
     mgr.set_observer(Observer::BackEmf(obs));
     if cfg.tracker_wn > 0.0 {
-        mgr.set_phase_tracker(cfg.tracker_wn, 1.2);
+        mgr.set_phase_tracker(per_second(cfg.tracker_wn), 1.2);
     }
     mgr.set_source(PhaseSource::Observer)
         .expect("observer source");
@@ -2388,8 +2405,8 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
     driver.set_current_limits(CurrentLimits::from_max_current(10.0));
     driver.set_actuation_delay(1.0); // = the plant's
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: cfg.iq_target,
-        id_target: 0.0,
+        iq_target: amps(cfg.iq_target),
+        id_target: amps(0.0),
     });
 
     let mut report = ColdStartReport::default();
@@ -2410,7 +2427,12 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
         if was_starting && !starting && report.handoff_step.is_none() {
             report.handoff_step = Some(step);
             report.rotor_omega_at_handoff = out.omega_e;
-            report.observer_vel_at_handoff = driver.phase().observer().velocity().unwrap_or(0.0);
+            report.observer_vel_at_handoff = driver
+                .phase()
+                .observer()
+                .velocity()
+                .unwrap_or(erad_per_s(0.0))
+                .value;
         }
         was_starting = starting;
         if report.handoff_step.is_some() {
@@ -2420,17 +2442,26 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
             }
         }
         if cfg.kick_at_step > 0 && step == cfg.kick_at_step {
-            let ph = driver.phase().observer().phase().unwrap_or(0.0) + cfg.kick_rad;
-            let vel = driver.phase().observer().velocity().unwrap_or(0.0);
+            let ph = driver.phase().observer().phase().unwrap_or(erad(0.0)) + erad(cfg.kick_rad);
+            let vel = driver
+                .phase()
+                .observer()
+                .velocity()
+                .unwrap_or(erad_per_s(0.0));
             driver.phase_mut().seed_observer(wrap_angle(ph), vel);
         }
         if cfg.trace_every > 0 && step % cfg.trace_every == 0 {
             println!(
-                "t={:6.3} rotor={:7.1} obs={:7.1} iq={:+6.2} conf={:.2} starting={}",
+                "t={:6.3} rotor={:7.1} obs={:7.1} iq={:+6.2} conf={:.2?} starting={:?}",
                 step as f32 * DT,
                 out.omega_e,
-                driver.phase().observer().velocity().unwrap_or(0.0),
-                telem.iq,
+                driver
+                    .phase()
+                    .observer()
+                    .velocity()
+                    .unwrap_or_default()
+                    .value,
+                telem.iq.value,
                 driver.phase().observer().confidence(),
                 u8::from(starting),
             );
@@ -2459,7 +2490,12 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
     }
     report.final_omega = out.omega_e;
     report.observer_ready_final = driver.phase().observer().is_ready();
-    report.observer_vel_final = driver.phase().observer().velocity().unwrap_or(0.0);
+    report.observer_vel_final = driver
+        .phase()
+        .observer()
+        .velocity()
+        .unwrap_or(erad_per_s(0.0))
+        .value;
     if post_handoff_cycles > 0 {
         #[allow(clippy::cast_precision_loss)]
         {
@@ -2874,19 +2910,22 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     };
     let mut motor = VirtualMotor::new(params);
 
-    let mut foc =
-        FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(0.127, L_AVG, VBUS);
+    let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+        ohms(0.127),
+        henries(L_AVG),
+        volts(VBUS),
+    );
     foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
-        ld_h: 86e-6,
-        lq_h: 129e-6,
-        flux_linkage_wb: LAMBDA,
-        resistance_ohm: 0.127,
+        ld: henries(86e-6),
+        lq: henries(129e-6),
+        flux_linkage: webers(LAMBDA),
+        resistance: ohms(0.127),
     }));
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(
-        BackEmfObserver::new(0.127, L_AVG, LAMBDA)
-            .with_saliency(86e-6, 129e-6)
+        BackEmfObserver::new(ohms(0.127), henries(L_AVG), webers(LAMBDA))
+            .with_saliency(henries(86e-6), henries(129e-6))
             .with_lambda_tracking(crate::foc::phase::DEFAULT_LAMBDA_GAIN),
     ));
     mgr.set_source(PhaseSource::Observer).unwrap();
@@ -2902,8 +2941,8 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     driver.set_current_limits(CurrentLimits::from_max_current(10.0));
     driver.set_actuation_delay(1.0); // = the plant's
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 1.5,
-        id_target: 0.0,
+        iq_target: amps(1.5),
+        id_target: amps(0.0),
     });
 
     // Phase 1: healthy spin-up past the first handoff.
@@ -2913,7 +2952,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     while step < 40_000 {
         driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
         let telem = driver.step(step * 50).expect("healthy spin must not trip");
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         step += 1;
         if !driver.phase().is_starting() && driver.phase().observer().is_ready() {
             handed_off = true;
@@ -2933,8 +2972,8 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     // trips instead — that path belongs to protection, and its OC is
     // exactly bench reproducers #1/#2's signature).
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 0.3,
-        id_target: 0.0,
+        iq_target: amps(0.3),
+        id_target: amps(0.0),
     });
     let mut restarted = false;
     for _ in 0..40_000u64 {
@@ -2948,7 +2987,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
         // would just track the backward spin — honest, but not the
         // trust-loss scenario under test).
         let load = 0.03 * out.omega_e.signum();
-        out = motor.step(telem.v_alpha, telem.v_beta, load, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
         step += 1;
         if driver.phase().is_starting() {
             restarted = true;
@@ -2971,7 +3010,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
             Ok(t) => t,
             Err(e) => panic!("recovery must not trip: {e:?}"),
         };
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         step += 1;
         if out.omega_e > 500.0 && !driver.phase().is_starting() {
             break;
@@ -3010,9 +3049,9 @@ fn run_perfect_angle_spin(
     };
     let mut motor = VirtualMotor::new(params);
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        0.127,
-        (86e-6 + 129e-6) / 2.0,
-        12.0,
+        ohms(0.127),
+        henries((86e-6 + 129e-6) / 2.0),
+        volts(12.0),
     );
     foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(decoupling));
@@ -3021,26 +3060,26 @@ fn run_perfect_angle_spin(
     let mut max_idq = 0.0f32;
     for step in 1..40_000u64 {
         // Same advance as FocDriver::set_actuation_delay.
-        foc.set_actuation_advance(out.omega_e * DT * (actuation_delay + 0.5));
+        foc.set_actuation_advance(erad(out.omega_e * DT * (actuation_delay + 0.5)));
         let telem = foc.step_with_injection(
-            (out.ia, out.ib, out.ic),
-            wrap_angle(out.angle_rad),
-            out.omega_e,
-            0.0,
-            1.5,
-            0.0,
-            0.0,
+            (amps(out.ia), amps(out.ib), amps(out.ic)),
+            erad(wrap_angle(out.angle_rad)),
+            erad_per_s(out.omega_e),
+            amps(0.0),
+            amps(1.5),
+            volts(0.0),
+            volts(0.0),
             4250,
-            DT,
+            seconds(DT),
         );
-        let idq = (telem.id * telem.id + telem.iq * telem.iq).sqrt();
+        let idq = (telem.id.value * telem.id.value + telem.iq.value * telem.iq.value).sqrt();
         if step > 2_000 {
             max_idq = max_idq.max(idq);
         }
         if idq > 10.0 {
             return Err((step, "overcurrent"));
         }
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
         if out.omega_e >= 2500.0 {
             break;
         }
@@ -3071,10 +3110,10 @@ fn run_perfect_angle_spin(
 fn sensorless_chain_stable_through_bench_trip_zone() {
     let consistent = run_bench_spin_with_decoupling(
         Decoupling {
-            ld_h: 86e-6,
-            lq_h: 129e-6,
-            flux_linkage_wb: 1.145e-3,
-            resistance_ohm: 0.127,
+            ld: henries(86e-6),
+            lq: henries(129e-6),
+            flux_linkage: webers(1.145e-3),
+            resistance: ohms(0.127),
         },
         (86e-6 + 129e-6) / 2.0,
         true,
@@ -3103,10 +3142,10 @@ fn sensorless_chain_stable_through_bench_trip_zone() {
     // chain, not the loop).
     let perfect = run_perfect_angle_spin(
         Decoupling {
-            ld_h: 86e-6,
-            lq_h: 129e-6,
-            flux_linkage_wb: 1.145e-3,
-            resistance_ohm: 0.127,
+            ld: henries(86e-6),
+            lq: henries(129e-6),
+            flux_linkage: webers(1.145e-3),
+            resistance: ohms(0.127),
         },
         1.0, // = the plant's actuation delay
     );
@@ -3131,10 +3170,10 @@ fn cold_start_captures_rotor_from_any_initial_angle() {
         let delta0 = frac * core::f32::consts::PI;
         let res = run_bench_spin_with_decoupling(
             Decoupling {
-                ld_h: 86e-6,
-                lq_h: 129e-6,
-                flux_linkage_wb: 1.145e-3,
-                resistance_ohm: 0.127,
+                ld: henries(86e-6),
+                lq: henries(129e-6),
+                flux_linkage: webers(1.145e-3),
+                resistance: ohms(0.127),
             },
             (86e-6 + 129e-6) / 2.0,
             true,
@@ -3165,7 +3204,7 @@ fn cold_start_captures_rotor_from_any_initial_angle() {
 fn deadman_arms_failsafe_on_stale_command() {
     use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
 
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -3186,8 +3225,8 @@ fn deadman_arms_failsafe_on_stale_command() {
 
     // Running + affirmed: not stale yet.
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 2.0,
-        id_target: 0.0,
+        iq_target: amps(2.0),
+        id_target: amps(0.0),
     });
     driver.note_command_tick(0);
     assert!(!driver.deadman_expired(500));
@@ -3201,8 +3240,8 @@ fn deadman_arms_failsafe_on_stale_command() {
     // A fresh command re-arms control: set_mode clears the failsafe, and
     // the new stamp un-stales the deadman.
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 2.0,
-        id_target: 0.0,
+        iq_target: amps(2.0),
+        id_target: amps(0.0),
     });
     driver.note_command_tick(2_000);
     assert!(!driver.failsafe_active());
@@ -3219,7 +3258,7 @@ fn deadman_arms_failsafe_on_stale_command() {
 fn deadman_long_bound_covers_bench_modes() {
     use crate::motor::failsafe::{FailsafeConfig, FailsafePolicy};
 
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -3236,9 +3275,9 @@ fn deadman_long_bound_covers_bench_modes() {
     });
 
     driver.set_mode(ControlMode::OpenLoop {
-        angle_rad: 0.0,
-        current: 1.0,
-        velocity_rad_s: 0.0,
+        angle: erad(0.0),
+        current: amps(1.0),
+        velocity: erad_per_s(0.0),
         pi_gains: None,
     });
     driver.note_command_tick(0);
@@ -3251,9 +3290,9 @@ fn deadman_long_bound_covers_bench_modes() {
 
     // DirectVoltage behaves identically.
     driver.set_mode(ControlMode::DirectVoltage {
-        vd: 0.5,
-        vq: 0.0,
-        angle_rad: 0.0,
+        vd: volts(0.5),
+        vq: volts(0.0),
+        angle: erad(0.0),
     });
     driver.note_command_tick(0);
     assert!(!driver.deadman_expired(5_000_000));
@@ -3273,7 +3312,7 @@ fn stop_from_open_loop_seeds_no_q_torque() {
     let mut hall = HallSensor::new(1_000_000);
     hall.update(1, 0); // a valid state: rotor parked in its sector
     let mut driver = FocDriver::new(
-        FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+        FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
         MockPwm { duties: [0; 3] },
         MockCurrentSensor {
             currents: (0.0, 0.0, 0.0),
@@ -3283,14 +3322,18 @@ fn stop_from_open_loop_seeds_no_q_torque() {
     );
     driver.set_current_limits(CurrentLimits::from_max_current(20.0));
     driver.set_mode(ControlMode::OpenLoop {
-        angle_rad: 0.0,
-        current: 5.0,
-        velocity_rad_s: 0.0,
+        angle: erad(0.0),
+        current: amps(5.0),
+        velocity: erad_per_s(0.0),
         pi_gains: None,
     });
     assert!(driver.enter_brake_ramp());
     let out = driver.step(50).expect("stop step");
-    assert!(out.vq.abs() < 1e-3, "stop seeded q torque: vq {}", out.vq);
+    assert!(
+        out.vq.value.abs() < 1e-3,
+        "stop seeded q torque: vq {}",
+        out.vq.value
+    );
 }
 
 /// Closed-loop: spin a VirtualMotor up on Hall, stop affirming, and the
@@ -3375,9 +3418,9 @@ fn controlled_stop_run(
 
     let mgr = PhaseManager::with_hall(hall); // default source = Hall
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
     let mut driver = FocDriver::new(
         foc,
@@ -3402,8 +3445,8 @@ fn controlled_stop_run(
         terminal: FailsafeTerminal::HighZ,
     });
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 3.0,
-        id_target: 0.0,
+        iq_target: amps(3.0),
+        id_target: amps(0.0),
     });
 
     const STOP_AFFIRMING_AT: u64 = 30_000; // 1.5 s of drive, then go silent
@@ -3428,7 +3471,7 @@ fn controlled_stop_run(
 
         let telem = driver.step(now).unwrap_or_default();
         out = if driver.pwm.enabled {
-            motor.step(telem.v_alpha, telem.v_beta, 0.0, DT)
+            motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT)
         } else {
             motor.step_coast(0.0, DT)
         };
@@ -3468,9 +3511,9 @@ fn brake_at_speed_ramps_to_standstill_then_parks() {
 
     let mgr = PhaseManager::with_hall(hall);
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
     let mut driver = FocDriver::new(
         foc,
@@ -3483,8 +3526,8 @@ fn brake_at_speed_ramps_to_standstill_then_parks() {
     );
     driver.set_current_limits(CurrentLimits::from_max_current(40.0));
     driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 3.0,
-        id_target: 0.0,
+        iq_target: amps(3.0),
+        id_target: amps(0.0),
     });
 
     const BRAKE_AT: u64 = 20_000; // 1 s of drive, then the user brakes
@@ -3510,7 +3553,7 @@ fn brake_at_speed_ramps_to_standstill_then_parks() {
             peak_omega = peak_omega.max(out.omega_e.abs());
         }
         let telem = driver.step(now).unwrap_or_default();
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
     }
 
     assert_eq!(
@@ -3552,9 +3595,9 @@ fn velocity_control_tracks_target_on_virtual_motor() {
 
     let mgr = PhaseManager::with_hall(hall); // default source = Hall
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
     let mut driver = FocDriver::new(
         foc,
@@ -3574,14 +3617,16 @@ fn velocity_control_tracks_target_on_virtual_motor() {
     driver.set_velocity_config(VelocityLoopConfig {
         kp: 0.008,
         ki: 0.2,
-        accel_limit: 400.0, // erad/s²
+        accel_limit: erad_per_s2(400.0), // erad/s²
         accel_ff: 0.0,
     });
 
     // Track 300 electrical rad/s from standstill (1.5 s), then retarget
     // downward within velocity mode (ramped, no reset) for another 1.5 s.
     const RETARGET_AT: u64 = 30_000;
-    driver.set_mode(ControlMode::VelocityControl { target_vel: 300.0 });
+    driver.set_mode(ControlMode::VelocityControl {
+        target_vel: erad_per_s(300.0),
+    });
     for step in 1..=60_000u64 {
         let now = step * 50; // µs
         if step == RETARGET_AT {
@@ -3593,7 +3638,9 @@ fn velocity_control_tracks_target_on_virtual_motor() {
             // Stay well clear of zero: hall velocity is degenerate
             // through standstill/reversal (edge intervals blow up) —
             // a cruise loop never legitimately crosses zero anyway.
-            driver.set_mode(ControlMode::VelocityControl { target_vel: 150.0 });
+            driver.set_mode(ControlMode::VelocityControl {
+                target_vel: erad_per_s(150.0),
+            });
         }
         if out.hall_state != last_hall {
             driver.phase_mut().hall_mut().update(out.hall_state, now);
@@ -3601,7 +3648,7 @@ fn velocity_control_tracks_target_on_virtual_motor() {
         }
         driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
         let telem = driver.step(now).unwrap_or_default();
-        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT);
+        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
     }
     assert!(
         (out.omega_e - 150.0).abs() < 25.0,
@@ -3669,7 +3716,7 @@ mod severity_gate {
     const BOARD: PreparedBoardConfig = PreparedBoardConfig::new(BoardConfig {
         current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
         calib: crate::types::BoardCalib {
-            shunt_ohms: 0.003,
+            shunt_ohms: ohms(0.003),
             amp_gain: 16.0,
             adc_vref_mv: 3300,
             adc_max_counts: 4095,
@@ -3701,7 +3748,7 @@ mod severity_gate {
         let state: CriticalSectionMutex<RefCell<MotorControlState>> =
             CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
         let registry: FaultRegistry<SevFault> = FaultRegistry::new();
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
         let driver = FocDriver::new(
             foc,
             MockPwm { duties: [0; 3] },
@@ -3718,8 +3765,8 @@ mod severity_gate {
             driver,
         };
         let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-            iq_target: 1.0,
-            id_target: 0.0,
+            iq_target: amps(1.0),
+            id_target: amps(0.0),
         }));
         let out = h.cycle(0);
         assert!(out.is_some(), "harness must start cleanly");
@@ -3857,7 +3904,7 @@ mod severity_gate {
             let program = program();
             let pending = Cell::new(true);
             let mut driver = FocDriver::new(
-                FocController::<SvpwmModulator, LibmSinCos>::new(24.0),
+                FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0)),
                 MockPwm { duties: [0; 3] },
                 OnReadSensor {
                     sensor: MockCurrentSensor {
@@ -4278,7 +4325,7 @@ mod severity_gate {
         });
         let registry = FaultRegistry::<StandardFault>::new();
         let mut driver = FocDriver::new(
-            FocController::<SvpwmModulator>::new(24.0),
+            FocController::<SvpwmModulator>::new(volts(24.0)),
             GatedPwm {
                 enabled: false,
                 applied: [0; 3],
@@ -4291,13 +4338,13 @@ mod severity_gate {
         );
         for mode in [
             ControlMode::CurrentControl {
-                iq_target: 1.0,
-                id_target: 0.0,
+                iq_target: amps(1.0),
+                id_target: amps(0.0),
             },
             ControlMode::DirectVoltage {
-                vd: 1.0,
-                vq: 0.0,
-                angle_rad: 0.0,
+                vd: volts(1.0),
+                vq: volts(0.0),
+                angle: erad(0.0),
             },
             ControlMode::Brake,
         ] {
@@ -4342,13 +4389,13 @@ mod severity_gate {
         struct SpinningPhase;
         impl PhaseProvider for SpinningPhase {
             fn rotor_velocity(&self) -> Option<crate::foc::phase::RotorVelocityEstimate> {
-                crate::foc::phase::RotorVelocityEstimate::new(100.0)
+                crate::foc::phase::RotorVelocityEstimate::new(erad_per_s(100.0))
             }
 
             fn get(&self) -> PhaseOutput {
                 PhaseOutput {
-                    angle: 0.0,
-                    velocity: 100.0,
+                    angle: erad(0.0),
+                    velocity: erad_per_s(100.0),
                 }
             }
             fn update(&mut self, _: &PhaseInput, _: u64) {}
@@ -4358,7 +4405,7 @@ mod severity_gate {
         critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
         let registry = FaultRegistry::<SevFault>::new();
         let mut driver = FocDriver::new(
-            FocController::<SvpwmModulator>::new(24.0),
+            FocController::<SvpwmModulator>::new(volts(24.0)),
             GatedPwm {
                 enabled: false,
                 applied: [0; 3],
@@ -4413,7 +4460,7 @@ mod severity_gate {
             CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
         let registry: FaultRegistry<SevFault> = FaultRegistry::new();
         registry.set(SevFault::Hall);
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
         let mut driver = FocDriver::new(
             foc,
             MockPwm { duties: [0; 3] },
@@ -4426,8 +4473,8 @@ mod severity_gate {
         critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
 
         let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-            iq_target: 1.0,
-            id_target: 0.0,
+            iq_target: amps(1.0),
+            id_target: amps(0.0),
         }));
         process_commands(&state, &mut driver, &registry);
         assert!(
@@ -4457,8 +4504,8 @@ mod severity_gate {
         h.cycle(100);
         assert!(matches!(h.driver.mode(), ControlMode::Stopped));
         let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-            iq_target: 1.0,
-            id_target: 0.0,
+            iq_target: amps(1.0),
+            id_target: amps(0.0),
         }));
         h.cycle(150);
         assert!(
@@ -4492,7 +4539,7 @@ mod severity_gate {
         let state: CriticalSectionMutex<RefCell<MotorControlState>> =
             CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
         let registry: FaultRegistry<SevFault> = FaultRegistry::new();
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
         let mut hall = HallSensor::new(1_000_000);
         hall.update(1, 0); // boot seed: healthy, valid sample from t=0
         let mut driver = FocDriver::new(
@@ -4511,8 +4558,8 @@ mod severity_gate {
         };
 
         let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-            iq_target: 1.0,
-            id_target: 0.0,
+            iq_target: amps(1.0),
+            id_target: amps(0.0),
         }));
         cycle(&mut driver, 0);
         assert!(!registry.has_category(FaultCategory::HallError));
@@ -4675,8 +4722,8 @@ mod severity_gate {
         let mut h = running_harness();
         h.driver.set_derating(DeratingConfig {
             bus_voltage: crate::motor::derating::BusVoltageDerating {
-                vbus_cut_start_v: 22.0,
-                vbus_cut_end_v: 18.0,
+                cut_start: volts(22.0),
+                cut_end: volts(18.0),
                 ..Default::default()
             },
             ..Default::default()
@@ -4724,10 +4771,10 @@ fn derating_clamps_drive_and_brake_separately() {
     use crate::foc::trig::LibmSinCos;
 
     let make = |scales: DeratingScales, iq: f32| {
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
         let mut mgr = PhaseManager::sensorless();
         mgr.set_source(PhaseSource::OpenLoop).unwrap();
-        mgr.set_open_loop_velocity(100.0);
+        mgr.set_open_loop_velocity(erad_per_s(100.0));
         let mut driver = FocDriver::new(
             foc,
             MockPwm { duties: [0; 3] },
@@ -4742,15 +4789,15 @@ fn derating_clamps_drive_and_brake_separately() {
         // Warmup at zero target: latches the phase velocity into the
         // managed output without accumulating PI state.
         driver.set_mode(ControlMode::CurrentControl {
-            iq_target: 0.0,
-            id_target: 0.0,
+            iq_target: amps(0.0),
+            id_target: amps(0.0),
         });
         driver.step(50).unwrap();
         driver.set_mode(ControlMode::CurrentControl {
-            iq_target: iq,
-            id_target: 0.0,
+            iq_target: amps(iq),
+            id_target: amps(0.0),
         });
-        driver.step(100).unwrap().vq
+        driver.step(100).unwrap().vq.value
     };
 
     let full = make(DeratingScales::IDENTITY, 10.0);
@@ -4850,22 +4897,24 @@ impl HallRig {
         hall.update(out.hall_state, 0);
         let mut mgr = PhaseManager::with_hall(hall);
         mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-            params.r,
-            params.ld,
-            params.lambda,
+            ohms(params.r),
+            henries(params.ld),
+            webers(params.lambda),
         )));
-        mgr.set_phase_tracker(100.0, 1.2); // the f405 boot configuration
+        mgr.set_phase_tracker(per_second(100.0), 1.2); // the f405 boot configuration
         // As from_runtime_config builds it on the f405: params-derived
         // PI gains plus dq decoupling / back-EMF feedforward.
         let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-            params.r, params.ld, 24.0,
+            ohms(params.r),
+            henries(params.ld),
+            volts(24.0),
         );
         foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
         foc.set_decoupling(Some(Decoupling {
-            ld_h: params.ld,
-            lq_h: params.lq,
-            flux_linkage_wb: params.lambda,
-            resistance_ohm: params.r,
+            ld: henries(params.ld),
+            lq: henries(params.lq),
+            flux_linkage: webers(params.lambda),
+            resistance: ohms(params.r),
         }));
         let mut driver = FocDriver::new(
             foc,
@@ -4947,7 +4996,8 @@ impl HallRig {
         // A disabled bridge floats the phases: the plant coasts. (Zero
         // volts would be all windings shorted — a brake.)
         self.out = if self.driver.pwm.enabled {
-            self.motor.step(telem.v_alpha, telem.v_beta, load, Self::DT)
+            self.motor
+                .step(telem.v_alpha.value, telem.v_beta.value, load, Self::DT)
         } else {
             self.motor.step_coast(load, Self::DT)
         };
@@ -4993,7 +5043,7 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
         .fold(f32::INFINITY, f32::min);
     let mut rig = HallRig::new(0.5, 2e-5);
     let mut hall = HallSensor::new(1_000_000);
-    hall.set_calibration_raw(CENTROIDS);
+    hall.set_calibration_raw(CENTROIDS.map(erad));
     rig.last_hall = raw_state(rig.out.angle_rad);
     hall.update(rig.last_hall, 0).unwrap();
     *rig.driver.phase_mut().hall_mut() = hall;
@@ -5010,8 +5060,8 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
     let mut previous_raw_angle = None;
     for direction in [1.0_f32, -1.0] {
         rig.driver.set_mode(ControlMode::CurrentControl {
-            iq_target: direction * 0.6,
-            id_target: 0.0,
+            iq_target: amps(direction * 0.6),
+            id_target: amps(0.0),
         });
         // Slow forward/backward, including both sides of 500 eRPM (52.36
         // electrical rad/s), with real stationary intervals between signs.
@@ -5050,7 +5100,8 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
                 // sector steps, rather than trivially observing no movement.
                 let raw_angle = rig.driver.phase().hall().sample_at(now).unwrap().angle;
                 if let Some(previous) = previous_raw_angle {
-                    max_raw_step = max_raw_step.max(angle_difference(raw_angle, previous).abs());
+                    max_raw_step =
+                        max_raw_step.max((angle_difference(raw_angle, previous).abs()).value);
                 }
                 previous_raw_angle = Some(raw_angle);
                 let output = rig
@@ -5060,35 +5111,38 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
                 let control = rig.driver.phase().get();
                 assert!(
                     [
-                        output.id,
-                        output.iq,
-                        output.v_alpha,
-                        output.v_beta,
-                        control.angle,
-                        control.velocity
+                        output.id.value,
+                        output.iq.value,
+                        output.v_alpha.value,
+                        output.v_beta.value,
+                        control.angle.value,
+                        control.velocity.value
                     ]
                     .iter()
                     .all(|x| x.is_finite())
                 );
                 assert_eq!(rig.driver.phase().source(), PhaseSource::Hall);
                 assert!(!rig.driver.phase().is_open_loop_override_active());
-                let norm = libm::sqrtf(output.id * output.id + output.iq * output.iq);
+                let norm = libm::sqrtf(
+                    output.id.value * output.id.value + output.iq.value * output.iq.value,
+                );
                 peak_current = peak_current.max(norm);
                 if let Some(previous) = previous_control_angle {
-                    max_control_step =
-                        max_control_step.max(angle_difference(control.angle, previous).abs());
+                    max_control_step = max_control_step
+                        .max((angle_difference(control.angle, previous).abs()).value);
                 }
                 previous_control_angle = Some(control.angle);
                 if omega.abs() > 60.0
-                    && control.velocity * direction > 500.0 * core::f32::consts::TAU / 60.0
+                    && control.velocity * direction
+                        > erad_per_s(500.0 * core::f32::consts::TAU / 60.0)
                 {
                     crossover_directions[usize::from(direction < 0.0)] = true;
                 }
                 rig.prev_angle = sample.angle_rad;
                 rig.motor.set_velocity(omega); // external mechanical drive
-                rig.out = rig
-                    .motor
-                    .step(output.v_alpha, output.v_beta, 0.0, HallRig::DT);
+                rig.out =
+                    rig.motor
+                        .step(output.v_alpha.value, output.v_beta.value, 0.0, HallRig::DT);
             }
         }
     }
@@ -5131,12 +5185,13 @@ fn position_control_moves_and_parks() {
         rig.driver.set_velocity_config(VelocityLoopConfig {
             kp: vkp,
             ki: vki,
-            accel_limit: 500.0,
+            accel_limit: erad_per_s2(500.0),
             accel_ff: ff,
         });
         let target = 20.0 * core::f32::consts::TAU;
-        rig.driver
-            .set_mode(ControlMode::PositionControl { target_pos: target });
+        rig.driver.set_mode(ControlMode::PositionControl {
+            target_pos: erad(target),
+        });
         let mut peak = f32::NEG_INFINITY;
         let mut worst_late = 0.0f32;
         let mut true_lo = f32::INFINITY;
@@ -5178,8 +5233,9 @@ fn full_pack_descent_holds_its_cruise_by_dissipation() {
             max_dissipation_w,
             ..CurrentLimits::from_max_current(30.0)
         });
-        rig.driver
-            .set_mode(ControlMode::VelocityControl { target_vel: 800.0 });
+        rig.driver.set_mode(ControlMode::VelocityControl {
+            target_vel: erad_per_s(800.0),
+        });
         rig.run(2.0);
         // The pack is full and the road tips down: holding 800 el
         // rad/s takes ~4.9 A of brake, ~16 W of regen to burn.
@@ -5192,7 +5248,7 @@ fn full_pack_descent_holds_its_cruise_by_dissipation() {
         let mut charged_j = 0.0;
         for _ in 0..(1.0 / HallRig::DT) as u32 {
             let (_, t) = rig.step();
-            charged_j -= 1.5 * (t.vd * t.id + t.vq * t.iq) * HallRig::DT;
+            charged_j -= 1.5 * (t.vd.value * t.id.value + t.vq.value * t.iq.value) * HallRig::DT;
         }
         (rig.out.omega_e, charged_j)
     };
@@ -5224,8 +5280,8 @@ fn dissipative_heat_aligns_a_displaced_rotor_with_coarse_hall_feedback() {
         rig.out = rig.motor.step_coast(0.0, HallRig::DT);
         rig.prev_angle = rig.out.angle_rad;
         rig.driver.set_mode(ControlMode::CurrentControl {
-            iq_target: 0.0,
-            id_target,
+            iq_target: amps(0.0),
+            id_target: amps(id_target),
         });
         let mut peak = 0.0f32;
         for _ in 0..6_000 {
@@ -5257,8 +5313,8 @@ fn park_brake_regulates_when_pushed_past_its_limit() {
         ..CurrentLimits::from_max_current(30.0)
     });
     rig.driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 20.0,
-        id_target: 0.0,
+        iq_target: amps(20.0),
+        id_target: amps(0.0),
     });
     rig.run(0.2);
     assert!(rig.out.omega_e > 1_200.0, "ω {}", rig.out.omega_e);
@@ -5294,12 +5350,12 @@ fn park_brake_keeps_braking_a_slope_it_cannot_short() {
     let mut peak = 0.0f32;
     for _ in 0..(1.0 / HallRig::DT) as u32 {
         let (_, t) = rig.step();
-        peak = peak.max(t.iq.abs());
+        peak = peak.max(t.iq.value.abs());
     }
     let (_, t) = rig.step();
     assert_eq!(rig.driver.mode(), ControlMode::Brake);
     assert!(rig.driver.park_iq.is_some(), "regulating");
-    assert!((t.iq + 10.0).abs() < 1.0, "holding {} A", t.iq);
+    assert!((t.iq.value + 10.0).abs() < 1.0, "holding {} A", t.iq.value);
     // The hand-over from the short overshoots by what the short adds
     // during the actuation pipeline.
     assert!(peak < 14.0, "peak {peak} A");
@@ -5333,14 +5389,16 @@ fn park_brake_without_an_angle_guards_itself_by_its_current() {
         motor.set_velocity(omega0);
         let mut mgr = PhaseManager::sensorless();
         mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-            params.r,
-            params.ld,
-            params.lambda,
+            ohms(params.r),
+            henries(params.ld),
+            webers(params.lambda),
         )));
         mgr.set_source(PhaseSource::Observer).unwrap();
         let mut driver = FocDriver::new(
             FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-                params.r, params.ld, 24.0,
+                ohms(params.r),
+                henries(params.ld),
+                volts(24.0),
             ),
             GatedPwm {
                 enabled: false,
@@ -5390,13 +5448,13 @@ fn park_brake_without_an_angle_guards_itself_by_its_current() {
 fn failsafe_keeps_braking_a_descent_it_cannot_beat() {
     let mut rig = HallRig::new(0.5, 2e-5);
     rig.driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 8.0,
-        id_target: 0.0,
+        iq_target: amps(8.0),
+        id_target: amps(0.0),
     });
     rig.run(0.4);
     rig.driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 0.0,
-        id_target: 0.0,
+        iq_target: amps(0.0),
+        id_target: amps(0.0),
     });
     rig.load = -0.6;
     rig.driver.enter_failsafe();
@@ -5413,7 +5471,7 @@ fn failsafe_keeps_braking_a_descent_it_cannot_beat() {
     );
     // At least the commanded 15 A (past top speed the back-EMF pushes
     // some regen beyond what the current loop holds).
-    assert!(t.iq < -14.0, "braking at {} A", t.iq);
+    assert!(t.iq.value < -14.0, "braking at {} A", t.iq.value);
 }
 
 /// Braking has its own limit: a remote brake command past `max_brake_a`
@@ -5427,18 +5485,18 @@ fn braking_is_held_to_its_own_limit() {
         ..CurrentLimits::from_max_current(30.0)
     });
     let torque = |iq_target| ControlMode::CurrentControl {
-        iq_target,
-        id_target: 0.0,
+        iq_target: amps(iq_target),
+        id_target: amps(0.0),
     };
     rig.driver.set_mode(torque(20.0));
     rig.run(0.1);
     let (_, t) = rig.step();
-    assert!((t.iq - 20.0).abs() < 1.5, "drive iq {}", t.iq);
+    assert!((t.iq.value - 20.0).abs() < 1.5, "drive iq {}", t.iq.value);
     rig.driver.set_mode(torque(-20.0));
     rig.run(0.05);
     let (_, t) = rig.step();
     assert!(rig.out.omega_e > 100.0, "still rolling forward");
-    assert!((t.iq + 8.0).abs() < 1.0, "brake iq {}", t.iq);
+    assert!((t.iq.value + 8.0).abs() < 1.0, "brake iq {}", t.iq.value);
 }
 
 /// Cruise → Brake at speed (the controlled brake ramp) → cruise again
@@ -5450,8 +5508,9 @@ fn braking_is_held_to_its_own_limit() {
 #[cfg(feature = "virtual-motor")]
 fn cruise_resumed_mid_brake_ramp_starts_from_the_rotor() {
     let mut rig = HallRig::new(0.5, 2e-5);
-    rig.driver
-        .set_mode(ControlMode::VelocityControl { target_vel: 1000.0 });
+    rig.driver.set_mode(ControlMode::VelocityControl {
+        target_vel: erad_per_s(1000.0),
+    });
     rig.run(3.0);
     assert!(rig.out.omega_e > 950.0, "cruise ω {}", rig.out.omega_e);
     assert!(rig.driver.enter_brake_ramp());
@@ -5459,7 +5518,7 @@ fn cruise_resumed_mid_brake_ramp_starts_from_the_rotor() {
     let resumed_at = rig.out.omega_e;
     assert!(resumed_at < 850.0, "brake ramp ω {resumed_at}");
     rig.driver.set_mode(ControlMode::VelocityControl {
-        target_vel: resumed_at,
+        target_vel: erad_per_s(resumed_at),
     });
     let mut peak = resumed_at;
     for _ in 0..(0.5 / HallRig::DT) as u32 {
@@ -5483,20 +5542,22 @@ fn cruise_past_top_speed_answers_a_lower_target_at_once() {
     // Top speed at full torque, for reference.
     let mut rig = HallRig::new(0.5, 2e-5);
     rig.driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 30.0,
-        id_target: 0.0,
+        iq_target: amps(30.0),
+        id_target: amps(0.0),
     });
     rig.run(1.5);
     let top = rig.out.omega_e;
 
     let mut rig = HallRig::new(0.5, 2e-5);
-    rig.driver
-        .set_mode(ControlMode::VelocityControl { target_vel: 8000.0 });
+    rig.driver.set_mode(ControlMode::VelocityControl {
+        target_vel: erad_per_s(8000.0),
+    });
     rig.run(12.0);
     let cruise = rig.out.omega_e;
     assert!(cruise > 0.995 * top, "cruise {cruise} vs top speed {top}");
-    rig.driver
-        .set_mode(ControlMode::VelocityControl { target_vel: 2000.0 });
+    rig.driver.set_mode(ControlMode::VelocityControl {
+        target_vel: erad_per_s(2000.0),
+    });
     rig.run(0.5);
     assert!(
         rig.out.omega_e < cruise - 100.0,
@@ -5515,13 +5576,14 @@ fn cruise_loop_sees_the_bus_current_clamp() {
     let mut limits = CurrentLimits::from_max_current(30.0);
     limits.bus_in_max_a = 0.5;
     rig.driver.set_current_limits(limits);
-    rig.driver
-        .set_mode(ControlMode::VelocityControl { target_vel: 3000.0 });
+    rig.driver.set_mode(ControlMode::VelocityControl {
+        target_vel: erad_per_s(3000.0),
+    });
     let (mut peak, mut banked) = (0.0f32, 0.0f32);
     for _ in 0..(10.0 / HallRig::DT) as u32 {
         let (_, telem) = rig.step();
         peak = peak.max(rig.out.omega_e);
-        banked = banked.max(rig.driver.velocity_loop.last_iq() - telem.iq);
+        banked = banked.max(rig.driver.velocity_loop.last_iq().value - telem.iq.value);
     }
     assert!(
         (rig.out.omega_e - 3000.0).abs() < 10.0,
@@ -5547,8 +5609,8 @@ fn hall_drive_restarts_after_a_stop() {
     let mut rig = HallRig::new(0.5, 2e-5);
     rig.load = 0.2;
     let torque = |iq| ControlMode::CurrentControl {
-        iq_target: iq,
-        id_target: 0.0,
+        iq_target: amps(iq),
+        id_target: amps(0.0),
     };
     rig.driver.set_mode(torque(10.0));
     rig.run(0.5);
@@ -5623,23 +5685,26 @@ fn flying_restart_catches_low_tau_motors() {
         let mut motor = VirtualMotor::new(params);
         motor.set_angle(1.0);
         motor.set_velocity(w0);
-        let mut foc =
-            FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(params.r, l_avg, vbus);
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
+            ohms(params.r),
+            henries(l_avg),
+            volts(vbus),
+        );
         foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
         foc.set_decoupling(Some(Decoupling {
-            ld_h: params.ld,
-            lq_h: params.lq,
-            flux_linkage_wb: params.lambda,
-            resistance_ohm: params.r,
+            ld: henries(params.ld),
+            lq: henries(params.lq),
+            flux_linkage: webers(params.lambda),
+            resistance: ohms(params.r),
         }));
         let mut mgr = PhaseManager::sensorless();
         mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-            params.r,
-            l_avg,
-            params.lambda,
+            ohms(params.r),
+            henries(l_avg),
+            webers(params.lambda),
         )));
         mgr.set_source(PhaseSource::Observer).unwrap();
-        mgr.set_phase_tracker(100.0, 1.2); // the f405 boot configuration
+        mgr.set_phase_tracker(per_second(100.0), 1.2); // the f405 boot configuration
         let mut driver = FocDriver::new(
             foc,
             MockPwm { duties: [0; 3] },
@@ -5652,8 +5717,8 @@ fn flying_restart_catches_low_tau_motors() {
         driver.set_current_limits(CurrentLimits::from_max_current(max_a));
         driver.set_actuation_delay(params.actuation_delay);
         driver.set_mode(ControlMode::CurrentControl {
-            iq_target: 3.0,
-            id_target: 0.0,
+            iq_target: amps(3.0),
+            id_target: amps(0.0),
         });
         // Coasting with the bridge off until the throttle.
         let mut out = motor.step_coast(0.0, DT_FLY);
@@ -5674,16 +5739,16 @@ fn flying_restart_catches_low_tau_motors() {
                 break;
             };
             if was_starting && !driver.phase().is_starting() && caught_at.is_none() {
-                seed_err = driver.phase().get().velocity / out.omega_e - 1.0;
+                seed_err = (driver.phase().get().velocity / out.omega_e - erad_per_s(1.0)).value;
                 caught_at = Some(step);
             }
-            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, DT_FLY);
+            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT_FLY);
             peak = peak.max(out.ia.abs()).max(out.ib.abs()).max(out.ic.abs());
             if caught_at.is_some_and(|c| step - c < 40) {
                 // `get()` predicts the next sample instant — where the
                 // plant now is.
-                let e = angle_difference(driver.phase().get().angle, out.angle_rad);
-                frame_err = frame_err.max(e.abs());
+                let e = angle_difference(driver.phase().get().angle, erad(out.angle_rad));
+                frame_err = frame_err.max(e.abs().value);
             }
         }
         let pass =
@@ -5713,8 +5778,8 @@ fn flying_restart_catches_low_tau_motors() {
 fn hall_glitches_at_speed_do_not_trip() {
     let mut rig = HallRig::new(0.5, 1.4e-3);
     rig.driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 10.0,
-        id_target: 0.0,
+        iq_target: amps(10.0),
+        id_target: amps(0.0),
     });
     rig.run(0.8);
     let cruise = rig.out.omega_e;
@@ -5744,8 +5809,8 @@ fn full_torque_into_the_voltage_limit_keeps_id_regulated() {
     let mut rig = HallRig::new(0.5, 2e-5);
     rig.load = 0.1;
     rig.driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 25.0,
-        id_target: 0.0,
+        iq_target: amps(25.0),
+        id_target: amps(0.0),
     });
     rig.run(1.0); // base speed is reached at ~0.4 s
     let mut id_max = 0.0f32;
@@ -5770,8 +5835,8 @@ fn full_torque_into_the_voltage_limit_keeps_id_regulated() {
 fn hall_dying_at_speed_hands_over_to_the_observer() {
     let mut rig = HallRig::new(0.5, 1.4e-3);
     rig.driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 10.0,
-        id_target: 0.0,
+        iq_target: amps(10.0),
+        id_target: amps(0.0),
     });
     rig.run(1.0);
     let cruise = rig.out.omega_e;
@@ -5794,8 +5859,8 @@ fn measure_frame_timing(source: PhaseSource, delay: f32) -> FrameTiming {
     // 1.5·pp·λ·10 A = 0.31 N·m balances B·ωm at ωm ≈ 215 rad/s.
     let mut rig = HallRig::new(delay, 1.4e-3);
     rig.driver.set_mode(ControlMode::CurrentControl {
-        iq_target: 10.0,
-        id_target: 0.0,
+        iq_target: amps(10.0),
+        id_target: amps(0.0),
     });
     let (mut err, mut w, mut tid, mut tiq) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
     let mut n = 0u32;
@@ -5805,7 +5870,7 @@ fn measure_frame_timing(source: PhaseSource, delay: f32) -> FrameTiming {
         }
         let (sample, telem) = rig.step();
         if step > 20_000 {
-            err += angle_difference(telem.angle_rad, sample.angle_rad);
+            err += angle_difference(telem.angle.value, sample.angle_rad);
             w += sample.omega_e;
             let (i_alpha, i_beta) = clarke(sample.ia, sample.ib);
             let (s, c) = (libm::sinf(sample.angle_rad), libm::cosf(sample.angle_rad));
@@ -5866,14 +5931,14 @@ fn model_config() -> crate::storage::RuntimeConfig {
     use crate::storage::{MotorParamsConfig, RuntimeConfig};
     RuntimeConfig {
         motor_params: Some(MotorParamsConfig {
-            resistance_ohm: 0.03,
-            inductance_d_h: 18e-6,
-            inductance_q_h: 28e-6,
-            flux_linkage_wb: 0.0032,
+            resistance: ohms(0.03),
+            inductance_d: henries(18e-6),
+            inductance_q: henries(28e-6),
+            flux_linkage: webers(0.0032),
             pole_pairs: 7,
-            max_current_a: 2.0,
-            ld_fundamental_h: 35e-6,
-            lq_fundamental_h: 50e-6,
+            max_current: amps(2.0),
+            ld_fundamental: henries(35e-6),
+            lq_fundamental: henries(50e-6),
             ..MotorParamsConfig::default()
         }),
         ..RuntimeConfig::default()
@@ -5899,8 +5964,8 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
             driver.apply_motor_model(&mut prepared),
             Ok(PhaseSource::Manual)
         );
-        assert_eq!(driver.controller().id_pi.gains(), (0.017, 29.0));
-        assert_eq!(driver.controller().decoupling().unwrap().ld_h, 35e-6);
+        assert_eq!(pi_gains(&driver.controller().id_pi), (0.017, 29.0));
+        assert_eq!(driver.controller().decoupling().unwrap().ld.value, 35e-6);
         assert_eq!(
             driver.controller().voltage_feedforward_mode(),
             crate::types::VoltageFeedforwardMode::Disabled
@@ -5910,25 +5975,28 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
             driver.apply_motor_model(&mut prepared),
             Err(MotorModelError::Consumed)
         );
-        assert_eq!(driver.phase().observer().resistance(), Some(0.03));
-        assert_eq!(driver.phase().observer().lambda(), Some(0.0032));
-        assert!((driver.phase().observer().inductance().unwrap() - 28e-6).abs() < 1e-10);
+        assert_eq!(driver.phase().observer().resistance(), Some(ohms(0.03)));
+        assert_eq!(driver.phase().observer().lambda(), Some(webers(0.0032)));
+        assert!(
+            (driver.phase().observer().inductance().unwrap() - henries(28e-6)).abs()
+                < henries(1e-10)
+        );
         #[cfg(feature = "hfi")]
         assert!(driver.phase().hfi_observer().is_some());
     }
     assert_eq!(
-        boot.controller().decoupling().unwrap().ld_h,
-        live.controller().decoupling().unwrap().ld_h
+        boot.controller().decoupling().unwrap().ld.value,
+        live.controller().decoupling().unwrap().ld.value
     );
     live.phase_mut().set_source(PhaseSource::Observer).unwrap();
-    config.motor_params.as_mut().unwrap().resistance_ohm = 0.06;
-    config.motor_params.as_mut().unwrap().flux_linkage_wb = 0.004;
+    config.motor_params.as_mut().unwrap().resistance.value = 0.06;
+    config.motor_params.as_mut().unwrap().flux_linkage.value = 0.004;
     let mut changed = PreparedMotorModel::from_config(&config, 24.0, 3.0);
     live.apply_motor_model(&mut changed).unwrap();
     assert_eq!(live.phase().source(), PhaseSource::Observer);
-    assert_eq!(live.phase().observer().resistance(), Some(0.06));
-    assert_eq!(live.phase().observer().lambda(), Some(0.004));
-    config.motor_params.as_mut().unwrap().flux_linkage_wb = 0.0;
+    assert_eq!(live.phase().observer().resistance(), Some(ohms(0.06)));
+    assert_eq!(live.phase().observer().lambda(), Some(webers(0.004)));
+    config.motor_params.as_mut().unwrap().flux_linkage.value = 0.0;
     let mut partial = PreparedMotorModel::from_config(&config, 24.0, 3.0);
     assert_eq!(
         live.apply_motor_model(&mut partial),
@@ -5937,13 +6005,16 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
     assert!(!live.phase().observer().is_configured());
     #[cfg(feature = "hfi")]
     assert!(live.phase().hfi_observer().is_none());
-    assert_eq!(live.controller().id_pi.gains(), (0.017, 29.0));
-    assert_eq!(live.controller().decoupling().unwrap().flux_linkage_wb, 0.0);
+    assert_eq!(pi_gains(&live.controller().id_pi), (0.017, 29.0));
+    assert_eq!(
+        live.controller().decoupling().unwrap().flux_linkage.value,
+        0.0
+    );
     let mut empty =
         PreparedMotorModel::from_config(&crate::storage::RuntimeConfig::default(), 24.0, 3.0);
     live.apply_motor_model(&mut empty).unwrap();
     assert_eq!(empty.pole_pairs, 0);
-    assert_eq!(live.controller().id_pi.gains(), (0.4, 40.0));
+    assert_eq!(pi_gains(&live.controller().id_pi), (0.4, 40.0));
     assert!(live.controller().decoupling().is_none());
     assert!(!live.phase().observer().is_configured());
 }
@@ -5961,7 +6032,7 @@ fn voltage_feedforward_policy_has_boot_live_parity_and_survives_model_replacemen
     ] {
         let mut config = model_config();
         config.voltage_feedforward = Some(VoltageFeedforwardConfig { mode });
-        let boot = FocController::<SvpwmModulator>::from_runtime_config(&config, 24.0);
+        let boot = FocController::<SvpwmModulator>::from_runtime_config(&config, volts(24.0));
         let mut live = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
         live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
             .unwrap();
@@ -5969,16 +6040,16 @@ fn voltage_feedforward_policy_has_boot_live_parity_and_survives_model_replacemen
         assert_eq!(live.controller().voltage_feedforward_mode(), mode);
         assert_eq!(live.controller().id_pi.gains(), boot.id_pi.gains());
         assert_eq!(live.current_limits().max_current_a, 2.0);
-        assert_eq!(live.phase().observer().lambda(), Some(0.0032));
+        assert_eq!(live.phase().observer().lambda(), Some(webers(0.0032)));
         assert_eq!(
-            live.controller().decoupling().unwrap().flux_linkage_wb,
+            live.controller().decoupling().unwrap().flux_linkage.value,
             0.0032
         );
-        config.motor_params.as_mut().unwrap().flux_linkage_wb = 0.004;
+        config.motor_params.as_mut().unwrap().flux_linkage.value = 0.004;
         live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
             .unwrap();
         assert_eq!(live.controller().voltage_feedforward_mode(), mode);
-        assert_eq!(live.phase().observer().lambda(), Some(0.004));
+        assert_eq!(live.phase().observer().lambda(), Some(webers(0.004)));
         config.motor_params = None;
         live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
             .unwrap();
@@ -6065,8 +6136,8 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     // Already queued starts cannot run between model install and acknowledgement.
     CMD_CHANNEL
         .try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
-            id_target: 0.0,
-            iq_target: 0.2,
+            id_target: amps(0.0),
+            iq_target: amps(0.2),
         }))
         .unwrap();
     process_commands(&state, &mut driver, &registry);
@@ -6128,9 +6199,9 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
 
     // Recheck actual driver state at the consuming ISR, not only task state.
     driver.set_mode(ControlMode::DirectVoltage {
-        vd: 0.0,
-        vq: 0.0,
-        angle_rad: 0.0,
+        vd: volts(0.0),
+        vq: volts(0.0),
+        angle: erad(0.0),
     });
     let mut busy = Box::pin(prepare(5, 2).apply::<PendingTimer>());
     assert!(busy.as_mut().poll(&mut cx).is_pending());
@@ -6242,10 +6313,10 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         assert_eq!(config.borrow(cs).borrow().motor_params, next.motor_params);
     });
     assert_eq!(driver.current_limits().max_current_a, 2.0);
-    assert_eq!(driver.phase().observer().resistance(), Some(0.03));
+    assert_eq!(driver.phase().observer().resistance(), Some(ohms(0.03)));
     // A subsequent electrical-model write retains the explicit policy.
     let mut changed = critical_section::with(|cs| config.borrow(cs).borrow().clone());
-    changed.motor_params.as_mut().unwrap().resistance_ohm = 0.04;
+    changed.motor_params.as_mut().unwrap().resistance.value = 0.04;
     let update = ModelApplyGuard::prepare(
         PreparedMotorModel::from_config(&changed, 24.0, 3.0),
         changed.motor_params.clone().unwrap(),
@@ -6272,10 +6343,10 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         VoltageFeedforwardMode::Both
     );
     assert_eq!(
-        driver.controller().decoupling().unwrap().resistance_ohm,
+        driver.controller().decoupling().unwrap().resistance.value,
         0.04
     );
-    assert_eq!(driver.phase().observer().resistance(), Some(0.04));
+    assert_eq!(driver.phase().observer().resistance(), Some(ohms(0.04)));
     let mut cancelled_policy =
         Box::pin(prepare_policy(VoltageFeedforwardMode::Disabled, 12, 1).apply::<PendingTimer>());
     assert!(cancelled_policy.as_mut().poll(&mut cx).is_pending());
@@ -6297,9 +6368,9 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     );
     drop(conflict_policy);
     driver.set_mode(ControlMode::DirectVoltage {
-        vd: 0.0,
-        vq: 0.0,
-        angle_rad: 0.0,
+        vd: volts(0.0),
+        vq: volts(0.0),
+        angle: erad(0.0),
     });
     let mut busy_policy =
         Box::pin(prepare_policy(VoltageFeedforwardMode::Disabled, 14, 1).apply::<PendingTimer>());
@@ -6332,11 +6403,11 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         VoltageFeedforwardMode::Disabled
     );
     assert_eq!(
-        driver.controller().decoupling().unwrap().flux_linkage_wb,
+        driver.controller().decoupling().unwrap().flux_linkage.value,
         0.0032
     );
-    assert_eq!(driver.phase().observer().lambda(), Some(0.0032));
-    assert_eq!(driver.phase().observer().resistance(), Some(0.04));
+    assert_eq!(driver.phase().observer().lambda(), Some(webers(0.0032)));
+    assert_eq!(driver.phase().observer().resistance(), Some(ohms(0.04)));
     assert_eq!(driver.current_limits().max_current_a, 2.0);
 
     let persisted = Box::leak(Box::new(Mutex::new(RefCell::new(
@@ -6395,7 +6466,7 @@ fn model_replacement_rejects_unsupported_provider_and_preserves_board_settings()
     driver.controller_mut().set_dead_time_comp_factor(0.002);
     driver.set_actuation_delay(1.0);
     driver.apply_motor_model(&mut model).unwrap();
-    let expected = FocController::<SvpwmModulator>::from_runtime_config(&config, 24.0);
+    let expected = FocController::<SvpwmModulator>::from_runtime_config(&config, volts(24.0));
     assert_eq!(driver.controller().id_pi.gains(), expected.id_pi.gains());
     assert_eq!(
         driver.controller().current_sense_topology(),

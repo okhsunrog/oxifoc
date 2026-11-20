@@ -20,6 +20,7 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
 use super::hall_sensor::{Direction, HallSensor, PreparedHallCalibration};
 use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSnapshot};
+use crate::units::{ElectricalAngle, ElectricalAngularVelocity};
 
 // ========== Hall Estimator (shared state) ==========
 
@@ -170,7 +171,11 @@ pub fn apply_stored_config(config: &RuntimeConfig) {
             if let Some(ref tuning) = config.hall_tuning
                 && tuning.is_sane()
             {
-                h.set_interp_min_erpm(tuning.interp_min_erpm);
+                h.set_interp_min_erpm(
+                    tuning
+                        .interp_min_speed
+                        .get::<crate::units::unit::electrical::erpm>(),
+                );
                 h.set_rate_limit_factor(tuning.rate_limit_factor);
                 changed = true;
                 info!("Applied stored Hall tuning params");
@@ -196,7 +201,7 @@ impl HallAngleProxy {
 
 impl AngleSensor for HallAngleProxy {
     #[cfg(feature = "bench-cogging-compensation")]
-    fn bench_hall_position(&self, now_ticks: u64) -> Option<f32> {
+    fn bench_hall_position(&self, now_ticks: u64) -> Option<ElectricalAngle> {
         HALL_ESTIMATOR.lock(|est| est.borrow().sensor.as_ref()?.bench_hall_position(now_ticks))
     }
 
@@ -262,7 +267,7 @@ impl AngleSensor for HallAngleProxy {
         })
     }
 
-    fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {
+    fn is_stale(&self, now_ticks: u64, omega_ref: ElectricalAngularVelocity) -> bool {
         HALL_ESTIMATOR.lock(|est| {
             est.borrow()
                 .sensor
@@ -280,10 +285,9 @@ impl AngleSensor for HallAngleProxy {
         })
     }
 
-    fn read_angle(&self) -> f32 {
+    fn read_angle(&self) -> ElectricalAngle {
         self.sample(hall_now_ticks())
-            .map(|s| s.angle)
-            .unwrap_or(0.0)
+            .map_or(crate::units::ConstZero::ZERO, |s| s.angle)
     }
 
     fn read_direction(&self) -> Direction {

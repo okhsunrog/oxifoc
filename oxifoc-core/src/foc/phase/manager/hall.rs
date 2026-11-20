@@ -6,6 +6,7 @@ use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::AngleSensor;
 use crate::foc::sensors::HallSensorTrait;
 use crate::foc::trig::SinCos;
+use crate::units::{ElectricalAngle, ElectricalAngularVelocity, Sign};
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set a fault (adds if not already present)
@@ -82,7 +83,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 // the last known output angle at minimum velocity. Signed by
                 // the last known velocity (VESC-style): a board rolling
                 // backward must not be spun forward by the recovery override.
-                let dir = if self.output.velocity < 0.0 {
+                let dir = if self.output.velocity.is_negative() {
                     -1.0
                 } else {
                     1.0
@@ -103,7 +104,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
 impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// Set Hall calibration table
-    pub fn set_hall_calibration(&mut self, table: [f32; 6]) {
+    pub fn set_hall_calibration(&mut self, table: [ElectricalAngle; 6]) {
         self.hall.set_calibration(table);
         self.motion_reference_epoch.advance();
         self.hall_control_motion.reset();
@@ -134,9 +135,9 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     }
 
     /// Set Hall timing advance
-    pub fn set_hall_advance(&mut self, advance_rad: f32) {
-        let changed = self.hall.advance() != advance_rad;
-        self.hall.set_advance(advance_rad);
+    pub fn set_hall_advance(&mut self, advance: ElectricalAngle) {
+        let changed = self.hall.advance() != advance;
+        self.hall.set_advance(advance);
         if changed {
             // A new commutation-frame offset is not rotor motion.
             self.motion_reference_epoch.advance();
@@ -147,12 +148,12 @@ impl<H: HallSensorTrait, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     }
 
     /// Get Hall timing advance
-    pub fn hall_advance(&self) -> f32 {
+    pub fn hall_advance(&self) -> ElectricalAngle {
         self.hall.advance()
     }
 
     /// Get raw Hall edge/interpolation velocity (not the filtered control speed).
-    pub fn hall_velocity(&self) -> f32 {
+    pub fn hall_velocity(&self) -> ElectricalAngularVelocity {
         self.hall.electrical_velocity()
     }
 }

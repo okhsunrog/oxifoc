@@ -1,5 +1,6 @@
 //! Default-off ADC work tags. Change the runtime switch only while Stopped.
 //! Runtime on/off comparisons retain identical instructions and addresses.
+use crate::units::AngleRepr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 #[unsafe(no_mangle)]
@@ -37,8 +38,8 @@ pub fn mark(event: u32) {
 
 /// The exact branch condition used by the angle-difference fast path.
 #[inline(always)]
-pub fn angle_difference(event: u32, a: f32, b: f32) {
-    if (a - b).to_bits() & 0x7fff_ffff >= core::f32::consts::PI.to_bits() {
+pub fn angle_difference<A: AngleRepr>(event: u32, a: A, b: A) {
+    if (a.radians() - b.radians()).to_bits() & 0x7fff_ffff >= core::f32::consts::PI.to_bits() {
         mark(event);
     }
 }

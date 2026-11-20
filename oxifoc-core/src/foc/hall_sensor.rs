@@ -20,7 +20,10 @@ use super::sensors::{
     AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait, HallSnapshot,
 };
 use super::{angle_difference, wrap_angle};
-use crate::foc::clamp_f32;
+use crate::units::{
+    AngleRepr, ConstZero, ElectricalAngle, ElectricalAngularVelocity, Fraction, Frequency, Scalar,
+    Sign, Time, erad, erad_per_s, hertz, seconds,
+};
 
 /// Hall state lookup table: maps raw sensor reading (0-7) to logical state (0-5)
 ///
@@ -85,11 +88,11 @@ pub const DEFAULT_RATE_LIMIT_FACTOR: f32 = 1.5;
 /// let a dying hall reach +32 A of true id and the overcurrent trip first.
 pub const STALE_SECTOR_MULTIPLE: f32 = 1.5;
 
-/// Absolute floor for the staleness window (seconds): a few PWM periods,
-/// so capture/ISR jitter at very high speed can't trip it.
-pub const STALE_MIN_WINDOW_S: f32 = 0.000_3;
+/// Absolute floor for the staleness window: a few PWM periods, so
+/// capture/ISR jitter at very high speed can't trip it.
+pub const STALE_MIN_WINDOW: Time = seconds(0.000_3);
 
-/// Maximum electrical speed a hall edge pair is allowed to claim (rad/s).
+/// Maximum electrical speed a hall edge pair is allowed to claim.
 ///
 /// 30 000 el rad/s ≈ 286 kERPM — several times any supported motor's
 /// ceiling (a Flipsky 5065 at 60 V tops out near 12 k el rad/s), yet ~30×
@@ -97,7 +100,20 @@ pub const STALE_MIN_WINDOW_S: f32 = 0.000_3;
 /// 1 MHz timebase reads a 1 µs "sector" as ~10⁶ rad/s). Edges whose implied
 /// speed exceeds this are glitches: the velocity estimate keeps its
 /// previous value instead of adopting them.
-pub const MAX_PLAUSIBLE_E_RAD_S: f32 = 30_000.0;
+pub const MAX_PLAUSIBLE_SPEED: ElectricalAngularVelocity = erad_per_s(30_000.0);
+
+/// Below this speed no edge is expected soon: staleness and glitch-edge
+/// reconstruction need a moving rotor.
+const MIN_MOVING_SPEED: ElectricalAngularVelocity = erad_per_s(1.0);
+
+/// Electrical angle of one nominal Hall sector (60°).
+const NOMINAL_SECTOR: ElectricalAngle = erad(TAU / 6.0);
+
+/// Floor of the edge age the decayed velocity divides by.
+const MIN_EDGE_AGE: Time = seconds(1e-9);
+
+/// Microseconds per second, for the diagnostics' integer edge age.
+const MICROS_PER_SECOND: Frequency = hertz(1_000_000.0);
 
 /// Validated, normalized Hall reference, prepared outside the control ISR.
 pub struct PreparedHallCalibration {
@@ -124,7 +140,7 @@ impl PreparedHallCalibration {
             None => None,
         };
         Some(Self {
-            calibration: HallCalibration::from_raw_table(config.angles, 0.0),
+            calibration: HallCalibration::from_raw_table(config.angles, ElectricalAngle::ZERO),
             geometry,
         })
     }
@@ -147,7 +163,7 @@ impl PreparedHallCalibration {
             None => None,
         };
         Some(Self {
-            calibration: HallCalibration::from_raw_table(result.angles, 0.0),
+            calibration: HallCalibration::from_raw_table(result.angles, ElectricalAngle::ZERO),
             geometry,
         })
     }
@@ -157,8 +173,8 @@ impl PreparedHallCalibration {
 /// conversion here avoids repeated software u64-to-f32 helpers on Cortex-M4.
 struct HallTimebase {
     ticks_per_sec: core::num::NonZeroU64,
-    hz: f32,
-    seconds_per_tick: f32,
+    hz: Frequency,
+    seconds_per_tick: Time,
 }
 
 impl HallTimebase {
@@ -167,13 +183,13 @@ impl HallTimebase {
             core::num::NonZeroU64::new(ticks_per_sec).unwrap_or(core::num::NonZeroU64::MIN);
         Self {
             ticks_per_sec,
-            hz: ticks_per_sec.get() as f32,
-            seconds_per_tick: 1.0 / ticks_per_sec.get() as f32,
+            hz: hertz(ticks_per_sec.get() as f32),
+            seconds_per_tick: seconds(1.0 / ticks_per_sec.get() as f32),
         }
     }
 
     #[inline]
-    fn seconds(&self, ticks: u64) -> f32 {
+    fn seconds(&self, ticks: u64) -> Time {
         crate::foc::fast_math::u64_to_f32(ticks) * self.seconds_per_tick
     }
 }
@@ -192,21 +208,21 @@ impl HallTimebase {
 /// - Low-speed interpolation threshold
 pub struct HallSensor {
     /// Electrical angle increment per Hall state change (TAU / 6)
-    angle_per_state: f32,
+    angle_per_state: ElectricalAngle,
     /// Optional measured boundary topology; legacy centroid-only tables retain
     /// the nominal sector equations.
     geometry: Option<HallTransitionGeometry>,
     /// Width of the current valid sector, cached at accepted edges/configuration.
-    current_sector_width: f32,
-    /// Calibration table: electrical angle (rad) for each logical Hall state (0-5)
+    current_sector_width: ElectricalAngle,
+    /// Calibration table: electrical angle for each logical Hall state (0-5)
     calib: HallCalibration,
-    /// Interpolation base angle at the last Hall edge (radians, 0 to 2π).
+    /// Interpolation base angle at the last Hall edge (0 to 2π).
     ///
     /// A measured transition boundary when available, otherwise the legacy
     /// midpoint of adjacent centroids. Unequal sector widths cannot in general
     /// be recovered from centroids alone. Falls back to the new centroid when
     /// no usable previous sector establishes an edge.
-    angle: f32,
+    angle: ElectricalAngle,
     /// Whether `angle` is a sector boundary rather than a boot centroid.
     /// Gates the measured-traversal velocity estimate: the distance
     /// between two boundaries is a real sector width; the distance from a
@@ -225,8 +241,8 @@ pub struct HallSensor {
     /// Last edge timestamp (ticks of a caller-provided clock)
     last_edge_ticks: Option<u64>,
     last_edge_timing: super::sensors::HallEdgeTiming,
-    /// Electrical velocity estimate (rad/s) from last edge
-    elec_velocity: f32,
+    /// Electrical velocity estimate from last edge
+    elec_velocity: ElectricalAngularVelocity,
     /// Travel-consistent speed for the outer loop, separate from edge prediction.
     rotor_motion: RotorMotion,
     /// Last VALID raw state (1..=6): the sector the rotor was last seen in.
@@ -250,13 +266,14 @@ pub struct HallSensor {
     timebase: HallTimebase,
     /// Minimum eRPM for interpolation. Below this, use sector angle only.
     interp_min_erpm: f32,
-    /// The same configured minimum in rad/s, used by the angle rate limiter.
-    /// Keep the eRPM comparison separate to preserve its rounded boundary.
-    interp_min_rad_s: f32,
+    /// The same configured minimum as a speed, used by the angle rate
+    /// limiter. Keep the eRPM comparison separate to preserve its rounded
+    /// boundary.
+    interp_min_speed: ElectricalAngularVelocity,
     /// Rate limit factor (1.5 = allow 50% overshoot, VESC default)
     rate_limit_factor: f32,
     /// Rate-limited angle (tracked across samples for smooth limiting)
-    rate_limited_angle: f32,
+    rate_limited_angle: ElectricalAngle,
     /// Last sample timestamp for rate limiting dt calculation
     last_sample_ticks: Option<u64>,
 
@@ -281,10 +298,10 @@ pub struct HallSensor {
 /// Snapshot of the Hall estimator state after a valid edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HallReading {
-    pub angle_rad: f32,
+    pub angle: ElectricalAngle,
     pub direction: Direction,
     pub state: u8,
-    pub elec_velocity: f32,
+    pub elec_velocity: ElectricalAngularVelocity,
     pub t_ticks: u64,
 }
 
@@ -388,14 +405,14 @@ impl HallSensor {
     /// `mechanical_angle = electrical_angle / pole_pairs`
     pub fn new(ticks_per_sec: u64) -> Self {
         // Electrical angle completes 2π every 6 Hall states (one electrical revolution)
-        let angle_per_state = TAU / 6.0;
+        let angle_per_state = NOMINAL_SECTOR;
 
         Self {
             angle_per_state,
             geometry: None,
             current_sector_width: angle_per_state,
             calib: HallCalibration::default(),
-            angle: 0.0,
+            angle: ElectricalAngle::ZERO,
             base_is_boundary: false,
             raw_state: 0,
             logical_state: 0,
@@ -404,7 +421,7 @@ impl HallSensor {
             direction_reversed: false,
             last_edge_ticks: None,
             last_edge_timing: super::sensors::HallEdgeTiming::Captured,
-            elec_velocity: 0.0,
+            elec_velocity: ElectricalAngularVelocity::ZERO,
             rotor_motion: RotorMotion::default(),
             valid_raw: 0,
             in_glitch: false,
@@ -414,9 +431,9 @@ impl HallSensor {
             error_count: 0,
             timebase: HallTimebase::new(ticks_per_sec),
             interp_min_erpm: DEFAULT_INTERP_MIN_ERPM,
-            interp_min_rad_s: DEFAULT_INTERP_MIN_ERPM * TAU / 60.0,
+            interp_min_speed: erad_per_s(DEFAULT_INTERP_MIN_ERPM * TAU / 60.0),
             rate_limit_factor: DEFAULT_RATE_LIMIT_FACTOR,
-            rate_limited_angle: 0.0,
+            rate_limited_angle: ElectricalAngle::ZERO,
             last_sample_ticks: None,
             wire_bit_changes: [0; 3],
             wire_window_updates: 0,
@@ -435,7 +452,7 @@ impl HallSensor {
     /// slow direction reversals. Default: 500 eRPM (VESC default).
     pub fn set_interp_min_erpm(&mut self, erpm: f32) {
         self.interp_min_erpm = erpm.abs();
-        self.interp_min_rad_s = self.interp_min_erpm * TAU / 60.0;
+        self.interp_min_speed = erad_per_s(self.interp_min_erpm * TAU / 60.0);
     }
 
     /// Get minimum interpolation eRPM
@@ -443,10 +460,11 @@ impl HallSensor {
         self.interp_min_erpm
     }
 
-    /// Convert electrical velocity (rad/s) to eRPM
+    /// |electrical velocity| in eRPM, rounded as the configured threshold was
+    /// (`rad/s · 60/2π`; uom's unit conversion divides by `2π/60` instead).
     #[inline]
-    fn vel_to_erpm(vel_rad_s: f32) -> f32 {
-        vel_rad_s.abs() * (60.0 / TAU)
+    fn vel_to_erpm(velocity: ElectricalAngularVelocity) -> f32 {
+        velocity.abs().value * (60.0 / TAU)
     }
 
     /// Set rate limit factor for angle changes.
@@ -472,18 +490,18 @@ impl HallSensor {
     /// speed. The expected sector time uses the SLOWER of the two speeds:
     /// the observer's velocity lags a deceleration, and the hall's last
     /// edge speed is the better bound there. `omega_ref = 0` never trips.
-    pub fn is_stale_at_speed(&self, now_ticks: u64, omega_ref: f32) -> bool {
+    pub fn is_stale_at_speed(&self, now_ticks: u64, omega_ref: ElectricalAngularVelocity) -> bool {
         let Some(dt_ticks) = self.time_since_edge(now_ticks) else {
             // No edge ever seen: "no data yet", not "data stopped".
             return false;
         };
         let vel = self.elec_velocity.abs().min(omega_ref.abs());
-        if vel < 1.0 {
+        if vel < MIN_MOVING_SPEED {
             return false;
         }
-        let dt_s = self.timebase.seconds(dt_ticks);
-        let expected_sector_s = self.current_sector_width / vel;
-        dt_s > (expected_sector_s * STALE_SECTOR_MULTIPLE).max(STALE_MIN_WINDOW_S)
+        let dt = self.timebase.seconds(dt_ticks);
+        let expected_sector: Time = self.current_sector_width / vel;
+        dt > (expected_sector * STALE_SECTOR_MULTIPLE).max(STALE_MIN_WINDOW)
     }
 
     /// Get time since last Hall edge in ticks.
@@ -497,8 +515,8 @@ impl HallSensor {
             .map(|last| now_ticks.saturating_sub(last))
     }
 
-    /// Age of the last captured edge in seconds, in this sensor's clock domain.
-    pub fn time_since_edge_s(&self, now_ticks: u64) -> Option<f32> {
+    /// Age of the last captured edge, in this sensor's clock domain.
+    pub fn time_since_edge_s(&self, now_ticks: u64) -> Option<Time> {
         self.time_since_edge(now_ticks)
             .map(|ticks| self.timebase.seconds(ticks))
     }
@@ -618,9 +636,9 @@ impl HallSensor {
     /// * `t_ticks` - Monotonic time in ticks (of `ticks_per_sec`)
     ///
     /// # Returns
-    /// * `Some(angle)` - Electrical angle at the edge in radians (0 to 2π)
+    /// * `Some(angle)` - Electrical angle at the edge (0 to 2π)
     /// * `None` - Invalid Hall state (0 or 7)
-    pub fn update(&mut self, raw_state: u8, t_ticks: u64) -> Option<f32> {
+    pub fn update(&mut self, raw_state: u8, t_ticks: u64) -> Option<ElectricalAngle> {
         // Previous raw state (for the boundary midpoint) before overwriting
         let prev_raw = self.raw_state;
         // Store raw state
@@ -673,9 +691,9 @@ impl HallSensor {
             // and the next (measured from this estimated time).
             if let Some(last) = self.last_edge_ticks {
                 let speed = self.elec_velocity.abs();
-                let t_cross = if speed > 1.0 {
-                    let sector_s = self.current_sector_width / speed;
-                    last.saturating_add((sector_s * self.timebase.hz) as u64)
+                let t_cross = if speed > MIN_MOVING_SPEED {
+                    let sector: Time = self.current_sector_width / speed;
+                    last.saturating_add((sector * self.timebase.hz).fraction() as u64)
                 } else {
                     t_ticks
                 };
@@ -753,9 +771,9 @@ impl HallSensor {
                 self.calib.angle_for_state(raw_state),
                 self.calib.angle_for_state(prev_raw),
             );
-            if step > 0.0 {
+            if step.is_positive() {
                 Direction::Clockwise
-            } else if step < 0.0 {
+            } else if step.is_negative() {
                 Direction::CounterClockwise
             } else {
                 self.direction
@@ -782,7 +800,7 @@ impl HallSensor {
             // after a reverse recovery, including a reverse edge hidden by an
             // invalid-state glitch whose timing deliberately remains held.
             self.elec_velocity =
-                self.angle_step_signed(new_direction).signum() * self.elec_velocity.abs();
+                self.angle_step_signed(new_direction).radians().signum() * self.elec_velocity.abs();
         }
 
         // An adjacent edge identifies its measured boundary. Legacy tables
@@ -801,7 +819,7 @@ impl HallSensor {
                 .as_ref()
                 .and_then(|g| g.boundary_for_transition(prev_raw, raw_state))
             {
-                wrap_angle(boundary + self.calib.advance_rad)
+                wrap_angle(boundary + self.calib.advance)
             } else {
                 let centroid_prev = self.calib.angle_for_state(prev_raw);
                 wrap_angle(centroid_prev + angle_difference(centroid_new, centroid_prev) / 2.0)
@@ -838,7 +856,7 @@ impl HallSensor {
                 } else {
                     (angle_step / dt).abs()
                 };
-                angle_step.signum() * self.elec_velocity.abs().min(speed_bound)
+                angle_step.radians().signum() * self.elec_velocity.abs().min(speed_bound)
             } else if prev_base_is_boundary && crossed_boundary {
                 // Boundary-to-boundary distance is the MEASURED width of the
                 // sector just traversed (handles asymmetric Hall placement —
@@ -854,14 +872,14 @@ impl HallSensor {
             // pulse (the bench-observed OC-from-hall-bounce class). Keep
             // the previous estimate; the angle/timestamp update above
             // stands, and real edges re-converge the velocity immediately.
-            if candidate.abs() <= MAX_PLAUSIBLE_E_RAD_S {
+            if candidate.abs() <= MAX_PLAUSIBLE_SPEED {
                 self.elec_velocity = candidate;
             }
         }
 
         if crossed_boundary {
             self.rotor_motion
-                .cross_boundary(wrap_angle(base - self.calib.advance_rad));
+                .cross_boundary(wrap_angle(base - self.calib.advance));
         } else {
             // Boot/reference centroids and skipped edges carry no measured
             // displacement. Start a new physical baseline at the first boundary.
@@ -893,7 +911,7 @@ impl HallSensor {
     pub fn update_sample(&mut self, raw_state: u8, t_ticks: u64) -> Result<HallReading, HallError> {
         match self.update(raw_state, t_ticks) {
             Some(angle) => Ok(HallReading {
-                angle_rad: angle,
+                angle,
                 direction: self.direction,
                 state: self.logical_state,
                 elec_velocity: self.elec_velocity,
@@ -903,8 +921,8 @@ impl HallSensor {
         }
     }
 
-    /// Get current electrical angle in radians (0 to 2π)
-    pub fn angle(&self) -> f32 {
+    /// Get current electrical angle (0 to 2π)
+    pub fn angle(&self) -> ElectricalAngle {
         self.angle
     }
 
@@ -941,9 +959,9 @@ impl HallSensor {
         self.raw_state
     }
 
-    /// Get current timing advance (radians)
-    pub fn advance(&self) -> f32 {
-        self.calib.advance_rad
+    /// Get current timing advance
+    pub fn advance(&self) -> ElectricalAngle {
+        self.calib.advance
     }
 
     /// Get ticks per second
@@ -955,8 +973,8 @@ impl HallSensor {
     ///
     /// This is the preferred method as it works with any Hall sensor wiring.
     /// Angles should be in [0, 2π). States 0 and 7 are invalid.
-    pub fn set_calibration_raw(&mut self, raw_table: [f32; 8]) {
-        self.calib = HallCalibration::from_raw_table(raw_table, self.calib.advance_rad);
+    pub fn set_calibration_raw(&mut self, raw_table: [ElectricalAngle; 8]) {
+        self.calib = HallCalibration::from_raw_table(raw_table, self.calib.advance);
         self.geometry = None;
         self.current_sector_width = self.angle_per_state;
         self.geometry_resync = false;
@@ -967,8 +985,8 @@ impl HallSensor {
     ///
     /// For backwards compatibility. Angles should be in [0, 2π) for the
     /// clockwise logical sequence 0→1→2→3→4→5.
-    pub fn set_calibration(&mut self, table_rad: [f32; 6]) {
-        self.calib = HallCalibration::from_logical_table(table_rad, self.calib.advance_rad);
+    pub fn set_calibration(&mut self, table: [ElectricalAngle; 6]) {
+        self.calib = HallCalibration::from_logical_table(table, self.calib.advance);
         self.geometry = None;
         self.current_sector_width = self.angle_per_state;
         self.geometry_resync = false;
@@ -997,9 +1015,9 @@ impl HallSensor {
         &mut self,
         prepared: &PreparedHallCalibration,
     ) -> super::sensors::HallReferenceUpdate {
-        let advance = self.calib.advance_rad;
+        let advance = self.calib.advance;
         self.calib = prepared.calibration;
-        self.calib.advance_rad = advance;
+        self.calib.advance = advance;
         self.geometry = prepared.geometry;
         self.current_sector_width = self
             .geometry
@@ -1008,7 +1026,7 @@ impl HallSensor {
         self.geometry_resync = false;
         self.angle = self.calib.angle_for_state(self.valid_raw);
         self.base_is_boundary = false;
-        self.elec_velocity = 0.0;
+        self.elec_velocity = ElectricalAngularVelocity::ZERO;
         self.rotor_motion.reset();
         self.direction = Direction::Stopped;
         self.prev_direction = Direction::Stopped;
@@ -1019,15 +1037,15 @@ impl HallSensor {
         super::sensors::HallReferenceUpdate {
             sample: (self.last_edge_ticks.is_some() && !self.in_glitch).then_some(AngleSample {
                 angle: self.angle,
-                omega: 0.0,
+                omega: ElectricalAngularVelocity::ZERO,
                 direction: Direction::Stopped,
             }),
         }
     }
 
-    /// Set additional electrical advance (radians) applied to calibrated angles.
-    pub fn set_advance(&mut self, advance_rad: f32) {
-        self.calib.advance_rad = advance_rad;
+    /// Set additional electrical advance applied to calibrated angles.
+    pub fn set_advance(&mut self, advance: ElectricalAngle) {
+        self.calib.advance = advance;
     }
 
     /// Interpolated sample at `now_ticks` (immutable version).
@@ -1047,18 +1065,18 @@ impl HallSensor {
     /// calculate its angle and velocity. This avoids a second time conversion.
     pub fn snapshot_at(&self, now_ticks: u64) -> Option<HallSnapshot> {
         self.sample_with_edge_age_at(now_ticks)
-            .map(|(sample, edge_age_s)| HallSnapshot {
-                angle_rad: sample.angle,
-                velocity_rad_s: sample.omega,
+            .map(|(sample, edge_age)| HallSnapshot {
+                angle: sample.angle,
+                velocity: sample.omega,
                 direction: sample.direction,
                 state: self.logical_state,
                 error_count: self.error_count,
-                edge_age_s,
+                edge_age,
             })
     }
 
     #[inline]
-    fn sample_with_edge_age_at(&self, now_ticks: u64) -> Option<(AngleSample, f32)> {
+    fn sample_with_edge_age_at(&self, now_ticks: u64) -> Option<(AngleSample, Time)> {
         let t0 = self.last_edge_ticks?;
         if self.in_glitch || self.geometry_resync {
             // Invalid state right now: no angle (the caller falls back).
@@ -1109,9 +1127,9 @@ impl HallSensor {
     /// geometry must use the current width here, even though edge speed came
     /// from the previous sector. Centroid-only tables keep the nominal60° cap.
     #[inline]
-    fn decayed_velocity(&self, dt_from_edge: f32) -> f32 {
-        let vel_limit = self.current_sector_width / dt_from_edge.max(1e-9);
-        clamp_f32(self.elec_velocity, -vel_limit, vel_limit)
+    fn decayed_velocity(&self, dt_from_edge: Time) -> ElectricalAngularVelocity {
+        let vel_limit = self.current_sector_width / dt_from_edge.max(MIN_EDGE_AGE);
+        self.elec_velocity.clamp_to(-vel_limit, vel_limit)
     }
 
     /// Interpolated sample at `now_ticks` with full VESC-style processing.
@@ -1173,7 +1191,7 @@ impl HallSensor {
         // Nonfinite factors retain the full arithmetic (0 * infinity is NaN).
         if target_angle == self.rate_limited_angle && self.rate_limit_factor.is_finite() {
             // The normal zero-step addition also turns a -0 frame into +0.
-            self.rate_limited_angle = target_angle + 0.0;
+            self.rate_limited_angle = target_angle + ElectricalAngle::ZERO;
             return Some(AngleSample {
                 angle: self.rate_limited_angle,
                 omega: velocity,
@@ -1185,7 +1203,7 @@ impl HallSensor {
         // Limit how fast angle can change per sample to prevent current spikes
         // max_step = max(|velocity|, min_vel_from_erpm) * dt * rate_limit_factor
         let dt_sample = self.timebase.seconds(dt_sample_ticks);
-        let effective_vel = velocity.abs().max(self.interp_min_rad_s);
+        let effective_vel = velocity.abs().max(self.interp_min_speed);
         let max_step = effective_vel * dt_sample * self.rate_limit_factor;
 
         // Calculate desired step from current rate-limited angle
@@ -1208,7 +1226,7 @@ impl HallSensor {
             // Clamp to max step, preserving sign
             #[cfg(feature = "isr-work-events")]
             crate::isr_work::mark(crate::isr_work::HALL_SLEW_CLIPPED);
-            if desired_step > 0.0 {
+            if desired_step.is_positive() {
                 max_step
             } else {
                 -max_step
@@ -1232,17 +1250,17 @@ impl HallSensor {
         })
     }
 
-    /// Electrical velocity estimate (rad/s) from last transition
-    pub fn electrical_velocity(&self) -> f32 {
+    /// Electrical velocity estimate from last transition
+    pub fn electrical_velocity(&self) -> ElectricalAngularVelocity {
         self.elec_velocity
     }
 
     #[inline]
-    fn angle_step_signed(&self, dir: Direction) -> f32 {
+    fn angle_step_signed(&self, dir: Direction) -> ElectricalAngle {
         match dir {
             Direction::Clockwise => self.angle_per_state,
             Direction::CounterClockwise => -self.angle_per_state,
-            Direction::Stopped => 0.0,
+            Direction::Stopped => ElectricalAngle::ZERO,
         }
     }
 }
@@ -1254,20 +1272,20 @@ impl HallSensor {
 /// States 0 and 7 are invalid (all sensors low/high).
 #[derive(Clone, Copy)]
 pub struct HallCalibration {
-    /// Electrical angle (rad) for each raw Hall state (0-7)
+    /// Electrical angle for each raw Hall state (0-7)
     /// Invalid states (0, 7) store 0.0 but should not be used
-    raw_table: [f32; 8],
+    raw_table: [ElectricalAngle; 8],
     /// Validity flags for each raw state
     valid: [bool; 8],
-    /// Additional timing advance (radians)
-    advance_rad: f32,
+    /// Additional timing advance
+    advance: ElectricalAngle,
 }
 
 impl HallCalibration {
     /// Create calibration from raw-state angles (8-entry table)
-    pub fn from_raw_table(raw_table: [f32; 8], advance_rad: f32) -> Self {
+    pub fn from_raw_table(raw_table: [ElectricalAngle; 8], advance: ElectricalAngle) -> Self {
         let mut valid = [false; 8];
-        let mut normalized = [0.0_f32; 8];
+        let mut normalized = [ElectricalAngle::ZERO; 8];
         for i in 1..=6 {
             normalized[i] = wrap_angle(raw_table[i]);
             valid[i] = true;
@@ -1275,14 +1293,17 @@ impl HallCalibration {
         Self {
             raw_table: normalized,
             valid,
-            advance_rad,
+            advance,
         }
     }
 
     /// Create calibration from logical-state angles (6-entry table)
     /// Maps logical states back to raw states using HALL_STATE_TABLE
-    pub fn from_logical_table(logical_table: [f32; 6], advance_rad: f32) -> Self {
-        let mut raw_table = [0.0_f32; 8];
+    pub fn from_logical_table(
+        logical_table: [ElectricalAngle; 6],
+        advance: ElectricalAngle,
+    ) -> Self {
+        let mut raw_table = [ElectricalAngle::ZERO; 8];
         let mut valid = [false; 8];
 
         // Map logical state index to raw state
@@ -1299,16 +1320,16 @@ impl HallCalibration {
         Self {
             raw_table,
             valid,
-            advance_rad,
+            advance,
         }
     }
 
     /// Get angle for a raw Hall state (returns None for invalid states)
     #[inline]
-    pub fn angle_for_raw_state(&self, raw_state: u8) -> Option<f32> {
+    pub fn angle_for_raw_state(&self, raw_state: u8) -> Option<ElectricalAngle> {
         let idx = (raw_state & 0x07) as usize;
         if self.valid[idx] {
-            Some(wrap_angle(self.raw_table[idx] + self.advance_rad))
+            Some(wrap_angle(self.raw_table[idx] + self.advance))
         } else {
             None
         }
@@ -1316,8 +1337,10 @@ impl HallCalibration {
 
     /// Get angle for a raw Hall state, panicking on invalid (for internal use)
     #[inline]
-    pub fn angle_for_state(&self, raw_state: u8) -> f32 {
-        self.angle_for_raw_state(raw_state).unwrap_or(0.0) // Fallback for invalid states
+    pub fn angle_for_state(&self, raw_state: u8) -> ElectricalAngle {
+        // Fallback for invalid states
+        self.angle_for_raw_state(raw_state)
+            .unwrap_or(ElectricalAngle::ZERO)
     }
 
     /// Check if a raw state is valid
@@ -1332,8 +1355,8 @@ impl Default for HallCalibration {
         // Default: evenly spaced angles for raw states 1-6
         // Raw state sequence (CW): 1 → 3 → 2 → 6 → 4 → 5
         // Assign angles in sequence order
-        let step = TAU / 6.0;
-        let mut raw_table = [0.0_f32; 8];
+        let step = NOMINAL_SECTOR;
+        let mut raw_table = [ElectricalAngle::ZERO; 8];
         let mut valid = [false; 8];
 
         // Map raw states to their position in the CW sequence
@@ -1354,14 +1377,14 @@ impl Default for HallCalibration {
         Self {
             raw_table,
             valid,
-            advance_rad: 0.0,
+            advance: ElectricalAngle::ZERO,
         }
     }
 }
 
 impl AngleSensor for HallSensor {
     #[cfg(feature = "bench-cogging-compensation")]
-    fn bench_hall_position(&self, now_ticks: u64) -> Option<f32> {
+    fn bench_hall_position(&self, now_ticks: u64) -> Option<ElectricalAngle> {
         let age = self.time_since_edge_s(now_ticks)?;
         if self.in_glitch || self.geometry_resync {
             return None;
@@ -1374,7 +1397,11 @@ impl AngleSensor for HallSensor {
 
     #[cfg(feature = "storage")]
     fn apply_hall_tuning(&mut self, tuning: &crate::storage::HallTuningConfig) -> bool {
-        self.set_interp_min_erpm(tuning.interp_min_erpm);
+        self.set_interp_min_erpm(
+            tuning
+                .interp_min_speed
+                .get::<crate::units::unit::electrical::erpm>(),
+        );
         self.set_rate_limit_factor(tuning.rate_limit_factor);
         true
     }
@@ -1406,7 +1433,7 @@ impl AngleSensor for HallSensor {
         let offset = if self.base_is_boundary {
             sample.omega * age
         } else {
-            0.0
+            ElectricalAngle::ZERO
         };
         sample.omega = self.rotor_motion.sample(
             now_ticks,
@@ -1426,12 +1453,12 @@ impl AngleSensor for HallSensor {
                 reference_epoch: 0,
                 ticks,
                 timing: self.last_edge_timing,
-                sector_width_rad: self.current_sector_width,
-                velocity_rad_s: self.elec_velocity,
+                sector_width: self.current_sector_width,
+                velocity: self.elec_velocity,
             })
     }
 
-    fn is_stale(&self, now_ticks: u64, omega_ref: f32) -> bool {
+    fn is_stale(&self, now_ticks: u64, omega_ref: ElectricalAngularVelocity) -> bool {
         self.is_stale_at_speed(now_ticks, omega_ref)
     }
 
@@ -1461,15 +1488,15 @@ impl HallSensorTrait for HallSensor {
         self.last_edge_ticks
     }
 
-    fn electrical_velocity(&self) -> f32 {
+    fn electrical_velocity(&self) -> ElectricalAngularVelocity {
         self.elec_velocity
     }
 
-    fn set_calibration(&mut self, table: [f32; 6]) {
+    fn set_calibration(&mut self, table: [ElectricalAngle; 6]) {
         Self::set_calibration(self, table);
     }
 
-    fn set_calibration_raw(&mut self, raw_table: [f32; 8]) {
+    fn set_calibration_raw(&mut self, raw_table: [ElectricalAngle; 8]) {
         Self::set_calibration_raw(self, raw_table);
     }
 
@@ -1480,12 +1507,12 @@ impl HallSensorTrait for HallSensor {
         Self::apply_calibration(self, result)
     }
 
-    fn set_advance(&mut self, advance_rad: f32) {
-        Self::set_advance(self, advance_rad);
+    fn set_advance(&mut self, advance: ElectricalAngle) {
+        Self::set_advance(self, advance);
     }
 
-    fn advance(&self) -> f32 {
-        self.calib.advance_rad
+    fn advance(&self) -> ElectricalAngle {
+        self.calib.advance
     }
 
     fn interpolation_info(&self, now_ticks: u64) -> HallInterpolationInfo {
@@ -1496,10 +1523,10 @@ impl HallSensorTrait for HallSensor {
             let dt_ticks = now_ticks.wrapping_sub(t0);
             let dt_sec = self.timebase.seconds(dt_ticks);
             let offset = self.elec_velocity * dt_sec;
-            let time_us = (dt_sec * 1_000_000.0) as u32;
+            let time_us = (dt_sec * MICROS_PER_SECOND).fraction() as u32;
             (offset, time_us)
         } else {
-            (0.0, 0)
+            (ElectricalAngle::ZERO, 0)
         };
 
         HallInterpolationInfo {
@@ -1519,17 +1546,19 @@ mod rotor_motion_tests;
 
 #[cfg(test)]
 mod tests {
+    use crate::units::ToBits;
+    use crate::units::{erad, erad_per_s, seconds};
     #[cfg(feature = "storage")]
     #[test]
     fn prepared_reference_reanchors_raw_and_control_without_old_geometry() {
         use super::*;
         let mut hall = HallSensor::new(1_000_000);
         hall.set_interp_min_erpm(0.0);
-        hall.set_advance(0.2);
+        hall.set_advance(erad(0.2));
         hall.update(1, 1_000);
         hall.update(3, 2_000);
         hall.update(2, 3_000);
-        assert!(hall.sample_at_mut(3_050).unwrap().omega > 100.0);
+        assert!(hall.sample_at_mut(3_050).unwrap().omega > erad_per_s(100.0));
         let before = (
             hall.raw_state,
             hall.logical_state,
@@ -1538,7 +1567,7 @@ mod tests {
         );
         let mut config = crate::storage::HallCalibrationConfig::default();
         for angle in &mut config.angles[1..=6] {
-            *angle += 0.7;
+            *angle += erad(0.7);
         }
         let prepared = PreparedHallCalibration::from_config(&config).unwrap();
         hall.install_prepared_calibration(&prepared);
@@ -1551,25 +1580,25 @@ mod tests {
             ),
             before
         );
-        let expected = wrap_angle(config.angles[2] + 0.2);
+        let expected = wrap_angle(config.angles[2] + erad(0.2));
         for sample in [
             hall.sample_at(3_100).unwrap(),
             hall.sample_at_mut(3_100).unwrap(),
         ] {
             assert_eq!(sample.angle.to_bits(), expected.to_bits());
-            assert_eq!(sample.omega, 0.0);
+            assert_eq!(sample.omega, erad_per_s(0.0));
             assert_eq!(sample.direction, Direction::Stopped);
         }
         assert!(!hall.base_is_boundary);
         hall.update(6, 4_000);
         assert_eq!(
             hall.electrical_velocity(),
-            0.0,
+            erad_per_s(0.0),
             "old edge frame is not a speed baseline"
         );
         hall.update(4, 5_000);
         assert!(
-            hall.electrical_velocity() > 100.0,
+            hall.electrical_velocity() > erad_per_s(100.0),
             "two new boundaries restore measured speed"
         );
         hall.update(7, 5_100);
@@ -1593,7 +1622,7 @@ mod tests {
             "claimed count cannot override a missing physical state"
         );
         let mut invalid = config;
-        invalid.angles[3] = f32::NAN;
+        invalid.angles[3] = erad(f32::NAN);
         assert!(PreparedHallCalibration::from_config(&invalid).is_none());
         let mut cold = HallSensor::new(1_000_000);
         cold.install_prepared_calibration(&prepared);
@@ -1610,13 +1639,13 @@ mod tests {
         match (hall.snapshot_at(now), hall.sample_at(now)) {
             (None, None) => {}
             (Some(snapshot), Some(sample)) => {
-                assert_eq!(snapshot.angle_rad.to_bits(), sample.angle.to_bits());
-                assert_eq!(snapshot.velocity_rad_s.to_bits(), sample.omega.to_bits());
+                assert_eq!(snapshot.angle.to_bits(), sample.angle.to_bits());
+                assert_eq!(snapshot.velocity.to_bits(), sample.omega.to_bits());
                 assert_eq!(snapshot.direction, sample.direction);
                 assert_eq!(snapshot.state, hall.logical_state());
                 assert_eq!(snapshot.error_count, hall.error_count());
                 assert_eq!(
-                    snapshot.edge_age_s.to_bits(),
+                    snapshot.edge_age.to_bits(),
                     hall.time_since_edge_s(now).unwrap().to_bits()
                 );
             }
@@ -1663,9 +1692,9 @@ mod tests {
         }
         let age = hall.timebase.seconds(now.saturating_sub(t0));
         let sector = hall.calib.angle_for_state(hall.raw_state);
-        let limit = hall.angle_per_state / age.max(1e-9);
-        let velocity = clamp_f32(hall.elec_velocity, -limit, limit);
-        let angle = if velocity.abs() * 60.0 / TAU < hall.interp_min_erpm {
+        let limit = hall.angle_per_state / age.max(seconds(1e-9));
+        let velocity = Scalar::clamp_to(hall.elec_velocity, -limit, limit);
+        let angle = if velocity.abs().value * 60.0 / TAU < hall.interp_min_erpm {
             sector
         } else {
             wrap_angle(hall.angle + velocity * age)
@@ -1702,11 +1731,11 @@ mod tests {
         if !initialized || !hall.rate_limited_angle.is_finite() || !target.is_finite() {
             hall.rate_limited_angle = target;
         } else {
-            let max_step = velocity.abs().max(hall.interp_min_rad_s) * dt * hall.rate_limit_factor;
+            let max_step = velocity.abs().max(hall.interp_min_speed) * dt * hall.rate_limit_factor;
             let desired = angle_difference(target, hall.rate_limited_angle);
             let step = if desired.abs() <= max_step {
                 desired
-            } else if desired > 0.0 {
+            } else if desired > erad(0.0) {
                 max_step
             } else {
                 -max_step
@@ -1726,8 +1755,8 @@ mod tests {
             (Some(actual), Some(expected)) => {
                 assert_eq!(actual.direction, expected.direction);
                 for (actual, expected) in [
-                    (actual.angle, expected.angle),
-                    (actual.omega, expected.omega),
+                    (actual.angle.value, expected.angle.value),
+                    (actual.omega.value, expected.omega.value),
                 ] {
                     if expected.is_nan() {
                         assert!(actual.is_nan());
@@ -1754,17 +1783,17 @@ mod tests {
                         // Reversed wiring and asymmetric sectors; applying a new
                         // calibration must not re-anchor the current live base.
                         let table = [0.0, 5.4, 1.5, 0.6, 4.0, 5.0, 2.6, 0.0];
-                        actual.set_calibration_raw(table);
-                        expected.set_calibration_raw(table);
+                        actual.set_calibration_raw(table.map(erad));
+                        expected.set_calibration_raw(table.map(erad));
                     }
                     if i == 9 {
-                        actual.set_advance(-TAU * 1.25);
-                        expected.set_advance(-TAU * 1.25);
+                        actual.set_advance(erad(-TAU * 1.25));
+                        expected.set_advance(erad(-TAU * 1.25));
                     }
                     if i == 15 {
                         let table = [0.1, 1.2, 2.3, 3.4, 4.5, 5.6];
-                        actual.set_calibration(table);
-                        expected.set_calibration(table);
+                        actual.set_calibration(table.map(erad));
+                        expected.set_calibration(table.map(erad));
                     }
                     let now = i as u64 * 12_347;
                     actual.update(raw, now);
@@ -1786,7 +1815,7 @@ mod tests {
                             // The control angle intentionally changes. Its speed,
                             // direction and availability must retain raw semantics.
                             let motion_only = |mut s: AngleSample| {
-                                s.angle = 0.0;
+                                s.angle = erad(0.0);
                                 s
                             };
                             assert_same_sample(sample.map(motion_only), reference.map(motion_only));
@@ -1832,8 +1861,8 @@ mod tests {
                     // update the limiter cache without resetting live state.
                     actual.set_interp_min_erpm(erpm);
                     expected.set_interp_min_erpm(erpm);
-                    actual.elec_velocity = velocity;
-                    expected.elec_velocity = velocity;
+                    actual.elec_velocity = erad_per_s(velocity);
+                    expected.elec_velocity = erad_per_s(velocity);
                     let sample = if rate_limited {
                         actual.sample_at_mut(123)
                     } else {
@@ -1878,7 +1907,7 @@ mod tests {
     #[test]
     fn test_hall_sensor_creation() {
         let hall = HallSensor::new(1);
-        assert_eq!(hall.angle(), 0.0);
+        assert_eq!(hall.angle(), erad(0.0));
         assert_eq!(hall.direction(), Direction::Stopped);
         assert_eq!(hall.error_count(), 0);
     }
@@ -1903,7 +1932,7 @@ mod tests {
             assert!(hall.update(raw, 100).is_some());
             assert_eq!(hall.error_count(), 0, "initial raw sector {raw}");
             assert_eq!(hall.direction(), Direction::Stopped);
-            assert_eq!(hall.elec_velocity, 0.0);
+            assert_eq!(hall.elec_velocity, erad_per_s(0.0));
 
             // Real skipped transitions remain errors after initialization.
             let skipped = (1..=6)
@@ -1933,21 +1962,21 @@ mod tests {
         }
         let steady = hall.elec_velocity;
         assert!(
-            (steady.abs() - 1047.0).abs() < 60.0,
-            "unexpected steady velocity {steady}"
+            (steady.abs() - erad_per_s(1047.0)).abs() < erad_per_s(60.0),
+            "unexpected steady velocity {steady:?}"
         );
         // Bounce: the next edge and its return arrive 1 tick apart.
         hall.update(2, t);
         hall.update(3, t + 1);
         hall.update(2, t + 2);
         assert!(
-            hall.elec_velocity.abs() <= MAX_PLAUSIBLE_E_RAD_S,
-            "bounce produced implausible velocity {}",
+            hall.elec_velocity.abs() <= MAX_PLAUSIBLE_SPEED,
+            "bounce produced implausible velocity {:?}",
             hall.elec_velocity
         );
         assert!(
-            (hall.elec_velocity.abs() - steady.abs()).abs() < 60.0,
-            "bounce should keep the previous estimate, got {}",
+            (hall.elec_velocity.abs() - steady.abs()).abs() < erad_per_s(60.0),
+            "bounce should keep the previous estimate, got {:?}",
             hall.elec_velocity
         );
     }
@@ -1974,8 +2003,8 @@ mod tests {
         for (i, &state) in sequence.iter().enumerate() {
             let angle = hall.update(state, i as u64).unwrap();
             assert!(
-                (angle - expected_angles[i]).abs() < 1e-5,
-                "Step {}: expected {}, got {}",
+                (angle - erad(expected_angles[i])).abs() < erad(1e-5),
+                "Step {:?}: expected {:?}, got {:?}",
                 i,
                 expected_angles[i],
                 angle
@@ -2013,14 +2042,14 @@ mod tests {
         // First edge: centroid fallback (0°). Second edge: the boundary
         // between the 0° and 60° sectors = 30°.
         let angle1 = hall.update(1, 0).unwrap();
-        assert!((angle1 - 0.0).abs() < 1e-5);
+        assert!((angle1 - erad(0.0)).abs() < erad(1e-5));
 
         let angle2 = hall.update(3, 1).unwrap();
-        assert!((angle2 - TAU / 12.0).abs() < 1e-5);
+        assert!((angle2 - erad(TAU / 12.0)).abs() < erad(1e-5));
 
         // From a boundary base, each further edge advances one full sector.
         let angle3 = hall.update(2, 2).unwrap();
-        assert!((angle3 - (TAU / 12.0 + TAU / 6.0)).abs() < 1e-5);
+        assert!((angle3 - erad(TAU / 12.0 + TAU / 6.0)).abs() < erad(1e-5));
     }
 
     #[test]
@@ -2040,7 +2069,7 @@ mod tests {
     fn test_reset_errors() {
         let mut hall = HallSensor::new(1_000);
 
-        hall.update(0, 0).unwrap_or(0.0); // Generate error
+        hall.update(0, 0).unwrap_or(erad(0.0)); // Generate error
         assert!(hall.error_count() > 0);
 
         hall.reset_errors();
@@ -2054,14 +2083,17 @@ mod tests {
         hall.update(3, 10).unwrap(); // 1 ms later with 10 kHz ticks
 
         let expected_vel = (TAU / 6.0) / 0.001;
-        assert!((hall.electrical_velocity() - expected_vel).abs() < expected_vel * 0.01);
+        assert!(
+            (hall.electrical_velocity() - erad_per_s(expected_vel)).abs()
+                < erad_per_s(expected_vel * 0.01)
+        );
 
         // Sample shortly after the edge (0.1ms): interpolation runs from
         // the boundary just crossed (30°), not the sector centroid.
         let interp = hall.sample_at(11).unwrap();
         let expected_angle = (TAU / 12.0) + expected_vel * 0.0001;
-        let diff = (wrap_angle(interp.angle) - wrap_angle(expected_angle)).abs();
-        assert!(diff < 1e-3);
+        let diff = (wrap_angle(interp.angle) - wrap_angle(erad(expected_angle))).abs();
+        assert!(diff < erad(1e-3));
     }
 
     #[test]
@@ -2076,8 +2108,8 @@ mod tests {
 
         // At low speed, should return sector angle exactly (no interpolation)
         assert!(
-            (sample.angle - sector_angle).abs() < 1e-5,
-            "Low speed should use sector angle, got {} expected {}",
+            (sample.angle - erad(sector_angle)).abs() < erad(1e-5),
+            "Low speed should use sector angle, got {:?} expected {:?}",
             sample.angle,
             sector_angle
         );
@@ -2087,8 +2119,17 @@ mod tests {
     fn first_smoothed_sample_anchors_the_observed_sector_not_zero() {
         for raw in 1..=6 {
             let mut hall = HallSensor::new(1_000_000);
-            hall.set_calibration_raw([0.0, 5.4474, 1.5422, 0.5691, 4.0420, 4.9824, 2.6073, 0.0]);
-            hall.set_advance(-TAU * 1.25);
+            hall.set_calibration_raw([
+                erad(0.0),
+                erad(5.4474),
+                erad(1.5422),
+                erad(0.5691),
+                erad(4.0420),
+                erad(4.9824),
+                erad(2.6073),
+                erad(0.0),
+            ]);
+            hall.set_advance(erad(-TAU * 1.25));
             assert!(hall.sample_at_mut(0).is_none());
             hall.update(0, 50);
             assert!(hall.sample_at_mut(50).is_none());
@@ -2111,35 +2152,35 @@ mod tests {
         hall.update(1, 0);
         let mut previous = 0.0;
         for now in (0..100_000).step_by(50) {
-            previous = hall.sample_at_mut(now).unwrap().angle;
+            previous = hall.sample_at_mut(now).unwrap().angle.value;
         }
         hall.update(3, 100_000);
         let accepted_speed = hall.electrical_velocity().to_bits();
         let raw = hall.sample_at(100_000).unwrap();
         let smoothed = hall.sample_at_mut(100_000).unwrap();
-        let raw_step = angle_difference(raw.angle, previous).abs();
-        let control_step = angle_difference(smoothed.angle, previous).abs();
+        let raw_step = angle_difference(raw.angle, erad(previous)).abs();
+        let control_step = angle_difference(smoothed.angle, erad(previous)).abs();
         let bound = DEFAULT_INTERP_MIN_ERPM * TAU / 60.0 * 50e-6 * DEFAULT_RATE_LIMIT_FACTOR;
         assert!(
-            raw_step > 1.0,
+            raw_step > erad(1.0),
             "the raw sector really changed by about 60 degrees"
         );
         assert!(
-            control_step <= bound + 1e-6,
-            "unlimited low-speed step {control_step}"
+            control_step <= erad(bound + 1e-6),
+            "unlimited low-speed step {control_step:?}"
         );
 
         // This is the geometrical change of a 3-A reference vector, not a
         // prediction of the physical current transient in a particular motor.
-        assert!(6.0 * libm::sinf(raw_step * 0.5) > 2.9);
-        assert!(6.0 * libm::sinf(control_step * 0.5) < 0.012);
-        previous = smoothed.angle;
+        assert!(6.0 * libm::sinf((raw_step * 0.5).value) > 2.9);
+        assert!(6.0 * libm::sinf((control_step * 0.5).value) < 0.012);
+        previous = smoothed.angle.value;
         for now in (100_050..=114_000).step_by(50) {
             let sample = hall.sample_at_mut(now).unwrap();
-            assert!(angle_difference(sample.angle, previous).abs() <= bound + 1e-6);
-            previous = sample.angle;
+            assert!(angle_difference(sample.angle, erad(previous)).abs() <= erad(bound + 1e-6));
+            previous = sample.angle.value;
         }
-        assert!(angle_difference(previous, raw.angle).abs() < 1e-5);
+        assert!(angle_difference(previous, raw.angle.value).abs() < 1e-5);
         assert_eq!(hall.electrical_velocity().to_bits(), accepted_speed);
     }
 
@@ -2148,12 +2189,21 @@ mod tests {
         let default = HallCalibration::default();
         let mut reverse = [0.0; 8];
         for (raw, angle) in reverse.iter_mut().enumerate().take(7).skip(1) {
-            *angle = wrap_angle(-default.angle_for_state(raw as u8));
+            *angle = wrap_angle((-default.angle_for_state(raw as u8)).value);
         }
         for table in [
             default.raw_table,
-            reverse,
-            [0.0, 5.4474, 1.5422, 0.5691, 4.0420, 4.9824, 2.6073, 0.0],
+            reverse.map(erad),
+            [
+                erad(0.0),
+                erad(5.4474),
+                erad(1.5422),
+                erad(0.5691),
+                erad(4.0420),
+                erad(4.9824),
+                erad(2.6073),
+                erad(0.0),
+            ],
         ] {
             let mut hall = HallSensor::new(1_000_000);
             hall.set_calibration_raw(table);
@@ -2167,8 +2217,8 @@ mod tests {
                 let edge = sector as u64 * 100_000;
                 hall.update(raw, edge);
                 let accepted_speed = hall.electrical_velocity();
-                forward |= accepted_speed > 1.0;
-                backward |= accepted_speed < -1.0;
+                forward |= accepted_speed > erad_per_s(1.0);
+                backward |= accepted_speed < erad_per_s(-1.0);
                 for now in (edge..edge + 100_000).step_by(50) {
                     let raw_sample = hall.sample_at(now).unwrap();
                     assert_eq!(
@@ -2178,12 +2228,12 @@ mod tests {
                     let sample = hall.sample_at_mut(now).unwrap();
                     assert_eq!(sample.omega.to_bits(), raw_sample.omega.to_bits());
                     if let Some(angle) = previous {
-                        let bound = sample.omega.abs().max(hall.interp_min_rad_s)
-                            * 50e-6
+                        let bound = sample.omega.abs().max(hall.interp_min_speed)
+                            * seconds(50e-6)
                             * hall.rate_limit_factor;
                         assert!(
-                            angle_difference(sample.angle, angle).abs() <= bound + 2e-6,
-                            "sector={sector}, time={now}, previous={angle}, sample={sample:?}"
+                            angle_difference(sample.angle, angle).abs() <= bound + erad(2e-6),
+                            "sector={sector:?}, time={now:?}, previous={angle:?}, sample={sample:?}"
                         );
                     }
                     previous = Some(sample.angle);
@@ -2210,11 +2260,12 @@ mod tests {
             (20_700, 400.0, 0.7),
         ] {
             hall.set_interp_min_erpm(threshold);
-            hall.set_advance(advance);
+            hall.set_advance(erad(advance));
             let sample = hall.sample_at_mut(now).unwrap();
-            let bound =
-                sample.omega.abs().max(hall.interp_min_rad_s) * 50e-6 * hall.rate_limit_factor;
-            assert!(angle_difference(sample.angle, previous).abs() <= bound + 1e-6);
+            let bound = sample.omega.abs().max(hall.interp_min_speed)
+                * seconds(50e-6)
+                * hall.rate_limit_factor;
+            assert!(angle_difference(sample.angle, previous).abs() <= bound + erad(1e-6));
             previous = sample.angle;
         }
     }
@@ -2228,8 +2279,8 @@ mod tests {
         for now in [99_999, 100_000, 100_050] {
             let sample = hall.sample_at_mut(now).unwrap();
             let ticks = if now <= 100_000 { 1.0 } else { 50.0 };
-            let bound = hall.interp_min_rad_s * ticks * 1e-6 * hall.rate_limit_factor;
-            assert!(angle_difference(sample.angle, previous).abs() <= bound + 1e-6);
+            let bound = hall.interp_min_speed * seconds(ticks * 1e-6) * hall.rate_limit_factor;
+            assert!(angle_difference(sample.angle, previous).abs() <= bound + erad(1e-6));
             assert_eq!(hall.last_sample_ticks, Some(now.max(100_000)));
             previous = sample.angle;
         }
@@ -2241,10 +2292,10 @@ mod tests {
             let mut hall = HallSensor::new(1_000_000);
             hall.update(3, 0);
             hall.sample_at_mut(0).unwrap();
-            hall.set_advance(advance);
+            hall.set_advance(erad(advance));
             assert!(!hall.sample_at(50).unwrap().angle.is_finite());
             assert!(!hall.sample_at_mut(50).unwrap().angle.is_finite());
-            hall.set_advance(0.1);
+            hall.set_advance(erad(0.1));
             let expected = hall.sample_at(100);
             assert_same_sample(hall.sample_at_mut(100), expected);
         }
@@ -2271,11 +2322,12 @@ mod tests {
             assert_eq!(sample.omega.to_bits(), raw.omega.to_bits());
             assert!(sample.angle.is_finite());
             if threshold.is_infinite() || factor == f32::INFINITY {
-                assert!(angle_difference(sample.angle, raw.angle).abs() < 1e-6);
+                assert!(angle_difference(sample.angle, raw.angle).abs() < erad(1e-6));
             } else {
-                let bound =
-                    raw.omega.abs().max(hall.interp_min_rad_s) * 50e-6 * hall.rate_limit_factor;
-                assert!(angle_difference(sample.angle, before.angle).abs() <= bound + 1e-6);
+                let bound = raw.omega.abs().max(hall.interp_min_speed)
+                    * seconds(50e-6)
+                    * hall.rate_limit_factor;
+                assert!(angle_difference(sample.angle, before.angle).abs() <= bound + erad(1e-6));
             }
         }
     }
@@ -2311,12 +2363,18 @@ mod tests {
                         for hall in [&mut actual, &mut expected] {
                             match i {
                                 5 => hall.set_calibration_raw([
-                                    0.0, 5.4473944, 1.5422314, 0.5690834, 4.0419855, 4.982443,
-                                    2.6073236, 0.0,
+                                    erad(0.0),
+                                    erad(5.4473944),
+                                    erad(1.5422314),
+                                    erad(0.5690834),
+                                    erad(4.0419855),
+                                    erad(4.982443),
+                                    erad(2.6073236),
+                                    erad(0.0),
                                 ]),
-                                9 => hall.set_advance(-TAU * 1.25),
-                                11 => hall.set_advance(f32::NAN),
-                                13 => hall.set_advance(0.0),
+                                9 => hall.set_advance(erad(-TAU * 1.25)),
+                                11 => hall.set_advance(erad(f32::NAN)),
+                                13 => hall.set_advance(erad(0.0)),
                                 _ => {}
                             }
                             hall.update(raw, i as u64 * 12_347);
@@ -2353,8 +2411,8 @@ mod tests {
                     let mut expected = HallSensor::new(1_000_000);
                     for hall in [&mut actual, &mut expected] {
                         let zero = if negative_zero { -0.0 } else { 0.0 };
-                        hall.set_calibration_raw([zero; 8]);
-                        hall.set_advance(zero);
+                        hall.set_calibration_raw([erad(zero); 8]);
+                        hall.set_advance(erad(zero));
                         hall.set_interp_min_erpm(threshold);
                         hall.set_rate_limit_factor(factor);
                         hall.update(1, 0);
@@ -2388,8 +2446,8 @@ mod tests {
             };
             let angle = hall.sample_at(t).unwrap().angle;
             assert!(
-                angle_difference(angle, expected).abs() < 1e-4,
-                "t={t}: {angle}"
+                angle_difference(angle, erad(expected)).abs() < erad(1e-4),
+                "t={t:?}: {angle:?}"
             );
         }
     }
@@ -2413,8 +2471,8 @@ mod tests {
         let expected_max_step = 1047.0 * 0.00001 * DEFAULT_RATE_LIMIT_FACTOR;
 
         assert!(
-            step <= expected_max_step * 1.1, // Allow 10% margin for floating point
-            "Rate limiting should constrain step to {expected_max_step}, got {step} rad"
+            step <= erad(expected_max_step * 1.1), // Allow 10% margin for floating point
+            "Rate limiting should constrain step to {expected_max_step:?}, got {step:?} rad"
         );
     }
 
@@ -2455,13 +2513,19 @@ mod tests {
             t += sector_us;
         }
         let omega = hall.electrical_velocity();
-        assert!((omega - 5.0).abs() < 0.1, "ω {omega}");
+        assert!(
+            (omega - erad_per_s(5.0)).abs() < erad_per_s(0.1),
+            "ω {omega:?}"
+        );
         // Into the next sector, and straight back out 5 ms later.
         hall.update(CW_SEQ[4], t).unwrap();
         hall.update(CW_SEQ[3], t + 5_000).unwrap();
         assert!(hall.direction_reversed());
         let omega = hall.electrical_velocity();
-        assert!(omega < 0.0 && omega > -10.0, "ω {omega}");
+        assert!(
+            omega < erad_per_s(0.0) && omega > erad_per_s(-10.0),
+            "ω {omega:?}"
+        );
     }
 
     #[test]
@@ -2503,7 +2567,7 @@ mod tests {
             hall.update(CW_SEQ[idx % 6], t).unwrap();
             idx += 1;
             for k in 1..10u64 {
-                last_out = hall.sample_at_mut(t + k * 50).unwrap().angle;
+                last_out = (hall.sample_at_mut(t + k * 50).unwrap().angle).value;
             }
             t += 500;
         }
@@ -2511,19 +2575,21 @@ mod tests {
         hall.update(CW_SEQ[idx % 6], t).unwrap();
         idx += 1;
         for k in 1..=4u64 {
-            last_out = hall.sample_at_mut(t + k * 50).unwrap().angle;
+            last_out = (hall.sample_at_mut(t + k * 50).unwrap().angle).value;
         }
         // …then the next edge arrives at +250 µs — twice as early as expected.
         hall.update(CW_SEQ[idx % 6], t + 250).unwrap();
         let out = hall.sample_at_mut(t + 300).unwrap().angle;
 
-        let step = angle_difference(out, last_out).abs();
+        let step = angle_difference(out, erad(last_out)).abs();
         // The limiter bound uses the (now doubled) post-edge velocity estimate
         // over the 100 µs between the two samples (t+200 → t+300).
-        let max_step = hall.electrical_velocity().abs() * 100e-6 * DEFAULT_RATE_LIMIT_FACTOR + 1e-3;
+        let max_step =
+            hall.electrical_velocity().abs() * seconds(100e-6) * DEFAULT_RATE_LIMIT_FACTOR
+                + erad(1e-3);
         assert!(
             step <= max_step,
-            "angle jumped {step} rad across an early hall edge (rate limit {max_step})"
+            "angle jumped {step:?} rad across an early hall edge (rate limit {max_step:?})"
         );
     }
 
@@ -2538,10 +2604,10 @@ mod tests {
         // The last edge was at t − 1 ms; one sector takes 1 ms (1047 rad/s)
         // and the observer confirms that speed.
         let w = FRAC_PI_3 / 1e-3;
-        assert!(!hall.is_stale_at_speed(t, w));
-        assert!(!hall.is_stale_at_speed(t + 400, w));
+        assert!(!hall.is_stale_at_speed(t, erad_per_s(w)));
+        assert!(!hall.is_stale_at_speed(t + 400, erad_per_s(w)));
         // Cable cut: 1.5 expected sector times with no edge.
-        assert!(hall.is_stale_at_speed(t + 600, w));
+        assert!(hall.is_stale_at_speed(t + 600, erad_per_s(w)));
     }
 
     /// Half the ways to connect three hall wires reverse the nominal state
@@ -2558,13 +2624,16 @@ mod tests {
         for (k, &raw) in seq.iter().enumerate() {
             table[raw as usize] = k as f32 * FRAC_PI_3;
         }
-        hall.set_calibration_raw(table);
+        hall.set_calibration_raw(table.map(erad));
         for (k, &raw) in seq.iter().cycle().take(12).enumerate() {
             hall.update(raw, k as u64 * 1_000);
             if k > 0 {
                 assert_eq!(hall.direction(), Direction::Clockwise, "edge {k}");
                 let v = hall.electrical_velocity();
-                assert!((v - FRAC_PI_3 / 1e-3).abs() < 1.0, "edge {k}: {v} rad/s");
+                assert!(
+                    (v - erad_per_s(FRAC_PI_3 / 1e-3)).abs() < erad_per_s(1.0),
+                    "edge {k:?}: {v:?} rad/s"
+                );
             }
         }
     }
@@ -2579,10 +2648,10 @@ mod tests {
         }
         // Coasted to a stop: no independent rotation evidence → the rotor
         // stopped, however stale the last edge's speed looks.
-        assert!(!hall.is_stale_at_speed(t + 1_000_000, 0.0));
+        assert!(!hall.is_stale_at_speed(t + 1_000_000, erad_per_s(0.0)));
         // A slower reference (decelerating; the observer lags) stretches the
         // window: the slower of the two speeds sets the expected cadence.
-        assert!(!hall.is_stale_at_speed(t + 5_000, 100.0));
+        assert!(!hall.is_stale_at_speed(t + 5_000, erad_per_s(100.0)));
     }
 
     #[test]
@@ -2590,11 +2659,11 @@ mod tests {
         // A motor that was never moved produces no edges — not staleness,
         // whatever the reference claims.
         let hall = HallSensor::new(1_000_000);
-        assert!(!hall.is_stale_at_speed(10_000_000, 1000.0));
+        assert!(!hall.is_stale_at_speed(10_000_000, erad_per_s(1000.0)));
 
         let mut hall = HallSensor::new(1_000_000);
         hall.update(1, 0).unwrap(); // single state, velocity 0
-        assert!(!hall.is_stale_at_speed(10_000_000, 1000.0));
+        assert!(!hall.is_stale_at_speed(10_000_000, erad_per_s(1000.0)));
     }
 
     #[test]
@@ -2606,7 +2675,7 @@ mod tests {
             t += 1000; // 1 ms per sector
         }
         let v = hall.electrical_velocity();
-        assert!(v > 500.0);
+        assert!(v > erad_per_s(500.0));
         let last = CW_SEQ[11 % CW_SEQ.len()];
         // A 200 µs all-low glitch mid-sector: no angle while it lasts, but
         // the speed and direction survive it.
@@ -2678,12 +2747,12 @@ mod tests {
             }
 
             let est = hall.sample_at(t).unwrap().angle;
-            let err = angle_difference(est, theta).abs();
-            max_err = max_err.max(err);
+            let err = angle_difference(est, erad(theta)).abs();
+            max_err = max_err.max(err.value);
             // Give the estimator one electrical revolution to settle
             // velocity, then record the worst tracking error.
             if k > 700 {
-                settled_err = settled_err.max(err);
+                settled_err = settled_err.max(err.value);
             }
         }
 
@@ -2713,13 +2782,16 @@ mod tests {
             t += 1000; // 1 ms per sector ≈ 10k eRPM
         }
         let running = hall.sample_at(t).unwrap().omega.abs();
-        assert!(running > 500.0, "sanity: motor was spinning, got {running}");
+        assert!(
+            running > erad_per_s(500.0),
+            "sanity: motor was spinning, got {running:?}"
+        );
 
         // 50 ms after the last edge, with no new edges:
         let stale = hall.sample_at(t + 50_000).unwrap();
         assert!(
             stale.omega.abs() < 0.05 * running,
-            "stale velocity {} did not decay (running was {})",
+            "stale velocity {:?} did not decay (running was {:?})",
             stale.omega,
             running
         );

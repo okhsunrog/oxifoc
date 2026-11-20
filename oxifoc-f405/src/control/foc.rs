@@ -189,7 +189,7 @@ fn publish_velocity_debug(
             Direction::CounterClockwise => -1,
             Direction::Stopped => 0,
         };
-        let age = hall.edge_age_s * 10_000.0;
+        let age = hall.edge_age.value * 10_000.0;
         if age > f32::from(u16::MAX) {
             frame.flags |= trace::HALL_AGE_CLIPPED;
         }
@@ -422,14 +422,15 @@ pub async fn init(
 
     // Hardware/controller setup is independent of the electrical model.
     // Boot and live writes install the same prepared model below.
-    let mut foc_controller = FocController::<_, FastSinCos>::new(initial_vbus_v);
+    let mut foc_controller =
+        FocController::<_, FastSinCos>::new(oxifoc_core::units::volts(initial_vbus_v));
 
     // Configure dead time compensation
     foc_controller
         .set_dead_time_comp_factor(crate::config::DEAD_TIME_COMP_NS as f32 * 1e-9 / timing.dt_s());
     defmt::unwrap!(
         foc_controller
-            .set_dead_time_comp_linear_region(crate::config::DEAD_TIME_COMP_LINEAR_CURRENT_A)
+            .set_dead_time_comp_linear_region(crate::config::DEAD_TIME_COMP_LINEAR_CURRENT)
     );
 
     // Use the same timer-derived period sent to the host and detection backend.
@@ -781,7 +782,7 @@ fn ADC() {
             driver
                 .phase()
                 .rotor_velocity()
-                .map_or(f32::NAN, |v| v.electrical_rad_s())
+                .map_or(f32::NAN, |v| v.velocity().value)
         });
         #[cfg(feature = "bench-raw-codec")]
         {
@@ -792,7 +793,7 @@ fn ADC() {
             outlier_active = !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
             #[cfg(feature = "bench-cycle-outliers")]
             {
-                outlier_velocity = output.map_or(0.0, |sample| sample.velocity_rad_s);
+                outlier_velocity = output.map_or(0.0, |sample| sample.velocity.value);
             }
         }
         #[cfg(feature = "isr-timing")]
@@ -801,7 +802,7 @@ fn ADC() {
             time_control_motion = matches!(
                 driver.mode(),
                 ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
-            ) && output.is_some_and(|sample| sample.velocity_rad_s != 0.0);
+            ) && output.is_some_and(|sample| sample.velocity.value != 0.0);
         }
         #[cfg(any(
             feature = "bench-executor-trace",

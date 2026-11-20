@@ -9,6 +9,7 @@
 /// power loss (in Watts) that's safe for detection measurements.
 /// This prevents overheating during resistance/inductance measurements.
 use crate::foc::fast_math::sqrtf;
+use crate::units::{ohms, watts};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -171,8 +172,11 @@ impl MotorParams {
     /// Formula: I_max = sqrt(max_power_loss / R / 1.5)
     pub fn calculate_max_current(&mut self, motor_size: MotorSize) {
         if self.resistance_ohm > 0.0 {
-            let max_power = motor_size.max_power_loss_w();
-            self.max_current_a = sqrtf(max_power / self.resistance_ohm / 1.5);
+            self.max_current_a = crate::motor::dissipation::heat_current_limit(
+                watts(motor_size.max_power_loss_w()),
+                ohms(self.resistance_ohm),
+            )
+            .value;
         }
     }
 

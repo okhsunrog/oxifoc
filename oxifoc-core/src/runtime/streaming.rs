@@ -306,7 +306,7 @@ pub fn build_fast_telemetry(
     // The fast frame stores mechanical RPM; host enrichment multiplies it
     // back by pole pairs for eRPM.
     let mech_rpm = if pole_pairs > 0 {
-        foc.velocity_rad_s / f32::from(pole_pairs) * (60.0 / TAU)
+        foc.velocity.value / f32::from(pole_pairs) * (60.0 / TAU)
     } else {
         0.0
     };
@@ -315,10 +315,12 @@ pub fn build_fast_telemetry(
         ib: adc.ib,
         ic: adc.ic,
         vbus: FastTelemetry::pack_vbus(adc.vbus_mv as f32 * 0.001),
-        angle: FastTelemetry::pack_angle(foc.angle_rad),
-        hall_angle: crate::types::HallAngle::from_radians(hall.map(|h| h.angle_rad)),
-        vd: FastTelemetry::pack_volt(foc.vd),
-        vq: FastTelemetry::pack_volt(foc.vq),
+        angle: FastTelemetry::pack_angle(foc.angle.value),
+        hall_angle: crate::types::HallAngle::from_radians(
+            hall.map(|h| crate::units::AngleRepr::radians(h.angle)),
+        ),
+        vd: FastTelemetry::pack_volt(foc.vd.value),
+        vq: FastTelemetry::pack_volt(foc.vq.value),
         rpm: FastTelemetry::pack_rpm(mech_rpm),
         seq: seq as u16,
         vphase_adc: adc.vphase.unwrap_or([u16::MAX; 3]),

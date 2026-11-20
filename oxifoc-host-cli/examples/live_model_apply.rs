@@ -1,6 +1,7 @@
 //! Stopped-only, volatile model replacement under continuous native telemetry.
 //! Cleanup runs on normal errors and unwinding; killing the process bypasses it.
 
+use oxifoc_core::units::Sign;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -180,13 +181,6 @@ impl Drop for Restore<'_> {
     }
 }
 
-struct DrainOnExit<'a>(&'a AtomicBool);
-impl Drop for DrainOnExit<'_> {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-}
-
 struct Events<'a> {
     start: Instant,
     seq: &'a AtomicU32,
@@ -214,7 +208,7 @@ fn exercise(
         select_source(runtime, PhaseSource::Observer, PhaseSource::Observer)?,
     );
     let mut partial = original.clone();
-    partial.flux_linkage_wb = 0.0;
+    partial.flux_linkage.value = 0.0;
     events.record("partial-model", checked_apply_model(runtime, &partial)?);
     let fallback = fresh_status(runtime)?;
     ensure!(
@@ -283,10 +277,10 @@ fn main() -> Result<()> {
         .context("MotorParams absent from group snapshot")?;
     let original = model(original_snapshot)?;
     ensure!(
-        original.resistance_ohm > 0.0
-            && original.inductance_d_h > 0.0
-            && original.inductance_q_h > 0.0
-            && original.flux_linkage_wb > 0.0
+        original.resistance.is_positive()
+            && original.inductance_d.is_positive()
+            && original.inductance_q.is_positive()
+            && original.flux_linkage.is_positive()
             && original.pole_pairs > 0,
         "a complete original model is required"
     );
@@ -312,7 +306,8 @@ fn main() -> Result<()> {
         entries: Vec::new(),
     };
     let (cap, checks, restore_result, stream_stop, drain_result) = std::thread::scope(|scope| {
-        let _drain_on_exit = DrainOnExit(&quit);
+        let _drain_on_exit =
+            std::mem::DropGuard::new(&quit, |quit| quit.store(true, Ordering::Relaxed));
         let receiver = scope.spawn(|| {
             let mut cap = cap;
             let result = (|| {
@@ -362,7 +357,7 @@ fn main() -> Result<()> {
                 .find(|s| s.group == before.group)
                 .is_some_and(|after| {
                     if before.group == ConfigGroupId::MotorParams {
-                        before.value == after.value && after.valid
+                        before == after && after.valid
                     } else {
                         before == after
                     }

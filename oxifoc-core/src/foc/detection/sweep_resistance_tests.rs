@@ -1,4 +1,5 @@
 use super::*;
+use crate::units::{amps, volts};
 use core::cell::Cell;
 use core::task::{Context, Poll, Waker};
 
@@ -37,7 +38,7 @@ impl DetectionHardware for Hardware {
     async fn send_command(&self, mode: ControlMode) {
         match mode {
             ControlMode::OpenLoop { current, .. } => {
-                self.current.set(current);
+                self.current.set(current.value);
                 self.stopped.set(false);
             }
             ControlMode::Stopped => {
@@ -50,8 +51,8 @@ impl DetectionHardware for Hardware {
 
     async fn wait_telemetry(&mut self) -> FocOutput {
         FocOutput {
-            vd: self.pi_slope * self.current.get(),
-            id: self.current.get(),
+            vd: volts(self.pi_slope * self.current.get()),
+            id: amps(self.current.get()),
             ..FocOutput::empty()
         }
     }

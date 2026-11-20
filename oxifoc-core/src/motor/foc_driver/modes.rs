@@ -11,6 +11,7 @@ use crate::foc::sensors::CurrentSensor;
 use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
+use crate::units::{amps, erad, erad_per_s, seconds, volts};
 
 /// Host-only comparison of prepared bounds against the same-cycle probes.
 #[cfg(all(test, feature = "pi-bounds-ahead"))]
@@ -111,7 +112,7 @@ where
             // carries less than the limit — the switch point is where the
             // two currents meet, so no step. VESC switches on the same vq
             // sign change.
-            self.park_iq = (out.vq * omega > 0.0).then_some(iq);
+            self.park_iq = (out.vq.value * omega > 0.0).then_some(iq);
             return Ok(out);
         }
         self.park_iq = None;
@@ -163,12 +164,12 @@ where
         // that with the real circulating currents.
         self.update_phase_with_applied_voltage(0.0, 0.0, i_alpha, i_beta, dt, now_ticks);
         Ok(FocOutput {
-            ia,
-            ib,
-            ic,
-            i_alpha,
-            i_beta,
-            angle_rad: self.phase.get().angle,
+            ia: amps(ia),
+            ib: amps(ib),
+            ic: amps(ic),
+            i_alpha: amps(i_alpha),
+            i_beta: amps(i_beta),
+            angle: self.phase.get().angle,
             ..Default::default()
         })
     }
@@ -228,7 +229,7 @@ where
         target.unwrap_or_else(|| {
             let error = self.position_target.minus(self.position.position());
             self.position_cfg
-                .speed_for(error, self.velocity_loop.config().accel_limit)
+                .speed_for(error, self.velocity_loop.config().accel_limit.value)
         })
     }
 
@@ -249,10 +250,10 @@ where
         let Some(velocity) = self.phase.rotor_velocity() else {
             return self.velocity_unavailable(dt, now_ticks);
         };
-        let omega = velocity.electrical_rad_s();
+        let omega = velocity.velocity().value;
         let epoch = self.phase.motion_reference_epoch();
         if !self.velocity_feedback_available || !self.velocity_schedule.matches_epoch(epoch) {
-            self.velocity_loop.reset(omega);
+            self.velocity_loop.reset(erad_per_s(omega));
             self.velocity_schedule.rearm(epoch);
             self.velocity_feedback_available = true;
         }
@@ -278,7 +279,7 @@ where
                 self.update_velocity_request(target, omega, dt, now_ticks);
             }
             super::velocity_schedule::VelocityTick::Reanchor => {
-                self.velocity_loop.reset(omega);
+                self.velocity_loop.reset(erad_per_s(omega));
                 self.velocity_schedule.rearm(epoch);
             }
         }
@@ -346,7 +347,7 @@ where
         let profile_start = crate::isr_prof::phase_now();
         let target_vel = self.velocity_target(target);
         let (tracking, mut blockage, mut voltage_clip) = self.velocity_schedule.take_feedback();
-        self.velocity_loop.track_grant(tracking);
+        self.velocity_loop.track_grant(amps(tracking));
         // The derating speed ceiling also caps the cruise reference: the
         // current-side rolloff alone would leave the PI winding up against
         // an unreachable target.
@@ -454,26 +455,46 @@ where
                 .phase
                 .bench_hall_position(_now_ticks)
                 .map_or(0.0, |angle| {
-                    let (_, cos) = S::sin_cos(wrap_angle(2.0 * (angle - 47.0_f32.to_radians())));
+                    let doubled =
+                        wrap_angle(2.0 * (angle - crate::units::erad(47.0_f32.to_radians())));
+                    let (_, cos) = S::sin_cos(crate::units::AngleRepr::radians(doubled));
                     position_feedforward * cos
                 });
-            self.velocity_loop.step_with_feedforward(
-                target_vel,
-                omega,
-                iq_min,
-                iq_max,
-                blockage,
-                dt,
-                feedforward,
-            )
+            self.velocity_loop
+                .step_with_feedforward(
+                    erad_per_s(target_vel),
+                    erad_per_s(omega),
+                    amps(iq_min),
+                    amps(iq_max),
+                    blockage,
+                    seconds(dt),
+                    amps(feedforward),
+                )
+                .value
         } else {
             self.velocity_loop
-                .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt)
+                .step_with_blockage(
+                    erad_per_s(target_vel),
+                    erad_per_s(omega),
+                    amps(iq_min),
+                    amps(iq_max),
+                    blockage,
+                    seconds(dt),
+                )
+                .value
         };
         #[cfg(not(feature = "bench-cogging-compensation"))]
         let iq_target = self
             .velocity_loop
-            .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt);
+            .step_with_blockage(
+                erad_per_s(target_vel),
+                erad_per_s(omega),
+                amps(iq_min),
+                amps(iq_max),
+                blockage,
+                seconds(dt),
+            )
+            .value;
         #[cfg(feature = "fast-telemetry")]
         if self.record_velocity_updates {
             use crate::velocity_telemetry as trace;
@@ -643,7 +664,7 @@ where
         let phase_out = self.phase.get();
         let angle_rad = phase_out.angle;
         self.controller
-            .set_actuation_advance(self.actuation_advance(phase_out.velocity, dt));
+            .set_actuation_advance(erad(self.actuation_advance(phase_out.velocity.value, dt)));
 
         // HFI carrier for this cycle (zero for non-HFI sources). Must be
         // read between get() and update(): the estimator demodulates the
@@ -660,21 +681,24 @@ where
         let prof_t1 = crate::isr_prof::now();
         crate::isr_prof::add(&crate::isr_prof::STEP_GATE, prof_t0, prof_t1);
         let out = self.controller.step_with_injection(
-            currents,
+            (amps(currents.0), amps(currents.1), amps(currents.2)),
             angle_rad,
             phase_out.velocity,
-            id_target,
-            iq_target,
+            amps(id_target),
+            amps(iq_target),
             vd_inject,
             vq_inject,
             max_duty,
-            dt,
+            seconds(dt),
         );
         let prof_t2 = crate::isr_prof::now();
         crate::isr_prof::add(&crate::isr_prof::STEP_CTRL, prof_t1, prof_t2);
 
         // Layer 2: Check measured current against hard overcurrent limit
-        if self.current_limits.is_overcurrent(out.id, out.iq) {
+        if self
+            .current_limits
+            .is_overcurrent(out.id.value, out.iq.value)
+        {
             self.pwm.disable();
             self.controller.reset();
             self.mode = ControlMode::Stopped;
@@ -684,7 +708,7 @@ where
         // Track the q-axis modulation for the bus-limit clamp (next cycle).
         self.update_bus_mod_q(self.controller.bus_mod_q(), dt);
         self.update_duty_utilization(out.vd, out.vq, dt);
-        self.last_iq_meas = out.iq;
+        self.last_iq_meas = out.iq.value;
 
         self.pwm.set_duties(out.duties);
         let prof_t3 = crate::isr_prof::now();
@@ -692,16 +716,16 @@ where
 
         // Feed the physics acceleration prior with the measured torque
         // current (see BackEmfObserver::set_accel_prior).
-        self.phase.note_torque_current(out.iq.abs(), dt);
+        self.phase.note_torque_current(out.iq.abs(), seconds(dt));
 
         // Update phase provider for next step (feeds observer if present).
         // The observer gets the PREVIOUS command — the voltage that was
         // actually acting while these currents were measured.
         self.update_phase_with_applied_voltage(
-            out.v_alpha,
-            out.v_beta,
-            out.i_alpha,
-            out.i_beta,
+            out.v_alpha.value,
+            out.v_beta.value,
+            out.i_alpha.value,
+            out.i_beta.value,
             dt,
             now_ticks,
         );
@@ -787,13 +811,21 @@ where
         // exact frame rate (also clears any stale advance from a previous
         // closed-loop cycle when velocity is 0).
         self.controller
-            .set_actuation_advance(self.actuation_advance(velocity_rad_s, dt));
-        let out = self
-            .controller
-            .step(currents, angle, id_target, iq_target, max_duty, dt);
+            .set_actuation_advance(erad(self.actuation_advance(velocity_rad_s, dt)));
+        let out = self.controller.step(
+            (amps(currents.0), amps(currents.1), amps(currents.2)),
+            erad(angle),
+            amps(id_target),
+            amps(iq_target),
+            max_duty,
+            seconds(dt),
+        );
 
         // Check measured overcurrent
-        if self.current_limits.is_overcurrent(out.id, out.iq) {
+        if self
+            .current_limits
+            .is_overcurrent(out.id.value, out.iq.value)
+        {
             self.pwm.disable();
             self.controller.reset();
             self.mode = ControlMode::Stopped;
@@ -804,10 +836,10 @@ where
 
         // Update phase provider (for sensor tracking, even in open-loop)
         self.update_phase_with_applied_voltage(
-            out.v_alpha,
-            out.v_beta,
-            out.i_alpha,
-            out.i_beta,
+            out.v_alpha.value,
+            out.v_beta.value,
+            out.i_alpha.value,
+            out.i_beta.value,
             dt,
             now_ticks,
         );
@@ -849,29 +881,37 @@ where
             .unwrap_or((i_alpha_m, i_beta_m));
         #[cfg(not(feature = "detection"))]
         let (i_comp_alpha, i_comp_beta) = (i_alpha_m, i_beta_m);
-        let mut out =
-            self.controller
-                .apply_dq(vd, vq, angle_rad, i_comp_alpha, i_comp_beta, max_duty);
+        let mut out = self.controller.apply_dq(
+            volts(vd),
+            volts(vq),
+            erad(angle_rad),
+            amps(i_comp_alpha),
+            amps(i_comp_beta),
+            max_duty,
+        );
 
         self.pwm.set_duties(out.duties);
 
         // Read currents for telemetry and phase observer
         if let Some(currents) = currents {
-            out.ia = currents.0;
-            out.ib = currents.1;
-            out.ic = currents.2;
+            out.ia.value = currents.0;
+            out.ib.value = currents.1;
+            out.ic.value = currents.2;
             let (i_alpha, i_beta) = (i_alpha_m, i_beta_m);
-            out.i_alpha = i_alpha;
-            out.i_beta = i_beta;
+            out.i_alpha.value = i_alpha;
+            out.i_beta.value = i_beta;
             let (sin_a, cos_a) = S::sin_cos(angle_rad);
             let (id, iq) = park(i_alpha, i_beta, sin_a, cos_a);
-            out.id = id;
-            out.iq = iq;
+            out.id.value = id;
+            out.iq.value = iq;
 
             // No PI loop reins the current in here — the commanded voltage
             // is applied verbatim — so the measured check is the only
             // software protection this mode has.
-            if self.current_limits.is_overcurrent(out.id, out.iq) {
+            if self
+                .current_limits
+                .is_overcurrent(out.id.value, out.iq.value)
+            {
                 self.pwm.disable();
                 self.controller.reset();
                 self.mode = ControlMode::Stopped;
@@ -880,10 +920,10 @@ where
         }
 
         self.update_phase_with_applied_voltage(
-            out.v_alpha,
-            out.v_beta,
-            out.i_alpha,
-            out.i_beta,
+            out.v_alpha.value,
+            out.v_beta.value,
+            out.i_alpha.value,
+            out.i_beta.value,
             dt,
             now_ticks,
         );
@@ -936,24 +976,34 @@ where
             ControlMode::CurrentControl {
                 iq_target,
                 id_target,
-            } => self.step_current_control(iq_target, id_target, dt, now_ticks),
+            } => self.step_current_control(iq_target.value, id_target.value, dt, now_ticks),
             ControlMode::Throttle { fraction } => {
                 self.step_current_control(self.throttle_current(fraction), 0.0, dt, now_ticks)
             }
             ControlMode::VelocityControl { target_vel } => {
-                self.step_velocity_control(target_vel, dt, now_ticks)
+                self.step_velocity_control(target_vel.value, dt, now_ticks)
             }
             ControlMode::PositionControl { .. } => self.step_position_control(dt, now_ticks),
             ControlMode::OpenLoop {
-                angle_rad,
+                angle: angle_rad,
                 current,
-                velocity_rad_s,
+                velocity: velocity_rad_s,
                 ..
-            } => self.step_open_loop(angle_rad, current, velocity_rad_s, dt, now_ticks),
-            ControlMode::DirectVoltage { vd, vq, angle_rad } => {
+            } => self.step_open_loop(
+                angle_rad.value,
+                current.value,
+                velocity_rad_s.value,
+                dt,
+                now_ticks,
+            ),
+            ControlMode::DirectVoltage {
+                vd,
+                vq,
+                angle: angle_rad,
+            } => {
                 // Host-supplied angle: wrap it (see step_open_loop).
-                let angle = wrap_angle(angle_rad);
-                self.step_direct_voltage(vd, vq, angle, dt, now_ticks)
+                let angle = wrap_angle(angle_rad.value);
+                self.step_direct_voltage(vd.value, vq.value, angle, dt, now_ticks)
             }
             ControlMode::Coast => {
                 // High-Z: all FETs off, motor spins freely.

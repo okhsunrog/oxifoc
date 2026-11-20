@@ -50,6 +50,10 @@ use crate::foc::fast_math::sqrtf;
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
+use crate::units::unit::{henry, ohm, radian_per_second, volt, weber};
+use crate::units::{
+    AngularVelocity, ElectricalResistance, amps, erad_per_s, henries, hertz, ohms, volts,
+};
 
 /// Conservative PI gains for detection (VESC-style).
 /// Motor parameters are unknown at detection time, so these must be safe
@@ -139,8 +143,8 @@ pub trait DetectionHardware {
         async {
             let output = self.wait_telemetry().await;
             Ok(ResistanceSample {
-                voltage_v: output.vd,
-                current_a: output.id,
+                voltage_v: output.vd.value,
+                current_a: output.id.value,
                 source: ResistanceVoltageSource::ControllerCommand,
             })
         }
@@ -326,7 +330,7 @@ async fn sample_voltage_current<H: DetectionHardware, T: Timer>(
             } else {
                 let output = hw.wait_telemetry().await;
                 hw.check_health()?;
-                (output.vd, output.id)
+                (output.vd.value, output.id.value)
             };
             if !voltage.is_finite() || !current.is_finite() {
                 return Err(DetectionError::HardwareFault);
@@ -392,7 +396,12 @@ async fn settled_hold_voltage<H: DetectionHardware, T: Timer>(
             hw.check_health()?;
             let output = hw.wait_telemetry().await;
             hw.check_health()?;
-            let values = [output.vd, output.vq, output.id, output.iq];
+            let values = [
+                output.vd.value,
+                output.vq.value,
+                output.id.value,
+                output.iq.value,
+            ];
             if values.iter().any(|v| !v.is_finite()) {
                 return Err(DetectionError::HardwareFault);
             }
@@ -440,16 +449,16 @@ async fn ramp_down_stationary_current<H: DetectionHardware, T: Timer>(
         let remaining = remaining_ms as f32 / duration_ms as f32;
         let current = hold_current_a * remaining * remaining * (3.0 - 2.0 * remaining);
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad,
-            current,
-            velocity_rad_s: 0.0,
+            angle: erad(angle_rad),
+            current: amps(current),
+            velocity: erad_per_s(0.0),
             pi_gains: None,
         })
         .await;
         T::after_millis(1).await;
         if current.abs() <= RELEASE_CURRENT_A
             && let Either::First(sample) = select(hw.wait_telemetry(), T::after_millis(2)).await
-            && sample.id * sample.id + sample.iq * sample.iq
+            && sample.id.value * sample.id.value + sample.iq.value * sample.iq.value
                 <= RELEASE_CURRENT_A * RELEASE_CURRENT_A
         {
             hw.check_health()?;
@@ -507,9 +516,9 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     for i in 1..=ramp_steps {
         let current = i_low * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current,
-            velocity_rad_s: 0.0,
+            angle: erad(0.0),
+            current: amps(current),
+            velocity: erad_per_s(0.0),
             pi_gains: if i == 1 { det_gains } else { None },
         })
         .await;
@@ -534,9 +543,9 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     for i in 1..=ramp_steps {
         let current = i_low + (i_high - i_low) * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current,
-            velocity_rad_s: 0.0,
+            angle: erad(0.0),
+            current: amps(current),
+            velocity: erad_per_s(0.0),
             pi_gains: None,
         })
         .await;
@@ -559,9 +568,9 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     for i in (0..ramp_steps).rev() {
         let current = i_high * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current,
-            velocity_rad_s: 0.0,
+            angle: erad(0.0),
+            current: amps(current),
+            velocity: erad_per_s(0.0),
             pi_gains: None,
         })
         .await;
@@ -606,17 +615,18 @@ pub async fn measure_resistance<H: DetectionHardware, T: Timer>(
     // A negative slope is not a physical positive resistor. In particular,
     // command-side deadtime compensation can make pre-compensation PI slope
     // negative; abs() used to hide that wrong voltage definition.
-    let resistance = delta_v / delta_i;
+    let resistance: ElectricalResistance = volts(delta_v) / amps(delta_i);
 
     if !resistance.is_finite() {
         return Err(DetectionError::HardwareFault);
     }
-    if resistance < 0.001 {
+    if resistance < super::resistance::MIN_VALID_RESISTANCE {
         return Err(DetectionError::OutOfRange);
     }
-    if resistance > 100.0 {
+    if resistance > super::resistance::MAX_VALID_RESISTANCE {
         return Err(DetectionError::MotorNotResponding);
     }
+    let resistance = resistance.get::<ohm>();
 
     info!(
         "Resistance: {} Ohm (dV={}, dI={})",
@@ -861,11 +871,17 @@ async fn hfi_collect<H: DetectionHardware, T: Timer, S: SinCos>(
         }
         response.record(&capture, lag)?;
         let first = capture.samples[lag - 1];
-        measurement.prime_currents(first.alpha, first.beta);
+        measurement.prime_currents(amps(first.alpha), amps(first.beta));
         for (index, sample) in capture.samples[lag..capture.len].iter().enumerate() {
             let (v_a, v_b) = program.injection::<S>(index);
             let angle = (index % FFT_SIZE) as f32 * core::f32::consts::TAU / FFT_SIZE as f32;
-            measurement.record(sample.alpha, sample.beta, angle, v_a, v_b);
+            measurement.record(
+                amps(sample.alpha),
+                amps(sample.beta),
+                angle,
+                volts(v_a),
+                volts(v_b),
+            );
             if index % super::excitation::PROCESS_CHUNK == super::excitation::PROCESS_CHUNK - 1 {
                 T::after_micros(100).await;
             }
@@ -955,9 +971,9 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
         hw.check_health()?;
         let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current,
-            velocity_rad_s: 0.0,
+            angle: erad(0.0),
+            current: amps(current),
+            velocity: erad_per_s(0.0),
             pi_gains: if i == 1 { det_gains } else { None },
         })
         .await;
@@ -1036,7 +1052,7 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     let voltage_limit = headroom.min(params.hfi_voltage_v);
     let mut v_run = (probe_v * 1.7).min(voltage_limit);
     let mut l_probe = 0.0;
-    let mut previous: Option<(f32, f32)> = None;
+    let mut previous: Option<(crate::units::Inductance, crate::units::Inductance)> = None;
     let mut qualified = false;
     let mut qualified_rms = 0.0;
     let pilot_params = InductanceParams {
@@ -1083,19 +1099,22 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
             Ok(result) => {
                 debug!(
                     "HFI pilot fit: Ld={}H, Lq={}H, residual={}",
-                    result.ld, result.lq, result.relative_error
+                    result.ld.get::<henry>(),
+                    result.lq.get::<henry>(),
+                    result.relative_error
                 );
                 // Preserve the independent magnitude cross-check. A gross
                 // model/probe disagreement must not request stronger pulses.
                 if rms >= i_target * 0.5
                     && l_probe > 0.0
-                    && !(0.4..=2.5).contains(&(result.l_avg / l_probe))
+                    && !(0.4..=2.5).contains(&(result.l_avg.get::<henry>() / l_probe))
                 {
                     return Err(DetectionError::LowConfidence);
                 }
                 quality_ok = result.relative_error < 0.4;
                 let stable = previous.is_some_and(|(ld, lq)| {
-                    (result.ld / ld - 1.0).abs() < 0.15 && (result.lq / lq - 1.0).abs() < 0.15
+                    ((result.ld / ld).value - 1.0).abs() < 0.15
+                        && ((result.lq / lq).value - 1.0).abs() < 0.15
                 });
                 let enough_current = (0.75..=1.25).contains(&(rms / i_target))
                     || ((v_run >= voltage_limit * 0.99
@@ -1169,17 +1188,18 @@ async fn measure_inductance_inner<H: DetectionHardware, T: Timer, S: SinCos>(
     // magnitude is not. A gross mismatch means the demod cannot be
     // trusted — LowConfidence sends the auto-ladder to the pulse method.
     if l_probe > 0.0 {
-        let ratio = result.l_avg / l_probe;
+        let ratio = result.l_avg.get::<henry>() / l_probe;
         if !(0.4..=2.5).contains(&ratio) {
             info!(
                 "HFI demod L={} disagrees with |Z| magnitude L={} — low confidence",
-                result.l_avg, l_probe
+                result.l_avg.get::<henry>(),
+                l_probe
             );
             return Err(DetectionError::LowConfidence);
         }
     }
 
-    Ok((result.ld, result.lq))
+    Ok((result.ld.get::<henry>(), result.lq.get::<henry>()))
 }
 
 /// Fixed context for a voltage-pulse session on one locked axis: where the
@@ -1255,8 +1275,11 @@ async fn pulse_once<H: DetectionHardware>(
     if !settled {
         return Err(DetectionError::LowConfidence);
     }
+    // FastSinCos, not libm: |err| < 1e-6 moves no detection result (see
+    // `detection_results_do_not_depend_on_the_sin_cos_backend`), while libm
+    // sinf/cosf link ~12 KB of f64 soft-float on the M4F.
     let capture = hw
-        .capture_voltage_burst::<crate::foc::trig::LibmSinCos>(program)
+        .capture_voltage_burst::<crate::foc::trig::FastSinCos>(program)
         .await?;
     capture.validate(usize::from(program.samples))?;
     let project = |sample: BurstSample| {
@@ -1364,9 +1387,9 @@ async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCo
             hw.check_health()?;
             let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
             hw.send_command(ControlMode::OpenLoop {
-                angle_rad: angle,
-                current,
-                velocity_rad_s: 0.0,
+                angle: erad(angle),
+                current: amps(current),
+                velocity: erad_per_s(0.0),
                 pi_gains: if first_cmd {
                     first_cmd = false;
                     det_gains
@@ -1432,8 +1455,8 @@ async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCo
         // d holding voltage continues aligning the rotor.
         let mut meas = VoltagePulseMeasurement::new(
             &cal_params,
-            pwm_freq_hz,
-            if q_axis { voltage.vq } else { vd_hold },
+            hertz(pwm_freq_hz),
+            volts(if q_axis { voltage.vq } else { vd_hold }),
         );
         // Residual dead-time the firmware's compensation did not cancel
         // (vd_hold − R·I_hold). Removed from the pulse so L is dead-time-immune;
@@ -1442,7 +1465,7 @@ async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCo
             "axis {}: vd_hold={} V, residual dead-time={} V, pulse={} V",
             axis,
             vd_hold,
-            meas.dead_time_v(),
+            meas.dead_time().get::<volt>(),
             pulse_voltage
         );
 
@@ -1460,13 +1483,13 @@ async fn measure_inductance_pulse_inner<H: DetectionHardware, T: Timer, S: SinCo
             // A real pulse dwarfs the noise; below the floor means an open
             // winding (no rise) — record a skip so finish() reports it.
             if after - before > PULSE_EDGE_THRESHOLD_A {
-                meas.record_pulse(before, after);
+                meas.record_pulse(amps(before), amps(after));
             } else {
-                meas.record_pulse(before, before);
+                meas.record_pulse(amps(before), amps(before));
             }
         }
 
-        let inductance = meas.finish();
+        let inductance = meas.finish().map(|l| l.get::<henry>());
 
         // Ramp down and de-energise BEFORE acting on the measurement result.
         // The last command was `DirectVoltage { vd_hold + pulse_v }`, sized
@@ -1572,9 +1595,9 @@ async fn measure_impedance_at_pulsating<H: DetectionHardware, S: SinCos>(
         let ph_now = phase;
         let (sin_c, _cos_c) = S::sin_cos(phase);
         hw.send_command(ControlMode::DirectVoltage {
-            vd: vd_hold + amp * sin_c,
-            vq: 0.0,
-            angle_rad: 0.0,
+            vd: volts(vd_hold + amp * sin_c),
+            vq: volts(0.0),
+            angle: erad(0.0),
         })
         .await;
         hist[k % 8] = ph_now;
@@ -1638,9 +1661,9 @@ pub async fn measure_impedance_sweep<H: DetectionHardware, T: Timer, S: SinCos>(
         hw.check_health()?;
         let current = params.hold_current_a * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current,
-            velocity_rad_s: 0.0,
+            angle: erad(0.0),
+            current: amps(current),
+            velocity: erad_per_s(0.0),
             pi_gains: if i == 1 { det_gains } else { None },
         })
         .await;
@@ -1775,7 +1798,7 @@ pub async fn measure_inductance_auto<H: DetectionHardware, T: Timer, S: SinCos>(
     {
         let hfi = measure_inductance::<H, T, S>(hw, params, pwm_freq_hz).await;
         match &hfi {
-            Ok((ld, lq)) if validate_inductance(*ld, *lq).is_ok() => return hfi,
+            Ok((ld, lq)) if validate_inductance(henries(*ld), henries(*lq)).is_ok() => return hfi,
             Ok(_) | Err(DetectionError::LowConfidence | DetectionError::OutOfRange) => {}
             _ => return hfi,
         }
@@ -1860,9 +1883,9 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
     for i in 1..=CAPTURE_STEPS {
         hw.check_health()?;
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0, // ignored: velocity mode
-            current: params.current_a * i as f32 / CAPTURE_STEPS as f32,
-            velocity_rad_s: CAPTURE_OMEGA_E,
+            angle: erad(0.0), // ignored: velocity mode
+            current: amps(params.current_a * i as f32 / CAPTURE_STEPS as f32),
+            velocity: erad_per_s(CAPTURE_OMEGA_E),
             pi_gains: if i == 1 { det_gains } else { None },
         })
         .await;
@@ -1878,7 +1901,7 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
     const BASELINE_SAMPLES: u32 = 10;
     for _ in 0..BASELINE_SAMPLES {
         let telem = hw.wait_telemetry().await;
-        v_baseline += sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        v_baseline += sqrtf(telem.vd.value * telem.vd.value + telem.vq.value * telem.vq.value);
         T::after_micros(500).await;
     }
     v_baseline /= BASELINE_SAMPLES as f32;
@@ -1902,16 +1925,16 @@ async fn spin_up_open_loop<H: DetectionHardware, T: Timer>(
         hw.check_health()?;
         omega = CAPTURE_OMEGA_E + (omega_cap - CAPTURE_OMEGA_E) * i as f32 / ramp_steps as f32;
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0, // ignored: firmware integrates velocity
-            current: params.current_a,
-            velocity_rad_s: omega,
+            angle: erad(0.0), // ignored: firmware integrates velocity
+            current: amps(params.current_a),
+            velocity: erad_per_s(omega),
             pi_gains: None,
         })
         .await;
         T::after_millis(step_ms).await;
 
         let telem = hw.wait_telemetry().await;
-        let v_mag = sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+        let v_mag = sqrtf(telem.vd.value * telem.vd.value + telem.vq.value * telem.vq.value);
         v_filt = if i == 1 {
             v_mag
         } else {
@@ -1952,9 +1975,9 @@ async fn settle_open_loop<H: DetectionHardware, T: Timer>(
     while remaining > 0 {
         hw.check_health()?;
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current: params.current_a,
-            velocity_rad_s: omega_e,
+            angle: erad(0.0),
+            current: amps(params.current_a),
+            velocity: erad_per_s(omega_e),
             pi_gains: None,
         })
         .await;
@@ -1978,9 +2001,9 @@ async fn ramp_down_open_loop<H: DetectionHardware, T: Timer>(
         hw.check_health()?;
         let progress = i as f32 / ramp_steps as f32;
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
-            current: current_a * progress,
-            velocity_rad_s: omega_e * progress,
+            angle: erad(0.0),
+            current: amps(current_a * progress),
+            velocity: erad_per_s(omega_e * progress),
             pi_gains: None,
         })
         .await;
@@ -2031,23 +2054,27 @@ pub async fn measure_flux_linkage<H: DetectionHardware, T: Timer>(
         // Same-value OpenLoop re-sends are already proven safe by the ramp.
         if i % 256 == 0 {
             hw.send_command(ControlMode::OpenLoop {
-                angle_rad: 0.0,
-                current: params.current_a,
-                velocity_rad_s: omega_e,
+                angle: erad(0.0),
+                current: amps(params.current_a),
+                velocity: erad_per_s(omega_e),
                 pi_gains: None,
             })
             .await;
         }
         T::after_micros(500).await; // ~2 kHz sampling
         let telem = hw.wait_telemetry().await;
-        measurement.record(telem.vq, telem.iq, omega_e);
+        measurement.record(
+            volts(telem.vq.value),
+            amps(telem.iq.value),
+            erad_per_s(omega_e),
+        );
     }
 
     ramp_down_open_loop::<H, T>(hw, params.current_a, omega_e, params.ramp_time_ms).await?;
 
     let flux_linkage = measurement.finish()?;
     info!("Flux linkage measurement complete");
-    Ok(flux_linkage)
+    Ok(flux_linkage.get::<weber>())
 }
 
 /// Measure flux linkage via the back-EMF vector (driven, load-angle
@@ -2074,8 +2101,8 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
     }
 
     let mut measurement = MagnitudeFluxMeasurement::new(
-        params.resistance_ohm,
-        params.inductance_h,
+        ohms(params.resistance_ohm),
+        henries(params.inductance_h),
         params.num_samples,
     );
 
@@ -2089,23 +2116,29 @@ pub async fn measure_flux_linkage_magnitude<H: DetectionHardware, T: Timer>(
         // `measure_flux_linkage` above.
         if i % 256 == 0 {
             hw.send_command(ControlMode::OpenLoop {
-                angle_rad: 0.0,
-                current: params.current_a,
-                velocity_rad_s: omega_e,
+                angle: erad(0.0),
+                current: amps(params.current_a),
+                velocity: erad_per_s(omega_e),
                 pi_gains: None,
             })
             .await;
         }
         T::after_micros(500).await; // ~2 kHz sampling
         let telem = hw.wait_telemetry().await;
-        measurement.record(telem.vd, telem.vq, telem.id, telem.iq, omega_e);
+        measurement.record(
+            volts(telem.vd.value),
+            volts(telem.vq.value),
+            amps(telem.id.value),
+            amps(telem.iq.value),
+            erad_per_s(omega_e),
+        );
     }
 
     ramp_down_open_loop::<H, T>(hw, params.current_a, omega_e, params.ramp_time_ms).await?;
 
     let flux = measurement.finish()?;
     info!("Back-EMF-vector flux linkage measurement complete");
-    Ok(flux)
+    Ok(flux.get::<weber>())
 }
 
 /// Measure flux linkage using spin-down (undriven) back-EMF.
@@ -2157,7 +2190,11 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
                 break;
             }
             if let Some(lambda) = hall_measurement.record(sample)? {
-                info!("Flux coast turn: seq={} lambda={}", sample.sequence, lambda);
+                info!(
+                    "Flux coast turn: seq={} lambda={}",
+                    sample.sequence,
+                    lambda.get::<weber>()
+                );
             }
             if hall_measurement.has_enough_samples() {
                 break;
@@ -2167,7 +2204,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
             return Err(DetectionError::LowConfidence);
         }
 
-        if !measurement.record(v_bemf, sample.omega_e) {
+        if !measurement.record(volts(v_bemf), erad_per_s(sample.omega_e)) {
             // omega below threshold — motor has slowed too much
             break;
         }
@@ -2186,7 +2223,7 @@ pub async fn measure_flux_linkage_spindown<H: DetectionHardware, T: Timer>(
         measurement.finish()?
     };
     info!("Spin-down flux linkage measurement complete");
-    Ok(flux)
+    Ok(flux.get::<weber>())
 }
 
 /// Measure flux linkage: spin-down first (when the hardware can read
@@ -2365,7 +2402,10 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
 
     // Step 4: Calculate PI gains
     info!("Step 4/4: PI auto-tuning");
-    let mut bandwidth = estimate_bandwidth(result.params.inductance_avg_h, params.pwm_freq_hz);
+    let mut bandwidth = estimate_bandwidth(
+        henries(result.params.inductance_avg_h),
+        hertz(params.pwm_freq_hz),
+    );
     // Voltage limit: a worst-case current step of i_max must not demand
     // more than the bus can give (V ≈ Kp·ΔI, Kp = L·ω_bw). Without this a
     // high-R/high-L motor gets gains that slam the PI into saturation on
@@ -2373,10 +2413,11 @@ pub async fn run_full_detection<H: DetectionHardware, T: Timer, S: SinCos>(
     let i_max = result.params.max_current_a.min(params.current_max);
     let l_avg = result.params.inductance_avg_h;
     if i_max > 0.0 && l_avg > 0.0 {
-        let bw_voltage_limit = (params.vbus * 0.577 / i_max) / l_avg;
+        let bw_voltage_limit: AngularVelocity =
+            (volts(params.vbus * 0.577) / amps(i_max) / henries(l_avg)).into();
         bandwidth = bandwidth.min(bw_voltage_limit);
     }
-    if let Some(gains) = calculate_foc_gains(&result.params, bandwidth) {
+    if let Some(gains) = calculate_foc_gains(&result.params, bandwidth.get::<radian_per_second>()) {
         // Use average of d/q gains for simplicity
         result.kp_current = (gains.kp_d + gains.kp_q) / 2.0;
         result.ki_current = (gains.ki_d + gains.ki_q) / 2.0;
@@ -2399,6 +2440,7 @@ pub use crate::foc::hall_calibration::HallReader;
 use crate::foc::hall_calibration::{
     HallCalibrationParams, HallCalibrationResult, HallCalibrator, HallSweepDirection,
 };
+use crate::units::erad;
 
 // Establish motion in each direction before collecting repeatability data.
 // Measured turns and all quality gates remain unchanged; native telemetry also
@@ -2435,11 +2477,11 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
 
     for i in 1..=ramp_steps {
         hw.check_health()?;
-        let current = params.current_amps * (i as f32 / ramp_steps as f32);
+        let current = params.current * (i as f32 / ramp_steps as f32);
         hw.send_command(ControlMode::OpenLoop {
-            angle_rad: 0.0,
+            angle: erad(0.0),
             current,
-            velocity_rad_s: 0.0,
+            velocity: erad_per_s(0.0),
             pi_gains: if i == 1 { det_gains } else { None },
         })
         .await;
@@ -2467,12 +2509,12 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
                 } else {
                     degrees_per_sweep - 1 - deg
                 };
-                let angle_rad = actual_deg as f32 * core::f32::consts::TAU / 360.0;
+                let angle = erad(actual_deg as f32 * core::f32::consts::TAU / 360.0);
 
                 hw.send_command(ControlMode::OpenLoop {
-                    angle_rad,
-                    current: params.current_amps,
-                    velocity_rad_s: 0.0,
+                    angle,
+                    current: params.current,
+                    velocity: erad_per_s(0.0),
                     pi_gains: None,
                 })
                 .await;
@@ -2481,7 +2523,7 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
                 let hall_state = hall_reader.read_hall_state();
                 if turn >= HALL_SETTLING_TURNS_PER_DIRECTION {
                     calibrator.record_directed(
-                        angle_rad,
+                        angle,
                         hall_state,
                         if forward {
                             HallSweepDirection::Positive
@@ -2494,7 +2536,8 @@ pub async fn calibrate_hall<H: DetectionHardware, T: Timer, R: HallReader>(
         }
     }
 
-    ramp_down_stationary_current::<H, T>(hw, params.current_amps, 0.0, params.ramp_time_ms).await?;
+    ramp_down_stationary_current::<H, T>(hw, params.current.value, 0.0, params.ramp_time_ms)
+        .await?;
     T::after_millis(100).await;
 
     // Step 4: Compute result

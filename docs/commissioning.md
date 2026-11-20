@@ -60,7 +60,7 @@ persistence, which requires a stopped controller. For example, while stopped:
 
 ```sh
 just cli-bridge config get motor-feedback
-just cli-bridge config set motor-feedback mode=hall blend_low_erad_s=150 blend_high_erad_s=300 --volatile
+just cli-bridge config set motor-feedback mode=hall blend_low=150 blend_high=300 --volatile
 just cli-bridge config get pwm-config
 ```
 

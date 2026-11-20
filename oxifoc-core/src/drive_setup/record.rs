@@ -3,6 +3,7 @@
 use super::{DriveCurrent, DriveSetup, Feedback, SetupError, ValidatedDriveSetup};
 use crate::storage::{HallCalibrationConfig, HallTransitionGeometryConfig, MotorParamsConfig};
 use crate::types::commissioning::SourceLimits;
+use crate::units::{ElectricalAngle, amps, henries, ohms, watts, webers};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -30,14 +31,14 @@ pub struct SetupV1 {
 enum FeedbackV1 {
     Sensorless,
     Hall {
-        angles: [f32; 8],
+        angles: [ElectricalAngle; 8],
         valid: [bool; 8],
         geometry: Option<GeometryV1>,
     },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct GeometryV1 {
-    entry_angles: [f32; 8],
+    entry_angles: [ElectricalAngle; 8],
     next_states: [u8; 8],
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -51,14 +52,14 @@ impl From<&ValidatedDriveSetup> for SetupRecord {
         let setup = value.setup();
         let motor = &setup.motor;
         Self::V1(SetupV1 {
-            resistance: motor.resistance_ohm,
-            ld: motor.inductance_d_h,
-            lq: motor.inductance_q_h,
-            flux: motor.flux_linkage_wb,
+            resistance: motor.resistance.value,
+            ld: motor.inductance_d.value,
+            lq: motor.inductance_q.value,
+            flux: motor.flux_linkage.value,
             pole_pairs: motor.pole_pairs,
-            power_loss: motor.max_power_loss_w,
-            ld_fundamental: motor.ld_fundamental_h,
-            lq_fundamental: motor.lq_fundamental_h,
+            power_loss: motor.max_power_loss.value,
+            ld_fundamental: motor.ld_fundamental.value,
+            lq_fundamental: motor.lq_fundamental.value,
             feedback: match &setup.feedback {
                 Feedback::Sensorless => FeedbackV1::Sensorless,
                 Feedback::Hall(h) => FeedbackV1::Hall {
@@ -70,8 +71,8 @@ impl From<&ValidatedDriveSetup> for SetupRecord {
                     }),
                 },
             },
-            input_a: setup.source.input_a,
-            regen_a: setup.source.regen_a,
+            input_a: setup.source.input.value,
+            regen_a: setup.source.regen.value,
             current: match setup.current {
                 DriveCurrent::Auto => CurrentV1::Auto,
                 DriveCurrent::Override(a) => CurrentV1::Override(a),
@@ -89,16 +90,16 @@ impl SetupRecord {
         let Self::V1(v) = self;
         DriveSetup {
             motor: MotorParamsConfig {
-                resistance_ohm: v.resistance,
-                inductance_d_h: v.ld,
-                inductance_q_h: v.lq,
-                flux_linkage_wb: v.flux,
+                resistance: ohms(v.resistance),
+                inductance_d: henries(v.ld),
+                inductance_q: henries(v.lq),
+                flux_linkage: webers(v.flux),
                 pole_pairs: v.pole_pairs,
-                max_power_loss_w: v.power_loss,
-                ld_fundamental_h: v.ld_fundamental,
-                lq_fundamental_h: v.lq_fundamental,
+                max_power_loss: watts(v.power_loss),
+                ld_fundamental: henries(v.ld_fundamental),
+                lq_fundamental: henries(v.lq_fundamental),
                 // Derived by validation, not stored twice.
-                max_current_a: 0.0,
+                max_current: amps(0.0),
             },
             feedback: match v.feedback {
                 FeedbackV1::Sensorless => Feedback::Sensorless,
@@ -116,8 +117,8 @@ impl SetupRecord {
                 }),
             },
             source: SourceLimits {
-                input_a: v.input_a,
-                regen_a: v.regen_a,
+                input: amps(v.input_a),
+                regen: amps(v.regen_a),
             },
             current: match v.current {
                 CurrentV1::Auto => DriveCurrent::Auto,
@@ -131,6 +132,7 @@ impl SetupRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{amps, henries, ohms, watts, webers};
     fn ready<T>(f: impl Future<Output = T>) -> T {
         let mut f = core::pin::pin!(f);
         match f.as_mut().poll(&mut core::task::Context::from_waker(
@@ -152,29 +154,29 @@ mod tests {
         type Flash = MockFlashBase<4, 4, 128>;
         let old = DriveSetup {
             motor: MotorParamsConfig {
-                resistance_ohm: 0.063,
-                inductance_d_h: 31e-6,
-                inductance_q_h: 51e-6,
-                flux_linkage_wb: 0.004,
+                resistance: ohms(0.063),
+                inductance_d: henries(31e-6),
+                inductance_q: henries(51e-6),
+                flux_linkage: webers(0.004),
                 pole_pairs: 7,
-                max_power_loss_w: 120.0,
+                max_power_loss: watts(120.0),
                 ..Default::default()
             },
             feedback: Feedback::Hall(HallCalibrationConfig::default()),
             current: DriveCurrent::Auto,
             source: SourceLimits {
-                input_a: 5.0,
-                regen_a: 0.0,
+                input: amps(5.0),
+                regen: amps(0.0),
             },
         }
         .validate(70.0, 30.0)
         .unwrap();
         let mut next = old.setup().clone();
         next.feedback = Feedback::Sensorless;
-        next.motor.resistance_ohm = 0.05;
+        next.motor.resistance.value = 0.05;
         next.source = SourceLimits {
-            input_a: 12.0,
-            regen_a: 2.0,
+            input: amps(12.0),
+            regen: amps(2.0),
         };
         let next = next.validate(70.0, 30.0).unwrap();
         let mut store = MapStorage::<ConfigKey, _, _>::new(
@@ -237,19 +239,19 @@ mod tests {
             for current in [DriveCurrent::Auto, DriveCurrent::Override(20.0)] {
                 let setup = DriveSetup {
                     motor: MotorParamsConfig {
-                        resistance_ohm: 0.063,
-                        inductance_d_h: 31e-6,
-                        inductance_q_h: 51e-6,
-                        flux_linkage_wb: 0.004,
+                        resistance: ohms(0.063),
+                        inductance_d: henries(31e-6),
+                        inductance_q: henries(51e-6),
+                        flux_linkage: webers(0.004),
                         pole_pairs: 7,
-                        max_power_loss_w: 120.0,
+                        max_power_loss: watts(120.0),
                         ..Default::default()
                     },
                     feedback: feedback.clone(),
                     current,
                     source: SourceLimits {
-                        input_a: 5.0,
-                        regen_a: 0.0,
+                        input: amps(5.0),
+                        regen: amps(0.0),
                     },
                 }
                 .validate(70.0, 30.0)
@@ -264,7 +266,7 @@ mod tests {
                 );
                 let lowered = loaded.validate(70.0, 13.0);
                 match current {
-                    DriveCurrent::Auto => assert_eq!(lowered.unwrap().limits().max_iq_a, 10.0),
+                    DriveCurrent::Auto => assert_eq!(lowered.unwrap().limits().max_iq.value, 10.0),
                     DriveCurrent::Override(_) => {
                         assert!(matches!(lowered, Err(SetupError::Current)));
                     }

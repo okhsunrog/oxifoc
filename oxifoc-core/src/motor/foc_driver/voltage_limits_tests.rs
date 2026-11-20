@@ -1,6 +1,7 @@
 use super::*;
 use crate::foc::fault::{FaultCategory, FaultRegistry, StandardFault};
 use crate::storage::VoltageLimitsConfig;
+use crate::units::amps;
 
 fn board() -> BoardConfig {
     BoardConfig {
@@ -91,8 +92,8 @@ fn invalid_or_running_voltage_updates_leave_previous_protection_intact() {
         assert_eq!(driver.protection.overvoltage_threshold(), 26.0);
     }
     driver.set_mode(ControlMode::CurrentControl {
-        id_target: 0.0,
-        iq_target: 0.2,
+        id_target: amps(0.0),
+        iq_target: amps(0.2),
     });
     assert_eq!(
         driver.apply_voltage_limits(

@@ -105,8 +105,10 @@ def seg_features(sl, iq_cmd=None, motor=None):
     # ≈ 0 → phantom / standstill behind a spinning claim. Only meaningful
     # above the dead-time distortion floor (~0.15 V on the bench board).
     bemf_ratio = None
-    if motor and motor.get("resistance_ohm") and motor.get("flux_linkage_wb"):
-        r, lam = motor["resistance_ohm"], motor["flux_linkage_wb"]
+    # ICD v24 dropped the unit suffixes; older captures keep them.
+    r = motor and (motor.get("resistance") or motor.get("resistance_ohm"))
+    lam = motor and (motor.get("flux_linkage") or motor.get("flux_linkage_wb"))
+    if r and lam:
         idq = np.hypot(sl["id_a"].to_numpy(), iq)
         bemf_meas = float(np.mean(np.maximum(vmag - r * idq, 0.0)))
         bemf_claim = lam * abs(float(erpm.mean())) * 2.0 * np.pi / 60.0
@@ -261,7 +263,10 @@ def fmt_manifest(md, integ):
     L += [
         f"hw/mcu/sw  : {md.get('oxifoc.hw','?')} / {md.get('oxifoc.mcu','?')} / {md.get('oxifoc.sw','?')}",
         f"rates      : foc={md.get('oxifoc.foc_freq_hz','?')}Hz fast={md.get('oxifoc.fast_hz_actual','?')}Hz (req {md.get('oxifoc.fast_hz_requested','?')}) decim M={integ['decimation_m']}",
-        f"motor      : R={mp.get('resistance_ohm')}Ω Ld={mp.get('inductance_d_h')}H Lq={mp.get('inductance_q_h')}H λ={mp.get('flux_linkage_wb')}Wb PP={mp.get('pole_pairs')}",
+        f"motor      : R={mp.get('resistance', mp.get('resistance_ohm'))}Ω "
+        f"Ld={mp.get('inductance_d', mp.get('inductance_d_h'))}H "
+        f"Lq={mp.get('inductance_q', mp.get('inductance_q_h'))}H "
+        f"λ={mp.get('flux_linkage', mp.get('flux_linkage_wb'))}Wb PP={mp.get('pole_pairs')}",
         f"pi-gains   : kp={pi.get('kp')} ki={pi.get('ki')} bw={pi.get('bandwidth_rad_s')}rad/s",
         f"limits     : max_iq={lim.get('max_iq_a')}A bus_in={lim.get('bus_in_max_a')}A regen={lim.get('bus_regen_max_a')}A dissipation={lim.get('max_dissipation_w')}W",
         "caveat     : erpm/angle = ACTIVE phase source (startup openloop during"

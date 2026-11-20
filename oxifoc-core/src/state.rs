@@ -32,6 +32,7 @@ use crate::motor::{ControlMode, FocDriver};
 use crate::types::{
     DriveOwnership, DriveSessionId, MotorCommand, MotorCommandOutcome, MotorRequest, MotorState,
 };
+use crate::units::si;
 
 // ============================================================================
 // Global Communication Channels
@@ -1023,7 +1024,7 @@ where
                 continue;
             }
             DriverCommand::SetPiGains { kp, ki } => {
-                foc.set_current_pi_gains(kp, ki);
+                foc.set_current_pi_gains(si(kp), si(ki));
                 continue;
             }
             DriverCommand::SetDecoupling(d) => {
@@ -1552,8 +1553,10 @@ where
             }
             let program = ex.program?;
             let starting_in_hold = matches!(driver.mode(), ControlMode::OpenLoop {
-                velocity_rad_s: 0.0, current, angle_rad, ..
-            } if current == program.hold_current && angle_rad == program.angle);
+                velocity, current, angle: angle_rad, ..
+            } if velocity.value == 0.0
+                && current.value == program.hold_current
+                && angle_rad.value == program.angle);
             if fault_registry.any_stopping()
                 || driver.failsafe_active()
                 || saw_set_mode
@@ -1631,7 +1634,9 @@ where
             // Kill detector; both deliberately single-sample — current
             // moves fast, unlike voltage).
             let limit = board.max_phase_current_a;
-            if (telem.ia.abs() > limit || telem.ib.abs() > limit || telem.ic.abs() > limit)
+            if (telem.ia.value.abs() > limit
+                || telem.ib.value.abs() > limit
+                || telem.ic.value.abs() > limit)
                 && !fault_registry.has_category(FaultCategory::OverCurrent)
                 && let Some(f) = F::from_category(FaultCategory::OverCurrent)
             {
@@ -1639,9 +1644,9 @@ where
                 #[cfg(feature = "defmt")]
                 defmt::error!(
                     "SW overcurrent FAULT: ia={}, ib={}, ic={}",
-                    telem.ia,
-                    telem.ib,
-                    telem.ic
+                    telem.ia.value,
+                    telem.ib.value,
+                    telem.ic.value
                 );
             }
             Some(telem)
@@ -1699,9 +1704,11 @@ where
             let Some(program) = ex.program else {
                 return (false, false);
             };
-            let (alpha, beta) = board
-                .current_sense_topology
-                .clarke((telem.ia, telem.ib, telem.ic));
+            let (alpha, beta) = board.current_sense_topology.clarke((
+                telem.ia.value,
+                telem.ib.value,
+                telem.ic.value,
+            ));
             if !program.current_in_budget(alpha, beta) {
                 ex.abort(crate::foc::detection::DetectionError::HardwareFault);
                 cancel_detection();
@@ -1789,22 +1796,17 @@ pub async fn measure_current_offsets(
     if CURRENT_OFFSET_REQUEST_PENDING.swap(true, Ordering::AcqRel) {
         return Err(CurrentOffsetError::Busy);
     }
-    struct EnqueueGuard(bool);
-    impl Drop for EnqueueGuard {
-        fn drop(&mut self) {
-            if self.0 {
-                CURRENT_OFFSET_REQUEST_PENDING.store(false, Ordering::Release);
-            }
-        }
-    }
-    let mut guard = EnqueueGuard(true);
+    // Release the claim if this waiter is cancelled before the request is queued.
+    let enqueue = core::mem::DropGuard::new((), |()| {
+        CURRENT_OFFSET_REQUEST_PENDING.store(false, Ordering::Release);
+    });
     CURRENT_OFFSET_DONE.reset();
     CMD_CHANNEL
         .send(DriverCommand::StartCurrentOffsetCalibration(request))
         .await;
     // From here the queued ISR operation owns clearing the pending flag,
     // even if this waiter is cancelled.
-    guard.0 = false;
+    core::mem::DropGuard::dismiss(enqueue);
     CURRENT_OFFSET_DONE.wait().await
 }
 
@@ -1875,7 +1877,7 @@ mod tests {
         seq: u32,
     ) {
         let mut foc = FocOutput::empty();
-        foc.iq = seq as f32;
+        foc.iq.value = seq as f32;
         critical_section::with(|cs| {
             let mut state = state.borrow(cs).borrow_mut();
             state.update_adc(AdcSnapshot::new(0, 0, 0, 24_000, seq));
@@ -1974,7 +1976,7 @@ mod tests {
             critical_section::with(|cs| {
                 let state = state.borrow(cs).borrow();
                 assert_ne!(state.last_adc.seq, previous_seq, "{point:?}");
-                assert_eq!((state.last_adc.seq, state.last_foc.iq), (1, 1.0));
+                assert_eq!((state.last_adc.seq, state.last_foc.iq.value), (1, 1.0));
             });
             let expected_wakes = usize::from(matches!(
                 point,

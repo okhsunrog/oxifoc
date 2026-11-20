@@ -575,7 +575,7 @@ enum ConfigAction {
     Set {
         #[arg(help = "Group name, e.g. current-limits")]
         group: String,
-        #[arg(required = true, help = "field=value pairs, e.g. max_iq_a=5.0")]
+        #[arg(required = true, help = "field=value pairs, e.g. max_iq=5.0")]
         fields: Vec<String>,
         #[arg(
             long,
@@ -715,7 +715,7 @@ fn main() -> Result<()> {
                     "mcu": info.mcu.as_str(),
                     "uuid": info.uuid.as_str(),
                     "foc_freq_hz": info.foc_freq_hz,
-                    "max_current_a": info.max_current_a,
+                    "max_current_a": info.max_current_a.value,
                     "calib": info.calib,
                 }),
                 format!(
@@ -725,7 +725,7 @@ fn main() -> Result<()> {
                     info.sw,
                     info.uuid,
                     info.foc_freq_hz,
-                    info.max_current_a,
+                    info.max_current_a.value,
                     info.calib.adc_vref_mv
                 ),
             );
@@ -787,8 +787,8 @@ fn main() -> Result<()> {
             let status = send_motor_acked(
                 &runtime,
                 ControlMode::CurrentControl {
-                    iq_target: iq,
-                    id_target: id,
+                    iq_target: oxifoc_core::units::amps(iq),
+                    id_target: oxifoc_core::units::amps(id),
                 },
             )?;
             emit(
@@ -845,8 +845,12 @@ fn main() -> Result<()> {
             );
         }
         Command::Velocity { rad_s } => {
-            let status =
-                send_motor_acked(&runtime, ControlMode::VelocityControl { target_vel: rad_s })?;
+            let status = send_motor_acked(
+                &runtime,
+                ControlMode::VelocityControl {
+                    target_vel: oxifoc_core::units::erad_per_s(rad_s),
+                },
+            )?;
             emit(
                 json,
                 json!({"sent": {"velocity_rad_s": rad_s}, "device": format!("{status:?}")}),
@@ -861,9 +865,9 @@ fn main() -> Result<()> {
             let status = send_motor_acked(
                 &runtime,
                 ControlMode::OpenLoop {
-                    angle_rad: angle,
-                    current,
-                    velocity_rad_s: velocity,
+                    angle: oxifoc_core::units::erad(angle),
+                    current: oxifoc_core::units::amps(current),
+                    velocity: oxifoc_core::units::erad_per_s(velocity),
                     pi_gains: None,
                 },
             )?;
@@ -877,9 +881,9 @@ fn main() -> Result<()> {
             let status = send_motor_acked(
                 &runtime,
                 ControlMode::DirectVoltage {
-                    vd,
-                    vq,
-                    angle_rad: angle,
+                    vd: oxifoc_core::units::volts(vd),
+                    vq: oxifoc_core::units::volts(vq),
+                    angle: oxifoc_core::units::erad(angle),
                 },
             )?;
             emit(

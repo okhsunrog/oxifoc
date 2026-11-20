@@ -436,7 +436,7 @@ def main():
                     row["configuration"] = call(image, "config", "dump")
                     if case in ["brake-authority", "brake-transitions"]:
                         assert isinstance(row["before"]["phase_source"], dict) and "HallToObserver" in row["before"]["phase_source"]
-                        call(image, "config", "set", "current-limits", "max_dissipation_w=0.05", "bus_regen_max_a=0", "--volatile")
+                        call(image, "config", "set", "current-limits", "max_dissipation=0.05", "bus_regen_max=0", "--volatile")
                     row["active_limits"] = call(image, "config", "get", "current-limits")
                     if case in ["velocity450", "brake-authority"]:
                         plan = dict(name=name, capture=dict(tail_s=.4, fast_hz=manifest["capture_hz"]), terminal="stop",

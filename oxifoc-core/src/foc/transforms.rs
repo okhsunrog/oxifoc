@@ -8,8 +8,23 @@
 //!
 //! Based on Microsemi implementation guide and foc-calebfletcher reference.
 
+use core::ops::{Add, Div, Mul, Neg, Sub};
+
 use super::constants::{FRAC_1_SQRT_3, SQRT_3};
 use crate::types::CurrentSenseTopology;
+
+/// A value the frame transforms act on: `f32` or a quantity (current,
+/// voltage). The transforms only add, subtract and scale by plain factors,
+/// so a quantity keeps its type and an `f32` compiles to the same code.
+pub trait PhaseSignal:
+    Copy + Add<Output = Self> + Sub<Output = Self> + Neg<Output = Self> + Div<f32, Output = Self>
+{
+}
+
+impl<T> PhaseSignal for T where
+    T: Copy + Add<Output = T> + Sub<Output = T> + Neg<Output = T> + Div<f32, Output = T>
+{
+}
 
 /// Clarke transform: Convert 3-phase currents (ABC) to 2-phase stationary frame (αβ)
 ///
@@ -24,7 +39,10 @@ use crate::types::CurrentSenseTopology;
 /// assert!(alpha > 0.0 && beta > 0.0);
 /// ```
 #[inline]
-pub fn clarke(ia: f32, ib: f32) -> (f32, f32) {
+pub fn clarke<T: PhaseSignal>(ia: T, ib: T) -> (T, T)
+where
+    f32: Mul<T, Output = T>,
+{
     // Alpha axis aligned with phase A
     let alpha = ia;
 
@@ -40,7 +58,11 @@ pub fn clarke(ia: f32, ib: f32) -> (f32, f32) {
 /// Raw phase currents must still be retained for independent protection and
 /// diagnostics; this projection is not a sensor-validity check.
 #[inline]
-pub fn clarke_three(ia: f32, ib: f32, ic: f32) -> (f32, f32) {
+pub fn clarke_three<T>(ia: T, ib: T, ic: T) -> (T, T)
+where
+    f32: Mul<T, Output = T>,
+    T: PhaseSignal + Mul<f32, Output = T>,
+{
     (
         (2.0 * ia - ib - ic) * (1.0 / 3.0),
         (ib - ic) * FRAC_1_SQRT_3,
@@ -51,7 +73,11 @@ impl CurrentSenseTopology {
     /// Project only the channels the hardware declares valid. In TwoShunt
     /// mode C is ignored, including a placeholder or non-finite value.
     #[inline]
-    pub fn clarke(self, currents: (f32, f32, f32)) -> (f32, f32) {
+    pub fn clarke<T>(self, currents: (T, T, T)) -> (T, T)
+    where
+        f32: Mul<T, Output = T>,
+        T: PhaseSignal + Mul<f32, Output = T>,
+    {
         let (ia, ib, ic) = currents;
         match self {
             Self::TwoShunt => clarke(ia, ib),
@@ -73,7 +99,10 @@ impl CurrentSenseTopology {
 /// assert!((va + vb + vc).abs() < 1e-6);
 /// ```
 #[inline]
-pub fn inverse_clarke(alpha: f32, beta: f32) -> (f32, f32, f32) {
+pub fn inverse_clarke<T: PhaseSignal>(alpha: T, beta: T) -> (T, T, T)
+where
+    f32: Mul<T, Output = T>,
+{
     // Phase A aligned with alpha
     let a = alpha;
 
@@ -115,7 +144,10 @@ pub fn inverse_clarke(alpha: f32, beta: f32) -> (f32, f32, f32) {
 /// assert_eq!(iq, i_beta);
 /// ```
 #[inline]
-pub fn park(alpha: f32, beta: f32, sin_theta: f32, cos_theta: f32) -> (f32, f32) {
+pub fn park<T: PhaseSignal>(alpha: T, beta: T, sin_theta: f32, cos_theta: f32) -> (T, T)
+where
+    f32: Mul<T, Output = T>,
+{
     // d-axis: component aligned with rotor
     // d = α*cos(θ) + β*sin(θ)
     let d = cos_theta * alpha + sin_theta * beta;
@@ -152,7 +184,10 @@ pub fn park(alpha: f32, beta: f32, sin_theta: f32, cos_theta: f32) -> (f32, f32)
 /// assert_eq!(v_beta, vq);
 /// ```
 #[inline]
-pub fn inverse_park(d: f32, q: f32, sin_theta: f32, cos_theta: f32) -> (f32, f32) {
+pub fn inverse_park<T: PhaseSignal>(d: T, q: T, sin_theta: f32, cos_theta: f32) -> (T, T)
+where
+    f32: Mul<T, Output = T>,
+{
     // α = d*cos(θ) - q*sin(θ)
     let alpha = cos_theta * d - sin_theta * q;
 

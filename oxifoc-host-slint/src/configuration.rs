@@ -95,27 +95,27 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                                 Some(ConfigValue::CurrentLimits(c)) => {
                                     app.set_cfg_max_iq(SharedString::from(format!(
                                         "{}",
-                                        c.max_iq_a
+                                        c.max_iq.value
                                     )));
                                     app.set_cfg_max_brake(SharedString::from(format!(
                                         "{}",
-                                        c.max_brake_a
+                                        c.max_brake.value
                                     )));
                                     app.set_cfg_max_phase_current(SharedString::from(format!(
                                         "{}",
-                                        c.max_phase_current_a
+                                        c.max_phase_current.value
                                     )));
                                     app.set_cfg_bus_in_max(SharedString::from(format!(
                                         "{}",
-                                        c.bus_in_max_a
+                                        c.bus_in_max.value
                                     )));
                                     app.set_cfg_bus_regen_max(SharedString::from(format!(
                                         "{}",
-                                        c.bus_regen_max_a
+                                        c.bus_regen_max.value
                                     )));
                                     app.set_cfg_max_dissipation(SharedString::from(format!(
                                         "{}",
-                                        c.max_dissipation_w
+                                        c.max_dissipation.value
                                     )));
                                 }
                                 Some(ConfigValue::VoltageLimits(v)) => {
@@ -133,7 +133,7 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                                     app.set_cfg_ki(SharedString::from(format!("{}", g.ki)));
                                     app.set_cfg_bandwidth(SharedString::from(format!(
                                         "{}",
-                                        g.bandwidth_rad_s
+                                        g.bandwidth.value
                                     )));
                                 }
                                 Some(ConfigValue::Velocity(v)) => {
@@ -141,7 +141,7 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                                     app.set_cfg_vel_ki(SharedString::from(format!("{}", v.ki)));
                                     app.set_cfg_vel_accel(SharedString::from(format!(
                                         "{}",
-                                        v.accel_limit
+                                        v.accel_limit.value
                                     )));
                                 }
                                 Some(ConfigValue::Failsafe(f)) => {
@@ -155,19 +155,19 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                                     )));
                                     app.set_cfg_fs_brake_current(SharedString::from(format!(
                                         "{}",
-                                        f.brake_current_a
+                                        f.brake_current.value
                                     )));
                                     app.set_cfg_fs_slew(SharedString::from(format!(
                                         "{}",
-                                        f.slew_a_per_s
+                                        f.slew.value
                                     )));
                                     app.set_cfg_fs_standstill(SharedString::from(format!(
                                         "{}",
-                                        f.standstill_rad_s
+                                        f.standstill.value
                                     )));
                                     app.set_cfg_fs_decel(SharedString::from(format!(
                                         "{}",
-                                        f.decel_rad_s2
+                                        f.decel.value
                                     )));
                                     app.set_cfg_fs_terminal(SharedString::from(format!(
                                         "{}",
@@ -247,12 +247,12 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                     let dissipation: f32 =
                         parse_field("dissipation max", &app.get_cfg_max_dissipation(), err);
                     ConfigAction::Replace(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                        max_iq_a: iq,
-                        max_brake_a: brake,
-                        max_phase_current_a: ph,
-                        bus_in_max_a: bus_in,
-                        bus_regen_max_a: bus_regen,
-                        max_dissipation_w: dissipation,
+                        max_iq: oxifoc_core::units::amps(iq),
+                        max_brake: oxifoc_core::units::amps(brake),
+                        max_phase_current: oxifoc_core::units::amps(ph),
+                        bus_in_max: oxifoc_core::units::amps(bus_in),
+                        bus_regen_max: oxifoc_core::units::amps(bus_regen),
+                        max_dissipation: oxifoc_core::units::watts(dissipation),
                     }))
                 }
                 2 => {
@@ -268,7 +268,7 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                     ConfigAction::Replace(ConfigValue::PiGains(PiGainsConfig {
                         kp,
                         ki,
-                        bandwidth_rad_s: bw,
+                        bandwidth: oxifoc_core::units::rad_per_s(bw),
                     }))
                 }
                 4 => {
@@ -297,10 +297,10 @@ pub(super) fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: 
                     ConfigAction::Replace(ConfigValue::Failsafe(FailsafeConfigStored {
                         staleness_timeout_ms: staleness,
                         policy,
-                        brake_current_a: brake,
-                        slew_a_per_s: slew,
-                        standstill_rad_s: standstill,
-                        decel_rad_s2: decel,
+                        brake_current: oxifoc_core::units::amps(brake),
+                        slew: oxifoc_core::units::amps_per_s(slew),
+                        standstill: oxifoc_core::units::erad_per_s(standstill),
+                        decel: oxifoc_core::units::erad_per_s2(decel),
                         terminal,
                     }))
                 }

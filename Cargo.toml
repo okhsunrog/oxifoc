@@ -19,6 +19,11 @@ exclude = [
     "tests/stm32f405", # On-target integration tests
 ]
 
+[workspace.package]
+# Minimum supported Rust; the host toolchain is pinned to the same release in
+# rust-toolchain.toml. core::mem::DropGuard is stable since 1.100.
+rust-version = "1.100"
+
 # Curated strict lints; members opt in via `[lints] workspace = true`.
 # The excluded device crates (oxifoc-g474/f405, bridge, remote, tests/*)
 # carry a verbatim copy of these tables — keep them in sync when editing.

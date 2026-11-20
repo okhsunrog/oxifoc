@@ -107,7 +107,7 @@ pub async fn run(
             mcu,
             uuid,
             foc_freq_hz,
-            max_current_a,
+            max_current_a: oxifoc_core::units::amps(max_current_a),
             calib: crate::VIRTUAL_CALIB,
         }
     };

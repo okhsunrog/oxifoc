@@ -13,6 +13,7 @@ use crate::foc::phase::startup::SensorlessStartup;
 use crate::foc::sensors::AngleSensor;
 use crate::foc::sensors::NoSensor;
 use crate::foc::trig::SinCos;
+use crate::units::{ConstZero, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity};
 use heapless::Vec as HeaplessVec;
 
 // ============================================================================
@@ -40,9 +41,9 @@ impl PhaseManager<NoSensor, NoSensor> {
             bench_observer_weight: None,
             motion_reference_epoch: Default::default(),
             hall_reference_epoch: None,
-            manual_angle: 0.0,
-            open_loop_angle: 0.0,
-            open_loop_velocity: 0.0,
+            manual_angle: ElectricalAngle::ZERO,
+            open_loop_angle: ElectricalAngle::ZERO,
+            open_loop_velocity: ElectricalAngularVelocity::ZERO,
             ticks_per_sec: 1_000_000,
             hall_control_motion: HallControlMotion::default(),
             hall_motion_witness: HallMotionWitness::default(),
@@ -53,7 +54,7 @@ impl PhaseManager<NoSensor, NoSensor> {
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
-            bemf_proxy_v: 0.0,
+            bemf_proxy: ElectricPotential::ZERO,
             #[cfg(feature = "observer-logging")]
             obs_trace_ticks: 0,
             hold_trace_ticks: 0,
@@ -83,9 +84,9 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             bench_observer_weight: None,
             motion_reference_epoch: Default::default(),
             hall_reference_epoch: None,
-            manual_angle: 0.0,
-            open_loop_angle: 0.0,
-            open_loop_velocity: 0.0,
+            manual_angle: ElectricalAngle::ZERO,
+            open_loop_angle: ElectricalAngle::ZERO,
+            open_loop_velocity: ElectricalAngularVelocity::ZERO,
             ticks_per_sec: 1_000_000,
             hall_control_motion: HallControlMotion::default(),
             hall_motion_witness: HallMotionWitness::default(),
@@ -96,7 +97,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
-            bemf_proxy_v: 0.0,
+            bemf_proxy: ElectricPotential::ZERO,
             #[cfg(feature = "observer-logging")]
             obs_trace_ticks: 0,
             hold_trace_ticks: 0,
@@ -137,7 +138,7 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             crossover_latched: self.crossover_latched,
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
-            bemf_proxy_v: self.bemf_proxy_v,
+            bemf_proxy: self.bemf_proxy,
             #[cfg(feature = "observer-logging")]
             obs_trace_ticks: self.obs_trace_ticks,
             hold_trace_ticks: self.hold_trace_ticks,
@@ -181,7 +182,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             crossover_latched: self.crossover_latched,
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
-            bemf_proxy_v: self.bemf_proxy_v,
+            bemf_proxy: self.bemf_proxy,
             #[cfg(feature = "observer-logging")]
             obs_trace_ticks: self.obs_trace_ticks,
             hold_trace_ticks: self.hold_trace_ticks,
@@ -211,9 +212,9 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             bench_observer_weight: None,
             motion_reference_epoch: Default::default(),
             hall_reference_epoch: None,
-            manual_angle: 0.0,
-            open_loop_angle: 0.0,
-            open_loop_velocity: 0.0,
+            manual_angle: ElectricalAngle::ZERO,
+            open_loop_angle: ElectricalAngle::ZERO,
+            open_loop_velocity: ElectricalAngularVelocity::ZERO,
             ticks_per_sec: 1_000_000,
             hall_control_motion: HallControlMotion::default(),
             hall_motion_witness: HallMotionWitness::default(),
@@ -224,7 +225,7 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             crossover_latched: false,
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
-            bemf_proxy_v: 0.0,
+            bemf_proxy: ElectricPotential::ZERO,
             #[cfg(feature = "observer-logging")]
             obs_trace_ticks: 0,
             hold_trace_ticks: 0,

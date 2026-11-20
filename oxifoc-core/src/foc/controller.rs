@@ -20,57 +20,91 @@ use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "storage")]
 use crate::storage::MotorParamsConfig;
 use crate::types::VoltageFeedforwardMode;
+use crate::units::unit::electrical::radian;
+use crate::units::{AngularVelocity, MagneticFlux};
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
+    ElectricalResistance, Fraction, Inductance, Linear, Scalar, Sign, Time, erad, ohms, rad_per_s,
+    si, volts,
+};
+
+/// Current PI proportional gain: V per A (an impedance).
+pub type CurrentKp = ElectricalResistance;
+/// Current PI integral gain: V per A·s.
+pub type CurrentKi = <ElectricalResistance as core::ops::Div<Time>>::Output;
+/// Inverse current, for scaling a current into a fraction.
+type PerAmp = <f32 as core::ops::Div<ElectricCurrent>>::Output;
+
+/// Units of the dq current PI: current error in, voltage out.
+#[derive(Clone, Copy, Debug)]
+pub enum CurrentPi {}
+
+impl crate::foc::pi_controller::PiUnits for CurrentPi {
+    type Error = ElectricCurrent;
+    type Output = ElectricPotential;
+    type Time = Time;
+    type Kp = CurrentKp;
+    type Ki = CurrentKi;
+    #[inline(always)]
+    fn proportional(kp: CurrentKp, error: ElectricCurrent) -> ElectricPotential {
+        kp * error
+    }
+    #[inline(always)]
+    fn integral(ki: CurrentKi, error_sum: ElectricCurrent, dt: Time) -> ElectricPotential {
+        ki * error_sum * 0.5 * dt
+    }
+}
 
 /// Output of a single FOC current-loop step
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct FocOutput {
-    /// Raw phase currents (A)
-    pub ia: f32,
-    pub ib: f32,
-    pub ic: f32,
-    /// Electrical angle used for this step (radians)
-    pub angle_rad: f32,
+    /// Raw phase currents
+    pub ia: ElectricCurrent,
+    pub ib: ElectricCurrent,
+    pub ic: ElectricCurrent,
+    /// Electrical angle used for this step
+    pub angle: ElectricalAngle,
     /// Clarke-transformed currents (α, β)
-    pub i_alpha: f32,
-    pub i_beta: f32,
+    pub i_alpha: ElectricCurrent,
+    pub i_beta: ElectricCurrent,
     /// Park-transformed currents (d, q)
-    pub id: f32,
-    pub iq: f32,
+    pub id: ElectricCurrent,
+    pub iq: ElectricCurrent,
     /// PI controller outputs in dq frame
-    pub vd: f32,
-    pub vq: f32,
+    pub vd: ElectricPotential,
+    pub vq: ElectricPotential,
     /// Commanded stationary-frame voltages
-    pub v_alpha: f32,
-    pub v_beta: f32,
+    pub v_alpha: ElectricPotential,
+    pub v_beta: ElectricPotential,
     /// Duty cycles to apply (already clamped)
     pub duties: [u16; 3],
-    /// Electrical velocity of the ACTIVE angle source (rad/s) — hall,
+    /// Electrical velocity of the ACTIVE angle source — hall,
     /// observer, HFI or the startup ramp, whichever commutates right now.
     /// Stamped by `FocDriver::step` (the controller itself only sees the
     /// angle); the virtual sim stamps it from the plant. Feeds the fast
     /// telemetry `rpm` field, which used to read the hall estimator
     /// unconditionally and showed 0 on sensorless boards while spinning.
-    pub velocity_rad_s: f32,
+    pub velocity: ElectricalAngularVelocity,
 }
 
 impl FocOutput {
     /// Create an empty telemetry struct (const for static initialization)
     pub const fn empty() -> Self {
         Self {
-            ia: 0.0,
-            ib: 0.0,
-            ic: 0.0,
-            angle_rad: 0.0,
-            i_alpha: 0.0,
-            i_beta: 0.0,
-            id: 0.0,
-            iq: 0.0,
-            vd: 0.0,
-            vq: 0.0,
-            v_alpha: 0.0,
-            v_beta: 0.0,
+            ia: ElectricCurrent::ZERO,
+            ib: ElectricCurrent::ZERO,
+            ic: ElectricCurrent::ZERO,
+            angle: ElectricalAngle::ZERO,
+            i_alpha: ElectricCurrent::ZERO,
+            i_beta: ElectricCurrent::ZERO,
+            id: ElectricCurrent::ZERO,
+            iq: ElectricCurrent::ZERO,
+            vd: ElectricPotential::ZERO,
+            vq: ElectricPotential::ZERO,
+            v_alpha: ElectricPotential::ZERO,
+            v_beta: ElectricPotential::ZERO,
             duties: [0; 3],
-            velocity_rad_s: 0.0,
+            velocity: ElectricalAngularVelocity::ZERO,
         }
     }
 }
@@ -85,29 +119,29 @@ impl FocOutput {
 #[derive(Clone, Copy, Debug)]
 pub struct Decoupling {
     /// d-axis inductance (H)
-    pub ld_h: f32,
+    pub ld: Inductance,
     /// q-axis inductance (H)
-    pub lq_h: f32,
+    pub lq: Inductance,
     /// Permanent-magnet flux linkage (Wb) — the back-EMF feedforward term
-    pub flux_linkage_wb: f32,
+    pub flux_linkage: MagneticFlux,
     /// Phase resistance (Ω). Not a decoupling term: it rides along for the
     /// driver's dissipative-braking power balance (`motor::dissipation`);
     /// `0` = unknown, which disables that.
-    pub resistance_ohm: f32,
+    pub resistance: ElectricalResistance,
 }
 
 impl Decoupling {
     /// Finite, physically meaningful values only — this multiplies the
     /// measured velocity straight into the output voltage.
     pub fn is_valid(&self) -> bool {
-        self.ld_h.is_finite()
-            && self.lq_h.is_finite()
-            && self.flux_linkage_wb.is_finite()
-            && self.resistance_ohm.is_finite()
-            && self.ld_h > 0.0
-            && self.lq_h > 0.0
-            && self.flux_linkage_wb >= 0.0
-            && self.resistance_ohm >= 0.0
+        self.ld.is_finite()
+            && self.lq.is_finite()
+            && self.flux_linkage.is_finite()
+            && self.resistance.is_finite()
+            && self.ld.is_positive()
+            && self.lq.is_positive()
+            && self.flux_linkage.is_non_negative()
+            && self.resistance.is_non_negative()
     }
 
     /// Electrical coefficients decoded from stored motor params, at boot and
@@ -117,14 +151,14 @@ impl Decoupling {
     /// OC class); the AC values otherwise.
     #[cfg(feature = "storage")]
     pub fn from_motor_params(mp: &MotorParamsConfig) -> Self {
-        let (ld_h, lq_h) = mp
+        let (ld, lq) = mp
             .fundamental_ld_lq()
-            .unwrap_or((mp.inductance_d_h, mp.inductance_q_h));
+            .unwrap_or((mp.inductance_d, mp.inductance_q));
         Self {
-            ld_h,
-            lq_h,
-            flux_linkage_wb: mp.flux_linkage_wb,
-            resistance_ohm: mp.resistance_ohm,
+            ld,
+            lq,
+            flux_linkage: mp.flux_linkage,
+            resistance: mp.resistance,
         }
     }
 }
@@ -237,26 +271,26 @@ impl ModulationLimits {
 pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> {
     current_sense_topology: crate::types::CurrentSenseTopology,
     /// d-axis PI controller (flux)
-    pub id_pi: PIController,
+    pub id_pi: PIController<CurrentPi>,
     /// q-axis PI controller (torque)
-    pub iq_pi: PIController,
-    /// DC bus voltage (Volts)
-    vbus: f32,
+    pub iq_pi: PIController<CurrentPi>,
+    /// DC bus voltage
+    vbus: ElectricPotential,
     /// Requested modulation and board duty cap, with coherent derived limits.
     modulation: ModulationLimits,
     /// Dead time compensation factor = dead_time_s × pwm_freq_hz (0.0 = disabled)
     dead_time_comp: f32,
     /// Reciprocal of the per-phase linear transition current. Zero retains
     /// legacy hard signs; boards can opt into a measured/tuned smooth region.
-    dead_time_current_inv_a: f32,
-    /// Actuation-frame advance (electrical rad, 0.0 = disabled): the output
+    dead_time_current_inv: PerAmp,
+    /// Actuation-frame advance (0 = disabled): the output
     /// voltage vector is rotated by this much AFTER the inverse Park.
     /// Compensates the one-PWM-period pipeline delay (the rotor moves
     /// `ωe·T_pwm` between current sampling and voltage application) without
     /// touching the measurement frame — advancing the angle used for the
     /// current Park displaces the regulated current vector off the q axis
     /// by the same amount (`id_true = −iq·sin(δ)`).
-    actuation_advance: f32,
+    actuation_advance: ElectricalAngle,
     /// Electrical model coefficients; availability does not enable feedforward.
     decoupling: Option<Decoupling>,
     voltage_feedforward_mode: VoltageFeedforwardMode,
@@ -291,7 +325,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     const VOLTS_TO_MOD: f32 = 1.5;
 
     /// Minimum bus voltage to avoid divide-by-zero (used in both `new` and `set_vbus`).
-    const MIN_VBUS: f32 = 0.5;
+    const MIN_VBUS: ElectricPotential = volts(0.5);
 
     /// Create a new controller with reasonable default gains.
     ///
@@ -302,16 +336,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// PI controllers have no individual output limits — voltage is constrained
     /// by circular clamping in [`step_with_injection`](Self::step_with_injection)
     /// which tracks `vbus × modulation_limit` every cycle.
-    pub fn new(vbus: f32) -> Self {
+    pub fn new(vbus: ElectricPotential) -> Self {
         Self {
             current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
-            id_pi: PIController::new(0.4, 40.0),
-            iq_pi: PIController::new(0.4, 40.0),
+            id_pi: PIController::with_gains(ohms(0.4), si(40.0)),
+            iq_pi: PIController::with_gains(ohms(0.4), si(40.0)),
             vbus: vbus.max(Self::MIN_VBUS),
             modulation: ModulationLimits::new(Self::DEFAULT_MODULATION_LIMIT),
             dead_time_comp: 0.0,
-            dead_time_current_inv_a: 0.0,
-            actuation_advance: 0.0,
+            dead_time_current_inv: PerAmp::ZERO,
+            actuation_advance: ElectricalAngle::ZERO,
             decoupling: None,
             voltage_feedforward_mode: VoltageFeedforwardMode::Disabled,
             q_clip: 0.0,
@@ -347,8 +381,17 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     ///
     /// Uses the default bandwidth of 1000 rad/s (~160 Hz). For custom
     /// bandwidth, use [`from_motor_params_with_bw`](Self::from_motor_params_with_bw).
-    pub fn from_motor_params(resistance: f32, inductance: f32, vbus: f32) -> Self {
-        Self::from_motor_params_with_bw(resistance, inductance, vbus, DEFAULT_BANDWIDTH_RAD_S)
+    pub fn from_motor_params(
+        resistance: ElectricalResistance,
+        inductance: Inductance,
+        vbus: ElectricPotential,
+    ) -> Self {
+        Self::from_motor_params_with_bw(
+            resistance,
+            inductance,
+            vbus,
+            rad_per_s(DEFAULT_BANDWIDTH_RAD_S),
+        )
     }
 
     /// Create a controller with PI gains computed from motor parameters and custom bandwidth.
@@ -359,23 +402,23 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// * `vbus` - DC bus voltage in Volts
     /// * `bandwidth_rad_s` - Desired current loop bandwidth in rad/s
     pub fn from_motor_params_with_bw(
-        resistance: f32,
-        inductance: f32,
-        vbus: f32,
-        bandwidth_rad_s: f32,
+        resistance: ElectricalResistance,
+        inductance: Inductance,
+        vbus: ElectricPotential,
+        bandwidth: AngularVelocity,
     ) -> Self {
-        let (kp, ki) = pi_tuning::calculate_current_gains(resistance, inductance, bandwidth_rad_s);
+        let (kp, ki) = pi_tuning::calculate_current_gains(resistance, inductance, bandwidth);
         let vbus = vbus.max(Self::MIN_VBUS);
 
         Self {
             current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
-            id_pi: PIController::new(kp, ki),
-            iq_pi: PIController::new(kp, ki),
+            id_pi: PIController::with_gains(kp, ki),
+            iq_pi: PIController::with_gains(kp, ki),
             vbus,
             modulation: ModulationLimits::new(Self::DEFAULT_MODULATION_LIMIT),
             dead_time_comp: 0.0,
-            dead_time_current_inv_a: 0.0,
-            actuation_advance: 0.0,
+            dead_time_current_inv: PerAmp::ZERO,
+            actuation_advance: ElectricalAngle::ZERO,
             decoupling: None,
             voltage_feedforward_mode: VoltageFeedforwardMode::Disabled,
             q_clip: 0.0,
@@ -413,28 +456,31 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// motor, so one L cannot serve both consumers (ZD2808: 86/129 µH
     /// fundamental vs ~24 µH AC plateau).
     #[cfg(feature = "storage")]
-    pub fn from_runtime_config(config: &crate::storage::RuntimeConfig, vbus: f32) -> Self {
+    pub fn from_runtime_config(
+        config: &crate::storage::RuntimeConfig,
+        vbus: ElectricPotential,
+    ) -> Self {
         let mut foc = if let Some(ref mp) = config.motor_params
             && mp.is_valid()
         {
-            let l_avg = (mp.inductance_d_h + mp.inductance_q_h) / 2.0;
+            let l_avg = (mp.inductance_d + mp.inductance_q) / 2.0;
             #[cfg(feature = "defmt")]
             defmt::info!(
-                "Using stored motor params: R={=f32}, L={=f32}, λ={=f32}, pp={}",
-                mp.resistance_ohm,
+                "Using stored motor params: R={} ohm, L={} H, λ={} Wb, pp={}",
+                mp.resistance,
                 l_avg,
-                mp.flux_linkage_wb,
+                mp.flux_linkage,
                 mp.pole_pairs
             );
-            let mut foc = Self::from_motor_params(mp.resistance_ohm, l_avg, vbus);
+            let mut foc = Self::from_motor_params(mp.resistance, l_avg, vbus);
             // is_sane: stored bits are arbitrary (older firmware accepted
             // unvalidated writes) — insane gains fall back to the
             // params-derived tuning instead of a NaN current loop.
             if let Some(ref pg) = config.pi_gains
                 && pg.is_sane()
             {
-                foc.id_pi.set_gains(pg.kp, pg.ki);
-                foc.iq_pi.set_gains(pg.kp, pg.ki);
+                foc.id_pi.set_gains(si(pg.kp), si(pg.ki));
+                foc.iq_pi.set_gains(si(pg.kp), si(pg.ki));
                 #[cfg(feature = "defmt")]
                 defmt::info!(
                     "PI gains overridden by stored config: kp={=f32}, ki={=f32}",
@@ -450,8 +496,8 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             // Same sanity gate as above: NaN or negative stored gains would
             // otherwise run the current loop as-is.
             let mut foc = Self::new(vbus);
-            foc.id_pi.set_gains(pg.kp, pg.ki);
-            foc.iq_pi.set_gains(pg.kp, pg.ki);
+            foc.id_pi.set_gains(si(pg.kp), si(pg.ki));
+            foc.iq_pi.set_gains(si(pg.kp), si(pg.ki));
             #[cfg(feature = "defmt")]
             defmt::info!("Using stored PI gains: kp={=f32}, ki={=f32}", pg.kp, pg.ki);
             foc
@@ -488,7 +534,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
     /// Circular voltage limit (V): the modulation limit, tightened to what
     /// the duty cap leaves (the SVPWM duty spread is `√3·|V|/vbus`).
-    pub(crate) fn voltage_limit(&self) -> f32 {
+    pub(crate) fn voltage_limit(&self) -> ElectricPotential {
         self.vbus * self.modulation.effective
     }
 
@@ -513,7 +559,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     }
 
     /// Update the cached DC bus voltage.
-    pub fn set_vbus(&mut self, vbus: f32) {
+    pub fn set_vbus(&mut self, vbus: ElectricPotential) {
         // Avoid divide-by-zero while tolerating brief brownouts.
         self.vbus = vbus.max(Self::MIN_VBUS);
     }
@@ -542,16 +588,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Invalid values are rejected without changing the existing setting.
     pub fn set_dead_time_comp_linear_region(
         &mut self,
-        transition_a: f32,
+        transition: ElectricCurrent,
     ) -> Result<(), &'static str> {
-        if !transition_a.is_finite() || transition_a <= 0.0 {
+        if !transition.is_finite() || transition.is_non_positive() {
             return Err("deadtime transition current must be finite and positive");
         }
-        let inverse = 1.0 / transition_a;
+        let inverse: PerAmp = 1.0 / transition;
         if !inverse.is_finite() {
             return Err("deadtime transition current is too small");
         }
-        self.dead_time_current_inv_a = inverse;
+        self.dead_time_current_inv = inverse;
         Ok(())
     }
 
@@ -570,10 +616,10 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     fn apply_dead_time_comp(
         mod_alpha: f32,
         mod_beta: f32,
-        i_alpha: f32,
-        i_beta: f32,
+        i_alpha: ElectricCurrent,
+        i_beta: ElectricCurrent,
         comp_factor: f32,
-        current_inv_a: f32,
+        current_inv: PerAmp,
     ) -> (f32, f32) {
         if comp_factor == 0.0 {
             return (mod_alpha, mod_beta);
@@ -581,10 +627,10 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
         // Reconstruct phase current signs from αβ
         let (ia, ib, ic) = transforms::inverse_clarke(i_alpha, i_beta);
-        let polarity = |i: f32| {
-            if current_inv_a > 0.0 {
-                clamp_f32(i * current_inv_a, -1.0, 1.0)
-            } else if i >= 0.0 {
+        let polarity = |i: ElectricCurrent| {
+            if current_inv.is_positive() {
+                clamp_f32((i * current_inv).fraction(), -1.0, 1.0)
+            } else if i.is_non_negative() {
                 1.0
             } else {
                 -1.0
@@ -614,7 +660,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// 0.5 rad is well above the ~0.3 rad a Flipsky-class motor needs at
     /// full speed and still inside the series' accuracy envelope (δ⁴/24 ≈
     /// 2.6·10⁻³).
-    pub const MAX_ACTUATION_ADVANCE_RAD: f32 = 0.5;
+    pub const MAX_ACTUATION_ADVANCE: ElectricalAngle = erad(0.5);
 
     /// Set the actuation-frame advance for the next step (electrical rad).
     ///
@@ -625,22 +671,22 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// speed), with no second SinCos evaluation in the ISR. Non-finite
     /// values reset to 0; magnitude saturates at
     /// [`MAX_ACTUATION_ADVANCE_RAD`](Self::MAX_ACTUATION_ADVANCE_RAD).
-    pub fn set_actuation_advance(&mut self, advance_rad: f32) {
-        self.actuation_advance = if advance_rad.is_finite() {
-            clamp_f32(
-                advance_rad,
-                -Self::MAX_ACTUATION_ADVANCE_RAD,
-                Self::MAX_ACTUATION_ADVANCE_RAD,
-            )
+    pub fn set_actuation_advance(&mut self, advance: ElectricalAngle) {
+        self.actuation_advance = if advance.is_finite() {
+            advance.clamp_to(-Self::MAX_ACTUATION_ADVANCE, Self::MAX_ACTUATION_ADVANCE)
         } else {
-            0.0
+            ElectricalAngle::ZERO
         };
     }
 
     /// Rotate an αβ vector by the configured actuation advance.
     #[inline]
-    fn apply_actuation_advance(&self, v_alpha: f32, v_beta: f32) -> (f32, f32) {
-        let d = self.actuation_advance;
+    fn apply_actuation_advance(
+        &self,
+        v_alpha: ElectricPotential,
+        v_beta: ElectricPotential,
+    ) -> (ElectricPotential, ElectricPotential) {
+        let d = self.actuation_advance.get::<radian>();
         if d == 0.0 {
             return (v_alpha, v_beta);
         }
@@ -652,7 +698,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     }
 
     /// Current DC bus voltage cached in the controller.
-    pub fn vbus(&self) -> f32 {
+    pub fn vbus(&self) -> ElectricPotential {
         self.vbus
     }
 
@@ -701,14 +747,14 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Clarke map and no compensation is applied.
     pub fn apply_dq(
         &self,
-        vd: f32,
-        vq: f32,
-        angle_rad: f32,
-        i_alpha: f32,
-        i_beta: f32,
+        vd: ElectricPotential,
+        vq: ElectricPotential,
+        angle: ElectricalAngle,
+        i_alpha: ElectricCurrent,
+        i_beta: ElectricCurrent,
         max_duty: u16,
     ) -> FocOutput {
-        let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
+        let (sin_theta, cos_theta) = S::sin_cos(angle.get::<radian>());
 
         // Circular voltage limiting
         let v_limit = self.voltage_limit();
@@ -716,7 +762,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let v_limit_sq = v_limit * v_limit;
 
         let (vd, vq) = if v_mag_sq > v_limit_sq {
-            let scale = v_limit / sqrtf(v_mag_sq);
+            let scale = v_limit.ratio_to(v_mag_sq.sqrt_with(sqrtf));
             (vd * scale, vq * scale)
         } else {
             (vd, vq)
@@ -725,16 +771,16 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let (v_alpha, v_beta) = transforms::inverse_park(vd, vq, sin_theta, cos_theta);
         let volts_to_mod = Self::VOLTS_TO_MOD / self.vbus;
         let (mod_a, mod_b) = Self::apply_dead_time_comp(
-            v_alpha * volts_to_mod,
-            v_beta * volts_to_mod,
+            (v_alpha * volts_to_mod).fraction(),
+            (v_beta * volts_to_mod).fraction(),
             i_alpha,
             i_beta,
             self.dead_time_comp,
-            self.dead_time_current_inv_a,
+            self.dead_time_current_inv,
         );
         let duties = self.duties_for(mod_a, mod_b, max_duty);
         FocOutput {
-            angle_rad,
+            angle,
             vd,
             vq,
             v_alpha,
@@ -758,17 +804,25 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// Telemetry containing intermediate values and final duty cycles.
     pub fn step(
         &mut self,
-        currents: (f32, f32, f32),
-        angle_rad: f32,
-        id_target: f32,
-        iq_target: f32,
+        currents: (ElectricCurrent, ElectricCurrent, ElectricCurrent),
+        angle: ElectricalAngle,
+        id_target: ElectricCurrent,
+        iq_target: ElectricCurrent,
         max_duty: u16,
-        dt: f32,
+        dt: Time,
     ) -> FocOutput {
         // Zero velocity = decoupling feedforward off; fine for the
         // detection/test contexts this entry point serves.
         self.step_with_injection(
-            currents, angle_rad, 0.0, id_target, iq_target, 0.0, 0.0, max_duty, dt,
+            currents,
+            angle,
+            ElectricalAngularVelocity::ZERO,
+            id_target,
+            iq_target,
+            ElectricPotential::ZERO,
+            ElectricPotential::ZERO,
+            max_duty,
+            dt,
         )
     }
 
@@ -801,19 +855,19 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     )]
     pub fn step_with_injection(
         &mut self,
-        currents: (f32, f32, f32),
-        angle_rad: f32,
-        vel_rad_s: f32,
-        id_target: f32,
-        iq_target: f32,
-        vd_inject: f32,
-        vq_inject: f32,
+        currents: (ElectricCurrent, ElectricCurrent, ElectricCurrent),
+        angle: ElectricalAngle,
+        velocity: ElectricalAngularVelocity,
+        id_target: ElectricCurrent,
+        iq_target: ElectricCurrent,
+        vd_inject: ElectricPotential,
+        vq_inject: ElectricPotential,
         max_duty: u16,
-        dt: f32,
+        dt: Time,
     ) -> FocOutput {
         let (ia, ib, ic) = currents;
         let prof_t0 = crate::isr_prof::now();
-        let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
+        let (sin_theta, cos_theta) = S::sin_cos(angle.get::<radian>());
         crate::isr_prof::add(&crate::isr_prof::CTRL_TRIG, prof_t0, crate::isr_prof::now());
 
         // Phase currents -> stationary frame
@@ -835,20 +889,20 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // state (i → i*), outside the loop dynamically.
         // Check policy before inspecting the model: disabled feedforward must
         // not load coefficients merely because a valid model is retained.
+        let zero = ElectricPotential::ZERO;
         let (vd_ff, vq_ff) = if self.voltage_feedforward_mode == VoltageFeedforwardMode::Disabled {
-            (0.0, 0.0)
+            (zero, zero)
         } else {
             match (self.decoupling, self.voltage_feedforward_mode) {
                 (Some(d), VoltageFeedforwardMode::Both) => (
-                    -vel_rad_s * d.lq_h * iq_target,
-                    vel_rad_s * (d.ld_h * id_target + d.flux_linkage_wb),
+                    -velocity * d.lq * iq_target,
+                    velocity * (d.ld * id_target + d.flux_linkage),
                 ),
-                (Some(d), VoltageFeedforwardMode::CrossCoupling) => (
-                    -vel_rad_s * d.lq_h * iq_target,
-                    vel_rad_s * (d.ld_h * id_target),
-                ),
-                (Some(d), VoltageFeedforwardMode::BackEmf) => (0.0, vel_rad_s * d.flux_linkage_wb),
-                _ => (0.0, 0.0),
+                (Some(d), VoltageFeedforwardMode::CrossCoupling) => {
+                    (-velocity * d.lq * iq_target, velocity * (d.ld * id_target))
+                }
+                (Some(d), VoltageFeedforwardMode::BackEmf) => (zero, velocity * d.flux_linkage),
+                _ => (zero, zero),
             }
         };
 
@@ -866,9 +920,11 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // 25 A command: −37 A of id, then the overcurrent trip. With d
         // priority the torque current just falls off at base speed.
         let v_limit = self.voltage_limit();
-        let vd = clamp_f32(vd_raw, -v_limit, v_limit);
-        let vq_room = sqrtf((v_limit * v_limit - vd * vd).max(0.0));
-        let vq = clamp_f32(vq_raw, -vq_room, vq_room);
+        let vd = vd_raw.clamp_to(-v_limit, v_limit);
+        let vq_room = (v_limit * v_limit - vd * vd)
+            .max(ConstZero::ZERO)
+            .sqrt_with(sqrtf);
+        let vq = vq_raw.clamp_to(-vq_room, vq_room);
         // Back-calculation anti-windup per axis, charged the whole clipped
         // amount: the integrator then absorbs a feedforward that overshoots
         // (the old PI-share rule peaked at 15 A vs 6 A on a 2 V back-EMF
@@ -882,9 +938,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         // Within 2% of the limit counts too: at the limit the q demand
         // hovers across it cycle to cycle, and an outer loop must not
         // regain its authority on every cycle it dips under.
-        self.q_clip = if vq_raw > 0.0 && vq_raw >= 0.98 * vq_room {
+        self.q_clip = if vq_raw.is_positive() && vq_raw >= 0.98 * vq_room {
             1.0
-        } else if vq_raw < 0.0 && vq_raw <= -0.98 * vq_room {
+        } else if vq_raw.is_negative() && vq_raw <= -0.98 * vq_room {
             -1.0
         } else {
             0.0
@@ -904,12 +960,12 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let (i_ref_alpha, i_ref_beta) =
             transforms::inverse_park(id_target, iq_target, sin_theta, cos_theta);
         let (mod_a, mod_b) = Self::apply_dead_time_comp(
-            v_alpha * volts_to_mod,
-            v_beta * volts_to_mod,
+            (v_alpha * volts_to_mod).fraction(),
+            (v_beta * volts_to_mod).fraction(),
             i_ref_alpha,
             i_ref_beta,
             self.dead_time_comp,
-            self.dead_time_current_inv_a,
+            self.dead_time_current_inv,
         );
         let duties = self.duties_for(mod_a, mod_b, max_duty);
         self.bus_mod_q = QAxisModulation::from_pwm(duties, max_duty, sin_theta, cos_theta);
@@ -918,7 +974,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             ia,
             ib,
             ic,
-            angle_rad,
+            angle,
             i_alpha,
             i_beta,
             id,
@@ -930,7 +986,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
             duties,
             // The controller only sees the angle; the driver (or the sim)
             // stamps the active source's velocity on top.
-            velocity_rad_s: 0.0,
+            velocity: ElectricalAngularVelocity::ZERO,
         }
     }
 }
@@ -942,19 +998,22 @@ mod modulation_tests;
 mod tests {
     use super::*;
     use crate::foc::trig::FastSinCos;
+    use crate::units::{
+        amps, erad, erad_per_s, henries, ohms, rad_per_s, seconds, si, volts, webers,
+    };
 
     const DT: f32 = 0.0001;
 
     #[test]
     fn explicit_feedforward_policy_selects_terms_without_discarding_model() {
-        let mut foc = FocController::<SvpwmModulator>::new(24.0);
-        foc.id_pi.set_gains(0.0, 0.0);
-        foc.iq_pi.set_gains(0.0, 0.0);
+        let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
+        foc.id_pi.set_gains(ohms(0.0), si(0.0));
+        foc.iq_pi.set_gains(ohms(0.0), si(0.0));
         foc.set_decoupling(Some(Decoupling {
-            ld_h: 100e-6,
-            lq_h: 300e-6,
-            flux_linkage_wb: 0.02,
-            resistance_ohm: 0.1,
+            ld: henries(100e-6),
+            lq: henries(300e-6),
+            flux_linkage: webers(0.02),
+            resistance: ohms(0.1),
         }));
         assert_eq!(
             foc.voltage_feedforward_mode(),
@@ -967,17 +1026,43 @@ mod tests {
             (VoltageFeedforwardMode::Both, -0.12, 4.01),
         ] {
             foc.set_voltage_feedforward_mode(mode);
-            let out =
-                foc.step_with_injection((0.0, 0.0, 0.0), 0.0, 200.0, 0.5, 2.0, 0.0, 0.0, 1000, DT);
-            assert!((out.vd - vd).abs() < 1e-6, "{mode:?}: vd {}", out.vd);
-            assert!((out.vq - vq).abs() < 1e-6, "{mode:?}: vq {}", out.vq);
-            assert_eq!(foc.decoupling().unwrap().resistance_ohm, 0.1);
+            let out = foc.step_with_injection(
+                (amps(0.0), amps(0.0), amps(0.0)),
+                erad(0.0),
+                erad_per_s(200.0),
+                amps(0.5),
+                amps(2.0),
+                volts(0.0),
+                volts(0.0),
+                1000,
+                seconds(DT),
+            );
+            assert!(
+                (out.vd.value - vd).abs() < 1e-6,
+                "{mode:?}: vd {}",
+                out.vd.value
+            );
+            assert!(
+                (out.vq.value - vq).abs() < 1e-6,
+                "{mode:?}: vq {}",
+                out.vq.value
+            );
+            assert_eq!(foc.decoupling().unwrap().resistance.value, 0.1);
         }
         foc.set_decoupling(None);
-        let out =
-            foc.step_with_injection((0.0, 0.0, 0.0), 0.0, 200.0, 0.5, 2.0, 0.0, 0.0, 1000, DT);
+        let out = foc.step_with_injection(
+            (amps(0.0), amps(0.0), amps(0.0)),
+            erad(0.0),
+            erad_per_s(200.0),
+            amps(0.5),
+            amps(2.0),
+            volts(0.0),
+            volts(0.0),
+            1000,
+            seconds(DT),
+        );
         assert_eq!(
-            (out.vd, out.vq),
+            (out.vd.value, out.vq.value),
             (0.0, 0.0),
             "policy needs valid coefficients"
         );
@@ -992,37 +1077,37 @@ mod tests {
                 VoltageFeedforwardMode::BackEmf,
                 VoltageFeedforwardMode::Both,
             ] {
-                let mut foc = FocController::<SvpwmModulator>::new(24.0);
-                foc.id_pi.set_gains(0.0, 0.0);
-                foc.iq_pi.set_gains(0.0, 0.0);
+                let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
+                foc.id_pi.set_gains(ohms(0.0), si(0.0));
+                foc.iq_pi.set_gains(ohms(0.0), si(0.0));
                 if model_present {
                     foc.set_decoupling(Some(Decoupling {
-                        ld_h: 100e-6,
-                        lq_h: 300e-6,
-                        flux_linkage_wb: 0.02,
-                        resistance_ohm: 0.1,
+                        ld: henries(100e-6),
+                        lq: henries(300e-6),
+                        flux_linkage: webers(0.02),
+                        resistance: ohms(0.1),
                     }));
                 }
                 foc.set_voltage_feedforward_mode(mode);
                 let out = foc.step_with_injection(
-                    (0.0, 0.0, 0.0),
-                    0.0,
-                    f32::NAN,
-                    0.5,
-                    2.0,
-                    0.0,
-                    0.0,
+                    (amps(0.0), amps(0.0), amps(0.0)),
+                    erad(0.0),
+                    erad_per_s(f32::NAN),
+                    amps(0.5),
+                    amps(2.0),
+                    volts(0.0),
+                    volts(0.0),
                     1000,
-                    DT,
+                    seconds(DT),
                 );
                 let active = model_present && mode != VoltageFeedforwardMode::Disabled;
                 assert_eq!(
-                    out.vd.is_nan(),
+                    out.vd.value.is_nan(),
                     active && mode != VoltageFeedforwardMode::BackEmf
                 );
-                assert_eq!(out.vq.is_nan(), active);
+                assert_eq!(out.vq.value.is_nan(), active);
                 if !active {
-                    assert_eq!((out.vd, out.vq), (0.0, 0.0));
+                    assert_eq!((out.vd.value, out.vq.value), (0.0, 0.0));
                 }
             }
         }
@@ -1036,37 +1121,58 @@ mod tests {
 
                 #[test]
                 fn zero_currents_zero_setpoint_centered_pwm() {
-                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(24.0);
-                    let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 0.0, 1000, DT);
+                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(volts(24.0));
+                    let telem = foc.step(
+                        (amps(0.0), amps(0.0), amps(0.0)),
+                        erad(0.0),
+                        amps(0.0),
+                        amps(0.0),
+                        1000,
+                        seconds(DT),
+                    );
 
                     for duty in telem.duties {
                         assert!((490..=510).contains(&duty));
                     }
-                    assert!((telem.id).abs() < 1e-6);
-                    assert!((telem.iq).abs() < 1e-6);
+                    assert!((telem.id.value).abs() < 1e-6);
+                    assert!((telem.iq.value).abs() < 1e-6);
                 }
 
                 #[test]
                 fn positive_q_axis_command_generates_voltage() {
-                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(48.0);
-                    let telem = foc.step((0.0, 0.0, 0.0), 1.0, 0.0, 5.0, 1200, DT);
+                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(volts(48.0));
+                    let telem = foc.step(
+                        (amps(0.0), amps(0.0), amps(0.0)),
+                        erad(1.0),
+                        amps(0.0),
+                        amps(5.0),
+                        1200,
+                        seconds(DT),
+                    );
 
-                    assert!(telem.vq > 0.0);
+                    assert!(telem.vq.value > 0.0);
                     assert!(telem.duties.iter().all(|d| *d <= 1200));
                 }
 
                 #[test]
                 fn modulation_limit_is_respected() {
-                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(30.0)
+                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(volts(30.0))
                         .with_modulation_limit(0.25);
-                    let telem = foc.step((2.0, -1.0, -1.0), 0.7, 0.0, 20.0, 800, DT);
+                    let telem = foc.step(
+                        (amps(2.0), amps(-1.0), amps(-1.0)),
+                        erad(0.7),
+                        amps(0.0),
+                        amps(20.0),
+                        800,
+                        seconds(DT),
+                    );
 
                     let v_limit = foc.vbus() * foc.modulation_limit();
-                    let v_mag =
-                        $crate::foc::fast_math::sqrtf(telem.vd * telem.vd + telem.vq * telem.vq);
+                    let v_mag = (telem.vd * telem.vd + telem.vq * telem.vq)
+                        .sqrt_with($crate::foc::fast_math::sqrtf);
                     assert!(
-                        v_mag <= v_limit + 1e-6,
-                        "voltage magnitude {} exceeds limit {}",
+                        v_mag <= v_limit + volts(1e-6),
+                        "voltage magnitude {:?} exceeds limit {:?}",
                         v_mag,
                         v_limit
                     );
@@ -1080,53 +1186,53 @@ mod tests {
                     // — reference-based on purpose (the measured-current form
                     // is a delayed feedback path with gain ω·L, see the
                     // step_with_injection decoupling comment).
-                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(24.0);
-                    foc.id_pi.set_gains(0.0, 0.0);
-                    foc.iq_pi.set_gains(0.0, 0.0);
+                    let mut foc = FocController::<SvpwmModulator, $sincos>::new(volts(24.0));
+                    foc.id_pi.set_gains(ohms(0.0), si(0.0));
+                    foc.iq_pi.set_gains(ohms(0.0), si(0.0));
                     foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
                     foc.set_decoupling(Some(Decoupling {
-                        ld_h: 100e-6,
-                        lq_h: 300e-6,
-                        flux_linkage_wb: 0.02,
-                        resistance_ohm: 0.1,
+                        ld: henries(100e-6),
+                        lq: henries(300e-6),
+                        flux_linkage: webers(0.02),
+                        resistance: ohms(0.1),
                     }));
 
                     let omega = 200.0; // electrical rad/s
                     let (id_target, iq_target) = (0.5, 2.0);
                     let telem = foc.step_with_injection(
-                        (1.0, 0.5, -1.5),
-                        0.0,
-                        omega,
-                        id_target,
-                        iq_target,
-                        0.0,
-                        0.0,
+                        (amps(1.0), amps(0.5), amps(-1.5)),
+                        erad(0.0),
+                        erad_per_s(omega),
+                        amps(id_target),
+                        amps(iq_target),
+                        volts(0.0),
+                        volts(0.0),
                         1000,
-                        DT,
+                        seconds(DT),
                     );
 
                     let vd_expected = -omega * 300e-6 * iq_target;
                     let vq_expected = omega * (100e-6 * id_target + 0.02);
                     assert!(
-                        (telem.vd - vd_expected).abs() < 1e-4,
+                        (telem.vd.value - vd_expected).abs() < 1e-4,
                         "vd {} != expected {}",
-                        telem.vd,
+                        telem.vd.value,
                         vd_expected
                     );
                     assert!(
-                        (telem.vq - vq_expected).abs() < 1e-4,
+                        (telem.vq.value - vq_expected).abs() < 1e-4,
                         "vq {} != expected {}",
-                        telem.vq,
+                        telem.vq.value,
                         vq_expected
                     );
 
                     // Garbage params must disable the feedforward, not feed
                     // NaN·ω into the output voltage.
                     foc.set_decoupling(Some(Decoupling {
-                        ld_h: f32::NAN,
-                        lq_h: 300e-6,
-                        flux_linkage_wb: 0.02,
-                        resistance_ohm: 0.1,
+                        ld: henries(f32::NAN),
+                        lq: henries(300e-6),
+                        flux_linkage: webers(0.02),
+                        resistance: ohms(0.1),
                     }));
                     assert!(foc.decoupling().is_none());
                 }
@@ -1134,24 +1240,44 @@ mod tests {
                 #[test]
                 fn from_motor_params_computes_correct_gains() {
                     let foc = FocController::<SvpwmModulator, $sincos>::from_motor_params(
-                        0.5, 5e-4, 24.0,
+                        ohms(0.5),
+                        henries(5e-4),
+                        volts(24.0),
                     );
 
                     let mut foc = foc;
-                    let telem = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, 0.001);
-                    assert!(
-                        telem.vq > 0.4,
-                        "vq should reflect computed gains, got {}",
-                        telem.vq
+                    let telem = foc.step(
+                        (amps(0.0), amps(0.0), amps(0.0)),
+                        erad(0.0),
+                        amps(0.0),
+                        amps(1.0),
+                        1000,
+                        seconds(0.001),
                     );
-                    assert!(telem.vq < 1.5, "vq should be reasonable, got {}", telem.vq);
+                    assert!(
+                        telem.vq.value > 0.4,
+                        "vq should reflect computed gains, got {}",
+                        telem.vq.value
+                    );
+                    assert!(
+                        telem.vq.value < 1.5,
+                        "vq should be reasonable, got {}",
+                        telem.vq.value
+                    );
 
                     let v_limit =
                         24.0 * FocController::<SvpwmModulator, $sincos>::DEFAULT_MODULATION_LIMIT;
-                    let telem_saturated = foc.step((0.0, 0.0, 0.0), 0.0, 0.0, 100.0, 1000, 0.001);
+                    let telem_saturated = foc.step(
+                        (amps(0.0), amps(0.0), amps(0.0)),
+                        erad(0.0),
+                        amps(0.0),
+                        amps(100.0),
+                        1000,
+                        seconds(0.001),
+                    );
                     let v_mag = $crate::foc::fast_math::sqrtf(
-                        telem_saturated.vd * telem_saturated.vd
-                            + telem_saturated.vq * telem_saturated.vq,
+                        telem_saturated.vd.value * telem_saturated.vd.value
+                            + telem_saturated.vq.value * telem_saturated.vq.value,
                     );
                     assert!(
                         v_mag <= v_limit + 1e-3,
@@ -1164,24 +1290,43 @@ mod tests {
                 #[test]
                 fn from_motor_params_with_custom_bandwidth() {
                     let foc_default = FocController::<SvpwmModulator, $sincos>::from_motor_params(
-                        0.5, 5e-4, 24.0,
+                        ohms(0.5),
+                        henries(5e-4),
+                        volts(24.0),
                     );
                     let foc_fast =
                         FocController::<SvpwmModulator, $sincos>::from_motor_params_with_bw(
-                            0.5, 5e-4, 24.0, 2000.0,
+                            ohms(0.5),
+                            henries(5e-4),
+                            volts(24.0),
+                            rad_per_s(2000.0),
                         );
 
                     let mut foc_d = foc_default;
                     let mut foc_f = foc_fast;
 
-                    let telem_d = foc_d.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, DT);
-                    let telem_f = foc_f.step((0.0, 0.0, 0.0), 0.0, 0.0, 1.0, 1000, DT);
+                    let telem_d = foc_d.step(
+                        (amps(0.0), amps(0.0), amps(0.0)),
+                        erad(0.0),
+                        amps(0.0),
+                        amps(1.0),
+                        1000,
+                        seconds(DT),
+                    );
+                    let telem_f = foc_f.step(
+                        (amps(0.0), amps(0.0), amps(0.0)),
+                        erad(0.0),
+                        amps(0.0),
+                        amps(1.0),
+                        1000,
+                        seconds(DT),
+                    );
 
                     assert!(
-                        telem_f.vq > telem_d.vq * 1.5,
+                        telem_f.vq.value > telem_d.vq.value * 1.5,
                         "Higher bandwidth should give stronger response: {} vs {}",
-                        telem_f.vq,
-                        telem_d.vq
+                        telem_f.vq.value,
+                        telem_d.vq.value
                     );
                 }
             }
@@ -1197,19 +1342,19 @@ mod tests {
     #[test]
     fn actuation_advance_clamps_to_a_rotation() {
         type Foc = FocController<SvpwmModulator, FastSinCos>;
-        let mut foc = Foc::new(24.0);
+        let mut foc = Foc::new(volts(24.0));
 
-        foc.set_actuation_advance(10.0);
-        assert_eq!(foc.actuation_advance, Foc::MAX_ACTUATION_ADVANCE_RAD);
-        foc.set_actuation_advance(-10.0);
-        assert_eq!(foc.actuation_advance, -Foc::MAX_ACTUATION_ADVANCE_RAD);
-        foc.set_actuation_advance(f32::NAN);
-        assert_eq!(foc.actuation_advance, 0.0);
+        foc.set_actuation_advance(erad(10.0));
+        assert_eq!(foc.actuation_advance, Foc::MAX_ACTUATION_ADVANCE);
+        foc.set_actuation_advance(erad(-10.0));
+        assert_eq!(foc.actuation_advance, -Foc::MAX_ACTUATION_ADVANCE);
+        foc.set_actuation_advance(erad(f32::NAN));
+        assert_eq!(foc.actuation_advance, ElectricalAngle::ZERO);
 
         // At the clamp the rotation must preserve vector magnitude.
-        foc.set_actuation_advance(Foc::MAX_ACTUATION_ADVANCE_RAD);
-        let (a, b) = foc.apply_actuation_advance(1.0, 0.5);
-        let gain2 = (a * a + b * b) / (1.0 + 0.25);
+        foc.set_actuation_advance(Foc::MAX_ACTUATION_ADVANCE);
+        let (a, b) = foc.apply_actuation_advance(volts(1.0), volts(0.5));
+        let gain2 = ((a * a + b * b) / volts(1.0) / volts(1.0)).fraction() / (1.0 + 0.25);
         assert!((gain2 - 1.0).abs() < 5e-3, "gain^2 = {gain2}");
     }
 
@@ -1233,27 +1378,34 @@ mod tests {
         // receives only 2/3 of the commanded voltage and every quantity derived
         // from commanded volts (R/L/λ detection, observer input) is off by 1.5×.
         let vbus = 24.0;
-        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
+        let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(vbus));
         let max_duty = 1000u16;
         // One duty LSB is vbus/max_duty of leg voltage; allow a few for truncation.
         let tol = 3.0 * vbus / f32::from(max_duty);
         for angle_deg in (0..360).step_by(30) {
             let angle = (angle_deg as f32).to_radians();
             // |V| ≈ 5.1 V, far below the 13.8 V modulation limit — no clamping.
-            let out = foc.apply_dq(1.0, 5.0, angle, 0.0, 0.0, max_duty);
+            let out = foc.apply_dq(
+                volts(1.0),
+                volts(5.0),
+                erad(angle),
+                amps(0.0),
+                amps(0.0),
+                max_duty,
+            );
             let (va, vb) = alpha_beta_from_duties(out.duties, max_duty, vbus);
             assert!(
-                (va - out.v_alpha).abs() < tol,
+                (va - out.v_alpha.value).abs() < tol,
                 "applied v_alpha {} != commanded {} at {}°",
                 va,
-                out.v_alpha,
+                out.v_alpha.value,
                 angle_deg
             );
             assert!(
-                (vb - out.v_beta).abs() < tol,
+                (vb - out.v_beta.value).abs() < tol,
                 "applied v_beta {} != commanded {} at {}°",
                 vb,
-                out.v_beta,
+                out.v_beta.value,
                 angle_deg
             );
         }
@@ -1270,12 +1422,22 @@ mod tests {
         let comp = 0.02; // 1 µs dead time × 20 kHz PWM
         // Current along +α: ia > 0, ib < 0, ic < 0.
         let (ma, _) = FocController::<SvpwmModulator, LibmSinCos>::apply_dead_time_comp(
-            0.5, 0.0, 10.0, 0.0, comp, 0.0,
+            0.5,
+            0.0,
+            amps(10.0),
+            amps(0.0),
+            comp,
+            si(0.0),
         );
         assert!(ma > 0.5, "mod_alpha must increase with ia > 0, got {ma}");
         // Current along +β: ib > 0, ic < 0.
         let (_, mb) = FocController::<SvpwmModulator, LibmSinCos>::apply_dead_time_comp(
-            0.0, 0.5, 0.0, 10.0, comp, 0.0,
+            0.0,
+            0.5,
+            amps(0.0),
+            amps(10.0),
+            comp,
+            si(0.0),
         );
         assert!(mb > 0.5, "mod_beta must increase with iβ > 0, got {mb}");
     }
@@ -1283,7 +1445,9 @@ mod tests {
     #[test]
     fn dead_time_linear_region_is_continuous_odd_and_preserves_full_correction() {
         type C = FocController<SvpwmModulator, LibmSinCos>;
-        let correction = |ia, ib| C::apply_dead_time_comp(0.0, 0.0, ia, ib, 0.0072, 1.0);
+        let correction = |ia: f32, ib: f32| {
+            C::apply_dead_time_comp(0.0, 0.0, amps(ia), amps(ib), 0.0072, si(1.0))
+        };
         assert_eq!(correction(0.0, 0.0), (0.0, 0.0));
         for (ia, ib) in [(0.06, 0.0), (0.0, 0.06), (0.02, 0.03)] {
             let p = correction(ia, ib);
@@ -1295,13 +1459,13 @@ mod tests {
         }
         assert_eq!(
             correction(10.0, 0.0),
-            C::apply_dead_time_comp(0.0, 0.0, 10.0, 0.0, 0.0072, 0.0)
+            C::apply_dead_time_comp(0.0, 0.0, amps(10.0), amps(0.0), 0.0072, si(0.0))
         );
-        let mut c = C::new(24.0);
-        c.set_dead_time_comp_linear_region(1.0).unwrap();
+        let mut c = C::new(volts(24.0));
+        c.set_dead_time_comp_linear_region(amps(1.0)).unwrap();
         for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::from_bits(1)] {
-            assert!(c.set_dead_time_comp_linear_region(invalid).is_err());
-            assert_eq!(c.dead_time_current_inv_a, 1.0);
+            assert!(c.set_dead_time_comp_linear_region(amps(invalid)).is_err());
+            assert_eq!(c.dead_time_current_inv, si(1.0));
         }
     }
 
@@ -1313,8 +1477,8 @@ mod tests {
         let vbus = 24.0;
         let max_duty = 10_000u16;
         let c = 0.02;
-        let plain = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
-        let mut comp = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
+        let plain = FocController::<SvpwmModulator, LibmSinCos>::new(volts(vbus));
+        let mut comp = FocController::<SvpwmModulator, LibmSinCos>::new(volts(vbus));
         comp.set_dead_time_comp_factor(c);
         for angle_deg in (15..360).step_by(30) {
             let angle = (angle_deg as f32).to_radians();
@@ -1325,10 +1489,24 @@ mod tests {
             let s = [ia, ib, ic].map(|i| if i >= 0.0 { 1.0f32 } else { -1.0 });
             let s_mean = (s[0] + s[1] + s[2]) / 3.0;
             let d0 = plain
-                .apply_dq(3.0, 0.0, angle, i_alpha, i_beta, max_duty)
+                .apply_dq(
+                    volts(3.0),
+                    volts(0.0),
+                    erad(angle),
+                    amps(i_alpha),
+                    amps(i_beta),
+                    max_duty,
+                )
                 .duties;
             let d1 = comp
-                .apply_dq(3.0, 0.0, angle, i_alpha, i_beta, max_duty)
+                .apply_dq(
+                    volts(3.0),
+                    volts(0.0),
+                    erad(angle),
+                    amps(i_alpha),
+                    amps(i_beta),
+                    max_duty,
+                )
                 .duties;
             let delta: [f32; 3] =
                 core::array::from_fn(|k| (f32::from(d1[k]) - f32::from(d0[k])) / 10_000.0);
@@ -1353,30 +1531,38 @@ mod tests {
         let vbus = 24.0;
         let max_duty = 10_000u16;
         let cap = 0.95;
-        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::new(vbus);
+        let mut foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(vbus));
         foc.set_duty_cap(cap);
         let v_max = cap * FRAC_1_SQRT_3 * vbus;
         let tol = 3.0 * vbus / f32::from(max_duty);
         for angle_deg in (0..360).step_by(7) {
             let angle = (angle_deg as f32).to_radians();
             // Demand far beyond the circle: the limit must engage.
-            let out = foc.apply_dq(0.0, 30.0, angle, 0.0, 0.0, max_duty);
+            let out = foc.apply_dq(
+                volts(0.0),
+                volts(30.0),
+                erad(angle),
+                amps(0.0),
+                amps(0.0),
+                max_duty,
+            );
             let top = out.duties.iter().copied().max().unwrap_or(0);
             assert!(
                 f32::from(top) <= cap * f32::from(max_duty) + 1.0,
                 "top leg {top} over the cap at {angle_deg}°"
             );
-            let v_mag = sqrtf(out.v_alpha * out.v_alpha + out.v_beta * out.v_beta);
+            let v_mag =
+                sqrtf(out.v_alpha.value * out.v_alpha.value + out.v_beta.value * out.v_beta.value);
             assert!(
                 (v_mag - v_max).abs() < 0.01,
                 "|V| {v_mag} should sit on the capped limit {v_max}"
             );
             let (va, vb) = alpha_beta_from_duties(out.duties, max_duty, vbus);
             assert!(
-                (va - out.v_alpha).abs() < tol && (vb - out.v_beta).abs() < tol,
+                (va - out.v_alpha.value).abs() < tol && (vb - out.v_beta.value).abs() < tol,
                 "applied ({va}, {vb}) != reported ({}, {}) at {angle_deg}°",
-                out.v_alpha,
-                out.v_beta
+                out.v_alpha.value,
+                out.v_beta.value
             );
         }
     }

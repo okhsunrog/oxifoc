@@ -56,7 +56,7 @@ impl Currents {
         let scale = calib.adc_vref_mv as f32
             / 1000.0
             / f32::from(calib.adc_max_counts)
-            / calib.shunt_ohms
+            / calib.shunt_ohms.value
             / calib.amp_gain;
         self.raw = [out.ia, out.ib, out.ic].map(|i| {
             let raw = if calib.invert_current_sign {
@@ -133,7 +133,10 @@ pub async fn foc_loop(
         hall.apply_hall_tuning(tuning);
     }
     let phase = PhaseManager::with_hall(hall);
-    let controller = FocController::<SvpwmModulator>::from_runtime_config(&config, vbus);
+    let controller = FocController::<SvpwmModulator>::from_runtime_config(
+        &config,
+        oxifoc_core::units::volts(vbus),
+    );
     let pwm = VirtualPwm {
         duties: [0; 3],
         enabled: false,
@@ -216,8 +219,8 @@ pub async fn foc_loop(
             )
             .unwrap_or_default();
             let hall = HallSnapshot {
-                angle_rad: sample.angle_rad,
-                velocity_rad_s: sample.omega_e,
+                angle: oxifoc_core::units::erad(sample.angle_rad),
+                velocity: oxifoc_core::units::erad_per_s(sample.omega_e),
                 direction: if sample.omega_e > 0.1 {
                     Direction::Clockwise
                 } else if sample.omega_e < -0.1 {
@@ -227,7 +230,9 @@ pub async fn foc_loop(
                 },
                 state: driver.phase().hall().logical_state(),
                 error_count: 0,
-                edge_age_s: driver.phase().hall().time_since_edge(now).unwrap_or(0) as f32 * 1e-6,
+                edge_age: oxifoc_core::units::seconds(
+                    driver.phase().hall().time_since_edge(now).unwrap_or(0) as f32 * 1e-6,
+                ),
             };
             publish_cycle_telemetry(state_mutex, adc, Some(hall), telem, seq);
             previous_angle = sample.angle_rad;
@@ -235,7 +240,7 @@ pub async fn foc_loop(
             let omega_m = sample.omega_e / f32::from(params.pole_pairs);
             let load = load_torque * (omega_m / 2.0).tanh();
             out = if driver.pwm().enabled {
-                motor.step(telem.v_alpha, telem.v_beta, load, dt)
+                motor.step(telem.v_alpha.value, telem.v_beta.value, load, dt)
             } else {
                 motor.step_coast(load, dt)
             };

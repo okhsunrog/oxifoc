@@ -7,6 +7,7 @@ use defmt_rtt as _;
 #[embedded_test::tests(executor = embassy_executor::Executor::new())]
 mod tests {
     use core::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
+    use oxifoc_core::units::{amps, erad, seconds, volts};
 
     use oxifoc_core::foc::trig::CordicSinCos;
     use oxifoc_core::foc::{
@@ -183,12 +184,19 @@ mod tests {
         let max_duty: u16 = 1000;
         let dt = 50e-6_f32; // 20kHz
 
-        let mut foc = FocController::<SvpwmModulator, CordicSinCos>::new(vbus);
+        let mut foc = FocController::<SvpwmModulator, CordicSinCos>::new(volts(vbus));
 
         // With zero currents and zero targets, duties should be centered
         let angles: [f32; 4] = [0.0, FRAC_PI_4, PI, 5.0];
         for angle in angles {
-            let telem = foc.step((0.0, 0.0, 0.0), angle, 0.0, 0.0, max_duty, dt);
+            let telem = foc.step(
+                (amps(0.0), amps(0.0), amps(0.0)),
+                erad(angle),
+                amps(0.0),
+                amps(0.0),
+                max_duty,
+                seconds(dt),
+            );
 
             // PI controllers with zero error should output ~zero voltage → centered duties
             let center = max_duty / 2;
@@ -221,7 +229,7 @@ mod tests {
         let max_duty: u16 = 2000;
         let dt = 50e-6_f32;
 
-        let mut foc = FocController::<SvpwmModulator, CordicSinCos>::new(vbus);
+        let mut foc = FocController::<SvpwmModulator, CordicSinCos>::new(volts(vbus));
 
         // Simulate: angle = 0, inject known current on d-axis
         // At angle = 0: sin=0, cos=1, so clarke(ia, ib) with ia=1.0, ib=-0.5
@@ -232,17 +240,31 @@ mod tests {
         let ib = -0.5_f32;
 
         // Run multiple steps to let PI respond
-        let mut last_telem = foc.step((ia, ib, -ia - ib), angle, 0.0, 0.0, max_duty, dt);
+        let mut last_telem = foc.step(
+            (amps(ia), amps(ib), amps(-ia - ib)),
+            erad(angle),
+            amps(0.0),
+            amps(0.0),
+            max_duty,
+            seconds(dt),
+        );
         for _ in 0..10 {
-            last_telem = foc.step((ia, ib, -ia - ib), angle, 0.0, 0.0, max_duty, dt);
+            last_telem = foc.step(
+                (amps(ia), amps(ib), amps(-ia - ib)),
+                erad(angle),
+                amps(0.0),
+                amps(0.0),
+                max_duty,
+                seconds(dt),
+            );
         }
 
         // With persistent d-axis current and id_target=0, vd should be negative
         // (PI tries to push id towards zero)
         defmt::assert!(
-            last_telem.vd < 0.0,
+            last_telem.vd.value < 0.0,
             "Expected negative vd to counteract positive id, got vd={}",
-            last_telem.vd
+            last_telem.vd.value
         );
 
         // Duties should be non-trivially different from center (PI is acting)
@@ -256,8 +278,8 @@ mod tests {
 
         defmt::info!(
             "FOC synthetic current: PASS (vd={}, vq={}, duties={:?})",
-            last_telem.vd,
-            last_telem.vq,
+            last_telem.vd.value,
+            last_telem.vq.value,
             last_telem.duties
         );
     }
@@ -307,12 +329,19 @@ mod tests {
         let max_duty: u16 = 2000;
         let dt = 50e-6_f32; // 20kHz
 
-        let mut foc = FocController::<SvpwmModulator, CordicSinCos>::new(vbus);
+        let mut foc = FocController::<SvpwmModulator, CordicSinCos>::new(volts(vbus));
 
         // Warm up: let PI settle
         for i in 0..50u32 {
             let angle = (i as f32) * 0.1;
-            foc.step((1.0, -0.5, -0.5), angle, 0.5, 2.0, max_duty, dt);
+            foc.step(
+                (amps(1.0), amps(-0.5), amps(-0.5)),
+                erad(angle),
+                amps(0.5),
+                amps(2.0),
+                max_duty,
+                seconds(dt),
+            );
         }
 
         // Benchmark N iterations of the full FOC step
@@ -330,7 +359,14 @@ mod tests {
             let ic = -ia - ib;
 
             let start = dwt_cycles();
-            let result = foc.step((ia, ib, ic), angle, 0.5, 2.0, max_duty, dt);
+            let result = foc.step(
+                (amps(ia), amps(ib), amps(ic)),
+                erad(angle),
+                amps(0.5),
+                amps(2.0),
+                max_duty,
+                seconds(dt),
+            );
             let end = dwt_cycles();
             core::hint::black_box(&result);
 

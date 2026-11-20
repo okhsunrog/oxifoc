@@ -629,7 +629,7 @@ where
                     dev_info.mcu.as_str(),
                     dev_info.uuid.as_str(),
                     dev_info.foc_freq_hz,
-                    dev_info.max_current_a,
+                    dev_info.max_current_a.value,
                     dev_info.proto_version,
                 );
                 if !protocol_is_compatible(dev_info.proto_version) {

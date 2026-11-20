@@ -34,18 +34,57 @@
 /// let clamped = raw.clamp(-24.0, 24.0);
 /// pi.apply_anti_windup(clamped - raw);
 /// ```
-use crate::foc::clamp_f32;
+use core::fmt::Debug;
+use core::ops::{Add, Sub};
+
+use crate::units::{ConstZero, Scalar};
+
+/// Units of a PI regulator: the error and output types, the time step and
+/// the gains. The two products are methods, so each implementation checks
+/// its own dimension algebra (for example A per electrical rad/s times
+/// electrical rad/s is A) while the regulator code stays generic.
+pub trait PiUnits {
+    type Error: Scalar + Debug + Sub<Output = Self::Error> + Add<Output = Self::Error>;
+    type Output: Scalar + Debug + Add<Output = Self::Output> + Sub<Output = Self::Output>;
+    type Time: Copy + Debug;
+    type Kp: Copy + Debug;
+    type Ki: Scalar + Debug;
+    /// `kp · error`
+    fn proportional(kp: Self::Kp, error: Self::Error) -> Self::Output;
+    /// One trapezoidal integration step: `ki · (e + e_prev) · 0.5 · dt`.
+    fn integral(ki: Self::Ki, error_sum: Self::Error, dt: Self::Time) -> Self::Output;
+}
+
+/// Unitless `f32` regulator (current loop, PLLs).
+#[derive(Clone, Copy, Debug)]
+pub enum PlainPi {}
+
+impl PiUnits for PlainPi {
+    type Error = f32;
+    type Output = f32;
+    type Time = f32;
+    type Kp = f32;
+    type Ki = f32;
+    #[inline(always)]
+    fn proportional(kp: f32, error: f32) -> f32 {
+        kp * error
+    }
+    #[inline(always)]
+    fn integral(ki: f32, error_sum: f32, dt: f32) -> f32 {
+        ki * error_sum * 0.5 * dt
+    }
+}
 
 #[derive(Debug)]
-pub struct PIController {
+pub struct PIController<U: PiUnits = PlainPi> {
     /// Proportional gain
-    kp: f32,
+    kp: U::Kp,
     /// Integral gain
-    ki: f32,
+    ki: U::Ki,
     /// Accumulated integral
-    integral: f32,
+    integral: U::Output,
     /// Previous error for trapezoidal integration
-    prev_error: f32,
+    prev_error: U::Error,
 }
 
 impl PIController {
@@ -55,11 +94,18 @@ impl PIController {
     /// * `kp` - Proportional gain
     /// * `ki` - Integral gain
     pub fn new(kp: f32, ki: f32) -> Self {
+        Self::with_gains(kp, ki)
+    }
+}
+
+impl<U: PiUnits> PIController<U> {
+    /// [`new`](PIController::new) with typed gains.
+    pub fn with_gains(kp: U::Kp, ki: U::Ki) -> Self {
         Self {
             kp,
             ki,
-            integral: 0.0,
-            prev_error: 0.0,
+            integral: U::Output::ZERO,
+            prev_error: U::Error::ZERO,
         }
     }
 
@@ -71,17 +117,17 @@ impl PIController {
     /// * `setpoint` - Desired value
     /// * `measurement` - Current measured value
     /// * `dt` - Time step (seconds) since last update
-    pub fn update(&mut self, setpoint: f32, measurement: f32, dt: f32) -> f32 {
+    pub fn update(&mut self, setpoint: U::Error, measurement: U::Error, dt: U::Time) -> U::Output {
         let error = setpoint - measurement;
 
         // Proportional term
-        let p_term = self.kp * error;
+        let p_term = U::proportional(self.kp, error);
 
         // Integral term (trapezoidal / Tustin integration)
-        if self.ki == 0.0 {
-            self.integral = 0.0;
+        if self.ki == U::Ki::ZERO {
+            self.integral = U::Output::ZERO;
         } else {
-            self.integral += self.ki * (error + self.prev_error) * 0.5 * dt;
+            self.integral = self.integral + U::integral(self.ki, error + self.prev_error, dt);
         }
         self.prev_error = error;
 
@@ -95,9 +141,9 @@ impl PIController {
     ///
     /// Used by FOC circular voltage clamping.
     #[inline]
-    pub fn apply_anti_windup(&mut self, saturation: f32) {
-        if self.ki != 0.0 {
-            self.integral += saturation;
+    pub fn apply_anti_windup(&mut self, saturation: U::Output) {
+        if self.ki != U::Ki::ZERO {
+            self.integral = self.integral + saturation;
         }
     }
 
@@ -108,34 +154,38 @@ impl PIController {
     /// - Starting a new control sequence
     /// - Switching control modes
     pub fn reset(&mut self) {
-        self.integral = 0.0;
-        self.prev_error = 0.0;
+        self.integral = U::Output::ZERO;
+        self.prev_error = U::Error::ZERO;
     }
 
     /// Get current integral value (for debugging/telemetry)
-    pub fn get_integral(&self) -> f32 {
+    pub fn get_integral(&self) -> U::Output {
         self.integral
     }
 
     /// Restart with the integral at `integral`: at zero error the output
     /// continues from there (bumpless takeover of an existing command).
     /// Ignored when `ki == 0`: proportional-only control has no stored bias.
-    pub fn preload(&mut self, integral: f32) {
-        self.integral = if self.ki == 0.0 { 0.0 } else { integral };
-        self.prev_error = 0.0;
+    pub fn preload(&mut self, integral: U::Output) {
+        self.integral = if self.ki == U::Ki::ZERO {
+            U::Output::ZERO
+        } else {
+            integral
+        };
+        self.prev_error = U::Error::ZERO;
     }
 
     /// Update controller gains at runtime, clearing state when I is disabled.
-    pub fn set_gains(&mut self, kp: f32, ki: f32) {
+    pub fn set_gains(&mut self, kp: U::Kp, ki: U::Ki) {
         self.kp = kp;
         self.ki = ki;
-        if ki == 0.0 {
+        if ki == U::Ki::ZERO {
             self.reset();
         }
     }
 
     /// Current gains (kp, ki)
-    pub fn gains(&self) -> (f32, f32) {
+    pub fn gains(&self) -> (U::Kp, U::Ki) {
         (self.kp, self.ki)
     }
 }
@@ -155,10 +205,10 @@ impl PIController {
 /// assert!(output >= -24.0 && output <= 24.0);
 /// ```
 #[derive(Debug)]
-pub struct ClampedPI {
-    pi: PIController,
-    min: f32,
-    max: f32,
+pub struct ClampedPI<U: PiUnits = PlainPi> {
+    pi: PIController<U>,
+    min: U::Output,
+    max: U::Output,
 }
 
 impl ClampedPI {
@@ -170,8 +220,15 @@ impl ClampedPI {
     /// * `min` - Minimum output value
     /// * `max` - Maximum output value
     pub fn new(kp: f32, ki: f32, min: f32, max: f32) -> Self {
+        Self::with_gains(kp, ki, min, max)
+    }
+}
+
+impl<U: PiUnits> ClampedPI<U> {
+    /// [`new`](ClampedPI::new) with typed gains and limits.
+    pub fn with_gains(kp: U::Kp, ki: U::Ki, min: U::Output, max: U::Output) -> Self {
         Self {
-            pi: PIController::new(kp, ki),
+            pi: PIController::with_gains(kp, ki),
             min,
             max,
         }
@@ -186,16 +243,16 @@ impl ClampedPI {
     ///
     /// # Returns
     /// Controller output clamped to `[min, max]`
-    pub fn update(&mut self, setpoint: f32, measurement: f32, dt: f32) -> f32 {
+    pub fn update(&mut self, setpoint: U::Error, measurement: U::Error, dt: U::Time) -> U::Output {
         let integral_before = self.pi.integral;
         let raw = self.pi.update(setpoint, measurement, dt);
-        let min = if self.min.is_nan() {
-            f32::NEG_INFINITY
+        let min = if Scalar::is_nan(self.min) {
+            U::Output::NEG_INFINITY
         } else {
             self.min
         };
-        let max = if self.max.is_nan() {
-            f32::INFINITY
+        let max = if Scalar::is_nan(self.max) {
+            U::Output::INFINITY
         } else {
             self.max
         };
@@ -205,29 +262,25 @@ impl ClampedPI {
         // positive integral to cancel it: declining overspeed then requests
         // motoring torque while the rotor is still above its target.
         let delta = self.pi.integral - integral_before;
-        if (raw > max && delta > 0.0) || (raw < min && delta < 0.0) {
+        if (raw > max && delta > U::Output::ZERO) || (raw < min && delta < U::Output::ZERO) {
             self.pi.integral = integral_before;
         }
         // A shrinking actuator budget must also shed already stored authority.
         // Pure P control never stores state, including with nonzero limits.
-        if self.pi.ki != 0.0 {
-            self.pi.integral = clamp_f32(self.pi.integral, min, max);
+        if self.pi.ki != U::Ki::ZERO {
+            self.pi.integral = self.pi.integral.clamp_to(min, max);
         }
-        clamp_f32(
-            self.pi.kp * (setpoint - measurement) + self.pi.integral,
-            min,
-            max,
-        )
+        (U::proportional(self.pi.kp, setpoint - measurement) + self.pi.integral).clamp_to(min, max)
     }
 
     /// Update output limits
-    pub fn set_limits(&mut self, min: f32, max: f32) {
+    pub fn set_limits(&mut self, min: U::Output, max: U::Output) {
         self.min = min;
         self.max = max;
     }
 
     /// Track an external actuator's output residual once per controller step.
-    pub(crate) fn track_output(&mut self, correction: f32) {
+    pub(crate) fn track_output(&mut self, correction: U::Output) {
         self.pi.apply_anti_windup(correction);
     }
 
@@ -237,17 +290,17 @@ impl ClampedPI {
     }
 
     /// See [`PIController::preload`].
-    pub fn preload(&mut self, integral: f32) {
+    pub fn preload(&mut self, integral: U::Output) {
         self.pi.preload(integral);
     }
 
     /// Get current integral value (for debugging/telemetry)
-    pub fn get_integral(&self) -> f32 {
+    pub fn get_integral(&self) -> U::Output {
         self.pi.get_integral()
     }
 
     /// Update controller gains at runtime
-    pub fn set_gains(&mut self, kp: f32, ki: f32) {
+    pub fn set_gains(&mut self, kp: U::Kp, ki: U::Ki) {
         self.pi.set_gains(kp, ki);
     }
 }

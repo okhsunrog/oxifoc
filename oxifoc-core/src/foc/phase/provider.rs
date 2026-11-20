@@ -4,20 +4,23 @@
 //! with any phase source (Hall, Encoder, Observer, or combinations).
 
 use crate::foc::hall_sensor::HallFaultKind;
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity, Time,
+};
 
 /// Output from phase provider
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PhaseOutput {
-    /// Electrical angle (radians, 0 to 2π)
-    pub angle: f32,
-    /// Commutation-frame electrical velocity (rad/s), including frame tracking.
+    /// Electrical angle (0 to 2π)
+    pub angle: ElectricalAngle,
+    /// Commutation-frame electrical velocity, including frame tracking.
     /// Use [`PhaseProvider::rotor_velocity`] for physical motion feedback.
-    pub velocity: f32,
+    pub velocity: ElectricalAngularVelocity,
 }
 
 /// Estimated physical rotor velocity, distinct from commutation-frame corrections.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RotorVelocityEstimate(f32);
+pub struct RotorVelocityEstimate(ElectricalAngularVelocity);
 
 /// Generation of the physical-motion reference, independent of ordinary samples.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,14 +33,12 @@ impl MotionReferenceEpoch {
 }
 
 impl RotorVelocityEstimate {
-    /// A finite electrical angular velocity in rad/s. Zero is a usable estimate.
-    pub fn new(electrical_rad_s: f32) -> Option<Self> {
-        electrical_rad_s
-            .is_finite()
-            .then_some(Self(electrical_rad_s))
+    /// A finite electrical angular velocity. Zero is a usable estimate.
+    pub fn new(velocity: ElectricalAngularVelocity) -> Option<Self> {
+        velocity.is_finite().then_some(Self(velocity))
     }
 
-    pub fn electrical_rad_s(self) -> f32 {
+    pub fn velocity(self) -> ElectricalAngularVelocity {
         self.0
     }
 }
@@ -80,19 +81,19 @@ impl StartupStatus {
 /// Input for phase provider update
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PhaseInput {
-    /// α voltage (V) that acted on the motor over the sampling interval
+    /// α voltage that acted on the motor over the sampling interval
     /// ending at this cycle's current sample — NOT the command computed
     /// this cycle, which only acts after the actuation delay (see
     /// `FocDriver::set_actuation_delay`).
-    pub v_alpha: f32,
-    /// β counterpart of [`v_alpha`](Self::v_alpha) (V).
-    pub v_beta: f32,
-    /// Measured α current (A)
-    pub i_alpha: f32,
-    /// Measured β current (A)
-    pub i_beta: f32,
-    /// Time step (seconds)
-    pub dt: f32,
+    pub v_alpha: ElectricPotential,
+    /// β counterpart of [`v_alpha`](Self::v_alpha).
+    pub v_beta: ElectricPotential,
+    /// Measured α current
+    pub i_alpha: ElectricCurrent,
+    /// Measured β current
+    pub i_beta: ElectricCurrent,
+    /// Time step
+    pub dt: Time,
 }
 
 /// Provides electrical phase angle to FOC controller
@@ -133,7 +134,7 @@ pub struct PhaseInput {
 /// reports id = 0 (see `commutation_frame_tracks_rotor_at_sample_instant`).
 pub trait PhaseProvider {
     #[cfg(feature = "bench-cogging-compensation")]
-    fn bench_hall_position(&self, _now_ticks: u64) -> Option<f32> {
+    fn bench_hall_position(&self, _now_ticks: u64) -> Option<ElectricalAngle> {
         None
     }
 
@@ -223,8 +224,8 @@ pub trait PhaseProvider {
     /// the estimator demodulates the currents fed to the next `update()`
     /// against this exact carrier sample, and `update()` then advances the
     /// carrier. Default: no injection (sources without HFI).
-    fn injection(&self) -> (f32, f32) {
-        (0.0, 0.0)
+    fn injection(&self) -> (ElectricPotential, ElectricPotential) {
+        (ElectricPotential::ZERO, ElectricPotential::ZERO)
     }
 
     /// Request a switch of the angle source (host command).
@@ -256,12 +257,19 @@ pub trait PhaseProvider {
     /// Feed the measured |iq| to the estimation chain's physics
     /// acceleration prior (see `BackEmfObserver::set_accel_prior`).
     /// Default: no-op.
-    fn note_torque_current(&mut self, _iq_abs: f32, _dt: f32) {}
+    fn note_torque_current(&mut self, _iq_abs: ElectricCurrent, _dt: Time) {}
 
     /// Back-EMF observer internals for the `obs-debug-telem` fast-frame
     /// mapping: `(phase_pll, phase_raw, velocity_pll, readiness_phase_err)`.
     /// Default: none (providers without an observer). See `FocDriver::step`.
-    fn debug_observer(&self) -> Option<(f32, f32, f32, f32)> {
+    fn debug_observer(
+        &self,
+    ) -> Option<(
+        ElectricalAngle,
+        ElectricalAngle,
+        ElectricalAngularVelocity,
+        ElectricalAngle,
+    )> {
         None
     }
 

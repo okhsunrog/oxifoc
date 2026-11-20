@@ -36,7 +36,7 @@ where
         }
         self.watchdog
             .note_cycle(now_ticks, self.mode, self.phase.is_starting());
-        self.position.update(self.phase.get().angle);
+        self.position.update(self.phase.get().angle.value);
         let result = self.step_inner(now_ticks);
         if result.is_err() {
             self.end_commissioning();
@@ -51,7 +51,7 @@ where
                 self.mode,
                 ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. }
             ) {
-                if !context.source_allows(out.i_alpha, out.i_beta) {
+                if !context.source_allows(out.i_alpha.value, out.i_beta.value) {
                     self.safe_off();
                     return Err(StepError::SourceLimit);
                 }
@@ -77,7 +77,7 @@ where
     #[inline(always)]
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn stamp_step_telemetry(&mut self, out: &mut FocOutput) {
-        out.velocity_rad_s = self.phase.get().velocity;
+        out.velocity = self.phase.get().velocity;
         // Debug fast-frame mapping (bench estimator forensics): repurpose
         // four columns with observer internals — velocity/erpm ← PLL ω̂
         // (ALWAYS the observer, not the active source), angle ← phase_pll,
@@ -100,11 +100,11 @@ where
         // the mapping.
         #[cfg(feature = "obs-debug-telem")]
         if let Some((pll, _raw, vel, err_filt)) = self.phase.debug_observer() {
-            let drive_angle = out.angle_rad;
-            out.velocity_rad_s = vel;
-            out.angle_rad = pll;
-            out.vd = crate::foc::angle_difference(drive_angle, pll);
-            out.vq = if self.phase.angle_trustworthy() {
+            let drive_angle = out.angle.value;
+            out.velocity.value = vel;
+            out.angle.value = pll;
+            out.vd.value = crate::foc::angle_difference(drive_angle, pll);
+            out.vq.value = if self.phase.angle_trustworthy() {
                 err_filt
             } else {
                 -err_filt
@@ -139,10 +139,9 @@ where
     #[inline(always)]
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn step_deadshort(&mut self, dt: f32, now_ticks: u64) -> Option<Result<FocOutput, StepError>> {
-        self.phase
-            .startup_status()
-            .wants_short()
-            .then(|| self.step_direct_voltage(0.0, 0.0, self.phase.get().angle, dt, now_ticks))
+        self.phase.startup_status().wants_short().then(|| {
+            self.step_direct_voltage(0.0, 0.0, self.phase.get().angle.value, dt, now_ticks)
+        })
     }
 
     /// Sensorless restart on trust loss (see [`SENSORLESS_RESTART_AFTER_S`]):
@@ -155,9 +154,9 @@ where
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn maybe_restart_sensorless(&mut self, dt: f32) {
         let drive_cmd = match self.mode {
-            ControlMode::CurrentControl { iq_target, .. } => iq_target,
+            ControlMode::CurrentControl { iq_target, .. } => iq_target.value,
             ControlMode::Throttle { fraction } => fraction,
-            ControlMode::VelocityControl { target_vel } => target_vel,
+            ControlMode::VelocityControl { target_vel } => target_vel.value,
             _ => 0.0,
         };
         if drive_cmd != 0.0 && !self.phase.is_starting() {

@@ -14,8 +14,8 @@ use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::NoSensor;
-use oxifoc_core::motor::{ControlMode, FocDriver};
 use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
+use oxifoc_core::motor::{ControlMode, FocDriver};
 
 use crate::config::{BOARD, NTC, PWM_CONFIG};
 use crate::cordic::CordicSinCos;
@@ -42,13 +42,11 @@ pub static FET_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
 /// Handle for ADC1 injected conversions (TIM1-triggered): ia, vbus, temp.
 pub static ADC1_INJECTED: CriticalSectionMutex<
     RefCell<Option<InjectedAdc<'static, AdcRegs, Blocking>>>,
-> =
-    CriticalSectionMutex::new(RefCell::new(None));
+> = CriticalSectionMutex::new(RefCell::new(None));
 /// Handle for ADC2 injected conversions (TIM1-triggered).
 pub static ADC2_INJECTED: CriticalSectionMutex<
     RefCell<Option<InjectedAdc<'static, AdcRegs, Blocking>>>,
-> =
-    CriticalSectionMutex::new(RefCell::new(None));
+> = CriticalSectionMutex::new(RefCell::new(None));
 
 // ========== FOC Control ==========
 
@@ -89,13 +87,19 @@ pub async fn init(
     // Build FOC driver with dt from PWM config; controller and limits come
     // from the stored config (motor params → PI gains → defaults).
     let mut foc_driver = FocDriver::new(
-        FocController::<SvpwmModulator, CordicSinCos>::new(initial_vbus_v),
+        FocController::<SvpwmModulator, CordicSinCos>::new(oxifoc_core::units::volts(
+            initial_vbus_v,
+        )),
         motor_pwm,
         current_sensor,
         phase_manager,
         PWM_CONFIG.dt_s(),
     );
-    let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(config, initial_vbus_v, BOARD.max_phase_current_a);
+    let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
+        config,
+        initial_vbus_v,
+        BOARD.max_phase_current_a,
+    );
     let source = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
     critical_section::with(|cs| {
         let mut state = STATE.borrow(cs).borrow_mut();
@@ -108,7 +112,8 @@ pub async fn init(
     foc_driver.set_failsafe(oxifoc_core::motor::failsafe::FailsafeConfig::from_stored(
         config.failsafe.as_ref(),
     ));
-    foc_driver.configure_voltage_protection(&BOARD, config.voltage_limits.as_ref())
+    foc_driver
+        .configure_voltage_protection(&BOARD, config.voltage_limits.as_ref())
         .expect("stored voltage limits must fit the board");
 
     // Cruise velocity-loop tuning from stored config (or soft defaults).
@@ -128,9 +133,7 @@ pub async fn init(
     foc_driver.current_sensor_mut().calibrate().await;
 
     let (oa, ob, oc) = foc_driver.current_sensor().converter().get_offsets();
-    oxifoc_core::state::model::publish_boot_current_offsets(
-        &crate::RUNTIME_CONFIG, [oa, ob, oc],
-    );
+    oxifoc_core::state::model::publish_boot_current_offsets(&crate::RUNTIME_CONFIG, [oa, ob, oc]);
 
     // Install FOC driver for ISR-only access.
     FOC_DRIVER.lock(|cell| {
@@ -173,7 +176,8 @@ fn ADC1_2() {
             IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
             // Convert VBUS raw ADC to millivolts
-            vbus_mv = oxifoc_core::state::calibrated_vbus_mv(&STATE, BOARD.vbus_mv_from_adc(samples[1]));
+            vbus_mv =
+                oxifoc_core::state::calibrated_vbus_mv(&STATE, BOARD.vbus_mv_from_adc(samples[1]));
             VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
             // Convert temperature raw ADC to 0.1°C units

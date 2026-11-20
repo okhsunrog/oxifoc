@@ -21,6 +21,10 @@ use crate::foc::sensors::AngleSensor;
 use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
+use crate::units::{
+    AngleRepr, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
+    ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux, Sign, Time,
+};
 
 /// Diagnostic-only reproduction switch, changed while Stopped by the bench.
 /// Compiled out together with periodic observer logging in normal images.
@@ -102,6 +106,17 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// tail is covered by the trust gate instead: a cold demod reports
     /// zero confidence, `angle_trustworthy()` stays false and the driver
     /// keeps iq at zero for the few ms the lock takes.
+    /// The observer's motor model for the startup probes (zero without one).
+    fn observer_model(&self) -> (ElectricalResistance, Inductance, MagneticFlux) {
+        (
+            self.observer
+                .resistance()
+                .unwrap_or(ElectricalResistance::ZERO),
+            self.observer.inductance().unwrap_or(Inductance::ZERO),
+            self.observer.lambda().unwrap_or(MagneticFlux::ZERO),
+        )
+    }
+
     #[cfg(feature = "hfi")]
     fn hfi_active(&self) -> bool {
         if !self.source_usage.hfi {
@@ -113,9 +128,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 !self.crossover_latched
                     || self.output.velocity.abs() < min_vel * (1.0 + CROSSOVER_HYSTERESIS)
             }
-            PhaseSource::HfiToObserverVolts { toggle_v, .. } => {
-                !self.crossover_latched || self.bemf_proxy_v < toggle_v + HFI_VOLTS_HYSTERESIS
-            }
+            PhaseSource::HfiToObserverVolts {
+                toggle: toggle_v, ..
+            } => !self.crossover_latched || self.bemf_proxy < toggle_v + HFI_VOLTS_HYSTERESIS,
             PhaseSource::HfiToEncoder { switch_vel } => {
                 !self.crossover_latched
                     || self.output.velocity.abs() < switch_vel * (1.0 + CROSSOVER_HYSTERESIS)
@@ -131,7 +146,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
     #[cfg(feature = "bench-cogging-compensation")]
-    fn bench_hall_position(&self, now_ticks: u64) -> Option<f32> {
+    fn bench_hall_position(&self, now_ticks: u64) -> Option<ElectricalAngle> {
         if self.source == PhaseSource::Hall
             && self.hall_health == HallHealth::Ok
             && !self.open_loop_override.active
@@ -172,10 +187,12 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             } => {
                 let weight = if self.observer.is_ready() {
                     super::select::compute_blend(
-                        self.hall_control_motion
-                            .velocity()
-                            .abs()
-                            .max(self.observer.velocity().unwrap_or(0.0).abs()),
+                        self.hall_control_motion.velocity().abs().max(
+                            self.observer
+                                .velocity()
+                                .unwrap_or(ElectricalAngularVelocity::ZERO)
+                                .abs(),
+                        ),
                         blend_low,
                         blend_high,
                     )
@@ -211,7 +228,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     },
                     _ => PhaseOutput {
                         angle: sample.angle,
-                        velocity: 0.0,
+                        velocity: ElectricalAngularVelocity::ZERO,
                     },
                 };
             }
@@ -370,12 +387,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // active source uses it.
         if matches!(self.source, PhaseSource::HfiToObserverVolts { .. }) {
             use crate::foc::trig::FastSinCos;
-            let r = self.observer.resistance().unwrap_or(0.0);
-            let (sin_t, cos_t) = FastSinCos::sin_cos(self.output.angle);
+            let r = self
+                .observer
+                .resistance()
+                .unwrap_or(ElectricalResistance::ZERO);
+            let (sin_t, cos_t) = FastSinCos::sin_cos(self.output.angle.radians());
             let (_, vq) = park(input.v_alpha, input.v_beta, sin_t, cos_t);
             let (_, iq) = park(input.i_alpha, input.i_beta, sin_t, cos_t);
             let bemf = vq - r * iq;
-            self.bemf_proxy_v = if bemf < 0.0 { -bemf } else { bemf };
+            self.bemf_proxy = if bemf.is_negative() { -bemf } else { bemf };
         }
 
         // Update the estimators. The back-EMF observer always runs — it is
@@ -414,16 +434,19 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             if self.obs_trace_ticks.is_multiple_of(8192)
                 && OBSERVER_LOG_ENABLED.load(core::sync::atomic::Ordering::Relaxed)
                 && let Some(vel) = self.observer.velocity()
-                && vel.abs() > 20.0
+                && vel.abs() > crate::units::erad_per_s(20.0)
             {
-                let (bemf_q, travel) = self.observer.validity().unwrap_or((0.0, 0.0));
+                let (bemf_q, travel) = self
+                    .observer
+                    .validity()
+                    .unwrap_or((ElectricPotential::ZERO, ElectricalAngle::ZERO));
                 info!(
-                    "obs: vel={} conf={} e_q={} travel={} lambda={}",
+                    "obs: vel={:?} conf={} e_q={:?} travel={:?} lambda={:?}",
                     vel,
                     self.observer.confidence(),
                     bemf_q,
                     travel,
-                    self.observer.lambda().unwrap_or(0.0)
+                    self.observer.lambda().unwrap_or(MagneticFlux::ZERO)
                 );
             }
         }
@@ -474,16 +497,14 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 // voltage; feed the back-EMF-driven current to the probe. A
                 // spinning rotor → seed the observer and go straight to closed
                 // loop; standstill → the probe falls through to the ramp.
-                let r = self.observer.resistance().unwrap_or(0.0);
-                let l = self.observer.inductance().unwrap_or(0.0);
-                let lambda = self.observer.lambda().unwrap_or(0.0);
+                let (r, l, lambda) = self.observer_model();
                 if let DeadshortResult::Caught { angle, velocity } =
                     self.startup
                         .feed_deadshort(input.i_alpha, input.i_beta, input.dt, r, l, lambda)
                 {
                     if self.startup.log_allow() {
                         info!(
-                            "startup: deadshort caught spinning rotor (angle={} vel={}), seeding observer",
+                            "startup: deadshort caught spinning rotor (angle={:?} vel={:?}), seeding observer",
                             angle, velocity
                         );
                     }
@@ -503,15 +524,18 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 // back-EMF must corroborate the observer before closed loop
                 // engages (a phantom-locked observer passes every internal
                 // gate — see BackEmfObserver::is_ready).
-                let r = self.observer.resistance().unwrap_or(0.0);
-                let l = self.observer.inductance().unwrap_or(0.0);
-                let lambda = self.observer.lambda().unwrap_or(0.0);
+                let (r, l, lambda) = self.observer_model();
                 // The probe measures the rotor at THIS sample; the
                 // observer's phase predicts the next one — compare on the
                 // probe's time base.
-                let obs_vel = self.observer.velocity().unwrap_or(0.0);
+                let obs_vel = self
+                    .observer
+                    .velocity()
+                    .unwrap_or(ElectricalAngularVelocity::ZERO);
                 let claim = PhaseOutput {
-                    angle: wrap_angle(self.observer.phase().unwrap_or(0.0) - obs_vel * input.dt),
+                    angle: wrap_angle(
+                        self.observer.phase().unwrap_or(ElectricalAngle::ZERO) - obs_vel * input.dt,
+                    ),
                     velocity: obs_vel,
                 };
                 #[cfg(feature = "isr-profiling")]
@@ -535,7 +559,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     ConfirmResult::Confirmed { velocity } => {
                         if self.startup.log_allow() {
                             info!(
-                                "startup: handoff confirmed by probe (probe_vel={} observer_vel={})",
+                                "startup: handoff confirmed by probe (probe_vel={:?} observer_vel={:?})",
                                 velocity, obs_vel
                             );
                         }
@@ -543,7 +567,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     ConfirmResult::Unconfirmed { velocity } => {
                         if self.startup.log_allow() {
                             info!(
-                                "startup: handoff unconfirmed (probe_vel={} observer_vel={}), \
+                                "startup: handoff unconfirmed (probe_vel={:?} observer_vel={:?}), \
                                  holding for retry",
                                 velocity, obs_vel
                             );
@@ -560,7 +584,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                             let log_start = crate::isr_prof::now();
                             warn!(
                                 "startup: observer diverged from probed rotor \
-                                 (probe_vel={} observer_vel={}), seeding observer from probe",
+                                 (probe_vel={:?} observer_vel={:?}), seeding observer from probe",
                                 velocity, obs_vel
                             );
                             #[cfg(feature = "isr-profiling")]
@@ -593,12 +617,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     ConfirmResult::Probing => {}
                 }
             } else {
-                let i_mag = sqrtf(input.i_alpha * input.i_alpha + input.i_beta * input.i_beta);
+                let i_mag =
+                    (input.i_alpha * input.i_alpha + input.i_beta * input.i_beta).sqrt_with(sqrtf);
                 let out = self.startup.tick(
                     input.dt,
                     i_mag,
                     self.observer.is_ready(),
-                    self.observer.velocity().unwrap_or(0.0),
+                    self.observer
+                        .velocity()
+                        .unwrap_or(ElectricalAngularVelocity::ZERO),
                 );
                 // Transitions are one-shot per start — but starts themselves
                 // repeat several times a second during restart churn, hence
@@ -606,7 +633,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 let phase_now = self.startup.phase();
                 if phase_now != phase_before && self.startup.log_allow() {
                     info!(
-                        "startup: {} -> {} (vel={} |i|={})",
+                        "startup: {} -> {} (vel={:?} |i|={:?})",
                         phase_before.name(),
                         phase_now.name(),
                         out.velocity,
@@ -628,10 +655,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                 if out.handoff {
                     if self.startup.log_allow() {
                         info!(
-                            "startup: handoff gates passed (openloop_vel={} observer_vel={}), \
+                            "startup: handoff gates passed (openloop_vel={:?} observer_vel={:?}), \
                              running confirm probe",
                             out.velocity,
-                            self.observer.velocity().unwrap_or(0.0)
+                            self.observer.velocity()
                         );
                     }
                 } else if phase_now == StartupPhase::Hold {
@@ -641,9 +668,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     self.hold_trace_ticks = self.hold_trace_ticks.wrapping_add(1);
                     if self.hold_trace_ticks.is_multiple_of(8192) && self.startup.log_allow() {
                         info!(
-                            "startup: holding (openloop_vel={} observer_vel={} ready={} conf={})",
+                            "startup: holding (openloop_vel={:?} observer_vel={:?} ready={} conf={})",
                             out.velocity,
-                            self.observer.velocity().unwrap_or(0.0),
+                            self.observer.velocity(),
                             self.observer.is_ready(),
                             self.observer.confidence()
                         );
@@ -694,15 +721,15 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         if self.observer.is_ready() {
             if self.startup.log_allow() {
                 info!(
-                    "startup: cold start skipped, observer already tracking (vel={})",
-                    self.observer.velocity().unwrap_or(0.0)
+                    "startup: cold start skipped, observer already tracking (vel={:?})",
+                    self.observer.velocity()
                 );
             }
             return;
         }
         if self.startup.log_allow() {
             info!(
-                "startup: cold start engaged (angle0={} dir={})",
+                "startup: cold start engaged (angle0={:?} dir={})",
                 self.output.angle, dir
             );
         }
@@ -760,26 +787,33 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     #[cfg(feature = "hfi")]
-    fn injection(&self) -> (f32, f32) {
+    fn injection(&self) -> (ElectricPotential, ElectricPotential) {
         if self.hfi_active()
             && let Some(hfi) = &self.hfi
         {
             hfi.get_injection()
         } else {
-            (0.0, 0.0)
+            (ElectricPotential::ZERO, ElectricPotential::ZERO)
         }
     }
 
     #[cfg(not(feature = "hfi"))]
-    fn injection(&self) -> (f32, f32) {
-        (0.0, 0.0)
+    fn injection(&self) -> (ElectricPotential, ElectricPotential) {
+        (ElectricPotential::ZERO, ElectricPotential::ZERO)
     }
 
-    fn note_torque_current(&mut self, iq_abs: f32, dt: f32) {
+    fn note_torque_current(&mut self, iq_abs: ElectricCurrent, dt: Time) {
         self.observer.note_torque_current(iq_abs, dt);
     }
 
-    fn debug_observer(&self) -> Option<(f32, f32, f32, f32)> {
+    fn debug_observer(
+        &self,
+    ) -> Option<(
+        ElectricalAngle,
+        ElectricalAngle,
+        ElectricalAngularVelocity,
+        ElectricalAngle,
+    )> {
         match (
             self.observer.phase(),
             self.observer.phase_raw(),

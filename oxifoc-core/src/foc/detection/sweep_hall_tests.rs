@@ -1,4 +1,5 @@
 use super::*;
+use crate::units::{amps, erad};
 use core::cell::{Cell, RefCell};
 use core::task::{Context, Poll, Waker};
 use std::vec::Vec;
@@ -41,11 +42,13 @@ struct Hardware {
 impl DetectionHardware for Hardware {
     async fn send_command(&self, mode: ControlMode) {
         if let ControlMode::OpenLoop {
-            angle_rad, current, ..
+            angle: angle_rad,
+            current,
+            ..
         } = mode
         {
-            ANGLE.with(|angle| angle.set(angle_rad));
-            self.current.set(current);
+            ANGLE.with(|angle| angle.set(angle_rad.value));
+            self.current.set(current.value);
         }
         record(Event::Command(mode));
     }
@@ -53,7 +56,7 @@ impl DetectionHardware for Hardware {
     async fn wait_telemetry(&mut self) -> FocOutput {
         record(Event::CurrentRead);
         FocOutput {
-            id: self.current.get(),
+            id: amps(self.current.get()),
             ..FocOutput::empty()
         }
     }
@@ -76,9 +79,9 @@ impl HallReader for Reader {
 
 fn open_loop(angle_rad: f32, current: f32, pi_gains: Option<(f32, f32)>) -> Event {
     Event::Command(ControlMode::OpenLoop {
-        angle_rad,
-        current,
-        velocity_rad_s: 0.0,
+        angle: erad(angle_rad),
+        current: amps(current),
+        velocity: erad_per_s(0.0),
         pi_gains,
     })
 }
@@ -136,7 +139,7 @@ fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
                 events.next(),
                 Some(open_loop(
                     0.0,
-                    params.current_amps * (step as f32 / 100.0),
+                    (params.current * (step as f32 / 100.0)).value,
                     gains
                 ))
             );
@@ -160,7 +163,7 @@ fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
                 let angle = degrees as f32 * core::f32::consts::TAU / 360.0;
                 assert_eq!(
                     events.next(),
-                    Some(open_loop(angle, params.current_amps, None))
+                    Some(open_loop(angle, params.current.value, None))
                 );
                 assert_eq!(events.next(), Some(Event::Micros(5000)));
                 assert_eq!(events.next(), Some(Event::HallRead(angle)));
@@ -181,20 +184,21 @@ fn hall_sweeps_group_directions_and_visit_successive_motor_arcs() {
         }
         assert_eq!(maximum_degrees, expected_arc_degrees);
 
-        let mut previous = params.current_amps;
+        let mut previous = params.current;
         loop {
             let Some(Event::Command(ControlMode::OpenLoop {
-                angle_rad: 0.0,
+                angle,
                 current,
-                velocity_rad_s: 0.0,
+                velocity,
                 pi_gains: None,
             })) = events.next()
             else {
                 panic!("expected stationary current release");
             };
-            assert!((0.0..=0.004).contains(&(previous - current)));
+            assert_eq!((angle.value, velocity.value), (0.0, 0.0));
+            assert!((0.0..=0.004).contains(&(previous - current).value));
             assert_eq!(events.next(), Some(Event::Millis(1)));
-            if current <= 0.5 {
+            if current <= amps(0.5) {
                 assert_eq!(events.next(), Some(Event::CurrentRead));
                 break;
             }
@@ -248,11 +252,16 @@ fn settling_turns_do_not_contaminate_measured_centroids_or_transition_geometry()
         let centroid = entry + core::f32::consts::TAU / 12.0;
         let bin = core::f32::consts::TAU / 360.0;
         assert!(
-            crate::foc::angle_difference(geometry.boundary_for_positive_entry(raw).unwrap(), entry,)
-                .abs() <= bin
+            crate::foc::angle_difference(
+                geometry.boundary_for_positive_entry(raw).unwrap(),
+                erad(entry),
+            )
+            .abs()
+                <= erad(bin)
         );
         assert!(
-            crate::foc::angle_difference(result.angles[usize::from(raw)], centroid).abs() <= bin
+            crate::foc::angle_difference(result.angles[usize::from(raw)], erad(centroid)).abs()
+                <= erad(bin)
         );
     }
 }
