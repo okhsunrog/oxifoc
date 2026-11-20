@@ -2313,7 +2313,6 @@ name = "oxifoc-core"
 version = "0.1.0"
 dependencies = [
  "defmt 1.2.0",
- "embassy-futures 0.1.2 (git+https://github.com/embassy-rs/embassy.git?rev=72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8)",
  "ergot",
  "heapless 0.9.3",
  "libm",

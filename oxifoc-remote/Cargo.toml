@@ -49,7 +49,7 @@ embassy-futures = "0.1.2"
 bbqueue = "0.7"
 bt-hci = "0.11"
 heapless = { version = "0.9", default-features = false }
-oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", features = ["icd", "defmt"] }
+oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", default-features = false, features = ["icd", "defmt"] }
 cortex-m-rt = { version = "0.7.7", features = ["set-vtor"] }
 embassy-nrf = { version = "0.11.0", features = ["nrf52840", "time-driver-rtc1", "unstable-pac", "defmt"] }
 nrf-mpsl = { version = "0.4.0", default-features = false, features = ["critical-section-impl", "defmt"], git = "https://github.com/alexmoon/nrf-sdc.git", rev = "383afedd40964b31313cc983ff3aaf7c2e74e188" }

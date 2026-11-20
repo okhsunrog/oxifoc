@@ -74,7 +74,7 @@ postcard-schema = "0.2.5"
 embassy-futures = "0.1.2"
 bbqueue = "0.7"
 heapless = { version = "0.9", default-features = false }
-oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", features = ["icd", "defmt", "spi-link"] }
+oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", default-features = false, features = ["icd", "defmt", "spi-link"] }
 
 [dev-dependencies]
 embedded-test = { version = "0.7.3", features = [
