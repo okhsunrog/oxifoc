@@ -113,75 +113,11 @@ impl OuterClock {
     }
 
     /// Elapsed-time backstop for the slot frame: one period after the last
-    /// update or reanchor, surviving invalidation like the microsecond grid.
+    /// update or reanchor; it survives invalidation.
     /// A regular frame reaches it only in the scheduled slot, so it selects
     /// another slot only after missed native cycles.
     fn overdue(&self, now_us: u64) -> bool {
         now_us.wrapping_sub(self.deadline) < 1 << 63
-    }
-
-    #[cfg(test)]
-    fn advance(&mut self, now_us: u64) -> (u32, VelocityTick) {
-        self.advance_with_defer(now_us, false)
-    }
-
-    #[cfg(test)]
-    fn advance_with_defer(&mut self, now_us: u64, defer: bool) -> (u32, VelocityTick) {
-        let Some(previous) = self.previous.replace(now_us) else {
-            if defer {
-                self.updated = None;
-                self.deadline = now_us;
-                self.postponed = true;
-                return (0, VelocityTick::Hold);
-            }
-            self.updated = Some(now_us);
-            self.deadline = now_us.wrapping_add(PERIOD_US);
-            return (0, VelocityTick::Update { dt: Time::ZERO });
-        };
-        let elapsed = now_us.wrapping_sub(previous);
-        if elapsed == 0 {
-            return (0, VelocityTick::Hold);
-        }
-        if elapsed > MAX_GAP_US {
-            self.postponed = false;
-            self.updated = None;
-            self.deadline = now_us.wrapping_add(PERIOD_US);
-            return (0, VelocityTick::Reanchor);
-        }
-        let late = now_us.wrapping_sub(self.deadline);
-        if late >= 1 << 63 {
-            return (elapsed as u32, VelocityTick::Hold);
-        }
-        if self
-            .updated
-            .is_some_and(|last| now_us.wrapping_sub(last) > MAX_GAP_US)
-        {
-            self.postponed = false;
-            self.updated = None;
-            self.deadline = now_us.wrapping_add(PERIOD_US);
-            return (0, VelocityTick::Reanchor);
-        }
-        // Allow at most one native-cycle postponement. Do not consume
-        // the deadline or last actual update; feedback still advances below.
-        if defer && !self.postponed {
-            self.postponed = true;
-            return (elapsed as u32, VelocityTick::Hold);
-        }
-        self.postponed = false;
-        // Retain the periodic grid, skip missed deadlines and never replay a
-        // backlog of PI steps against one physical speed observation. A late
-        // update may be followed by a shorter interval to the next grid point;
-        // there is still at most one evaluation in each grid period/ISR.
-        // The previous deadline was ahead of the previous native sample,
-        // so valid lateness cannot exceed this bounded native gap.
-        debug_assert!(late <= MAX_GAP_US);
-        let periods = late as u32 / PERIOD_US as u32 + 1;
-        self.deadline = self.deadline.wrapping_add(u64::from(periods) * PERIOD_US);
-        let dt = self
-            .updated
-            .replace(now_us)
-            .map_or(Time::ZERO, |last| interval(now_us, last));
-        (elapsed as u32, VelocityTick::Update { dt })
     }
 }
 
@@ -241,37 +177,6 @@ pub(super) struct VelocitySchedule {
 }
 
 impl VelocitySchedule {
-    #[cfg(test)]
-    pub fn begin_slotted_cycle(&mut self, now_us: u64, due: bool) -> VelocityTick {
-        let elapsed = self
-            .clock
-            .previous
-            .replace(now_us)
-            .map_or(0, |previous| now_us.wrapping_sub(previous));
-        if elapsed > MAX_GAP_US {
-            self.clock.postponed = false;
-            self.clock.deadline = now_us.wrapping_add(PERIOD_US);
-            self.invalidate();
-            return VelocityTick::Reanchor;
-        }
-        self.feedback.advance(elapsed as u32);
-        if !due && !self.clock.postponed && !self.clock.overdue(now_us) {
-            return VelocityTick::Hold;
-        }
-        if self.defer_requested && !self.clock.postponed {
-            self.clock.postponed = true;
-            return VelocityTick::Hold;
-        }
-        self.clock.postponed = false;
-        self.clock.deadline = now_us.wrapping_add(PERIOD_US);
-        let dt = self
-            .clock
-            .updated
-            .replace(now_us)
-            .map_or(Time::ZERO, |last| interval(now_us, last));
-        VelocityTick::Update { dt }
-    }
-
     /// Slot frame with the authority bounds one native cycle ahead of the PI.
     /// Fresh drive activity never shares a cycle with either stage, and the
     /// update is never later than slot 1.
@@ -377,17 +282,6 @@ impl VelocitySchedule {
         self.epoch == Some(epoch)
     }
 
-    #[cfg(test)]
-    pub fn begin_cycle(&mut self, now_us: u64) -> VelocityTick {
-        let (elapsed, tick) = self.clock.advance_with_defer(now_us, self.defer_requested);
-        if matches!(tick, VelocityTick::Reanchor) {
-            self.invalidate();
-        } else {
-            self.feedback.advance(elapsed);
-        }
-        tick
-    }
-
     pub fn clear_request(&mut self) {
         self.requested_iq = ElectricCurrent::ZERO;
         self.authority = None;
@@ -427,38 +321,6 @@ impl VelocitySchedule {
 #[cfg(test)]
 #[path = "velocity_schedule_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-mod slot_tests {
-    use super::*;
-
-    #[test]
-    fn maintenance_and_flood_deferred_pi_have_distinct_slots_across_wraps() {
-        let mut now = 0;
-        for hz in [15_000_u32, 20_000, 15_000] {
-            let mut slots = ServiceSlots::new(seconds(1.0 / hz as f32));
-            let mut schedule = VelocitySchedule::default();
-            let mut pi_count = 0;
-            for cycle in 0..1_000_000_u64 {
-                let deadman = slots.deadman_due();
-                let derating = slots.derating_due();
-                slots.advance();
-                now += 1;
-                let time_us = now * 1_000_000 / u64::from(hz);
-                schedule.defer_for_cycle(true);
-                let tick = schedule.begin_slotted_cycle(time_us, slots.slot == 0);
-                if matches!(tick, VelocityTick::Update { .. }) {
-                    assert_eq!(slots.slot, 1);
-                    assert!(!deadman && !derating);
-                    pi_count += 1;
-                }
-                assert!(!(deadman && derating));
-                assert!(slots.slot < slots.length, "cycle {cycle}");
-            }
-            assert!(pi_count >= 1_000_000 / u32::from(slots.length) - 1);
-        }
-    }
-}
 
 #[cfg(test)]
 mod pipeline_tests {
