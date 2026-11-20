@@ -14,22 +14,37 @@
 //!
 //! let params = MotorParams::default();
 //! let mut motor = VirtualMotor::new(params);
-//! let mut foc   = FocController::new(24.0);
+//! let mut foc   = FocController::new(volts(24.0));
 //! let mut out   = Default::default();
 //!
 //! loop {
-//!     let dt = 1.0 / 20_000.0;
-//!     let telem = foc.step((out.ia, out.ib, out.ic), out.angle_rad,
-//!                          0.0, 5.0, 1000, dt);
+//!     let dt = seconds(1.0 / 20_000.0);
+//!     let telem = foc.step((out.ia, out.ib, out.ic), out.angle,
+//!                          amps(0.0), amps(5.0), 1000, dt);
 //!     out = motor.step(telem.v_alpha, telem.v_beta, 0.0, dt);
 //! }
 //! ```
+//!
+//! The electrical side (currents, voltages, fluxes, angle and speed) is
+//! typed. The mechanical side — load torque, inertia and viscous friction —
+//! stays in plain SI `f32` (N·m, kg·m², N·m·s/rad): torque is an angle-kind
+//! quantity in uom, and nothing outside the plant consumes it.
 
 pub mod io;
+
+use core::ops::Div;
 
 use crate::foc::clamp_f32;
 use crate::foc::constants::FRAC_1_SQRT_3;
 use crate::foc::transforms::inverse_clarke;
+use crate::units::{
+    AngleRepr, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
+    ElectricalAngularVelocity, ElectricalResistance, Fraction, Inductance, Linear, MagneticFlux,
+    Ratio, Sign, Time, erad, erad_per_s, henries, ohms, webers,
+};
+
+/// Saturation coefficient: the relative inductance change per ampere.
+pub type PerAmp = <Ratio as Div<ElectricCurrent>>::Output;
 
 /// CW Hall raw-state sequence: sector index 0-5 → 3-bit raw Hall reading.
 ///
@@ -41,14 +56,14 @@ const HALL_CW_RAW: [u8; 6] = [1, 3, 2, 6, 4, 5];
 /// PMSM motor parameters.
 #[derive(Clone, Copy, Debug)]
 pub struct MotorParams {
-    /// Phase resistance (Ω)
-    pub r: f32,
-    /// D-axis inductance (H)
-    pub ld: f32,
-    /// Q-axis inductance (H)
-    pub lq: f32,
-    /// Permanent-magnet flux linkage (Wb)
-    pub lambda: f32,
+    /// Phase resistance
+    pub r: ElectricalResistance,
+    /// D-axis inductance
+    pub ld: Inductance,
+    /// Q-axis inductance
+    pub lq: Inductance,
+    /// Permanent-magnet flux linkage
+    pub lambda: MagneticFlux,
     /// Number of pole pairs
     pub pole_pairs: u8,
     /// Rotor + load inertia (N·m·s²)
@@ -57,13 +72,13 @@ pub struct MotorParams {
     /// Creates a speed-proportional drag: T_friction = friction_b × ωm.
     /// A value of ~1e-4 is realistic for a small BLDC with bearing losses.
     pub friction_b: f32,
-    /// Hall sensor mounting offset (electrical radians).
+    /// Hall sensor mounting offset.
     ///
     /// Shifts all Hall transition edges by this amount relative to the
     /// back-EMF zero crossing.  Zero means ideal alignment; real motors
     /// typically have ±5–15° of mechanical tolerance (×pole_pairs electrical).
-    pub hall_offset: f32,
-    /// D-axis magnetic saturation coefficient (1/A). 0 = linear (default).
+    pub hall_offset: ElectricalAngle,
+    /// D-axis magnetic saturation coefficient. 0 = linear (default).
     ///
     /// Models the incremental-inductance asymmetry that HFI polarity
     /// detection relies on: positive id adds to the PM flux and saturates
@@ -71,8 +86,8 @@ pub struct MotorParams {
     /// rises): `Ld_eff = Ld / (1 + sat_k·id)`, clamped to 0.25–4× Ld.
     /// Only the d-axis current dynamics use `Ld_eff`; torque and the
     /// q-axis equation keep the nominal Ld (the model stays minimal).
-    pub sat_k: f32,
-    /// Q-axis saturation coefficient (1/A). 0 = linear (default).
+    pub sat_k: PerAmp,
+    /// Q-axis saturation coefficient. 0 = linear (default).
     ///
     /// Models saliency collapse under load — the classic HFI failure mode.
     /// Torque current saturates the q-axis iron regardless of sign:
@@ -82,7 +97,7 @@ pub struct MotorParams {
     /// therefore the demod confidence — stays healthy). Only the q-axis
     /// current dynamics use `Lq_eff`; torque and the d-axis cross-coupling
     /// keep the nominal Lq, mirroring the `sat_k` modeling choice.
-    pub lq_sat_k: f32,
+    pub lq_sat_k: PerAmp,
     /// Internal forward-Euler sub-steps per `step()` call (0 acts as 1).
     ///
     /// The default of 1 integrates the plant at exactly the caller's `dt`,
@@ -93,7 +108,7 @@ pub struct MotorParams {
     /// rotor moves *within* the FOC period, like real hardware), breaking
     /// the lockstep.
     pub substeps: u32,
-    /// Dead-time voltage distortion magnitude per phase (V). 0 = ideal
+    /// Dead-time voltage distortion magnitude per phase. 0 = ideal
     /// bridge (default). Physically `t_dt × f_pwm × vbus`.
     ///
     /// During dead time the body diode of the leg carrying positive
@@ -103,20 +118,20 @@ pub struct MotorParams {
     /// zero-crossing clamping and the 6th-harmonic dq ripple emerge
     /// naturally. `step_shorted` never applies it (no switching while all
     /// low-side FETs are held on).
-    pub dead_time_v: f32,
-    /// Current-sensor quantization step (A). 0 = continuous (default).
+    pub dead_time_voltage: ElectricPotential,
+    /// Current-sensor quantization step. 0 = continuous (default).
     ///
     /// Reported phase currents are rounded to this grid, e.g. a 12-bit ADC
     /// spanning ±31 A gives `62.0 / 4096.0 ≈ 15 mA`. Only the *measured*
     /// outputs are quantized; the internal plant state stays exact.
-    pub adc_lsb_a: f32,
-    /// Current-sensor noise amplitude (A). 0 = noiseless (default).
+    pub adc_lsb: ElectricCurrent,
+    /// Current-sensor noise amplitude. 0 = noiseless (default).
     ///
-    /// Uniform noise in `±adc_noise_a` from a deterministic xorshift32
+    /// Uniform noise in `±adc_noise` from a deterministic xorshift32
     /// stream is added to each reported phase current (before
     /// quantization). Deterministic seed → reproducible test runs.
-    pub adc_noise_a: f32,
-    /// Eddy-current inductance drop on the d axis (H). 0 = ideal iron
+    pub adc_noise: ElectricCurrent,
+    /// Eddy-current inductance drop on the d axis. 0 = ideal iron
     /// (default).
     ///
     /// Real laminated/solid-magnet rotors lose apparent inductance with
@@ -133,14 +148,14 @@ pub struct MotorParams {
     /// sim-vs-bench fidelity gap: the single-L plant tracks cleanly in
     /// exactly the closed-loop conditions where the bench estimate runs
     /// away.
-    pub eddy_delta_l_d: f32,
-    /// Eddy-current inductance drop on the q axis (H). 0 = ideal (default).
+    pub eddy_delta_l_d: Inductance,
+    /// Eddy-current inductance drop on the q axis. 0 = ideal (default).
     /// See [`eddy_delta_l_d`](Self::eddy_delta_l_d).
-    pub eddy_delta_l_q: f32,
-    /// Eddy branch time constant (s); the `L(f)` crossover sits at
+    pub eddy_delta_l_q: Inductance,
+    /// Eddy branch time constant; the `L(f)` crossover sits at
     /// `1/(2π·τ_e)`. Only used when a ΔL is nonzero. ZD2808: plateau
     /// reached by ~1 kHz ⇒ τ_e ≈ 0.2–0.5 ms.
-    pub eddy_tau_s: f32,
+    pub eddy_tau: Time,
     /// Actuation pipeline delay in `step()` periods (0 = none, default;
     /// clamped to 0..=3, fractions allowed).
     ///
@@ -163,15 +178,15 @@ pub struct MotorParams {
 impl MotorParams {
     /// Incremental d-axis inductance at the given d current (see
     /// [`sat_k`](Self::sat_k)).
-    fn ld_eff(&self, id: f32) -> f32 {
-        let denom = clamp_f32(1.0 + self.sat_k * id, 0.25, 4.0);
+    fn ld_eff(&self, id: ElectricCurrent) -> Inductance {
+        let denom = clamp_f32(1.0 + (self.sat_k * id).fraction(), 0.25, 4.0);
         self.ld / denom
     }
 
     /// Incremental q-axis inductance at the given q current (see
     /// [`lq_sat_k`](Self::lq_sat_k)).
-    fn lq_eff(&self, iq: f32) -> f32 {
-        let denom = clamp_f32(1.0 + self.lq_sat_k * iq.abs(), 0.25, 4.0);
+    fn lq_eff(&self, iq: ElectricCurrent) -> Inductance {
+        let denom = clamp_f32(1.0 + (self.lq_sat_k * iq.abs()).fraction(), 0.25, 4.0);
         self.lq / denom
     }
 }
@@ -184,23 +199,23 @@ impl Default for MotorParams {
     /// hall_offset = 0 rad (ideal sensor alignment).
     fn default() -> Self {
         Self {
-            r: 0.5,
-            ld: 5e-4,
-            lq: 5e-4,
-            lambda: 0.01,
+            r: ohms(0.5),
+            ld: henries(5e-4),
+            lq: henries(5e-4),
+            lambda: webers(0.01),
             pole_pairs: 7,
             j: 1e-4,
             friction_b: 1e-4,
-            hall_offset: 0.0,
-            sat_k: 0.0,
-            lq_sat_k: 0.0,
+            hall_offset: ElectricalAngle::ZERO,
+            sat_k: PerAmp::ZERO,
+            lq_sat_k: PerAmp::ZERO,
             substeps: 1,
-            dead_time_v: 0.0,
-            adc_lsb_a: 0.0,
-            adc_noise_a: 0.0,
-            eddy_delta_l_d: 0.0,
-            eddy_delta_l_q: 0.0,
-            eddy_tau_s: 0.0,
+            dead_time_voltage: ElectricPotential::ZERO,
+            adc_lsb: ElectricCurrent::ZERO,
+            adc_noise: ElectricCurrent::ZERO,
+            eddy_delta_l_d: Inductance::ZERO,
+            eddy_delta_l_q: Inductance::ZERO,
+            eddy_tau: Time::ZERO,
             actuation_delay: 0.0,
         }
     }
@@ -209,14 +224,14 @@ impl Default for MotorParams {
 /// Output produced by one call to [`VirtualMotor::step`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VirtualMotorOutput {
-    /// Phase currents (A)
-    pub ia: f32,
-    pub ib: f32,
-    pub ic: f32,
-    /// Electrical rotor angle (rad, wrapped to −π … π)
-    pub angle_rad: f32,
-    /// Electrical angular velocity (rad/s)
-    pub omega_e: f32,
+    /// Phase currents
+    pub ia: ElectricCurrent,
+    pub ib: ElectricCurrent,
+    pub ic: ElectricCurrent,
+    /// Electrical rotor angle (wrapped to −π … π)
+    pub angle: ElectricalAngle,
+    /// Electrical angular velocity
+    pub omega_e: ElectricalAngularVelocity,
     /// Electromagnetic torque (N·m)
     pub torque: f32,
     /// Simulated Hall sensor raw state (3-bit value, 1–6).
@@ -225,12 +240,12 @@ pub struct VirtualMotorOutput {
     /// [`crate::foc::hall_sensor::HallSensor`].  The state advances through
     /// the CW sequence 1 → 3 → 2 → 6 → 4 → 5 as the rotor spins forward.
     pub hall_state: u8,
-    /// Open-circuit back-EMF in α-β stator frame (V).
+    /// Open-circuit back-EMF in α-β stator frame.
     ///
     /// `e_α = −ωe × λ × sin(φ)`, `e_β = ωe × λ × cos(φ)`.
     /// Only physically meaningful when no current flows (coast mode).
-    pub bemf_alpha: f32,
-    pub bemf_beta: f32,
+    pub bemf_alpha: ElectricPotential,
+    pub bemf_beta: ElectricPotential,
 }
 
 /// Dynamic PMSM model using forward-Euler integration in the dq frame.
@@ -239,18 +254,18 @@ pub struct VirtualMotorOutput {
 /// (no iron losses, no temperature effects); the non-idealities that our
 /// own firmware compensates for are available behind opt-in parameters
 /// with ideal defaults — d/q saturation (`sat_k`, `lq_sat_k`), dead-time
-/// distortion (`dead_time_v`), sensor quantization/noise (`adc_lsb_a`,
-/// `adc_noise_a`) and sub-stepped integration (`substeps`).
+/// distortion (`dead_time_voltage`), sensor quantization/noise (`adc_lsb`,
+/// `adc_noise`) and sub-stepped integration (`substeps`).
 pub struct VirtualMotor {
     params: MotorParams,
     // Integrator state
-    id: f32,
-    iq: f32,
+    id: ElectricCurrent,
+    iq: ElectricCurrent,
     /// Eddy-branch filtered currents (see `MotorParams::eddy_delta_l_d`).
-    i_fd: f32,
-    i_fq: f32,
-    omega_e: f32, // electrical angular velocity (rad/s)
-    phi: f32,     // electrical rotor angle (rad)
+    i_fd: ElectricCurrent,
+    i_fq: ElectricCurrent,
+    omega_e: ElectricalAngularVelocity,
+    phi: ElectricalAngle,
     sin_phi: f32,
     cos_phi: f32,
     // xorshift32 state for current-sensor noise (deterministic seed so
@@ -259,7 +274,7 @@ pub struct VirtualMotor {
     // Actuation pipeline: the last `V_RING` αβ commands, newest at
     // `v_ring_idx − 1`. A delay of up to 3 periods needs the command from
     // 4 calls ago for the fractional share.
-    v_ring: [(f32, f32); V_RING],
+    v_ring: [(ElectricPotential, ElectricPotential); V_RING],
     v_ring_idx: usize,
 }
 
@@ -270,15 +285,15 @@ const V_RING: usize = 5;
 /// `older_share` of it, `newer` for the rest.
 #[derive(Clone, Copy)]
 struct Actuation {
-    older: (f32, f32),
-    newer: (f32, f32),
+    older: (ElectricPotential, ElectricPotential),
+    newer: (ElectricPotential, ElectricPotential),
     older_share: f32,
 }
 
 impl Actuation {
     /// Volt-second-weighted command over the sub-interval `[t0, t1)` of the
     /// period (fractions of it).
-    fn over(&self, t0: f32, t1: f32) -> (f32, f32) {
+    fn over(&self, t0: f32, t1: f32) -> (ElectricPotential, ElectricPotential) {
         let w = clamp_f32((self.older_share - t0) / (t1 - t0), 0.0, 1.0);
         (
             w * self.older.0 + (1.0 - w) * self.newer.0,
@@ -292,16 +307,16 @@ impl VirtualMotor {
     pub fn new(params: MotorParams) -> Self {
         Self {
             params,
-            id: 0.0,
-            iq: 0.0,
-            i_fd: 0.0,
-            i_fq: 0.0,
-            omega_e: 0.0,
-            phi: 0.0,
+            id: ElectricCurrent::ZERO,
+            iq: ElectricCurrent::ZERO,
+            i_fd: ElectricCurrent::ZERO,
+            i_fq: ElectricCurrent::ZERO,
+            omega_e: ElectricalAngularVelocity::ZERO,
+            phi: ElectricalAngle::ZERO,
             sin_phi: 0.0,
             cos_phi: 1.0,
             rng: 0x6F78_6601, // "oxf\x01"
-            v_ring: [(0.0, 0.0); V_RING],
+            v_ring: [(ElectricPotential::ZERO, ElectricPotential::ZERO); V_RING],
             v_ring_idx: 0,
         }
     }
@@ -311,7 +326,7 @@ impl VirtualMotor {
     /// `d = m + f` puts the command from `m + 1` calls ago on the first `f`
     /// of the period and the one from `m` calls ago on the rest; delay 0 is
     /// a transparent pass-through.
-    fn actuation(&mut self, v_alpha: f32, v_beta: f32) -> Actuation {
+    fn actuation(&mut self, v_alpha: ElectricPotential, v_beta: ElectricPotential) -> Actuation {
         self.v_ring[self.v_ring_idx] = (v_alpha, v_beta);
         let newest = self.v_ring_idx;
         self.v_ring_idx = (self.v_ring_idx + 1) % V_RING;
@@ -336,29 +351,29 @@ impl VirtualMotor {
     }
 
     /// Pass a true phase current through the simulated sensor chain:
-    /// uniform noise (`adc_noise_a`), then quantization (`adc_lsb_a`).
-    fn measure(&mut self, i: f32) -> f32 {
+    /// uniform noise (`adc_noise`), then quantization (`adc_lsb`).
+    fn measure(&mut self, i: ElectricCurrent) -> ElectricCurrent {
         let p = self.params;
         let mut v = i;
-        if p.adc_noise_a > 0.0 {
-            v += p.adc_noise_a * self.next_noise();
+        if p.adc_noise.is_positive() {
+            v += p.adc_noise * self.next_noise();
         }
-        if p.adc_lsb_a > 0.0 {
-            v = libm::roundf(v / p.adc_lsb_a) * p.adc_lsb_a;
+        if p.adc_lsb.is_positive() {
+            v = p.adc_lsb * libm::roundf(v.ratio_to(p.adc_lsb));
         }
         v
     }
 
-    /// Override the initial rotor angle (electrical radians).
-    pub fn set_angle(&mut self, phi_rad: f32) {
-        self.phi = phi_rad;
-        self.sin_phi = libm::sinf(phi_rad);
-        self.cos_phi = libm::cosf(phi_rad);
+    /// Override the initial rotor angle.
+    pub fn set_angle(&mut self, phi: ElectricalAngle) {
+        self.phi = phi;
+        self.sin_phi = libm::sinf(phi.radians());
+        self.cos_phi = libm::cosf(phi.radians());
     }
 
-    /// Override the rotor electrical velocity (rad/s) — sim helper to set up a
+    /// Override the rotor electrical velocity — sim helper to set up a
     /// freewheeling rotor (e.g. flying-restart tests).
-    pub fn set_velocity(&mut self, omega_e: f32) {
+    pub fn set_velocity(&mut self, omega_e: ElectricalAngularVelocity) {
         self.omega_e = omega_e;
     }
 
@@ -376,61 +391,80 @@ impl VirtualMotor {
     /// canceled), exposed when it switched to boundary anchoring.
     fn hall_state(&self) -> u8 {
         use core::f32::consts::TAU;
-        let phi_pos = if self.phi < 0.0 {
-            self.phi + TAU
-        } else {
-            self.phi
-        };
-        let phi_hall = libm::fmodf(phi_pos - self.params.hall_offset + TAU + TAU / 12.0, TAU);
+        let phi = self.phi.radians();
+        let phi_pos = if phi < 0.0 { phi + TAU } else { phi };
+        let phi_hall = libm::fmodf(
+            phi_pos - self.params.hall_offset.radians() + TAU + TAU / 12.0,
+            TAU,
+        );
         let sector = ((phi_hall * 6.0 / TAU) as usize).min(5);
         HALL_CW_RAW[sector]
+    }
+
+    /// Advance the electrical angle and refresh its cached sin/cos.
+    fn advance_angle(&mut self, dt: Time) {
+        self.phi += self.omega_e * dt;
+        // Wrap to (−π, π] — use remainder for robustness at high speeds
+        self.phi = erad(libm::remainderf(
+            self.phi.radians(),
+            2.0 * core::f32::consts::PI,
+        ));
+        self.sin_phi = libm::sinf(self.phi.radians());
+        self.cos_phi = libm::cosf(self.phi.radians());
+    }
+
+    /// Mechanical dynamics over `dt`, in plain SI:
+    /// `J·dωm/dt = Te − TL − B·ωm` →  `dωe/dt = p·(Te − TL − B·ωm)/J`, with
+    /// `ωm = ωe/pp` so `B·ωm = (friction_b/pp)·ωe`.
+    fn accelerate(&mut self, torque: f32, load_torque: f32, dt: Time) {
+        let p = self.params;
+        let pp = f32::from(p.pole_pairs);
+        let friction_torque = (p.friction_b / pp) * self.omega_e.value;
+        self.omega_e += erad_per_s(dt.value * pp / p.j * (torque - load_torque - friction_torque));
+    }
+
+    /// Open-circuit back-EMF: e = ωe × λ × [−sin(φ), cos(φ)]
+    fn back_emf(&self) -> (ElectricPotential, ElectricPotential) {
+        let e = self.omega_e * self.params.lambda;
+        (-e * self.sin_phi, e * self.cos_phi)
     }
 
     /// Run one simulation step with all FETs off (high-impedance).
     ///
     /// No current flows.  The only torque is the external load plus
     /// viscous friction.  The motor decelerates purely mechanically.
-    pub fn step_coast(&mut self, load_torque: f32, dt: f32) -> VirtualMotorOutput {
+    pub fn step_coast(&mut self, load_torque: f32, dt: Time) -> VirtualMotorOutput {
         // Gates off: nothing is commanded this cycle, the pipeline moves on.
-        let _ = self.actuation(0.0, 0.0);
+        let _ = self.actuation(ElectricPotential::ZERO, ElectricPotential::ZERO);
         let p = self.params;
-        let pp = f32::from(p.pole_pairs);
         let n = p.substeps.max(1);
         let dt_sub = dt / n as f32;
 
         // Zero current — no electromagnetic torque; the eddy-branch
         // currents decay with their own time constant.
-        self.id = 0.0;
-        self.iq = 0.0;
-        if self.params.eddy_tau_s > 0.0 {
-            let k = (dt / self.params.eddy_tau_s).min(1.0);
+        self.id = ElectricCurrent::ZERO;
+        self.iq = ElectricCurrent::ZERO;
+        if p.eddy_tau.is_positive() {
+            let k = dt.ratio_to(p.eddy_tau).min(1.0);
             self.i_fd -= k * self.i_fd;
             self.i_fq -= k * self.i_fq;
         } else {
-            self.i_fd = 0.0;
-            self.i_fq = 0.0;
+            self.i_fd = ElectricCurrent::ZERO;
+            self.i_fq = ElectricCurrent::ZERO;
         }
 
         for _ in 0..n {
             // Mechanical dynamics: only friction + external load
-            let friction_torque = (p.friction_b / pp) * self.omega_e;
-            self.omega_e -= dt_sub * pp / p.j * (load_torque + friction_torque);
-
-            // Angle integration
-            self.phi += self.omega_e * dt_sub;
-            self.phi = libm::remainderf(self.phi, 2.0 * core::f32::consts::PI);
+            self.accelerate(0.0, load_torque, dt_sub);
+            self.advance_angle(dt_sub);
         }
-        self.sin_phi = libm::sinf(self.phi);
-        self.cos_phi = libm::cosf(self.phi);
 
-        let bemf_alpha = -self.omega_e * p.lambda * self.sin_phi;
-        let bemf_beta = self.omega_e * p.lambda * self.cos_phi;
-
+        let (bemf_alpha, bemf_beta) = self.back_emf();
         VirtualMotorOutput {
-            ia: self.measure(0.0),
-            ib: self.measure(0.0),
-            ic: self.measure(0.0),
-            angle_rad: self.phi,
+            ia: self.measure(ElectricCurrent::ZERO),
+            ib: self.measure(ElectricCurrent::ZERO),
+            ic: self.measure(ElectricCurrent::ZERO),
+            angle: self.phi,
             omega_e: self.omega_e,
             torque: 0.0,
             hall_state: self.hall_state(),
@@ -443,35 +477,41 @@ impl VirtualMotor {
     ///
     /// All low-side FETs on: the motor windings are short-circuited.
     /// Currents circulate creating strong braking torque.
-    pub fn step_shorted(&mut self, load_torque: f32, dt: f32) -> VirtualMotorOutput {
+    pub fn step_shorted(&mut self, load_torque: f32, dt: Time) -> VirtualMotorOutput {
         // All low-side FETs held on: no switching, hence no dead-time
-        // distortion regardless of `dead_time_v`.
-        self.step_inner(0.0, 0.0, load_torque, dt, false)
+        // distortion regardless of `dead_time_voltage`.
+        self.step_inner(
+            ElectricPotential::ZERO,
+            ElectricPotential::ZERO,
+            load_torque,
+            dt,
+            false,
+        )
     }
 
     /// Run one simulation step with a voltage source connected.
     ///
     /// # Arguments
-    /// * `v_alpha`      – α-axis voltage applied to the motor (V)
-    /// * `v_beta`       – β-axis voltage applied to the motor (V)
+    /// * `v_alpha`      – α-axis voltage applied to the motor
+    /// * `v_beta`       – β-axis voltage applied to the motor
     /// * `load_torque`  – externally applied load torque (N·m, positive = braking)
-    /// * `dt`           – integration time step (s); use the FOC loop period
+    /// * `dt`           – integration time step; use the FOC loop period
     pub fn step(
         &mut self,
-        v_alpha: f32,
-        v_beta: f32,
+        v_alpha: ElectricPotential,
+        v_beta: ElectricPotential,
         load_torque: f32,
-        dt: f32,
+        dt: Time,
     ) -> VirtualMotorOutput {
         self.step_inner(v_alpha, v_beta, load_torque, dt, true)
     }
 
     fn step_inner(
         &mut self,
-        v_alpha: f32,
-        v_beta: f32,
+        v_alpha: ElectricPotential,
+        v_beta: ElectricPotential,
         load_torque: f32,
-        dt: f32,
+        dt: Time,
         switching: bool,
     ) -> VirtualMotorOutput {
         let act = self.actuation(v_alpha, v_beta);
@@ -480,6 +520,8 @@ impl VirtualMotor {
         let n = p.substeps.max(1);
         let dt_sub = dt / n as f32;
         let mut torque = 0.0;
+        // Keeps the effective winding inductance of the di/dt slope positive.
+        let min_inductance = henries(1e-9);
 
         // The αβ voltage is a zero-order hold per command (that is what the
         // inverter applies) — one command per period, or two split at the
@@ -488,17 +530,16 @@ impl VirtualMotor {
         for j in 0..n {
             let (v_alpha, v_beta) = act.over(j as f32 / n as f32, (j + 1) as f32 / n as f32);
             // ── Dead-time distortion (instantaneous phase-current signs) ──
-            let (va, vb) = if switching && p.dead_time_v != 0.0 {
+            let (va, vb) = if switching && p.dead_time_voltage != ElectricPotential::ZERO {
                 let i_alpha = self.cos_phi * self.id - self.sin_phi * self.iq;
                 let i_beta = self.cos_phi * self.iq + self.sin_phi * self.id;
                 let (ia, ib, ic) = inverse_clarke(i_alpha, i_beta);
-                let sa = if ia >= 0.0 { 1.0f32 } else { -1.0 };
-                let sb = if ib >= 0.0 { 1.0f32 } else { -1.0 };
-                let sc = if ic >= 0.0 { 1.0f32 } else { -1.0 };
+                let sign = |i: ElectricCurrent| if i.is_non_negative() { 1.0f32 } else { -1.0 };
+                let (sa, sb, sc) = (sign(ia), sign(ib), sign(ic));
                 // Per-phase −sign(i)·V_dt mapped through the (amplitude-
                 // invariant) Clarke transform; the common mode drops out.
-                let e_alpha = (2.0 * sa - sb - sc) * (p.dead_time_v / 3.0);
-                let e_beta = (sb - sc) * FRAC_1_SQRT_3 * p.dead_time_v;
+                let e_alpha = (2.0 * sa - sb - sc) * (p.dead_time_voltage / 3.0);
+                let e_beta = (sb - sc) * FRAC_1_SQRT_3 * p.dead_time_voltage;
                 (v_alpha - e_alpha, v_beta - e_beta)
             } else {
                 (v_alpha, v_beta)
@@ -514,23 +555,23 @@ impl VirtualMotor {
             // saturation-effective L stays confined to the di/dt slope.
             let dl_d = p.eddy_delta_l_d;
             let dl_q = p.eddy_delta_l_q;
-            let psi_q = (p.lq - dl_q) * self.iq + dl_q * self.i_fq;
+            let psi_q: MagneticFlux = (p.lq - dl_q) * self.iq + dl_q * self.i_fq;
             // Eddy branch EMF ΔL·d(i_f)/dt = ΔL·(i − i_f)/τ_e — the lossy
             // part of L(jω) (frequency-dependent eddy resistance).
-            let (e_fd, e_fq) = if p.eddy_tau_s > 0.0 {
+            let (e_fd, e_fq): (ElectricPotential, ElectricPotential) = if p.eddy_tau.is_positive() {
                 (
-                    dl_d * (self.id - self.i_fd) / p.eddy_tau_s,
-                    dl_q * (self.iq - self.i_fq) / p.eddy_tau_s,
+                    dl_d * (self.id - self.i_fd) / p.eddy_tau,
+                    dl_q * (self.iq - self.i_fq) / p.eddy_tau,
                 )
             } else {
-                (0.0, 0.0)
+                (ElectricPotential::ZERO, ElectricPotential::ZERO)
             };
 
             // ── D-axis current ────────────────────────────────────────────
             // (Ld_eff−ΔLd)·did/dt = Vd − R·id + ωe·ψq − ΔLd·(id−i_fd)/τe
             // Ld_eff(id) models d-axis saturation when sat_k ≠ 0 (HFI polarity).
             self.id += (vd + self.omega_e * psi_q - p.r * self.id - e_fd) * dt_sub
-                / (p.ld_eff(self.id) - dl_d).max(1e-9);
+                / (p.ld_eff(self.id) - dl_d).max(min_inductance);
 
             // ── Q-axis current ────────────────────────────────────────────
             // (Lq_eff−ΔLq)·diq/dt = Vq − R·iq − ωe·ψd − ΔLq·(iq−i_fq)/τe
@@ -541,37 +582,25 @@ impl VirtualMotor {
             // past ω·dt ≈ √(2·R·dt/L), 8000 el rad/s on a 5065 at one
             // substep, well inside a 12S board's speed range. This order
             // keeps the rotation norm-preserving.
-            let psi_d = (p.ld - dl_d) * self.id + dl_d * self.i_fd + p.lambda;
+            let psi_d: MagneticFlux = (p.ld - dl_d) * self.id + dl_d * self.i_fd + p.lambda;
             self.iq += (vq - self.omega_e * psi_d - p.r * self.iq - e_fq) * dt_sub
-                / (p.lq_eff(self.iq) - dl_q).max(1e-9);
-            let psi_q = (p.lq - dl_q) * self.iq + dl_q * self.i_fq;
+                / (p.lq_eff(self.iq) - dl_q).max(min_inductance);
+            let psi_q: MagneticFlux = (p.lq - dl_q) * self.iq + dl_q * self.i_fq;
 
             // ── Eddy branch state ─────────────────────────────────────────
-            if p.eddy_tau_s > 0.0 {
-                let k = (dt_sub / p.eddy_tau_s).min(1.0);
+            if p.eddy_tau.is_positive() {
+                let k = dt_sub.ratio_to(p.eddy_tau).min(1.0);
                 self.i_fd += k * (self.id - self.i_fd);
                 self.i_fq += k * (self.iq - self.i_fq);
             }
 
-            // ── Electromagnetic torque (flux cross product) ───────────────
+            // ── Electromagnetic torque (flux cross product), N·m ──────────
             // Te = (3/2)·p·(ψd·iq − ψq·id) — reduces to the familiar
             // (3/2)·p·[λPM + (Ld − Lq)·id]·iq at ΔL = 0.
-            torque = 1.5 * pp * (psi_d * self.iq - psi_q * self.id);
+            torque = 1.5 * pp * (psi_d * self.iq - psi_q * self.id).value;
 
-            // ── Mechanical dynamics ───────────────────────────────────────
-            // J·dωm/dt = Te − TL − B·ωm  →  dωe/dt = p·(Te − TL − B·ωm)/J
-            // ωm = ωe/pp, so B·ωm = (friction_b/pp)·ωe
-            let friction_torque = (p.friction_b / pp) * self.omega_e;
-            self.omega_e += dt_sub * pp / p.j * (torque - load_torque - friction_torque);
-
-            // ── Electrical angle integration ──────────────────────────────
-            self.phi += self.omega_e * dt_sub;
-            // Wrap to (−π, π] — use remainder for robustness at high speeds
-            self.phi = libm::remainderf(self.phi, 2.0 * core::f32::consts::PI);
-
-            // Update cached sin/cos
-            self.sin_phi = libm::sinf(self.phi);
-            self.cos_phi = libm::cosf(self.phi);
+            self.accelerate(torque, load_torque, dt_sub);
+            self.advance_angle(dt_sub);
         }
 
         // ── Inverse Park + inverse Clarke → phase currents ────────────────────
@@ -580,16 +609,13 @@ impl VirtualMotor {
         let (ia, ib, ic) = inverse_clarke(i_alpha, i_beta);
 
         let hall_state = self.hall_state();
-
-        // Open-circuit back-EMF: e = ωe × λ × [−sin(φ), cos(φ)]
-        let bemf_alpha = -self.omega_e * p.lambda * self.sin_phi;
-        let bemf_beta = self.omega_e * p.lambda * self.cos_phi;
+        let (bemf_alpha, bemf_beta) = self.back_emf();
 
         VirtualMotorOutput {
             ia: self.measure(ia),
             ib: self.measure(ib),
             ic: self.measure(ic),
-            angle_rad: self.phi,
+            angle: self.phi,
             omega_e: self.omega_e,
             torque,
             hall_state,
@@ -608,18 +634,21 @@ mod tests {
     use crate::foc::pi_controller::PIController;
     use crate::foc::pwm::SvpwmModulator;
     use crate::foc::{angle_difference, wrap_angle};
-    use crate::units::{amps, erad, ohms, seconds, si, volts};
+    use crate::units::{
+        amps, erad, erad_per_s, henries, ohms, per_second, quantity, seconds, si, sqrt_current,
+        volts, webers,
+    };
 
     #[test]
     fn closed_loop_accelerates() {
         const DT: f32 = 1.0 / 20_000.0;
         let params = MotorParams::default();
-        let kp = params.ld * 1000.0;
-        let ki = params.r * 1000.0;
+        let kp = params.ld * per_second(1000.0);
+        let ki = params.r * per_second(1000.0);
 
         let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
-        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.id_pi = PIController::with_gains(kp, ki);
+        foc.iq_pi = PIController::with_gains(kp, ki);
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
@@ -627,24 +656,24 @@ mod tests {
         // inject close to the target 2 A and the motor accelerates.
         for _ in 0..500 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(2.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         }
 
         // Motor should be spinning and producing torque.
         assert!(
-            out.omega_e > 10.0,
-            "motor should spin up: ωe={}",
+            out.omega_e > erad_per_s(10.0),
+            "motor should spin up: ωe={:?}",
             out.omega_e
         );
         assert!(out.torque > 0.0, "torque should be positive");
-        let i_mag = libm::sqrtf(out.ia * out.ia + out.ib * out.ib + out.ic * out.ic);
+        let i_mag = libm::sqrtf((out.ia * out.ia + out.ib * out.ib + out.ic * out.ic).value);
         assert!(
             i_mag > 0.3,
             "motor should carry current at low speed: |i|={i_mag}"
@@ -654,18 +683,18 @@ mod tests {
         // speed, but ωe should still be well above zero.
         for _ in 0..20_000 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(2.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         }
         assert!(
-            out.omega_e > 100.0,
-            "motor should reach steady-state speed: ωe={}",
+            out.omega_e > erad_per_s(100.0),
+            "motor should reach steady-state speed: ωe={:?}",
             out.omega_e
         );
     }
@@ -679,32 +708,32 @@ mod tests {
     fn closed_loop_reverse_direction() {
         const DT: f32 = 1.0 / 20_000.0;
         let params = MotorParams::default();
-        let kp = params.ld * 1000.0;
-        let ki = params.r * 1000.0;
+        let kp = params.ld * per_second(1000.0);
+        let ki = params.r * per_second(1000.0);
 
         let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
-        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.id_pi = PIController::with_gains(kp, ki);
+        foc.iq_pi = PIController::with_gains(kp, ki);
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Run 500 steps with negative iq_target
         for _ in 0..500 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(-2.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         }
 
         // Motor should spin in reverse
         assert!(
-            out.omega_e < -10.0,
-            "motor should spin in reverse: ωe={}",
+            out.omega_e < erad_per_s(-10.0),
+            "motor should spin in reverse: ωe={:?}",
             out.omega_e
         );
         assert!(out.torque < 0.0, "torque should be negative");
@@ -712,19 +741,19 @@ mod tests {
         // Continue for a full second to reach steady state
         for _ in 0..20_000 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(-2.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         }
 
         assert!(
-            out.omega_e < -100.0,
-            "motor should reach steady-state reverse speed: ωe={}",
+            out.omega_e < erad_per_s(-100.0),
+            "motor should reach steady-state reverse speed: ωe={:?}",
             out.omega_e
         );
     }
@@ -736,76 +765,76 @@ mod tests {
     fn load_torque_step_rejection() {
         const DT: f32 = 1.0 / 20_000.0;
         let params = MotorParams::default();
-        let kp = params.ld * 1000.0;
-        let ki = params.r * 1000.0;
+        let kp = params.ld * per_second(1000.0);
+        let ki = params.r * per_second(1000.0);
 
         let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
-        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.id_pi = PIController::with_gains(kp, ki);
+        foc.iq_pi = PIController::with_gains(kp, ki);
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Phase 1: spin up to steady state with no load (1 second)
         for _ in 0..20_000 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(2.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         }
         let speed_no_load = out.omega_e;
         assert!(
-            speed_no_load > 100.0,
-            "should reach steady state before load: ωe={speed_no_load}"
+            speed_no_load > erad_per_s(100.0),
+            "should reach steady state before load: ωe={speed_no_load:?}"
         );
 
         // Phase 2: apply load torque step, settle for 1 second
         let load = 0.005; // N·m — significant but within controller capability
         for _ in 0..20_000 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(2.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, load, seconds(DT));
         }
         let speed_loaded = out.omega_e;
 
         // Speed should drop but motor must keep spinning forward
         assert!(
-            speed_loaded > 0.0,
-            "motor should not stall under load: ωe={speed_loaded}"
+            speed_loaded > erad_per_s(0.0),
+            "motor should not stall under load: ωe={speed_loaded:?}"
         );
         assert!(
             speed_loaded < speed_no_load,
-            "speed should decrease under load: {speed_loaded} vs {speed_no_load}"
+            "speed should decrease under load: {speed_loaded:?} vs {speed_no_load:?}"
         );
 
         // Phase 3: remove load, verify recovery (1 second)
         for _ in 0..20_000 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(2.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         }
         let speed_recovered = out.omega_e;
 
         // Should recover close to original no-load speed
         assert!(
-            (speed_recovered - speed_no_load).abs() / speed_no_load < 0.05,
-            "speed should recover after load removal: {speed_recovered} vs {speed_no_load}"
+            (speed_recovered - speed_no_load).abs() / speed_no_load < quantity(0.05),
+            "speed should recover after load removal: {speed_recovered:?} vs {speed_no_load:?}"
         );
     }
 
@@ -828,7 +857,7 @@ mod tests {
         // 30° electrical offset — plausible real-world sensor misalignment.
         // For a 7-pole-pair motor this equals ~4.3° mechanical.
         let params = MotorParams {
-            hall_offset: PI / 6.0,
+            hall_offset: erad(PI / 6.0),
             ..MotorParams::default()
         };
 
@@ -845,9 +874,9 @@ mod tests {
         let n = 720usize;
         for i in 0..n {
             let phi_e = (i as f32 / n as f32) * TAU - PI; // (−π, π]
-            cal_motor.set_angle(phi_e);
+            cal_motor.set_angle(erad(phi_e));
             // Zero-voltage, tiny dt: we only need the Hall state output.
-            let out = cal_motor.step(0.0, 0.0, 0.0, 1e-9);
+            let out = cal_motor.step(volts(0.0), volts(0.0), 0.0, seconds(1e-9));
             // `HallCalibrator::record` expects angle in [0, 2π).
             let phi_cal = if phi_e < 0.0 { phi_e + TAU } else { phi_e };
             calibrator.record(erad(phi_cal), out.hall_state);
@@ -873,11 +902,11 @@ mod tests {
         // Mean |frame error| (Hall angle vs rotor) over the last quarter
         // second of a 1 s spin-up, with or without the calibration.
         let run = |calibration: Option<&HallCalibrationResult>| {
-            let kp = params.ld * 1_000.0;
-            let ki = params.r * 1_000.0;
+            let kp = params.ld * per_second(1_000.0);
+            let ki = params.r * per_second(1_000.0);
             let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
-            foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-            foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+            foc.id_pi = PIController::with_gains(kp, ki);
+            foc.iq_pi = PIController::with_gains(kp, ki);
 
             let mut motor = VirtualMotor::new(params);
             let mut out = VirtualMotorOutput::default();
@@ -901,20 +930,24 @@ mod tests {
                     hall_angle = sample.angle.value;
                 }
                 if tick >= 15_000 {
-                    err_sum += angle_difference(hall_angle, out.angle_rad).abs();
+                    err_sum += angle_difference(hall_angle, out.angle.value).abs();
                     err_n += 1;
                 }
                 let telem = foc.step(
-                    (amps(out.ia), amps(out.ib), amps(out.ic)),
+                    (out.ia, out.ib, out.ic),
                     erad(hall_angle),
                     amps(0.0),
                     amps(2.0),
                     1000,
                     seconds(DT),
                 );
-                out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
             }
-            assert!(out.omega_e > 100.0, "must spin up: ωe={}", out.omega_e);
+            assert!(
+                out.omega_e > erad_per_s(100.0),
+                "must spin up: ωe={:?}",
+                out.omega_e
+            );
             err_sum / err_n as f32
         };
         let calibrated = run(Some(&cal_result));
@@ -935,30 +968,32 @@ mod tests {
     fn single_substep_stays_stable_at_high_speed() {
         const DT: f32 = 1.0 / 20_000.0;
         let params = MotorParams {
-            r: 0.036,
-            ld: 22e-6,
-            lq: 22e-6,
-            lambda: 2.92e-3,
+            r: ohms(0.036),
+            ld: henries(22e-6),
+            lq: henries(22e-6),
+            lambda: webers(2.92e-3),
             pole_pairs: 7,
             j: 1e3, // speed held constant
             friction_b: 0.0,
             ..MotorParams::default()
         };
-        let omega = 12_000.0;
+        let omega = erad_per_s(12_000.0);
         let mut motor = VirtualMotor::new(params);
         motor.set_velocity(omega);
-        let settled = params.lambda * omega
-            / (params.r * params.r + (omega * params.ld) * (omega * params.ld)).sqrt();
-        let mut peak = 0.0f32;
+        let reactance: ElectricalResistance = omega * params.ld;
+        let impedance = (params.r * params.r + reactance * reactance).sqrt_with(libm::sqrtf);
+        let settled: ElectricCurrent = omega * params.lambda / impedance;
+        let magnitude = |m: &VirtualMotor| sqrt_current(m.id * m.id + m.iq * m.iq);
+        let mut peak = ElectricCurrent::ZERO;
         for _ in 0..2_000 {
-            motor.step_shorted(0.0, DT);
-            peak = peak.max(motor.id.hypot(motor.iq));
+            motor.step_shorted(0.0, seconds(DT));
+            peak = peak.max(magnitude(&motor));
         }
-        let last = motor.id.hypot(motor.iq);
-        assert!(peak < 2.5 * settled, "peak {peak} A vs settled {settled} A");
+        let last = magnitude(&motor);
+        assert!(peak < 2.5 * settled, "peak {peak:?} vs settled {settled:?}");
         assert!(
-            (last / settled - 1.0).abs() < 0.1,
-            "{last} A vs {settled} A"
+            (last.ratio_to(settled) - 1.0).abs() < 0.1,
+            "{last:?} vs {settled:?}"
         );
     }
 
@@ -974,9 +1009,9 @@ mod tests {
         const DT: f32 = 1.0 / 20_000.0;
         let run = |linear: bool| {
             let mut motor = VirtualMotor::new(MotorParams {
-                r: 0.031,
-                ld: 25e-6,
-                lq: 35e-6,
+                r: ohms(0.031),
+                ld: henries(25e-6),
+                lq: henries(35e-6),
                 substeps: 10,
                 ..MotorParams::default()
             });
@@ -992,7 +1027,7 @@ mod tests {
             for step in 0..4000 {
                 let target = if step < 400 { 0.0 } else { 0.06 };
                 let telem = foc.step(
-                    (amps(out.ia), amps(out.ib), amps(out.ic)),
+                    (out.ia, out.ib, out.ic),
                     erad(0.0),
                     amps(target),
                     amps(0.0),
@@ -1000,8 +1035,13 @@ mod tests {
                     seconds(DT),
                 );
                 let [a, b, c] = telem.duties.map(|d| f32::from(d) * VBUS / f32::from(ARR));
-                out = motor.step((2.0 * a - b - c) / 3.0, (b - c) * FRAC_1_SQRT_3, 0.0, DT);
-                peak = peak.max(motor.id.abs());
+                out = motor.step(
+                    volts((2.0 * a - b - c) / 3.0),
+                    volts((b - c) * FRAC_1_SQRT_3),
+                    0.0,
+                    seconds(DT),
+                );
+                peak = peak.max(motor.id.abs().value);
             }
             (peak, motor.id)
         };
@@ -1013,8 +1053,8 @@ mod tests {
             "startup impulse {smooth_peak} A vs legacy {hard_peak} A"
         );
         assert!(
-            (settled - 0.06).abs() < 0.01,
-            "tracking did not settle: {settled}"
+            (settled - amps(0.06)).abs() < amps(0.01),
+            "tracking did not settle: {settled:?}"
         );
     }
 
@@ -1037,8 +1077,8 @@ mod tests {
         // current-sensor noise.
         let run = |comp: bool, iq_target: f32, noise_a: f32| -> f32 {
             let params = MotorParams {
-                dead_time_v: DEAD_TIME_NS as f32 * 1e-9 * 20_000.0 * VBUS, // 0.384 V
-                adc_noise_a: noise_a,
+                dead_time_voltage: volts(DEAD_TIME_NS as f32 * 1e-9 * 20_000.0 * VBUS), // 0.384 V
+                adc_noise: amps(noise_a),
                 substeps: 10,
                 // Settle near ωe ≈ 735 rad/s — fast enough that the
                 // 6th-harmonic distortion (~700 Hz) sits above the current
@@ -1046,11 +1086,11 @@ mod tests {
                 friction_b: 2e-3,
                 ..MotorParams::default()
             };
-            let kp = params.ld * 1000.0;
-            let ki = params.r * 1000.0;
+            let kp = params.ld * per_second(1000.0);
+            let ki = params.r * per_second(1000.0);
             let mut foc = FocController::<SvpwmModulator>::new(volts(VBUS));
-            foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-            foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+            foc.id_pi = PIController::with_gains(kp, ki);
+            foc.iq_pi = PIController::with_gains(kp, ki);
             if comp {
                 foc.set_dead_time_comp(DEAD_TIME_NS, 20_000);
             }
@@ -1064,8 +1104,8 @@ mod tests {
             let mut n = 0u32;
             for step in 0..30_000 {
                 let telem = foc.step(
-                    (amps(out.ia), amps(out.ib), amps(out.ic)),
-                    erad(out.angle_rad),
+                    (out.ia, out.ib, out.ic),
+                    out.angle,
                     amps(0.0),
                     amps(iq_target),
                     MAX_DUTY,
@@ -1077,13 +1117,13 @@ mod tests {
                 let vc = f32::from(telem.duties[2]) * scale;
                 let v_alpha = (2.0 * va - vb - vc) / 3.0;
                 let v_beta = (vb - vc) * FRAC_1_SQRT_3;
-                out = motor.step(v_alpha, v_beta, 0.0, DT);
+                out = motor.step(volts(v_alpha), volts(v_beta), 0.0, seconds(DT));
                 if step >= 10_000 {
                     // TRUE dq current (noise-free plant state) — the
                     // measured one would score the sensor noise itself.
                     let ed = motor.id;
-                    let eq = motor.iq - iq_target;
-                    err_sq += ed * ed + eq * eq;
+                    let eq = motor.iq - amps(iq_target);
+                    err_sq += (ed * ed + eq * eq).value;
                     n += 1;
                 }
             }
@@ -1140,11 +1180,11 @@ mod tests {
                 friction_b: 1.2e-3, // settle ≈ 1200 rad/s el (δ ≈ 0.06 rad)
                 ..MotorParams::default()
             };
-            let kp = params.ld * 1000.0;
-            let ki = params.r * 1000.0;
+            let kp = params.ld * per_second(1000.0);
+            let ki = params.r * per_second(1000.0);
             let mut foc = FocController::<SvpwmModulator>::new(volts(VBUS));
-            foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-            foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+            foc.id_pi = PIController::with_gains(kp, ki);
+            foc.iq_pi = PIController::with_gains(kp, ki);
             let mut motor = VirtualMotor::new(params);
             let mut out = VirtualMotorOutput::default();
             let mut id_sum = 0.0f32;
@@ -1152,29 +1192,29 @@ mod tests {
             for step in 0..30_000 {
                 // Perfect estimator: true rotor state stands in for the
                 // phase provider.
-                let delta = out.omega_e * DT;
+                let delta = out.omega_e * seconds(DT);
                 let (angle_cmd, advance) = if advance_measurement_frame {
                     // the old firmware behavior: one advanced angle for both
-                    (wrap_angle(out.angle_rad + delta), 0.0)
+                    (wrap_angle(out.angle + delta), ElectricalAngle::ZERO)
                 } else {
                     // the fixed path: raw Park + actuation-side rotation
-                    (out.angle_rad, delta)
+                    (out.angle, delta)
                 };
-                foc.set_actuation_advance(erad(advance));
+                foc.set_actuation_advance(advance);
                 let telem = foc.step(
-                    (amps(out.ia), amps(out.ib), amps(out.ic)),
-                    erad(angle_cmd),
+                    (out.ia, out.ib, out.ic),
+                    angle_cmd,
                     amps(0.0),
                     amps(2.0),
                     4250,
                     seconds(DT),
                 );
-                out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
                 if step >= 20_000 {
                     let (i_alpha, i_beta) = transforms::clarke(out.ia, out.ib);
-                    let (s, c) = (libm::sinf(out.angle_rad), libm::cosf(out.angle_rad));
+                    let (s, c) = (libm::sinf(out.angle.value), libm::cosf(out.angle.value));
                     let (id, _) = transforms::park(i_alpha, i_beta, s, c);
-                    id_sum += id;
+                    id_sum += id.value;
                     n += 1;
                 }
             }
@@ -1207,9 +1247,9 @@ mod tests {
         let mut prev = 0u8;
         for i in 0..=n {
             let phi = TAU * i as f32 / n as f32 - core::f32::consts::PI;
-            motor.set_angle(phi);
+            motor.set_angle(erad(phi));
             // One zero-voltage step to populate the output.
-            let out = motor.step(0.0, 0.0, 0.0, 1e-6);
+            let out = motor.step(volts(0.0), volts(0.0), 0.0, seconds(1e-6));
             if out.hall_state != prev {
                 states.push(out.hall_state);
                 prev = out.hall_state;
@@ -1248,17 +1288,17 @@ mod tests {
     fn eddy_branch_drops_inductance_with_frequency() {
         use core::f32::consts::TAU;
         let params = MotorParams {
-            r: 0.127,
-            ld: 86e-6,
-            lq: 129e-6,
-            lambda: 1.145e-3,
+            r: ohms(0.127),
+            ld: henries(86e-6),
+            lq: henries(129e-6),
+            lambda: webers(1.145e-3),
             pole_pairs: 7,
             j: 5e-5,
             friction_b: 4e-6,
             substeps: 10,
-            eddy_delta_l_d: 62e-6,
-            eddy_delta_l_q: 105e-6,
-            eddy_tau_s: 0.2e-3,
+            eddy_delta_l_d: henries(62e-6),
+            eddy_delta_l_q: henries(105e-6),
+            eddy_tau: seconds(0.2e-3),
             ..MotorParams::default()
         };
         let dt = 1.0 / 20_000.0;
@@ -1270,9 +1310,9 @@ mod tests {
             let mut amp = 0.0f32;
             for k in 0..steps {
                 let v = 0.5 * libm::sinf(TAU * f_hz * k as f32 * dt);
-                let out = m.step(v, 0.0, 0.0, dt);
+                let out = m.step(volts(v), volts(0.0), 0.0, seconds(dt));
                 if k > steps * 8 / 10 {
-                    amp = amp.max(out.ia.abs());
+                    amp = amp.max(out.ia.abs().value);
                 }
             }
             amp
@@ -1301,9 +1341,9 @@ mod tests {
         // And the ideal (ΔL = 0) plant matches the DC prediction at HF —
         // the exact behavior that hid the bench sawtooth from the sim.
         let ideal = MotorParams {
-            eddy_delta_l_d: 0.0,
-            eddy_delta_l_q: 0.0,
-            eddy_tau_s: 0.0,
+            eddy_delta_l_d: henries(0.0),
+            eddy_delta_l_q: henries(0.0),
+            eddy_tau: seconds(0.0),
             ..params
         };
         let hi_ideal = amp_at(ideal, 2_000.0);

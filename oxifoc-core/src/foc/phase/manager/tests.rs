@@ -5,6 +5,8 @@ use crate::foc::phase::provider::{PhaseInput, PhaseProvider};
 use crate::foc::phase::source::PhaseSourceError;
 use crate::foc::sensors::{AngleSample, ControlAngleSample};
 use crate::foc::{angle_difference, wrap_angle};
+#[cfg(feature = "virtual-motor")]
+use crate::units::Linear;
 #[cfg(feature = "hfi")]
 use crate::units::hertz;
 #[cfg(feature = "storage")]
@@ -1229,23 +1231,23 @@ fn run_sensorless_sim(
 
     let mut motor = VirtualMotor::new(params);
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries(params.ld),
+        params.r,
+        params.ld,
         volts(VBUS),
     );
 
     // Prime the hall estimator with the initial rotor state so the
     // manager sees a working sensor from the start.
-    let mut out = motor.step(0.0, 0.0, 0.0, DT);
+    let mut out = motor.step(volts(0.0), volts(0.0), 0.0, seconds(DT));
     let mut hall = HallSensor::new(1_000_000); // µs timebase
     hall.update(out.hall_state, 0);
     let mut last_fed = out.hall_state;
 
     let mut mgr = PhaseManager::with_hall(hall);
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
-        webers(params.lambda),
+        params.r,
+        (params.ld + params.lq) / 2.0,
+        params.lambda,
     )));
     mgr.set_source(PhaseSource::HallToObserver {
         blend_low: erad_per_s(150.0),
@@ -1269,22 +1271,22 @@ fn run_sensorless_sim(
 
         let angle = mgr.get().angle;
         let telem = foc.step(
-            (amps(out.ia), amps(out.ib), amps(out.ic)),
-            erad(angle.value),
+            (out.ia, out.ib, out.ic),
+            angle,
             amps(0.0),
             amps(iq_target),
             1000,
             seconds(DT),
         );
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
                 v_alpha: telem.v_alpha,
                 v_beta: telem.v_beta,
-                i_alpha: amps(i_a),
-                i_beta: amps(i_b),
+                i_alpha: i_a,
+                i_beta: i_b,
                 dt: seconds(DT),
             },
             t_us,
@@ -1294,7 +1296,7 @@ fn run_sensorless_sim(
         // angle must never jump (π flips, blend discontinuities). Below
         // it, 60° sector snaps are expected hall behavior.
         let new_angle = mgr.get().angle;
-        if out.omega_e > 100.0 {
+        if out.omega_e > erad_per_s(100.0) {
             if let Some(prev) = prev_angle {
                 let jump = angle_difference(new_angle, erad(prev)).abs();
                 max_step_at_speed = max_step_at_speed.max(jump.value);
@@ -1317,8 +1319,8 @@ fn closed_loop_hall_to_observer_crossover() {
 
     // Motor must have spun up past the blend band → pure observer.
     assert!(
-        out.omega_e > 400.0,
-        "motor did not spin up: ωe = {}",
+        out.omega_e > erad_per_s(400.0),
+        "motor did not spin up: ωe = {:?}",
         out.omega_e
     );
     assert!(
@@ -1327,7 +1329,7 @@ fn closed_loop_hall_to_observer_crossover() {
     );
 
     // Managed angle tracks the true rotor angle.
-    let true_angle = wrap_angle(out.angle_rad);
+    let true_angle = wrap_angle(out.angle.value);
     let err = angle_difference(mgr.get().angle, erad(true_angle)).abs();
     assert!(
         err < erad(0.25),
@@ -1338,9 +1340,11 @@ fn closed_loop_hall_to_observer_crossover() {
     );
 
     // Velocity estimate agrees with the true electrical speed.
-    let vel_err = (mgr.get().velocity - erad_per_s(out.omega_e)).abs() / out.omega_e;
+    let vel_err = (mgr.get().velocity - out.omega_e)
+        .abs()
+        .ratio_to(out.omega_e);
     assert!(
-        vel_err < erad_per_s(0.10),
+        vel_err < 0.10,
         "managed velocity {:?} vs true {:?} ({:?}%)",
         mgr.get().velocity,
         out.omega_e,
@@ -1350,8 +1354,8 @@ fn closed_loop_hall_to_observer_crossover() {
     // No angle discontinuities across the whole crossover.
     let nominal_step = out.omega_e * DT;
     assert!(
-        max_step_at_speed < nominal_step + 0.15,
-        "angle jumped {max_step_at_speed} rad in one cycle (nominal step {nominal_step})"
+        max_step_at_speed < (nominal_step + erad_per_s(0.15)).value,
+        "angle jumped {max_step_at_speed:?} rad in one cycle (nominal step {nominal_step:?})"
     );
 }
 
@@ -1366,8 +1370,8 @@ fn closed_loop_hall_dropout_at_speed() {
         run_sensorless_sim(26_000, |step, s| (step < 20_000).then_some(s));
 
     assert!(
-        out.omega_e > 400.0,
-        "motor must still be spinning: ωe = {}",
+        out.omega_e > erad_per_s(400.0),
+        "motor must still be spinning: ωe = {:?}",
         out.omega_e
     );
     assert!(
@@ -1377,7 +1381,7 @@ fn closed_loop_hall_dropout_at_speed() {
     );
 
     // Observer must be carrying the commutation accurately.
-    let true_angle = wrap_angle(out.angle_rad);
+    let true_angle = wrap_angle(out.angle.value);
     let err = angle_difference(mgr.get().angle, erad(true_angle)).abs();
     assert!(
         err < erad(0.25),
@@ -1390,7 +1394,7 @@ fn closed_loop_hall_dropout_at_speed() {
     // And the handoff itself must have been continuous.
     let nominal_step = out.omega_e * (1.0 / 20_000.0);
     assert!(
-        max_step_at_speed < nominal_step + 0.15,
+        max_step_at_speed < (nominal_step + erad_per_s(0.15)).value,
         "angle jumped {max_step_at_speed} rad during hall dropout handoff"
     );
 }
@@ -1411,8 +1415,8 @@ fn closed_loop_partial_hall_failure_rides_through_and_names_wire() {
     });
 
     assert!(
-        out.omega_e > 400.0,
-        "motor must ride through a partial hall failure: ωe = {}",
+        out.omega_e > erad_per_s(400.0),
+        "motor must ride through a partial hall failure: ωe = {:?}",
         out.omega_e
     );
     assert_eq!(
@@ -1423,7 +1427,7 @@ fn closed_loop_partial_hall_failure_rides_through_and_names_wire() {
     );
 
     // Commutation stayed accurate and continuous on the observer.
-    let true_angle = wrap_angle(out.angle_rad);
+    let true_angle = wrap_angle(out.angle.value);
     let err = angle_difference(mgr.get().angle, erad(true_angle)).abs();
     assert!(
         err < erad(0.25),
@@ -1431,7 +1435,7 @@ fn closed_loop_partial_hall_failure_rides_through_and_names_wire() {
     );
     let nominal_step = out.omega_e * (1.0 / 20_000.0);
     assert!(
-        max_step_at_speed < nominal_step + 0.15,
+        max_step_at_speed < (nominal_step + erad_per_s(0.15)).value,
         "angle jumped {max_step_at_speed} rad during partial-failure ride-through"
     );
 }
@@ -1458,32 +1462,32 @@ fn closed_loop_hfi_to_observer_crossover() {
     // Light enough rotor to accelerate within the sim, enough friction
     // to settle around ωe ≈ 500 rad/s — well above the crossover.
     let params = MotorParams {
-        r: 0.1,
-        ld: 100e-6,
-        lq: 300e-6,
-        lambda: 0.02,
+        r: ohms(0.1),
+        ld: henries(100e-6),
+        lq: henries(300e-6),
+        lambda: webers(0.02),
         pole_pairs: 4,
         j: 1e-3,
         friction_b: 2e-3,
-        hall_offset: 0.0,
-        sat_k: 0.05,
+        hall_offset: erad(0.0),
+        sat_k: quantity(0.05),
         ..MotorParams::default()
     };
     let mut motor = VirtualMotor::new(params);
     // Far side: the HFI PLL's nearest saliency lock is the flipped one.
-    motor.set_angle(2.5);
+    motor.set_angle(erad(2.5));
 
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
 
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
-        webers(params.lambda),
+        params.r,
+        (params.ld + params.lq) / 2.0,
+        params.lambda,
     )));
     mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
     mgr.set_source(PhaseSource::HfiToObserver {
@@ -1493,7 +1497,7 @@ fn closed_loop_hfi_to_observer_crossover() {
     .unwrap();
 
     let mut out = VirtualMotorOutput {
-        angle_rad: 2.5,
+        angle: erad(2.5),
         ..Default::default()
     };
     let mut prev_angle: Option<f32> = None;
@@ -1524,7 +1528,7 @@ fn closed_loop_hfi_to_observer_crossover() {
         let angle = mgr.get().angle;
         let (vd_inj, vq_inj) = mgr.injection();
         let telem = foc.step_with_injection(
-            (amps(out.ia), amps(out.ib), amps(out.ic)),
+            (out.ia, out.ib, out.ic),
             angle,
             erad_per_s(0.0),
             amps(
@@ -1540,22 +1544,22 @@ fn closed_loop_hfi_to_observer_crossover() {
             1000,
             seconds(DT),
         );
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
                 v_alpha: telem.v_alpha,
                 v_beta: telem.v_beta,
-                i_alpha: amps(i_a),
-                i_beta: amps(i_b),
+                i_alpha: i_a,
+                i_beta: i_b,
                 dt: seconds(DT),
             },
             step * 50,
         );
 
         if step == SPIN_STEPS - 1 {
-            spun_up = out.omega_e > MIN_VEL * 1.5;
+            spun_up = out.omega_e > erad_per_s(MIN_VEL * 1.5);
             // Fully blended at speed → the carrier must be off.
             was_latched_at_speed = mgr.injection() == (volts(0.0), volts(0.0));
         }
@@ -1576,12 +1580,12 @@ fn closed_loop_hfi_to_observer_crossover() {
 
         if step == STANDSTILL_STEPS - 1 {
             // HFI must have found the flipped rotor at standstill.
-            let err = angle_difference(mgr.get().angle, wrap_angle(erad(out.angle_rad))).abs();
+            let err = angle_difference(mgr.get().angle, wrap_angle(out.angle)).abs();
             assert!(
                 err < erad(0.2),
                 "HFI standstill lock failed: est {:?} vs rotor {:?} (err {:?} full-circle)",
                 mgr.get().angle,
-                wrap_angle(out.angle_rad),
+                wrap_angle(out.angle.value),
                 err
             );
         }
@@ -1589,7 +1593,7 @@ fn closed_loop_hfi_to_observer_crossover() {
         // Continuity above the crossover band (same check as the hall
         // crossover sims).
         let new_angle = mgr.get().angle;
-        if out.omega_e > 100.0 {
+        if out.omega_e > erad_per_s(100.0) {
             if let Some(prev) = prev_angle {
                 let jump = angle_difference(new_angle, erad(prev)).abs();
                 max_step_at_speed = max_step_at_speed.max(jump.value);
@@ -1609,8 +1613,8 @@ fn closed_loop_hfi_to_observer_crossover() {
     // Phase 3 outcome: coasted back down — HFI carries commutation
     // again (carrier on) and still tracks the slowing rotor.
     assert!(
-        out.omega_e.abs() < MIN_VEL,
-        "motor should have coasted below the band: ωe = {}",
+        out.omega_e.abs() < erad_per_s(MIN_VEL),
+        "motor should have coasted below the band: ωe = {:?}",
         out.omega_e
     );
     assert_ne!(
@@ -1618,7 +1622,7 @@ fn closed_loop_hfi_to_observer_crossover() {
         (volts(0.0), volts(0.0)),
         "carrier must be back on below the crossover band"
     );
-    let true_angle = wrap_angle(out.angle_rad);
+    let true_angle = wrap_angle(out.angle.value);
     let err = angle_difference(mgr.get().angle, erad(true_angle)).abs();
     assert!(
         err < erad(0.25),
@@ -1672,30 +1676,30 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
     const DT: f32 = 1.0 / 20_000.0;
     const MIN_VEL: f32 = 150.0;
     let params = MotorParams {
-        r: 0.1,
-        ld: 100e-6,
-        lq: 300e-6,
-        lambda: 0.02,
+        r: ohms(0.1),
+        ld: henries(100e-6),
+        lq: henries(300e-6),
+        lambda: webers(0.02),
         pole_pairs: 4,
         j: 1e-3,
         friction_b: 2e-3,
-        hall_offset: 0.0,
-        sat_k: 0.05,
+        hall_offset: erad(0.0),
+        sat_k: quantity(0.05),
         ..MotorParams::default()
     };
     let mut motor = VirtualMotor::new(params);
 
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
 
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
-        webers(params.lambda),
+        params.r,
+        (params.ld + params.lq) / 2.0,
+        params.lambda,
     )));
     mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
     mgr.set_source(PhaseSource::HfiToObserver {
@@ -1725,7 +1729,7 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
         // The jam: 50 N·m of external braking while the rotor still
         // turns forward (pp/J scaled, that is ~200 krad/s² — any
         // pre-heat margin is crossed in well under a millisecond).
-        let load = if step >= SPIN_STEPS && out.omega_e > 2.0 {
+        let load = if step >= SPIN_STEPS && out.omega_e > erad_per_s(2.0) {
             50.0
         } else {
             0.0
@@ -1734,7 +1738,7 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
         let angle = mgr.get().angle;
         let (vd_inj, vq_inj) = mgr.injection();
         let telem = foc.step_with_injection(
-            (amps(out.ia), amps(out.ib), amps(out.ic)),
+            (out.ia, out.ib, out.ic),
             angle,
             erad_per_s(0.0),
             amps(0.0),
@@ -1744,22 +1748,22 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
             1000,
             seconds(DT),
         );
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, load, seconds(DT));
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
                 v_alpha: telem.v_alpha,
                 v_beta: telem.v_beta,
-                i_alpha: amps(i_a),
-                i_beta: amps(i_b),
+                i_alpha: i_a,
+                i_beta: i_b,
                 dt: seconds(DT),
             },
             step * 50,
         );
 
         if step == SPIN_STEPS - 1 {
-            latched_at_speed = mgr.crossover_latched && out.omega_e > MIN_VEL * 1.5;
+            latched_at_speed = mgr.crossover_latched && out.omega_e > erad_per_s(MIN_VEL * 1.5);
         }
 
         // After the jam: the cold window is "latch released, demod not
@@ -1780,8 +1784,8 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
         "motor must reach the latched regime before the jam"
     );
     assert!(
-        out.omega_e.abs() < 10.0,
-        "jam must have stopped the rotor: ωe = {}",
+        out.omega_e.abs() < erad_per_s(10.0),
+        "jam must have stopped the rotor: ωe = {:?}",
         out.omega_e
     );
     assert!(
@@ -1843,21 +1847,21 @@ fn closed_loop_hfi_saliency_collapse_loses_tracking_silently() {
         // PLL equilibrium to unstable (the catastrophic variant of
         // the failure).
         let params = MotorParams {
-            r: 0.1,
-            ld: 100e-6,
-            lq: 300e-6,
-            lambda: 0.02,
+            r: ohms(0.1),
+            ld: henries(100e-6),
+            lq: henries(300e-6),
+            lambda: webers(0.02),
             pole_pairs: 4,
             j: 2e-3,
             friction_b: 1e-3,
-            sat_k: 0.05,
-            lq_sat_k,
+            sat_k: quantity(0.05),
+            lq_sat_k: quantity(lq_sat_k),
             ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
         let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-            ohms(params.r),
-            henries((params.ld + params.lq) / 2.0),
+            params.r,
+            (params.ld + params.lq) / 2.0,
             volts(24.0),
         );
 
@@ -1882,7 +1886,7 @@ fn closed_loop_hfi_saliency_collapse_loses_tracking_silently() {
             let angle = mgr.get().angle;
             let (vd_inj, vq_inj) = mgr.injection();
             let telem = foc.step_with_injection(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
+                (out.ia, out.ib, out.ic),
                 angle,
                 erad_per_s(0.0),
                 amps(0.0),
@@ -1892,22 +1896,22 @@ fn closed_loop_hfi_saliency_collapse_loses_tracking_silently() {
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, load, seconds(DT));
 
             let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
             mgr.update(
                 &PhaseInput {
                     v_alpha: telem.v_alpha,
                     v_beta: telem.v_beta,
-                    i_alpha: amps(i_a),
-                    i_beta: amps(i_b),
+                    i_alpha: i_a,
+                    i_beta: i_b,
                     dt: seconds(DT),
                 },
                 step * 50,
             );
 
             if step >= LOCK_STEPS + 1_000 {
-                let err = angle_difference(mgr.get().angle, erad(out.angle_rad)).abs();
+                let err = angle_difference(mgr.get().angle, out.angle).abs();
                 max_err = max_err.max(err.value);
                 if let Some(h) = mgr.hfi_observer() {
                     min_conf = min_conf.min(h.confidence());
@@ -1960,31 +1964,31 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
     // ω ≈ toggle_v/λ = 150 rad/s, same regime as the velocity test.
     const TOGGLE_V: f32 = 3.0;
     let params = MotorParams {
-        r: 0.1,
-        ld: 100e-6,
-        lq: 300e-6,
-        lambda: 0.02,
+        r: ohms(0.1),
+        ld: henries(100e-6),
+        lq: henries(300e-6),
+        lambda: webers(0.02),
         pole_pairs: 4,
         j: 1e-3,
         friction_b: 2e-3,
-        hall_offset: 0.0,
-        sat_k: 0.05,
+        hall_offset: erad(0.0),
+        sat_k: quantity(0.05),
         ..MotorParams::default()
     };
     let mut motor = VirtualMotor::new(params);
-    motor.set_angle(0.5);
+    motor.set_angle(erad(0.5));
 
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
 
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
-        webers(params.lambda),
+        params.r,
+        (params.ld + params.lq) / 2.0,
+        params.lambda,
     )));
     mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
     mgr.set_source(PhaseSource::HfiToObserverVolts {
@@ -1994,7 +1998,7 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
     .unwrap();
 
     let mut out = VirtualMotorOutput {
-        angle_rad: 0.5,
+        angle: erad(0.5),
         ..Default::default()
     };
 
@@ -2013,7 +2017,7 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
         let angle = mgr.get().angle;
         let (vd_inj, vq_inj) = mgr.injection();
         let telem = foc.step_with_injection(
-            (amps(out.ia), amps(out.ib), amps(out.ic)),
+            (out.ia, out.ib, out.ic),
             angle,
             erad_per_s(0.0),
             amps(0.0),
@@ -2023,15 +2027,15 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
             1000,
             seconds(DT),
         );
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
                 v_alpha: telem.v_alpha,
                 v_beta: telem.v_beta,
-                i_alpha: amps(i_a),
-                i_beta: amps(i_b),
+                i_alpha: i_a,
+                i_beta: i_b,
                 dt: seconds(DT),
             },
             step * 50,
@@ -2039,13 +2043,12 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
 
         if step == SPIN_STEPS - 1 {
             assert!(
-                out.omega_e > 300.0,
-                "motor did not spin up: ωe = {}",
+                out.omega_e > erad_per_s(300.0),
+                "motor did not spin up: ωe = {:?}",
                 out.omega_e
             );
             latched_at_speed = mgr.injection() == (volts(0.0), volts(0.0));
-            err_at_speed =
-                (angle_difference(mgr.get().angle, wrap_angle(erad(out.angle_rad))).abs()).value;
+            err_at_speed = (angle_difference(mgr.get().angle, wrap_angle(out.angle)).abs()).value;
         }
     }
 
@@ -2060,8 +2063,8 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
 
     // Coasted down: bemf proxy below the band → back on HFI, carrier on.
     assert!(
-        out.omega_e.abs() * params.lambda < TOGGLE_V - HFI_VOLTS_HYSTERESIS.value,
-        "motor should have coasted below the voltage band: ωe = {}",
+        out.omega_e.abs() * params.lambda < volts(TOGGLE_V) - HFI_VOLTS_HYSTERESIS,
+        "motor should have coasted below the voltage band: ωe = {:?}",
         out.omega_e
     );
     assert_ne!(
@@ -2069,7 +2072,7 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
         (volts(0.0), volts(0.0)),
         "carrier must be back on below the voltage band"
     );
-    let err = angle_difference(mgr.get().angle, wrap_angle(erad(out.angle_rad))).abs();
+    let err = angle_difference(mgr.get().angle, wrap_angle(out.angle)).abs();
     assert!(
         err < erad(0.3),
         "angle error {err:?} rad after the downward voltage handoff"

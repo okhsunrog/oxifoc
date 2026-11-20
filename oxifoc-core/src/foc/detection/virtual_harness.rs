@@ -19,6 +19,7 @@
 // and none of this is compiled into firmware.
 #![allow(clippy::unwrap_used, clippy::panic, reason = "sim-only harness")]
 
+use crate::units::Sign;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::cell::RefCell;
 
@@ -37,7 +38,7 @@ use crate::foc::wrap_angle;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
 use crate::types::CurrentSenseTopology;
-use crate::units::{amps, erad, ohms, seconds, si, volts};
+use crate::units::{amps, erad, ohms, per_second, seconds, si, volts};
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
 const DT: f32 = 1.0 / 20_000.0;
@@ -66,16 +67,16 @@ struct SimState {
 
 impl SimState {
     fn new(motor_params: MotorParams, vbus: f32) -> Self {
-        let kp = motor_params.ld * 1_000.0;
-        let ki = motor_params.r * 1_000.0;
+        let kp = motor_params.ld * per_second(1_000.0);
+        let ki = motor_params.r * per_second(1_000.0);
         let mut foc = FocController::<SvpwmModulator>::new(volts(vbus));
-        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.id_pi = PIController::with_gains(kp, ki);
+        foc.iq_pi = PIController::with_gains(kp, ki);
         // Mirror the firmware: boards configure dead-time compensation from
         // their PWM config (g431: 800 ns), so a plant with dead-time
         // distortion gets the matching compensation here.
-        if motor_params.dead_time_v > 0.0 {
-            foc.set_dead_time_comp_factor(motor_params.dead_time_v / vbus);
+        if motor_params.dead_time_voltage.is_positive() {
+            foc.set_dead_time_comp_factor(motor_params.dead_time_voltage.value / vbus);
         }
         Self {
             foc,
@@ -121,7 +122,7 @@ impl SimState {
                 self.foc
                     .set_actuation_advance(erad(self.ol_omega * DT * (self.pipeline_steps + 0.5)));
                 self.foc.step(
-                    (amps(self.out.ia), amps(self.out.ib), amps(self.out.ic)),
+                    (self.out.ia, self.out.ib, self.out.ic),
                     erad(self.sim_angle),
                     amps(id_t),
                     amps(iq_t),
@@ -140,7 +141,7 @@ impl SimState {
                     self.out.ic,
                 ));
                 self.foc
-                    .apply_dq(vd, vq, angle_rad, amps(i_alpha), amps(i_beta), MAX_DUTY)
+                    .apply_dq(vd, vq, angle_rad, i_alpha, i_beta, MAX_DUTY)
             }
             ControlMode::Coast | ControlMode::Stopped => FocOutput::empty(),
             _ => FocOutput::empty(),
@@ -150,7 +151,7 @@ impl SimState {
             // Stopped disables the bridge on the boards (high-Z), exactly
             // like Coast floats it; shorting the plant here braked a
             // spinning rotor the hardware would let coast.
-            ControlMode::Coast | ControlMode::Stopped => self.motor.step_coast(0.0, DT),
+            ControlMode::Coast | ControlMode::Stopped => self.motor.step_coast(0.0, seconds(DT)),
             _ => {
                 // Drive the plant from the *duties*, not the commanded
                 // v_αβ: that is what the inverter applies, and it is the
@@ -164,14 +165,15 @@ impl SimState {
                 let vc = f32::from(telem.duties[2]) * scale;
                 let v_alpha = (2.0 * va - vb - vc) / 3.0;
                 let v_beta = (vb - vc) * FRAC_1_SQRT_3;
-                self.motor.step(v_alpha, v_beta, 0.0, DT)
+                self.motor
+                    .step(volts(v_alpha), volts(v_beta), 0.0, seconds(DT))
             }
         };
         self.peak_phase_a = self
             .peak_phase_a
-            .max(self.out.ia.abs())
-            .max(self.out.ib.abs())
-            .max(self.out.ic.abs());
+            .max(self.out.ia.abs().value)
+            .max(self.out.ib.abs().value)
+            .max(self.out.ic.abs().value);
         telem
     }
 
@@ -268,7 +270,7 @@ impl DetectionHardware for VirtualHardware {
         SIM.with(|s| {
             let s = s.borrow();
             let s = s.as_ref().unwrap();
-            (amps(s.out.ia), amps(s.out.ib), amps(s.out.ic))
+            (s.out.ia, s.out.ib, s.out.ic)
         })
     }
 

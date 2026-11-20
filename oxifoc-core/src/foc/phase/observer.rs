@@ -1681,8 +1681,6 @@ mod tests {
     use crate::foc::angle_difference;
     #[cfg(feature = "hfi")]
     use crate::units::hertz;
-    #[cfg(feature = "virtual-motor")]
-    use crate::units::si;
     use crate::units::{
         amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, volts,
         webers,
@@ -2275,15 +2273,15 @@ mod tests {
         // IPM with 3:1 saliency; heavy rotor + friction so the injection
         // itself doesn't move it.
         let params = MotorParams {
-            r: 0.1,
-            ld: 100e-6,
-            lq: 300e-6,
-            lambda: 0.02,
+            r: ohms(0.1),
+            ld: henries(100e-6),
+            lq: henries(300e-6),
+            lambda: webers(0.02),
             pole_pairs: 4,
             j: 1e-2,
             friction_b: 5e-2,
-            hall_offset: 0.0,
-            sat_k,
+            hall_offset: erad(0.0),
+            sat_k: quantity(sat_k),
             ..MotorParams::default()
         };
         run_hfi_sim_params(params, rotor_angle, load_torque, steps)
@@ -2305,7 +2303,7 @@ mod tests {
 
         const DT: f32 = 1.0 / 20_000.0;
         let mut motor = VirtualMotor::new(params);
-        motor.set_angle(rotor_angle);
+        motor.set_angle(erad(rotor_angle));
 
         let foc = FocController::<SvpwmModulator>::new(volts(24.0));
         let mut obs = HfiObserver::new(hertz(1000.0), volts(3.0));
@@ -2314,14 +2312,14 @@ mod tests {
         for _ in 0..steps {
             let (vd_inj, vq_inj) = obs.get_injection();
             let (i_a_m, i_b_m) = transforms::clarke(out.ia, out.ib);
-            let telem = foc.apply_dq(vd_inj, vq_inj, obs.phase(), amps(i_a_m), amps(i_b_m), 1000);
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, load_torque, DT);
+            let telem = foc.apply_dq(vd_inj, vq_inj, obs.phase(), i_a_m, i_b_m, 1000);
+            out = motor.step(telem.v_alpha, telem.v_beta, load_torque, seconds(DT));
             let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
             obs.update(&ObserverInput {
                 v_alpha: telem.v_alpha,
                 v_beta: telem.v_beta,
-                i_alpha: amps(i_a),
-                i_beta: amps(i_b),
+                i_alpha: i_a,
+                i_beta: i_b,
                 dt: seconds(DT),
             });
         }
@@ -2335,18 +2333,18 @@ mod tests {
         // must find it from saliency alone, without moving the rotor.
         let (obs, out) = run_hfi_sim(1.2, 0.0, 0.0, 20_000);
 
-        let err = angle_err_mod_pi(obs.phase().value, wrap_angle(out.angle_rad));
+        let err = angle_err_mod_pi(obs.phase().value, wrap_angle(out.angle.value));
         assert!(
             err < 0.1,
             "HFI did not converge: est {:?} vs rotor {:?} (err {:?} rad mod π)",
             obs.phase(),
-            wrap_angle(out.angle_rad),
+            wrap_angle(out.angle.value),
             err
         );
         assert!(
-            angle_difference(out.angle_rad, 1.2).abs() < 0.15,
+            angle_difference(out.angle.value, 1.2).abs() < 0.15,
             "injection moved the rotor: {} rad",
-            out.angle_rad
+            out.angle.value
         );
         assert!(
             obs.confidence() > 0.5,
@@ -2363,16 +2361,16 @@ mod tests {
         let (obs, out) = run_hfi_sim(0.3, 0.5, 0.0, 30_000);
 
         assert!(
-            out.omega_e.abs() > 5.0,
-            "rotor should be turning under load: ωe = {}",
+            out.omega_e.abs() > erad_per_s(5.0),
+            "rotor should be turning under load: ωe = {:?}",
             out.omega_e
         );
-        let err = angle_err_mod_pi(obs.phase().value, wrap_angle(out.angle_rad));
+        let err = angle_err_mod_pi(obs.phase().value, wrap_angle(out.angle.value));
         assert!(
             err < 0.15,
             "HFI lost a slowly turning rotor: est {:?} vs {:?} (err {:?})",
             obs.phase(),
-            wrap_angle(out.angle_rad),
+            wrap_angle(out.angle.value),
             err
         );
     }
@@ -2391,12 +2389,12 @@ mod tests {
             obs.polarity_resolved(),
             "probe must have run and resolved polarity"
         );
-        let err = angle_difference(obs.phase(), wrap_angle(erad(out.angle_rad))).abs();
+        let err = angle_difference(obs.phase(), wrap_angle(out.angle)).abs();
         assert!(
             err < erad(0.15),
             "polarity not corrected: est {:?} vs rotor {:?} (err {:?} rad full-circle)",
             obs.phase(),
-            wrap_angle(out.angle_rad),
+            wrap_angle(out.angle.value),
             err
         );
     }
@@ -2429,12 +2427,12 @@ mod tests {
         let (obs, out) = run_hfi_sim(1.2, 0.0, 0.05, 20_000);
 
         assert!(obs.polarity_resolved());
-        let err = angle_difference(obs.phase(), wrap_angle(erad(out.angle_rad))).abs();
+        let err = angle_difference(obs.phase(), wrap_angle(out.angle)).abs();
         assert!(
             err < erad(0.15),
             "correct lock was flipped: est {:?} vs rotor {:?} (err {:?} rad full-circle)",
             obs.phase(),
-            wrap_angle(out.angle_rad),
+            wrap_angle(out.angle.value),
             err
         );
     }
@@ -2451,17 +2449,17 @@ mod tests {
         use crate::virtual_motor::MotorParams;
         const ADC_LSB_A: f32 = 62.0 / 4096.0;
         let params = MotorParams {
-            r: 0.1,
-            ld: 100e-6,
-            lq: 300e-6,
-            lambda: 0.02,
+            r: ohms(0.1),
+            ld: henries(100e-6),
+            lq: henries(300e-6),
+            lambda: webers(0.02),
             pole_pairs: 4,
             j: 1e-2,
             friction_b: 5e-2,
-            sat_k: 0.05,
+            sat_k: quantity(0.05),
             substeps: 10,
-            adc_lsb_a: ADC_LSB_A,
-            adc_noise_a: ADC_LSB_A,
+            adc_lsb: amps(ADC_LSB_A),
+            adc_noise: amps(ADC_LSB_A),
             ..MotorParams::default()
         };
         let (obs, out) = run_hfi_sim_params(params, 1.2, 0.0, 20_000);
@@ -2475,12 +2473,12 @@ mod tests {
             "HFI must reach readiness through sensor noise: confidence {}",
             obs.confidence()
         );
-        let err = angle_difference(obs.phase(), wrap_angle(erad(out.angle_rad))).abs();
+        let err = angle_difference(obs.phase(), wrap_angle(out.angle)).abs();
         assert!(
             err < erad(0.15),
             "HFI did not converge through sensor noise: est {:?} vs rotor {:?} (err {:?})",
             obs.phase(),
-            wrap_angle(out.angle_rad),
+            wrap_angle(out.angle.value),
             err
         );
     }
@@ -2519,34 +2517,31 @@ mod tests {
                 friction_b: 1.2e-3, // settle ≈ 1200 rad/s el
                 ..MotorParams::default()
             };
-            let kp = params.ld * 1000.0;
-            let ki = params.r * 1000.0;
+            let kp = params.ld * per_second(1000.0);
+            let ki = params.r * per_second(1000.0);
             let mut foc = FocController::<SvpwmModulator>::new(volts(VBUS));
-            foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-            foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+            foc.id_pi = PIController::with_gains(kp, ki);
+            foc.iq_pi = PIController::with_gains(kp, ki);
             let mut motor = VirtualMotor::new(params);
             let mut out = VirtualMotorOutput::default();
-            let mut obs = BackEmfObserver::new(
-                ohms(params.r),
-                henries((params.ld + params.lq) / 2.0),
-                webers(params.lambda),
-            );
+            let mut obs =
+                BackEmfObserver::new(params.r, (params.ld + params.lq) / 2.0, params.lambda);
             let (mut pva, mut pvb) = (0.0f32, 0.0f32);
             let mut err_sum = 0.0f32;
             let mut n = 0u32;
             for step in 0..30_000 {
                 // commutation from the true rotor state (perfect estimator);
                 // the observer under test runs passively
-                foc.set_actuation_advance(erad(out.omega_e * DT));
+                foc.set_actuation_advance(out.omega_e * seconds(DT));
                 let telem = foc.step(
-                    (amps(out.ia), amps(out.ib), amps(out.ic)),
-                    erad(out.angle_rad),
+                    (out.ia, out.ib, out.ic),
+                    out.angle,
                     amps(0.0),
                     amps(2.0),
                     4250,
                     seconds(DT),
                 );
-                out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+                out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
                 let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
                 let (va, vb) = if prev_pairing {
                     (pva, pvb)
@@ -2556,14 +2551,14 @@ mod tests {
                 obs.update(&ObserverInput {
                     v_alpha: volts(va),
                     v_beta: volts(vb),
-                    i_alpha: amps(i_a),
-                    i_beta: amps(i_b),
+                    i_alpha: i_a,
+                    i_beta: i_b,
                     dt: seconds(DT),
                 });
                 pva = telem.v_alpha.value;
                 pvb = telem.v_beta.value;
                 if step >= 20_000 {
-                    err_sum += angle_difference(obs.phase(), wrap_angle(erad(out.angle_rad)))
+                    err_sum += angle_difference(obs.phase(), wrap_angle(out.angle))
                         .abs()
                         .value;
                     n += 1;

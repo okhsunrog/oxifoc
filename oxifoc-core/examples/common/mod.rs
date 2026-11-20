@@ -22,8 +22,9 @@ use oxifoc_core::storage::{
     CurrentLimitsConfig, HallCalibrationConfig, HallTransitionGeometryConfig, MotorParamsConfig,
     RuntimeConfig,
 };
+use oxifoc_core::units::quantity;
 use oxifoc_core::units::{amps, seconds};
-use oxifoc_core::units::{henries, ohms, per_second, volts, webers};
+use oxifoc_core::units::{per_second, volts};
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
 pub const FOC_HZ: u32 = 20_000;
@@ -59,10 +60,10 @@ pub fn preset(name: &str) -> (MotorParams, f32, f32) {
         // ZD2808 700 KV bench motor (2026-07-05 detection values).
         "zd2808" => (
             MotorParams {
-                r: 0.127,
-                ld: 86e-6,
-                lq: 129e-6,
-                lambda: 1.145e-3,
+                r: quantity(0.127),
+                ld: quantity(86e-6),
+                lq: quantity(129e-6),
+                lambda: quantity(1.145e-3),
                 pole_pairs: 7,
                 j: 5e-5,
                 friction_b: 4e-6,
@@ -75,10 +76,10 @@ pub fn preset(name: &str) -> (MotorParams, f32, f32) {
         // values, λ from KV.
         _ => (
             MotorParams {
-                r: 0.036,
-                ld: 22e-6,
-                lq: 22e-6,
-                lambda: 60.0 / (3f32.sqrt() * TAU * 270.0 * 7.0),
+                r: quantity(0.036),
+                ld: quantity(22e-6),
+                lq: quantity(22e-6),
+                lambda: quantity(60.0 / (3f32.sqrt() * TAU * 270.0 * 7.0)),
                 pole_pairs: 7,
                 j: 4e-4,
                 friction_b: 2e-5,
@@ -137,13 +138,14 @@ impl StepRecord {
     /// frame.
     pub fn true_dq(&self) -> (f32, f32) {
         let (i_alpha, i_beta) = clarke(self.sample.ia, self.sample.ib);
-        let (s, c) = self.sample.angle_rad.sin_cos();
-        park(i_alpha, i_beta, s, c)
+        let (s, c) = self.sample.angle.value.sin_cos();
+        let (id, iq) = park(i_alpha, i_beta, s, c);
+        (id.value, iq.value)
     }
 
     /// Commutation frame error vs the rotor at the sample instant (rad).
     pub fn frame_err(&self) -> f32 {
-        angle_difference(self.telem.angle.value, self.sample.angle_rad)
+        angle_difference(self.telem.angle.value, self.sample.angle.value)
     }
 }
 
@@ -169,10 +171,10 @@ impl Rig {
     pub fn new(cfg: &RigConfig) -> Self {
         let (mut params, vbus, i_max) = preset(&cfg.motor);
         if let Some(model) = &cfg.motor_params {
-            params.r = model.resistance.value;
-            params.ld = model.inductance_d.value;
-            params.lq = model.inductance_q.value;
-            params.lambda = model.flux_linkage.value;
+            params.r = model.resistance;
+            params.ld = model.inductance_d;
+            params.lq = model.inductance_q;
+            params.lambda = model.flux_linkage;
             params.pole_pairs = model.pole_pairs;
         }
         if cfg.j > 0.0 {
@@ -183,18 +185,18 @@ impl Rig {
         params.actuation_delay = cfg.delay;
         let config = RuntimeConfig {
             motor_params: Some(MotorParamsConfig {
-                resistance: ohms(params.r),
-                inductance_d: henries(params.ld),
-                inductance_q: henries(params.lq),
-                flux_linkage: webers(params.lambda),
+                resistance: params.r,
+                inductance_d: params.ld,
+                inductance_q: params.lq,
+                flux_linkage: params.lambda,
                 pole_pairs: params.pole_pairs,
                 ..MotorParamsConfig::default()
             }),
             ..RuntimeConfig::default()
         };
         let mut motor = VirtualMotor::new(params);
-        motor.set_angle(cfg.start_angle);
-        let mut out = motor.step(0.0, 0.0, 0.0, DT);
+        motor.set_angle(quantity(cfg.start_angle));
+        let mut out = motor.step(volts(0.0), volts(0.0), 0.0, seconds(DT));
         let mut hall = HallSensor::new(1_000_000);
         let hall_geometry = cfg.hall_calibration.as_ref().and_then(|config| {
             let prepared = PreparedHallCalibration::from_config(config)
@@ -203,7 +205,7 @@ impl Rig {
             config.geometry
         });
         if let Some(geometry) = &hall_geometry {
-            out.hall_state = measured_hall_state(geometry, out.angle_rad);
+            out.hall_state = measured_hall_state(geometry, out.angle.value);
         }
         hall.update(out.hall_state, 0);
         let mut phase = PhaseManager::with_hall(hall);
@@ -232,7 +234,7 @@ impl Rig {
             mech_angle: 0.0,
             last_hall: out.hall_state,
             hall_geometry,
-            prev_angle: out.angle_rad,
+            prev_angle: out.angle.value,
             step: 0,
         }
     }
@@ -256,7 +258,7 @@ impl Rig {
 
     /// Advance one FOC period.
     pub fn step(&mut self) -> StepRecord {
-        let omega_m = self.out.omega_e / f32::from(self.params.pole_pairs);
+        let omega_m = self.out.omega_e.value / f32::from(self.params.pole_pairs);
         self.step_with_load(self.load * (omega_m / 2.0).tanh() + self.torque_disturbance)
     }
 
@@ -267,7 +269,7 @@ impl Rig {
         if self.out.hall_state != self.last_hall {
             // Interpolate the crossing time between the two plant samples.
             let a0 = self.prev_angle;
-            let a1 = a0 + angle_difference(self.out.angle_rad, a0);
+            let a1 = a0 + angle_difference(self.out.angle.value, a0);
             let boundary = if let Some(geometry) = &self.hall_geometry {
                 let entered = if a1 > a0 {
                     self.out.hall_state
@@ -291,18 +293,18 @@ impl Rig {
             self.last_hall = self.out.hall_state;
         }
         let sample = self.out;
-        self.driver.current_sensor_mut().0 = (sample.ia, sample.ib, sample.ic);
+        self.driver.current_sensor_mut().0 = (sample.ia.value, sample.ib.value, sample.ic.value);
         let telem = self.driver.step(now).unwrap_or_default();
-        self.prev_angle = sample.angle_rad;
-        let omega_m = sample.omega_e / f32::from(self.params.pole_pairs);
+        self.prev_angle = sample.angle.value;
+        let omega_m = sample.omega_e.value / f32::from(self.params.pole_pairs);
         self.out = if self.driver.pwm().enabled {
             self.motor
-                .step(telem.v_alpha.value, telem.v_beta.value, load, DT)
+                .step(telem.v_alpha, telem.v_beta, load, seconds(DT))
         } else {
-            self.motor.step_coast(load, DT)
+            self.motor.step_coast(load, seconds(DT))
         };
         if let Some(geometry) = &self.hall_geometry {
-            self.out.hall_state = measured_hall_state(geometry, self.out.angle_rad);
+            self.out.hall_state = measured_hall_state(geometry, self.out.angle.value);
         }
         self.mech_angle += f64::from(omega_m * DT);
         StepRecord { sample, telem }

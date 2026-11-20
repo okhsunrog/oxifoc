@@ -24,7 +24,9 @@ use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
 use oxifoc_core::state::{MotorControlState, run_foc_cycle};
 use oxifoc_core::storage::RuntimeConfig;
-use oxifoc_core::units::{amps, erad, erad_per_s, quantity, seconds, volts};
+use oxifoc_core::units::{
+    AngleRepr, ElectricCurrent, Electrical, Linear, amps, erad_per_s, quantity, seconds, volts,
+};
 use oxifoc_core::virtual_motor::io::VirtualPwm;
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 use tracing::info;
@@ -55,16 +57,15 @@ impl Currents {
     fn sample(&mut self, out: VirtualMotorOutput) {
         let calib = crate::VIRTUAL_CALIB;
         let offset = f32::from(calib.adc_max_counts) / 2.0;
-        let scale = calib.adc_vref_mv as f32
-            / 1000.0
-            / f32::from(calib.adc_max_counts)
-            / calib.shunt_ohms.value
-            / calib.amp_gain;
+        let amps_per_count: ElectricCurrent = volts(calib.adc_vref_mv as f32 / 1000.0)
+            / (f32::from(calib.adc_max_counts) * calib.amp_gain)
+            / calib.shunt_ohms;
         self.raw = [out.ia, out.ib, out.ic].map(|i| {
+            let counts = i.ratio_to(amps_per_count);
             let raw = if calib.invert_current_sign {
-                offset - i / scale
+                offset - counts
             } else {
-                offset + i / scale
+                offset + counts
             };
             clamp_f32(raw, 0.0, f32::from(calib.adc_max_counts)).round() as u16
         });
@@ -123,9 +124,9 @@ pub async fn foc_loop(
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<StandardFault>,
 ) {
-    let dt = 1.0 / foc_freq as f32;
+    let dt = seconds(1.0 / foc_freq as f32);
     let mut motor = VirtualMotor::new(params);
-    let mut out = motor.step(0.0, 0.0, 0.0, dt);
+    let mut out = motor.step(volts(0.0), volts(0.0), 0.0, dt);
     let mut hall = HallSensor::new(1_000_000);
     hall.update(out.hall_state, 0);
     if let Some(calib) = &config.hall_calibration {
@@ -140,7 +141,7 @@ pub async fn foc_loop(
         duties: [0; 3],
         enabled: false,
     };
-    let mut driver = FocDriver::new(controller, pwm, Currents::new(&config), phase, seconds(dt));
+    let mut driver = FocDriver::new(controller, pwm, Currents::new(&config), phase, dt);
     driver.set_actuation_delay(params.actuation_delay);
     let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
         &config,
@@ -166,7 +167,7 @@ pub async fn foc_loop(
 
     let mut seq = 0u32;
     let mut step = 0u64;
-    let mut previous_angle = out.angle_rad;
+    let mut previous_angle = out.angle.radians();
     let mut last_hall = out.hall_state;
     let sleep_us = (batch as u64 * 1_000_000) / u64::from(foc_freq);
     let mut interval = tokio::time::interval(Duration::from_micros(sleep_us));
@@ -181,7 +182,7 @@ pub async fn foc_loop(
                 // Timestamp the true sector crossing within the previous
                 // plant period, as the examples' capture-timer model does.
                 let a0 = previous_angle;
-                let a1 = a0 + angle_difference(out.angle_rad, a0);
+                let a1 = a0 + angle_difference(out.angle.radians(), a0);
                 let k0 = ((a0 - FRAC_PI_6) / FRAC_PI_3).floor();
                 let k1 = ((a1 - FRAC_PI_6) / FRAC_PI_3).floor();
                 let fraction = if k0 == k1 {
@@ -193,7 +194,7 @@ pub async fn foc_loop(
                         1.0,
                     )
                 };
-                let edge = now - ((1.0 - fraction) * dt * 1_000_000.0) as u64;
+                let edge = now - ((1.0 - fraction) * dt.value * 1_000_000.0) as u64;
                 driver.phase_mut().hall_mut().update(out.hall_state, edge);
                 last_hall = out.hall_state;
             }
@@ -218,11 +219,11 @@ pub async fn foc_loop(
             )
             .unwrap_or_default();
             let hall = HallSnapshot {
-                angle: erad(sample.angle_rad),
-                velocity: erad_per_s(sample.omega_e),
-                direction: if sample.omega_e > 0.1 {
+                angle: sample.angle,
+                velocity: sample.omega_e,
+                direction: if sample.omega_e > erad_per_s(0.1) {
                     Direction::Clockwise
-                } else if sample.omega_e < -0.1 {
+                } else if sample.omega_e < erad_per_s(-0.1) {
                     Direction::CounterClockwise
                 } else {
                     Direction::Stopped
@@ -234,12 +235,12 @@ pub async fn foc_loop(
                 ),
             };
             publish_cycle_telemetry(state_mutex, adc, Some(hall), telem, seq);
-            previous_angle = sample.angle_rad;
+            previous_angle = sample.angle.radians();
             // Load opposes motion, including after a direction reversal.
-            let omega_m = sample.omega_e / f32::from(params.pole_pairs);
-            let load = load_torque * (omega_m / 2.0).tanh();
+            let omega_m = sample.omega_e.to_mechanical(params.pole_pairs);
+            let load = load_torque * (omega_m.value / 2.0).tanh();
             out = if driver.pwm().enabled {
-                motor.step(telem.v_alpha.value, telem.v_beta.value, load, dt)
+                motor.step(telem.v_alpha, telem.v_beta, load, dt)
             } else {
                 motor.step_coast(load, dt)
             };

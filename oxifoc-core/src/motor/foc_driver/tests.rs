@@ -59,11 +59,11 @@ use crate::state::CMD_CHANNEL;
 use crate::storage::CurrentLimitsConfig;
 #[cfg(feature = "hfi")]
 use crate::units::hertz;
+#[cfg(feature = "virtual-motor")]
+use crate::units::{Linear, amps_per_s, erad_per_s2, per_second};
 use crate::units::{
     Sign, amps, erad, erad_per_s, henries, ohms, quantity, seconds, volts, watts, webers,
 };
-#[cfg(feature = "virtual-motor")]
-use crate::units::{amps_per_s, erad_per_s2, per_second};
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 #[cfg(feature = "virtual-motor")]
@@ -1886,25 +1886,25 @@ fn current_control_drives_hfi_estimator() {
     // rotor + friction so the injection itself doesn't move it, plus
     // d-axis saturation so the polarity probe has a signal.
     let params = MotorParams {
-        r: 0.1,
-        ld: 100e-6,
-        lq: 300e-6,
-        lambda: 0.02,
+        r: ohms(0.1),
+        ld: henries(100e-6),
+        lq: henries(300e-6),
+        lambda: webers(0.02),
         pole_pairs: 4,
         j: 1e-2,
         friction_b: 5e-2,
-        hall_offset: 0.0,
-        sat_k: 0.05,
+        hall_offset: erad(0.0),
+        sat_k: quantity(0.05),
         ..MotorParams::default()
     };
     let mut motor = VirtualMotor::new(params);
-    motor.set_angle(ROTOR_ANGLE);
+    motor.set_angle(erad(ROTOR_ANGLE));
 
     // 1000 rad/s current loop — well below the 1 kHz carrier, so the
     // PI regulates the fundamental without eating the carrier response.
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
     let mut mgr = PhaseManager::sensorless();
@@ -1930,14 +1930,14 @@ fn current_control_drives_hfi_estimator() {
 
     let mut out = VirtualMotorOutput::default();
     for step in 1..20_000u64 {
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = driver.step(step * 50).expect("FOC step failed");
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
     }
 
     // Full-circle match: the polarity probe must have corrected the
     // π-flipped initial lock through the driver path.
-    let true_angle = wrap_angle(out.angle_rad);
+    let true_angle = wrap_angle(out.angle.value);
     let err = angle_difference(driver.phase().get().angle, erad(true_angle)).abs();
     assert!(
         err < erad(0.15),
@@ -1953,9 +1953,9 @@ fn current_control_drives_hfi_estimator() {
         hfi.confidence()
     );
     assert!(
-        angle_difference(out.angle_rad, ROTOR_ANGLE).abs() < 0.15,
+        angle_difference(out.angle.value, ROTOR_ANGLE).abs() < 0.15,
         "injection moved the rotor: {} rad",
-        out.angle_rad
+        out.angle.value
     );
 }
 
@@ -1985,28 +1985,28 @@ fn sensorless_cold_start_ramps_then_hands_off() {
     // reproducer material for the mid-speed limit-cycle investigation,
     // not a cold-start regression gate.
     let params = MotorParams {
-        r: 0.1,
-        ld: 200e-6,
-        lq: 200e-6,
-        lambda: 0.01,
+        r: ohms(0.1),
+        ld: henries(200e-6),
+        lq: henries(200e-6),
+        lambda: webers(0.01),
         pole_pairs: 7,
         j: 2e-3,
         friction_b: 1e-4,
         ..MotorParams::default()
     };
     let mut motor = VirtualMotor::new(params);
-    motor.set_angle(0.5);
+    motor.set_angle(erad(0.5));
 
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
-        webers(params.lambda),
+        params.r,
+        (params.ld + params.lq) / 2.0,
+        params.lambda,
     )));
     mgr.set_source(PhaseSource::Observer).unwrap();
 
@@ -2036,9 +2036,9 @@ fn sensorless_cold_start_ramps_then_hands_off() {
     // electrical revolutions beyond the old convergence point, so give
     // the post-handoff loop the same settling room it had before.
     for step in 1..40_000u64 {
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = driver.step(step * 50).expect("FOC step failed");
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
     }
 
     // Handed off (not stuck open-loop), spinning forward, observer locked.
@@ -2051,16 +2051,16 @@ fn sensorless_cold_start_ramps_then_hands_off() {
         "back-EMF observer must be tracking after handoff"
     );
     assert!(
-        out.omega_e > 50.0,
-        "motor must spin up forward, got omega_e {}",
+        out.omega_e > erad_per_s(50.0),
+        "motor must spin up forward, got omega_e {:?}",
         out.omega_e
     );
-    let err = angle_difference(driver.phase().get().angle, wrap_angle(erad(out.angle_rad))).abs();
+    let err = angle_difference(driver.phase().get().angle, wrap_angle(out.angle)).abs();
     assert!(
         err < erad(0.25),
         "observer angle {:?} vs rotor {:?} (err {:?} rad)",
         driver.phase().get().angle,
-        wrap_angle(out.angle_rad),
+        wrap_angle(out.angle.value),
         err
     );
 }
@@ -2084,10 +2084,10 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
         // τ = L/R = 2 ms: the short current is far from settled when
         // the probe window closes (seed accuracy across τ is
         // `flying_restart_catches_low_tau_motors`'s job).
-        r: 0.1,
-        ld: 200e-6,
-        lq: 200e-6,
-        lambda: 0.01,
+        r: ohms(0.1),
+        ld: henries(200e-6),
+        lq: henries(200e-6),
+        lambda: webers(0.01),
         pole_pairs: 7,
         j: 1e-3, // heavier rotor: the brief probe barely slows it
         friction_b: 1e-4,
@@ -2096,19 +2096,19 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
     let mut motor = VirtualMotor::new(params);
     // Freewheeling forward at ~200 rad/s elec, parked at a known angle,
     // zero current (gates were off) — the kick-push case.
-    motor.set_angle(1.0);
-    motor.set_velocity(200.0);
+    motor.set_angle(erad(1.0));
+    motor.set_velocity(erad_per_s(200.0));
 
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
-        webers(params.lambda),
+        params.r,
+        (params.ld + params.lq) / 2.0,
+        params.lambda,
     )));
     mgr.set_source(PhaseSource::Observer).unwrap();
 
@@ -2132,9 +2132,9 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
     let mut out = VirtualMotorOutput::default();
     let mut caught_cycle = None;
     for step in 1..200u64 {
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = driver.step(step * 50).expect("FOC step failed");
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         if caught_cycle.is_none() && !driver.phase().is_starting() {
             caught_cycle = Some(step);
         }
@@ -2153,16 +2153,16 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
     );
     // Rotor never braked to a stop and still spinning forward near ω0.
     assert!(
-        out.omega_e > 120.0,
-        "rotor must keep spinning, got {}",
+        out.omega_e > erad_per_s(120.0),
+        "rotor must keep spinning, got {:?}",
         out.omega_e
     );
-    let err = angle_difference(driver.phase().get().angle, wrap_angle(erad(out.angle_rad))).abs();
+    let err = angle_difference(driver.phase().get().angle, wrap_angle(out.angle)).abs();
     assert!(
         err < erad(0.3),
         "observer angle {:?} vs rotor {:?} (err {err:?} rad)",
         driver.phase().get().angle,
-        wrap_angle(out.angle_rad)
+        wrap_angle(out.angle.value)
     );
 }
 
@@ -2196,10 +2196,10 @@ fn run_bench_spin_with_decoupling(
     const LQ: f32 = 129e-6;
     const LAMBDA: f32 = 1.145e-3;
     let params = MotorParams {
-        r: 0.127,
-        ld: LD,
-        lq: LQ,
-        lambda: LAMBDA,
+        r: ohms(0.127),
+        ld: henries(LD),
+        lq: henries(LQ),
+        lambda: webers(LAMBDA),
         pole_pairs: 7,
         // Inertia from the bench acceleration (erpm 1116→7958 in 0.3 s
         // at iq≈1.4 → ω̇_e≈2400 rad/s² → J≈5e-5); friction from the
@@ -2216,7 +2216,7 @@ fn run_bench_spin_with_decoupling(
         ..MotorParams::default()
     };
     let mut motor = VirtualMotor::new(params);
-    motor.set_angle(initial_rotor_angle);
+    motor.set_angle(erad(initial_rotor_angle));
 
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
         ohms(0.127),
@@ -2257,12 +2257,12 @@ fn run_bench_spin_with_decoupling(
     let mut out = VirtualMotorOutput::default();
     let mut max_idq = 0.0f32;
     for step in 1..40_000u64 {
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = match driver.step(step * 50) {
             Ok(t) => t,
             Err(e) => return Err((step, e)),
         };
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         if !driver.phase().is_starting() {
             let idq = (telem.id.value * telem.id.value + telem.iq.value * telem.iq.value).sqrt();
             max_idq = max_idq.max(idq);
@@ -2271,11 +2271,11 @@ fn run_bench_spin_with_decoupling(
         // the 12 V modulation ceiling (~5.9 krad/s at 1.5 A): above it
         // the loop saturates by physics — field weakening is not
         // implemented, and that regime is not what this probes.
-        if out.omega_e >= 2500.0 {
+        if out.omega_e >= erad_per_s(2500.0) {
             break;
         }
     }
-    Ok((max_idq, out.omega_e))
+    Ok((max_idq, out.omega_e.value))
 }
 
 /// What one instrumented ZD2808 cold start saw (see
@@ -2375,10 +2375,10 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
     const LAMBDA: f32 = 1.145e-3;
     let sk = cfg.plant_skew;
     let params = MotorParams {
-        r: 0.127 * (1.0 + 0.1 * sk),
-        ld: 86e-6,
-        lq: 129e-6,
-        lambda: LAMBDA * (1.0 + 0.15 * sk),
+        r: ohms(0.127 * (1.0 + 0.1 * sk)),
+        ld: henries(86e-6),
+        lq: henries(129e-6),
+        lambda: webers(LAMBDA * (1.0 + 0.15 * sk)),
         pole_pairs: 7,
         j: cfg.j,
         friction_b: 4e-6,
@@ -2388,20 +2388,28 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
         // firmware's dead-time comp is on below, so only the residual
         // (zero-crossing clamping the comp can't model) reaches the
         // estimators — same as hardware.
-        dead_time_v: if cfg.dead_time {
+        dead_time_voltage: volts(if cfg.dead_time {
             DEAD_TIME_NS * 1e-9 * 20_000.0 * VBUS * (1.0 + sk)
         } else {
             0.0
+        }),
+        adc_lsb: amps(if cfg.adc_noise { 62.0 / 4096.0 } else { 0.0 }),
+        adc_noise: amps(if cfg.adc_noise { 62.0 / 4096.0 } else { 0.0 }),
+        eddy_delta_l_d: if cfg.eddy_tau_s > 0.0 {
+            henries(62e-6)
+        } else {
+            henries(0.0)
         },
-        adc_lsb_a: if cfg.adc_noise { 62.0 / 4096.0 } else { 0.0 },
-        adc_noise_a: if cfg.adc_noise { 62.0 / 4096.0 } else { 0.0 },
-        eddy_delta_l_d: if cfg.eddy_tau_s > 0.0 { 62e-6 } else { 0.0 },
-        eddy_delta_l_q: if cfg.eddy_tau_s > 0.0 { 105e-6 } else { 0.0 },
-        eddy_tau_s: cfg.eddy_tau_s,
+        eddy_delta_l_q: if cfg.eddy_tau_s > 0.0 {
+            henries(105e-6)
+        } else {
+            henries(0.0)
+        },
+        eddy_tau: seconds(cfg.eddy_tau_s),
         ..MotorParams::default()
     };
     let mut motor = VirtualMotor::new(params);
-    motor.set_angle(cfg.initial_rotor_angle);
+    motor.set_angle(erad(cfg.initial_rotor_angle));
 
     // Baked-config current loop: bw 1000 rad/s against `controller_l`.
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
@@ -2456,7 +2464,7 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
     let mut post_handoff_cycles = 0u64;
     let mut untrusted_cycles = 0u64;
     for step in 1..=cfg.steps {
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = match driver.step(step * 50) {
             Ok(t) => t,
             Err(e) => {
@@ -2467,7 +2475,7 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
         let starting = driver.phase().is_starting();
         if was_starting && !starting && report.handoff_step.is_none() {
             report.handoff_step = Some(step);
-            report.rotor_omega_at_handoff = out.omega_e;
+            report.rotor_omega_at_handoff = out.omega_e.value;
             report.observer_vel_at_handoff = driver
                 .phase()
                 .observer()
@@ -2495,7 +2503,7 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
             println!(
                 "t={:6.3} rotor={:7.1} obs={:7.1} iq={:+6.2} conf={:.2?} starting={:?}",
                 step as f32 * DT,
-                out.omega_e,
+                out.omega_e.value,
                 driver
                     .phase()
                     .observer()
@@ -2527,9 +2535,9 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
         } else {
             0.0
         };
-        out = motor.step(v_alpha, v_beta, load, DT);
+        out = motor.step(volts(v_alpha), volts(v_beta), load, seconds(DT));
     }
-    report.final_omega = out.omega_e;
+    report.final_omega = out.omega_e.value;
     report.observer_ready_final = driver.phase().observer().is_ready();
     report.observer_vel_final = driver
         .phase()
@@ -2938,10 +2946,10 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     const LAMBDA: f32 = 1.145e-3;
     const L_AVG: f32 = (86e-6 + 129e-6) / 2.0;
     let params = MotorParams {
-        r: 0.127,
-        ld: 86e-6,
-        lq: 129e-6,
-        lambda: LAMBDA,
+        r: ohms(0.127),
+        ld: henries(86e-6),
+        lq: henries(129e-6),
+        lambda: webers(LAMBDA),
         pole_pairs: 7,
         j: 5e-5,
         friction_b: 4e-6,
@@ -2991,18 +2999,21 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     let mut handed_off = false;
     let mut step = 1u64;
     while step < 40_000 {
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = driver.step(step * 50).expect("healthy spin must not trip");
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         step += 1;
         if !driver.phase().is_starting() && driver.phase().observer().is_ready() {
             handed_off = true;
-            if out.omega_e > 500.0 {
+            if out.omega_e > erad_per_s(500.0) {
                 break;
             }
         }
     }
-    assert!(handed_off && out.omega_e > 500.0, "spin-up failed");
+    assert!(
+        handed_off && out.omega_e > erad_per_s(500.0),
+        "spin-up failed"
+    );
 
     // Phase 2: drop to a light 0.3 A cruise, then stall it with a load
     // an order of magnitude past what 0.3 A can hold — the rotor drags
@@ -3018,7 +3029,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     });
     let mut restarted = false;
     for _ in 0..40_000u64 {
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = match driver.step(step * 50) {
             Ok(t) => t,
             Err(e) => panic!("stall must gate torque, not trip: {e:?}"),
@@ -3028,7 +3039,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
         // would just track the backward spin — honest, but not the
         // trust-loss scenario under test).
         let load = 0.03 * out.omega_e.signum();
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, load.value, seconds(DT));
         step += 1;
         if driver.phase().is_starting() {
             restarted = true;
@@ -3038,7 +3049,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     assert!(
         restarted,
         "trust loss under stall must re-enter the cold start (deadlock otherwise); \
-         omega_e {} trustworthy {}",
+         omega_e {:?} trustworthy {:?}",
         out.omega_e,
         driver.phase().angle_trustworthy()
     );
@@ -3046,20 +3057,20 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     // Phase 3: load released — the restart machinery must respin the
     // motor with no new host command (retries/recycles included).
     for _ in 0..80_000u64 {
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = match driver.step(step * 50) {
             Ok(t) => t,
             Err(e) => panic!("recovery must not trip: {e:?}"),
         };
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         step += 1;
-        if out.omega_e > 500.0 && !driver.phase().is_starting() {
+        if out.omega_e > erad_per_s(500.0) && !driver.phase().is_starting() {
             break;
         }
     }
     assert!(
-        out.omega_e > 500.0,
-        "must respin after the load releases, got omega_e {}",
+        out.omega_e > erad_per_s(500.0),
+        "must respin after the load releases, got omega_e {:?}",
         out.omega_e
     );
 }
@@ -3078,10 +3089,10 @@ fn run_perfect_angle_spin(
 
     const DT: f32 = 1.0 / 20_000.0;
     let params = MotorParams {
-        r: 0.127,
-        ld: 86e-6,
-        lq: 129e-6,
-        lambda: 1.145e-3,
+        r: ohms(0.127),
+        ld: henries(86e-6),
+        lq: henries(129e-6),
+        lambda: webers(1.145e-3),
         pole_pairs: 7,
         j: 5e-5,
         friction_b: 4e-6,
@@ -3101,11 +3112,11 @@ fn run_perfect_angle_spin(
     let mut max_idq = 0.0f32;
     for step in 1..40_000u64 {
         // Same advance as FocDriver::set_actuation_delay.
-        foc.set_actuation_advance(erad(out.omega_e * DT * (actuation_delay + 0.5)));
+        foc.set_actuation_advance(out.omega_e * seconds(DT) * (actuation_delay + 0.5));
         let telem = foc.step_with_injection(
-            (amps(out.ia), amps(out.ib), amps(out.ic)),
-            erad(wrap_angle(out.angle_rad)),
-            erad_per_s(out.omega_e),
+            (out.ia, out.ib, out.ic),
+            erad(wrap_angle(out.angle.value)),
+            out.omega_e,
             amps(0.0),
             amps(1.5),
             volts(0.0),
@@ -3120,12 +3131,12 @@ fn run_perfect_angle_spin(
         if idq > 10.0 {
             return Err((step, "overcurrent"));
         }
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
-        if out.omega_e >= 2500.0 {
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
+        if out.omega_e >= erad_per_s(2500.0) {
             break;
         }
     }
-    Ok((max_idq, out.omega_e))
+    Ok((max_idq, out.omega_e.value))
 }
 
 /// High-speed regression guard for the estimation + current-loop chain
@@ -3452,15 +3463,15 @@ fn controlled_stop_run(
     let mut motor = VirtualMotor::new(params);
 
     // Prime the hall estimator with the initial rotor state.
-    let mut out = motor.step_coast(0.0, DT);
+    let mut out = motor.step_coast(0.0, seconds(DT));
     let mut hall = HallSensor::new(1_000_000); // µs timebase
     hall.update(out.hall_state, 0);
     let mut last_hall = out.hall_state;
 
     let mgr = PhaseManager::with_hall(hall); // default source = Hall
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
     let mut driver = FocDriver::new(
@@ -3500,7 +3511,7 @@ fn controlled_stop_run(
             driver.phase_mut().hall_mut().update(out.hall_state, now);
             last_hall = out.hall_state;
         }
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
 
         // Emulate run_foc_cycle's deadman (host affirms, then stops).
         if step < STOP_AFFIRMING_AT {
@@ -3512,15 +3523,15 @@ fn controlled_stop_run(
 
         let telem = driver.step(now).unwrap_or_default();
         out = if driver.pwm.enabled {
-            motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT)
+            motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT))
         } else {
-            motor.step_coast(0.0, DT)
+            motor.step_coast(0.0, seconds(DT))
         };
 
         if step < STOP_AFFIRMING_AT {
-            peak_omega = peak_omega.max(out.omega_e.abs());
+            peak_omega = peak_omega.max(out.omega_e.abs().value);
         } else {
-            trace.push(out.omega_e);
+            trace.push(out.omega_e.value);
         }
     }
     (peak_omega, trace, driver)
@@ -3545,15 +3556,15 @@ fn brake_at_speed_ramps_to_standstill_then_parks() {
     };
     let mut motor = VirtualMotor::new(params);
 
-    let mut out = motor.step(0.0, 0.0, 0.0, DT);
+    let mut out = motor.step(volts(0.0), volts(0.0), 0.0, seconds(DT));
     let mut hall = HallSensor::new(1_000_000);
     hall.update(out.hall_state, 0);
     let mut last_hall = out.hall_state;
 
     let mgr = PhaseManager::with_hall(hall);
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
     let mut driver = FocDriver::new(
@@ -3588,13 +3599,13 @@ fn brake_at_speed_ramps_to_standstill_then_parks() {
             driver.phase_mut().hall_mut().update(out.hall_state, now);
             last_hall = out.hall_state;
         }
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         if step < BRAKE_AT {
             driver.note_command_tick(now);
-            peak_omega = peak_omega.max(out.omega_e.abs());
+            peak_omega = peak_omega.max(out.omega_e.abs().value);
         }
         let telem = driver.step(now).unwrap_or_default();
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
     }
 
     assert_eq!(
@@ -3605,8 +3616,8 @@ fn brake_at_speed_ramps_to_standstill_then_parks() {
     assert!(!driver.failsafe_active());
     assert!(!driver.failsafe_latched());
     assert!(
-        out.omega_e.abs() < 25.0,
-        "must be ~standstill, ωe = {}",
+        out.omega_e.abs() < erad_per_s(25.0),
+        "must be ~standstill, ωe = {:?}",
         out.omega_e
     );
 }
@@ -3629,15 +3640,15 @@ fn velocity_control_tracks_target_on_virtual_motor() {
     let mut motor = VirtualMotor::new(params);
 
     // Prime the hall estimator with the initial rotor state.
-    let mut out = motor.step(0.0, 0.0, 0.0, DT);
+    let mut out = motor.step(volts(0.0), volts(0.0), 0.0, seconds(DT));
     let mut hall = HallSensor::new(1_000_000); // µs timebase
     hall.update(out.hall_state, 0);
     let mut last_hall = out.hall_state;
 
     let mgr = PhaseManager::with_hall(hall); // default source = Hall
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        ohms(params.r),
-        henries((params.ld + params.lq) / 2.0),
+        params.r,
+        (params.ld + params.lq) / 2.0,
         volts(24.0),
     );
     let mut driver = FocDriver::new(
@@ -3672,8 +3683,8 @@ fn velocity_control_tracks_target_on_virtual_motor() {
         let now = step * 50; // µs
         if step == RETARGET_AT {
             assert!(
-                (out.omega_e - 300.0).abs() < 30.0,
-                "should track 300 erad/s, got {}",
+                (out.omega_e - erad_per_s(300.0)).abs() < erad_per_s(30.0),
+                "should track 300 erad/s, got {:?}",
                 out.omega_e
             );
             // Stay well clear of zero: hall velocity is degenerate
@@ -3687,13 +3698,13 @@ fn velocity_control_tracks_target_on_virtual_motor() {
             driver.phase_mut().hall_mut().update(out.hall_state, now);
             last_hall = out.hall_state;
         }
-        driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+        driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
         let telem = driver.step(now).unwrap_or_default();
-        out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+        out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
     }
     assert!(
-        (out.omega_e - 150.0).abs() < 25.0,
-        "should track 150 erad/s after retarget, got {}",
+        (out.omega_e - erad_per_s(150.0)).abs() < erad_per_s(25.0),
+        "should track 150 erad/s after retarget, got {:?}",
         out.omega_e
     );
 }
@@ -4936,10 +4947,10 @@ impl HallRig {
 
     fn new(delay: f32, friction_b: f32) -> Self {
         let params = MotorParams {
-            r: 0.036,
-            ld: 22e-6,
-            lq: 22e-6,
-            lambda: 2.92e-3,
+            r: ohms(0.036),
+            ld: henries(22e-6),
+            lq: henries(22e-6),
+            lambda: webers(2.92e-3),
             pole_pairs: 7,
             j: 4e-4,
             friction_b,
@@ -4948,29 +4959,29 @@ impl HallRig {
             ..MotorParams::default()
         };
         let mut motor = VirtualMotor::new(params);
-        let out = motor.step(0.0, 0.0, 0.0, Self::DT);
+        let out = motor.step(volts(0.0), volts(0.0), 0.0, seconds(Self::DT));
         let mut hall = HallSensor::new(1_000_000);
         hall.update(out.hall_state, 0);
         let mut mgr = PhaseManager::with_hall(hall);
         mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-            ohms(params.r),
-            henries(params.ld),
-            webers(params.lambda),
+            params.r,
+            params.ld,
+            params.lambda,
         )));
         mgr.set_phase_tracker(per_second(100.0), 1.2); // the f405 boot configuration
         // As from_runtime_config builds it on the f405: params-derived
         // PI gains plus dq decoupling / back-EMF feedforward.
         let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-            ohms(params.r),
-            henries(params.ld),
+            params.r,
+            params.ld,
             volts(24.0),
         );
         foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
         foc.set_decoupling(Some(Decoupling {
-            ld: henries(params.ld),
-            lq: henries(params.lq),
-            flux_linkage: webers(params.lambda),
-            resistance: ohms(params.r),
+            ld: params.ld,
+            lq: params.lq,
+            flux_linkage: params.lambda,
+            resistance: params.r,
         }));
         let mut driver = FocDriver::new(
             foc,
@@ -4991,7 +5002,7 @@ impl HallRig {
             out,
             driver,
             last_hall: out.hall_state,
-            prev_angle: out.angle_rad,
+            prev_angle: out.angle.value,
             step: 0,
             hall_alive: true,
             glitch_steps: 0,
@@ -5025,7 +5036,7 @@ impl HallRig {
         } else if self.hall_alive && self.out.hall_state != self.last_hall {
             // Crossing of the hall boundary (π/6 + k·π/3) inside the step.
             let a0 = self.prev_angle;
-            let a1 = a0 + angle_difference(self.out.angle_rad, a0);
+            let a1 = a0 + angle_difference(self.out.angle.value, a0);
             let k0 = libm::floorf((a0 - FRAC_PI_6) / FRAC_PI_3);
             let k1 = libm::floorf((a1 - FRAC_PI_6) / FRAC_PI_3);
             let frac = if k0 == k1 {
@@ -5045,17 +5056,18 @@ impl HallRig {
             self.last_hall = self.out.hall_state;
         }
         let sample = self.out;
-        self.driver.current_sensor_mut().currents = (sample.ia, sample.ib, sample.ic);
+        self.driver.current_sensor_mut().currents =
+            (sample.ia.value, sample.ib.value, sample.ic.value);
         let telem = self.driver.step(now).expect("FOC step failed");
-        self.prev_angle = sample.angle_rad;
-        let load = self.load * libm::tanhf(sample.omega_e / 10.0) + self.slope;
+        self.prev_angle = sample.angle.value;
+        let load = self.load * libm::tanhf((sample.omega_e / 10.0).value) + self.slope;
         // A disabled bridge floats the phases: the plant coasts. (Zero
         // volts would be all windings shorted — a brake.)
         self.out = if self.driver.pwm.enabled {
             self.motor
-                .step(telem.v_alpha.value, telem.v_beta.value, load, Self::DT)
+                .step(telem.v_alpha, telem.v_beta, load, seconds(Self::DT))
         } else {
-            self.motor.step_coast(load, Self::DT)
+            self.motor.step_coast(load, seconds(Self::DT))
         };
         (sample, telem)
     }
@@ -5100,7 +5112,7 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
     let mut rig = HallRig::new(0.5, 2e-5);
     let mut hall = HallSensor::new(1_000_000);
     hall.set_calibration_raw(CENTROIDS.map(erad));
-    rig.last_hall = raw_state(rig.out.angle_rad);
+    rig.last_hall = raw_state(rig.out.angle.value);
     hall.update(rig.last_hall, 0).unwrap();
     *rig.driver.phase_mut().hall_mut() = hall;
     rig.driver.set_current_limits(CurrentLimits {
@@ -5132,12 +5144,12 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
                 rig.step += 1;
                 let now = rig.step * HallRig::TICKS;
                 let sample = rig.out;
-                let raw = raw_state(sample.angle_rad);
+                let raw = raw_state(sample.angle.value);
                 visited[usize::from(raw)] = true;
                 if raw != rig.last_hall {
                     let old = CENTROIDS[usize::from(rig.last_hall)];
                     let boundary = old + angle_difference(CENTROIDS[usize::from(raw)], old) / 2.0;
-                    let travel = angle_difference(sample.angle_rad, rig.prev_angle);
+                    let travel = angle_difference(sample.angle.value, rig.prev_angle);
                     let fraction = clamp_f32(
                         angle_difference(boundary, rig.prev_angle) / travel,
                         0.0,
@@ -5151,7 +5163,8 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
                         .unwrap();
                     rig.last_hall = raw;
                 }
-                rig.driver.current_sensor_mut().currents = (sample.ia, sample.ib, sample.ic);
+                rig.driver.current_sensor_mut().currents =
+                    (sample.ia.value, sample.ib.value, sample.ic.value);
                 // Negative control: the same trajectory really contains raw
                 // sector steps, rather than trivially observing no movement.
                 let raw_angle = rig.driver.phase().hall().sample_at(now).unwrap().angle;
@@ -5194,11 +5207,11 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
                 {
                     crossover_directions[usize::from(direction < 0.0)] = true;
                 }
-                rig.prev_angle = sample.angle_rad;
-                rig.motor.set_velocity(omega); // external mechanical drive
-                rig.out =
-                    rig.motor
-                        .step(output.v_alpha.value, output.v_beta.value, 0.0, HallRig::DT);
+                rig.prev_angle = sample.angle.value;
+                rig.motor.set_velocity(erad_per_s(omega)); // external mechanical drive
+                rig.out = rig
+                    .motor
+                    .step(output.v_alpha, output.v_beta, 0.0, seconds(HallRig::DT));
             }
         }
     }
@@ -5253,11 +5266,11 @@ fn position_control_moves_and_parks() {
         let mut true_lo = f32::INFINITY;
         let mut true_hi = f32::NEG_INFINITY;
         let mut true_pos = 0.0f32;
-        let mut prev = rig.out.angle_rad;
+        let mut prev = rig.out.angle.value;
         for i in 0..(4.0 / HallRig::DT) as u32 {
             rig.step();
-            true_pos += angle_difference(rig.out.angle_rad, prev);
-            prev = rig.out.angle_rad;
+            true_pos += angle_difference(rig.out.angle.value, prev);
+            prev = rig.out.angle.value;
             let pos = rig.driver.position().as_angle();
             peak = peak.max(pos.value);
             if i as f32 * HallRig::DT > 3.0 {
@@ -5268,7 +5281,7 @@ fn position_control_moves_and_parks() {
         }
         eprintln!("DBG   true rotor band over the last second: [{true_lo:.2}, {true_hi:.2}] rad");
         eprintln!(
-            "DBG pkp {pkp} vkp {vkp} vki {vki} ff {ff}: overshoot {:.2} late err {:.2} ω {:.1}",
+            "DBG pkp {pkp:?} vkp {vkp:?} vki {vki:?} ff {ff:?}: overshoot {:.2?} late err {:.2?} ω {:.1?}",
             peak - target,
             worst_late,
             rig.out.omega_e
@@ -5309,9 +5322,15 @@ fn full_pack_descent_holds_its_cruise_by_dissipation() {
         (rig.out.omega_e, charged_j)
     };
     let (omega, _) = descent(watts(0.0));
-    assert!(omega > 2_000.0, "the plain cut must run away: ω {omega}");
+    assert!(
+        omega > erad_per_s(2_000.0),
+        "the plain cut must run away: ω {omega:?}"
+    );
     let (omega, charge_w) = descent(watts(50.0));
-    assert!((omega - 800.0).abs() < 30.0, "ω {omega}");
+    assert!(
+        (omega - erad_per_s(800.0)).abs() < erad_per_s(30.0),
+        "ω {omega:?}"
+    );
     assert!(charge_w.abs() < 2.0, "mean charge {charge_w} W");
 }
 
@@ -5332,9 +5351,9 @@ fn dissipative_heat_aligns_a_displaced_rotor_with_coarse_hall_feedback() {
     let (heat_id, _) = grant.grant_torque(amps(0.0), amps(-1.0), erad_per_s(40.0));
     let displacement = |id_target| {
         let mut rig = HallRig::new(0.5, 2e-5);
-        rig.motor.set_angle(0.15);
-        rig.out = rig.motor.step_coast(0.0, HallRig::DT);
-        rig.prev_angle = rig.out.angle_rad;
+        rig.motor.set_angle(erad(0.15));
+        rig.out = rig.motor.step_coast(0.0, seconds(HallRig::DT));
+        rig.prev_angle = rig.out.angle.value;
         rig.driver.set_mode(ControlMode::CurrentControl {
             iq_target: amps(0.0),
             id_target: amps(id_target),
@@ -5342,9 +5361,9 @@ fn dissipative_heat_aligns_a_displaced_rotor_with_coarse_hall_feedback() {
         let mut peak = 0.0f32;
         for _ in 0..6_000 {
             let (actual, _) = rig.step();
-            peak = peak.max(angle_difference(actual.angle_rad, 0.0).abs());
+            peak = peak.max(angle_difference(actual.angle.value, 0.0).abs());
         }
-        (peak, angle_difference(rig.out.angle_rad, 0.0).abs())
+        (peak, angle_difference(rig.out.angle.value, 0.0).abs())
     };
     let (peak, final_error) = displacement(heat_id.value);
     assert!(peak < 0.2 && final_error < 0.1, "({peak}, {final_error})");
@@ -5373,18 +5392,26 @@ fn park_brake_regulates_when_pushed_past_its_limit() {
         id_target: amps(0.0),
     });
     rig.run(0.2);
-    assert!(rig.out.omega_e > 1_200.0, "ω {}", rig.out.omega_e);
+    assert!(
+        rig.out.omega_e > erad_per_s(1_200.0),
+        "ω {:?}",
+        rig.out.omega_e
+    );
     rig.driver.set_mode(ControlMode::Brake);
     let mut peak = 0.0f32;
     for _ in 0..(2.0 / HallRig::DT) as u32 {
         rig.step();
         peak = peak
-            .max(rig.out.ia.abs())
-            .max(rig.out.ib.abs())
-            .max(rig.out.ic.abs());
+            .max(rig.out.ia.abs().value)
+            .max(rig.out.ib.abs().value)
+            .max(rig.out.ic.abs().value);
     }
     assert_eq!(rig.driver.mode(), ControlMode::Brake);
-    assert!(rig.out.omega_e.abs() < 50.0, "ω {}", rig.out.omega_e);
+    assert!(
+        rig.out.omega_e.abs() < erad_per_s(50.0),
+        "ω {:?}",
+        rig.out.omega_e
+    );
     assert!(peak < 25.0, "peak phase current {peak} A");
     assert!(rig.driver.park_iq.is_none(), "back on the short");
 }
@@ -5429,10 +5456,10 @@ fn park_brake_without_an_angle_guards_itself_by_its_current() {
 
     const DT: f32 = 1.0 / 20_000.0;
     let params = MotorParams {
-        r: 0.036,
-        ld: 22e-6,
-        lq: 22e-6,
-        lambda: 2.92e-3,
+        r: ohms(0.036),
+        ld: henries(22e-6),
+        lq: henries(22e-6),
+        lambda: webers(2.92e-3),
         pole_pairs: 7,
         j: 4e-4,
         friction_b: 2e-5,
@@ -5442,18 +5469,18 @@ fn park_brake_without_an_angle_guards_itself_by_its_current() {
     };
     let run = |omega0: f32| {
         let mut motor = VirtualMotor::new(params);
-        motor.set_velocity(omega0);
+        motor.set_velocity(erad_per_s(omega0));
         let mut mgr = PhaseManager::sensorless();
         mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-            ohms(params.r),
-            henries(params.ld),
-            webers(params.lambda),
+            params.r,
+            params.ld,
+            params.lambda,
         )));
         mgr.set_source(PhaseSource::Observer).unwrap();
         let mut driver = FocDriver::new(
             FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-                ohms(params.r),
-                henries(params.ld),
+                params.r,
+                params.ld,
                 volts(24.0),
             ),
             GatedPwm {
@@ -5471,14 +5498,14 @@ fn park_brake_without_an_angle_guards_itself_by_its_current() {
             ..CurrentLimits::from_max_current(amps(30.0))
         });
         driver.set_mode(ControlMode::Brake);
-        let mut out = motor.step_coast(0.0, DT);
+        let mut out = motor.step_coast(0.0, seconds(DT));
         for step in 1..4_000u64 {
-            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+            driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
             driver.step(step * 50).expect("no trip");
             out = if driver.pwm.enabled {
-                motor.step(0.0, 0.0, 0.0, DT)
+                motor.step(volts(0.0), volts(0.0), 0.0, seconds(DT))
             } else {
-                motor.step_coast(0.0, DT)
+                motor.step_coast(0.0, seconds(DT))
             };
         }
         assert!(!driver.phase().angle_trustworthy());
@@ -5487,11 +5514,11 @@ fn park_brake_without_an_angle_guards_itself_by_its_current() {
     // 100 el rad/s: ~8 A of short current — held, braked to a stop.
     let (mode, omega) = run(100.0);
     assert_eq!(mode, ControlMode::Brake);
-    assert!(omega.abs() < 20.0, "ω {omega}");
+    assert!(omega.abs() < erad_per_s(20.0), "ω {omega:?}");
     // 1500 el rad/s: the short heads for ~90 A — released at once.
     let (mode, omega) = run(1_500.0);
     assert_eq!(mode, ControlMode::Stopped);
-    assert!(omega > 1_400.0, "barely touched: ω {omega}");
+    assert!(omega > erad_per_s(1_400.0), "barely touched: ω {omega:?}");
 }
 
 /// Link lost on a descent the failsafe brake cannot beat (the slope's
@@ -5522,7 +5549,7 @@ fn failsafe_keeps_braking_a_descent_it_cannot_beat() {
     let (_, t) = rig.step();
     assert!(
         rig.out.omega_e > start,
-        "the slope wins: {}",
+        "the slope wins: {:?}",
         rig.out.omega_e
     );
     // At least the commanded 15 A (past top speed the back-EMF pushes
@@ -5551,7 +5578,7 @@ fn braking_is_held_to_its_own_limit() {
     rig.driver.set_mode(torque(-20.0));
     rig.run(0.05);
     let (_, t) = rig.step();
-    assert!(rig.out.omega_e > 100.0, "still rolling forward");
+    assert!(rig.out.omega_e > erad_per_s(100.0), "still rolling forward");
     assert!((t.iq.value + 8.0).abs() < 1.0, "brake iq {}", t.iq.value);
 }
 
@@ -5568,13 +5595,20 @@ fn cruise_resumed_mid_brake_ramp_starts_from_the_rotor() {
         target_vel: erad_per_s(1000.0),
     });
     rig.run(3.0);
-    assert!(rig.out.omega_e > 950.0, "cruise ω {}", rig.out.omega_e);
+    assert!(
+        rig.out.omega_e > erad_per_s(950.0),
+        "cruise ω {:?}",
+        rig.out.omega_e
+    );
     assert!(rig.driver.enter_brake_ramp());
     rig.run(0.3);
     let resumed_at = rig.out.omega_e;
-    assert!(resumed_at < 850.0, "brake ramp ω {resumed_at}");
+    assert!(
+        resumed_at < erad_per_s(850.0),
+        "brake ramp ω {resumed_at:?}"
+    );
     rig.driver.set_mode(ControlMode::VelocityControl {
-        target_vel: erad_per_s(resumed_at),
+        target_vel: resumed_at,
     });
     let mut peak = resumed_at;
     for _ in 0..(0.5 / HallRig::DT) as u32 {
@@ -5582,8 +5616,8 @@ fn cruise_resumed_mid_brake_ramp_starts_from_the_rotor() {
         peak = peak.max(rig.out.omega_e);
     }
     assert!(
-        peak < resumed_at + 30.0,
-        "resumed at {resumed_at} but climbed to {peak}"
+        peak < resumed_at + erad_per_s(30.0),
+        "resumed at {resumed_at:?} but climbed to {peak:?}"
     );
 }
 
@@ -5610,14 +5644,17 @@ fn cruise_past_top_speed_answers_a_lower_target_at_once() {
     });
     rig.run(12.0);
     let cruise = rig.out.omega_e;
-    assert!(cruise > 0.995 * top, "cruise {cruise} vs top speed {top}");
+    assert!(
+        cruise > 0.995 * top,
+        "cruise {cruise:?} vs top speed {top:?}"
+    );
     rig.driver.set_mode(ControlMode::VelocityControl {
         target_vel: erad_per_s(2000.0),
     });
     rig.run(0.5);
     assert!(
-        rig.out.omega_e < cruise - 100.0,
-        "0.5 s after the lower command: ω {} (was {cruise})",
+        rig.out.omega_e < cruise - erad_per_s(100.0),
+        "0.5 s after the lower command: ω {:?} (was {cruise:?})",
         rig.out.omega_e
     );
 }
@@ -5638,12 +5675,12 @@ fn cruise_loop_sees_the_bus_current_clamp() {
     let (mut peak, mut banked) = (0.0f32, 0.0f32);
     for _ in 0..(10.0 / HallRig::DT) as u32 {
         let (_, telem) = rig.step();
-        peak = peak.max(rig.out.omega_e);
+        peak = peak.max(rig.out.omega_e.value);
         banked = banked.max(rig.driver.velocity_loop.last_iq().value - telem.iq.value);
     }
     assert!(
-        (rig.out.omega_e - 3000.0).abs() < 10.0,
-        "ω {}",
+        (rig.out.omega_e - erad_per_s(3000.0)).abs() < erad_per_s(10.0),
+        "ω {:?}",
         rig.out.omega_e
     );
     assert!(peak < 3030.0, "overshoot to {peak}");
@@ -5673,15 +5710,15 @@ fn hall_drive_restarts_after_a_stop() {
     rig.driver.set_mode(torque(0.0));
     rig.run(1.0); // coasts to a stop well within this
     assert!(
-        rig.out.omega_e.abs() < 5.0,
-        "should have stopped, ω {}",
+        rig.out.omega_e.abs() < erad_per_s(5.0),
+        "should have stopped, ω {:?}",
         rig.out.omega_e
     );
     rig.driver.set_mode(torque(10.0));
     rig.run(0.3);
     assert!(
-        rig.out.omega_e > 300.0,
-        "must restart after the stop, ω {}",
+        rig.out.omega_e > erad_per_s(300.0),
+        "must restart after the stop, ω {:?}",
         rig.out.omega_e
     );
     assert!(rig.driver.phase().angle_trustworthy());
@@ -5697,10 +5734,10 @@ fn hall_drive_restarts_after_a_stop() {
 fn flying_restart_catches_low_tau_motors() {
     const DT_FLY: f32 = 1.0 / 20_000.0;
     let flipsky = MotorParams {
-        r: 0.036,
-        ld: 22e-6,
-        lq: 22e-6,
-        lambda: 2.92e-3,
+        r: ohms(0.036),
+        ld: henries(22e-6),
+        lq: henries(22e-6),
+        lambda: webers(2.92e-3),
         pole_pairs: 7,
         j: 4e-4,
         friction_b: 2e-5,
@@ -5709,10 +5746,10 @@ fn flying_restart_catches_low_tau_motors() {
         ..MotorParams::default()
     };
     let zd2808 = MotorParams {
-        r: 0.127,
-        ld: 86e-6,
-        lq: 129e-6,
-        lambda: 1.145e-3,
+        r: ohms(0.127),
+        ld: henries(86e-6),
+        lq: henries(129e-6),
+        lambda: webers(1.145e-3),
         pole_pairs: 7,
         j: 5e-5,
         friction_b: 4e-6,
@@ -5739,25 +5776,25 @@ fn flying_restart_catches_low_tau_motors() {
     for (name, params, vbus, max_a, w0, tol) in cases {
         let l_avg = (params.ld + params.lq) / 2.0;
         let mut motor = VirtualMotor::new(params);
-        motor.set_angle(1.0);
-        motor.set_velocity(w0);
+        motor.set_angle(erad(1.0));
+        motor.set_velocity(erad_per_s(w0));
         let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-            ohms(params.r),
-            henries(l_avg),
+            params.r,
+            l_avg,
             volts(vbus),
         );
         foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
         foc.set_decoupling(Some(Decoupling {
-            ld: henries(params.ld),
-            lq: henries(params.lq),
-            flux_linkage: webers(params.lambda),
-            resistance: ohms(params.r),
+            ld: params.ld,
+            lq: params.lq,
+            flux_linkage: params.lambda,
+            resistance: params.r,
         }));
         let mut mgr = PhaseManager::sensorless();
         mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-            ohms(params.r),
-            henries(l_avg),
-            webers(params.lambda),
+            params.r,
+            l_avg,
+            params.lambda,
         )));
         mgr.set_source(PhaseSource::Observer).unwrap();
         mgr.set_phase_tracker(per_second(100.0), 1.2); // the f405 boot configuration
@@ -5777,7 +5814,7 @@ fn flying_restart_catches_low_tau_motors() {
             id_target: amps(0.0),
         });
         // Coasting with the bridge off until the throttle.
-        let mut out = motor.step_coast(0.0, DT_FLY);
+        let mut out = motor.step_coast(0.0, seconds(DT_FLY));
         let mut peak = 0.0f32;
         let mut seed_err = f32::NAN;
         // Worst commutation-frame error over the 2 ms after the catch:
@@ -5788,31 +5825,36 @@ fn flying_restart_catches_low_tau_motors() {
         let mut caught_at = None;
         let mut result = "ok";
         for step in 1..6_000u64 {
-            driver.current_sensor_mut().currents = (out.ia, out.ib, out.ic);
+            driver.current_sensor_mut().currents = (out.ia.value, out.ib.value, out.ic.value);
             let was_starting = driver.phase().is_starting();
             let Ok(telem) = driver.step(step * 50) else {
                 result = "TRIPPED";
                 break;
             };
             if was_starting && !driver.phase().is_starting() && caught_at.is_none() {
-                seed_err = (driver.phase().get().velocity / out.omega_e - erad_per_s(1.0)).value;
+                seed_err = driver.phase().get().velocity.ratio_to(out.omega_e) - 1.0;
                 caught_at = Some(step);
             }
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT_FLY);
-            peak = peak.max(out.ia.abs()).max(out.ib.abs()).max(out.ic.abs());
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT_FLY));
+            peak = peak
+                .max(out.ia.abs().value)
+                .max(out.ib.abs().value)
+                .max(out.ic.abs().value);
             if caught_at.is_some_and(|c| step - c < 40) {
                 // `get()` predicts the next sample instant — where the
                 // plant now is.
-                let e = angle_difference(driver.phase().get().angle, erad(out.angle_rad));
+                let e = angle_difference(driver.phase().get().angle, out.angle);
                 frame_err = frame_err.max(e.abs().value);
             }
         }
-        let pass =
-            result == "ok" && seed_err.abs() < tol && frame_err < 0.2 && out.omega_e > 0.7 * w0;
+        let pass = result == "ok"
+            && seed_err.abs() < tol
+            && frame_err < 0.2
+            && out.omega_e > erad_per_s(0.7 * w0);
         ok &= pass;
         report += &format!(
-            "\n  {name} w0 {w0:5.0}: {result}, seed err {:+.1}%, frame err {frame_err:.2} rad, \
-             peak {peak:.1} A, final ω {:.0}{}",
+            "\n  {name:?} w0 {w0:5.0}: {result:?}, seed err {:+.1}%, frame err {frame_err:.2?} rad, \
+             peak {peak:.1?} A, final ω {:.0?}{:?}",
             seed_err * 100.0,
             out.omega_e,
             if pass { "" } else { "  <-- FAIL" }
@@ -5847,8 +5889,11 @@ fn hall_glitches_at_speed_do_not_trip() {
         for _ in 0..1007 {
             let (sample, _) = rig.step(); // panics on an overcurrent trip
             let (i_alpha, i_beta) = clarke(sample.ia, sample.ib);
-            let (s, c) = (libm::sinf(sample.angle_rad), libm::cosf(sample.angle_rad));
-            id_max = id_max.max(park(i_alpha, i_beta, s, c).0.abs());
+            let (s, c) = (
+                libm::sinf(sample.angle.value),
+                libm::cosf(sample.angle.value),
+            );
+            id_max = id_max.max((park(i_alpha, i_beta, s, c).0.abs()).value);
         }
     }
     assert!(id_max < 12.0, "true |id| peaked at {id_max} A");
@@ -5873,11 +5918,18 @@ fn full_torque_into_the_voltage_limit_keeps_id_regulated() {
     for _ in 0..4000 {
         let (sample, _) = rig.step(); // panics on an overcurrent trip
         let (i_alpha, i_beta) = clarke(sample.ia, sample.ib);
-        let (s, c) = (libm::sinf(sample.angle_rad), libm::cosf(sample.angle_rad));
-        id_max = id_max.max(park(i_alpha, i_beta, s, c).0.abs());
+        let (s, c) = (
+            libm::sinf(sample.angle.value),
+            libm::cosf(sample.angle.value),
+        );
+        id_max = id_max.max((park(i_alpha, i_beta, s, c).0.abs()).value);
     }
     assert!(id_max < 2.0, "true |id| {id_max} A at the voltage limit");
-    assert!(rig.out.omega_e > 4000.0, "ω {}", rig.out.omega_e);
+    assert!(
+        rig.out.omega_e > erad_per_s(4000.0),
+        "ω {:?}",
+        rig.out.omega_e
+    );
 }
 
 /// The other half of the staleness contract: hall edges stopping while
@@ -5896,12 +5948,12 @@ fn hall_dying_at_speed_hands_over_to_the_observer() {
     });
     rig.run(1.0);
     let cruise = rig.out.omega_e;
-    assert!(cruise > 1000.0, "cruise ω {cruise}");
+    assert!(cruise > erad_per_s(1000.0), "cruise ω {cruise:?}");
     rig.hall_alive = false;
     rig.run(0.5);
     assert!(
         rig.out.omega_e > 0.9 * cruise,
-        "must keep driving on the observer: ω {} (was {cruise})",
+        "must keep driving on the observer: ω {:?} (was {cruise:?})",
         rig.out.omega_e
     );
     assert!(rig.driver.phase().angle_trustworthy());
@@ -5926,13 +5978,16 @@ fn measure_frame_timing(source: PhaseSource, delay: f32) -> FrameTiming {
         }
         let (sample, telem) = rig.step();
         if step > 20_000 {
-            err += angle_difference(telem.angle.value, sample.angle_rad);
-            w += sample.omega_e;
+            err += angle_difference(telem.angle.value, sample.angle.value);
+            w += sample.omega_e.value;
             let (i_alpha, i_beta) = clarke(sample.ia, sample.ib);
-            let (s, c) = (libm::sinf(sample.angle_rad), libm::cosf(sample.angle_rad));
+            let (s, c) = (
+                libm::sinf(sample.angle.value),
+                libm::cosf(sample.angle.value),
+            );
             let (id, iq) = park(i_alpha, i_beta, s, c);
-            tid += id;
-            tiq += iq;
+            tid += id.value;
+            tiq += iq.value;
             n += 1;
         }
     }

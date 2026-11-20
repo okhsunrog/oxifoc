@@ -33,7 +33,8 @@ use oxifoc_core::foc::phase::PhaseSource;
 use oxifoc_core::motor::ControlMode;
 
 use common::{DT, FOC_HZ, Rig, RigConfig};
-use oxifoc_core::units::{amps, erad_per_s};
+use oxifoc_core::units::amps;
+use oxifoc_core::units::quantity;
 
 fn arg<T: std::str::FromStr>(args: &HashMap<String, String>, key: &str, default: T) -> T {
     args.get(key)
@@ -124,9 +125,8 @@ fn main() -> std::io::Result<()> {
         }
         let w0 = rig.out.omega_e;
         if lp == "velocity" {
-            rig.driver.set_mode(ControlMode::VelocityControl {
-                target_vel: erad_per_s(w0),
-            });
+            rig.driver
+                .set_mode(ControlMode::VelocityControl { target_vel: w0 });
         }
         for _ in 0..FOC_HZ / 2 {
             rig.step();
@@ -152,7 +152,7 @@ fn main() -> std::io::Result<()> {
                     id_target: amps(0.0),
                 }),
                 "velocity" => rig.driver.set_mode(ControlMode::VelocityControl {
-                    target_vel: erad_per_s(w0 + 30.0 * s),
+                    target_vel: w0 + quantity(30.0 * s),
                 }),
                 _ => rig.torque_disturbance = torque_amp * s,
             }
@@ -162,10 +162,12 @@ fn main() -> std::io::Result<()> {
                 let (_, iq_true) = rec.true_dq();
                 match lp.as_str() {
                     "current" => lock.add(tm, &[iq_true, rec.telem.iq.value, s]),
-                    "velocity" => lock.add(tm, &[rec.sample.omega_e, rec.telem.velocity.value, s]),
+                    "velocity" => {
+                        lock.add(tm, &[rec.sample.omega_e.value, rec.telem.velocity.value, s]);
+                    }
                     // Rotor speed (its constant part cancels over whole
                     // periods) and the frame error.
-                    _ => lock.add(tm, &[rec.frame_err(), rec.sample.omega_e, s]),
+                    _ => lock.add(tm, &[rec.frame_err(), rec.sample.omega_e.value, s]),
                 }
             }
             t += DT;

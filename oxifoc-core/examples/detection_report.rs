@@ -14,7 +14,8 @@ use oxifoc_core::foc::detection::types::{FluxLinkageParams, MotorSize};
 use oxifoc_core::foc::detection::virtual_harness::{
     VirtualHardware, VirtualTimer, block_on, run_detection, with_sim,
 };
-use oxifoc_core::units::{Electrical, amps, erpm, henries, hertz, ohms, volts};
+use oxifoc_core::units::quantity;
+use oxifoc_core::units::{Electrical, amps, erpm, hertz, volts};
 use oxifoc_core::virtual_motor::MotorParams;
 
 // ── Motor catalog ──────────────────────────────────────────────────────────
@@ -42,14 +43,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "Micro gimbal",
             params: MotorParams {
-                r: 8.0,
-                ld: 3e-3,
-                lq: 3e-3,
-                lambda: 0.005,
+                r: quantity(8.0),
+                ld: quantity(3e-3),
+                lq: quantity(3e-3),
+                lambda: quantity(0.005),
                 pole_pairs: 11,
                 j: 5e-6,
                 friction_b: 1e-5,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 12.0,
@@ -59,14 +60,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "5010 drone motor",
             params: MotorParams {
-                r: 0.12,
-                ld: 2e-4,
-                lq: 2e-4,
-                lambda: 0.008,
+                r: quantity(0.12),
+                ld: quantity(2e-4),
+                lq: quantity(2e-4),
+                lambda: quantity(0.008),
                 pole_pairs: 7,
                 j: 3e-4,
                 friction_b: 5e-5,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 24.0,
@@ -76,14 +77,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "6354 eskate",
             params: MotorParams {
-                r: 0.035,
-                ld: 1.5e-5,
-                lq: 1.5e-5,
-                lambda: 0.0085,
+                r: quantity(0.035),
+                ld: quantity(1.5e-5),
+                lq: quantity(1.5e-5),
+                lambda: quantity(0.0085),
                 pole_pairs: 7,
                 j: 1e-3,
                 friction_b: 1e-3,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 48.0,
@@ -93,14 +94,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "8308 ebike hub",
             params: MotorParams {
-                r: 0.05,
-                ld: 4e-5,
-                lq: 4e-5,
-                lambda: 0.015,
+                r: quantity(0.05),
+                ld: quantity(4e-5),
+                lq: quantity(4e-5),
+                lambda: quantity(0.015),
                 pole_pairs: 20,
                 j: 5e-3,
                 friction_b: 5e-3,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 72.0,
@@ -111,14 +112,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "IPM servo (mild)",
             params: MotorParams {
-                r: 0.3,
-                ld: 3e-4,
-                lq: 5e-4,
-                lambda: 0.012,
+                r: quantity(0.3),
+                ld: quantity(3e-4),
+                lq: quantity(5e-4),
+                lambda: quantity(0.012),
                 pole_pairs: 4,
                 j: 5e-4,
                 friction_b: 1e-4,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 48.0,
@@ -128,14 +129,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "IPM traction (strong)",
             params: MotorParams {
-                r: 0.02,
-                ld: 1e-4,
-                lq: 3e-4,
-                lambda: 0.02,
+                r: quantity(0.02),
+                ld: quantity(1e-4),
+                lq: quantity(3e-4),
+                lambda: quantity(0.02),
                 pole_pairs: 4,
                 j: 2e-3,
                 friction_b: 1e-3,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 96.0,
@@ -146,14 +147,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "Robot joint (geared)",
             params: MotorParams {
-                r: 0.1,
-                ld: 1e-4,
-                lq: 1e-4,
-                lambda: 0.015,
+                r: quantity(0.1),
+                ld: quantity(1e-4),
+                lq: quantity(1e-4),
+                lambda: quantity(0.015),
                 pole_pairs: 7,
                 j: 5e-5,
                 friction_b: 0.004,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 24.0,
@@ -163,14 +164,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "Direct-drive gripper",
             params: MotorParams {
-                r: 0.5,
-                ld: 4e-4,
-                lq: 4e-4,
-                lambda: 0.015,
+                r: quantity(0.5),
+                ld: quantity(4e-4),
+                lq: quantity(4e-4),
+                lambda: quantity(0.015),
                 pole_pairs: 7,
                 j: 2e-5,
                 friction_b: 0.005,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 24.0,
@@ -180,14 +181,14 @@ fn motor_catalog() -> Vec<MotorDef> {
         MotorDef {
             name: "NEMA23 stepper-servo",
             params: MotorParams {
-                r: 1.2,
-                ld: 2e-3,
-                lq: 2e-3,
-                lambda: 0.04,
+                r: quantity(1.2),
+                ld: quantity(2e-3),
+                lq: quantity(2e-3),
+                lambda: quantity(0.04),
                 pole_pairs: 50,
                 j: 2e-4,
                 friction_b: 1e-3,
-                hall_offset: 0.0,
+                hall_offset: quantity(0.0),
                 ..MotorParams::default()
             },
             vbus: 48.0,
@@ -245,9 +246,9 @@ fn nonideal(def: &MotorDef) -> MotorParams {
     const ADC_LSB_A: f32 = 62.0 / 4096.0; // 12-bit over ±31 A ≈ 15 mA
     MotorParams {
         substeps: 10,
-        dead_time_v: 300e-9 * 20_000.0 * def.vbus,
-        adc_lsb_a: ADC_LSB_A,
-        adc_noise_a: ADC_LSB_A,
+        dead_time_voltage: volts(300e-9 * 20_000.0 * def.vbus),
+        adc_lsb: amps(ADC_LSB_A),
+        adc_noise: amps(ADC_LSB_A),
         actuation_delay: 1.0,
         ..def.params
     }
@@ -277,10 +278,10 @@ fn main() {
         println!(
             "  {:<22} {:>7.4} {:>8.1} {:>8.1} {:>9.3} {:>4} {:>9.2}",
             def.name,
-            p.r,
-            p.ld * 1e6,
-            p.lq * 1e6,
-            p.lambda * 1e3,
+            p.r.value,
+            p.ld.value * 1e6,
+            p.lq.value * 1e6,
+            p.lambda.value * 1e3,
             p.pole_pairs,
             p.j * 1e3,
         );
@@ -301,10 +302,10 @@ fn main() {
 
         let (r_s, ld_s, lq_s, lam_s) = match result {
             Ok(det) => (
-                fmt_err(det.params.resistance.value, p.r),
-                fmt_err(det.params.inductance_d.value, p.ld),
-                fmt_err(det.params.inductance_q.value, p.lq),
-                fmt_err(det.params.flux_linkage.value, p.lambda),
+                fmt_err(det.params.resistance.value, p.r.value),
+                fmt_err(det.params.inductance_d.value, p.ld.value),
+                fmt_err(det.params.inductance_q.value, p.lq.value),
+                fmt_err(det.params.flux_linkage.value, p.lambda.value),
             ),
             Err(_) => (
                 " FAIL".into(),
@@ -337,10 +338,10 @@ fn main() {
 
         let (r_s, ld_s, lq_s, lam_s) = match result {
             Ok(det) => (
-                fmt_err(det.params.resistance.value, p.r),
-                fmt_err(det.params.inductance_d.value, p.ld),
-                fmt_err(det.params.inductance_q.value, p.lq),
-                fmt_err(det.params.flux_linkage.value, p.lambda),
+                fmt_err(det.params.resistance.value, p.r.value),
+                fmt_err(det.params.inductance_d.value, p.ld.value),
+                fmt_err(det.params.inductance_q.value, p.lq.value),
+                fmt_err(det.params.flux_linkage.value, p.lambda.value),
             ),
             Err(e) => {
                 eprintln!("  [{}] detection error: {e:?}", def.name);
@@ -374,15 +375,15 @@ fn main() {
         for def in &catalog {
             let p = def.params;
             let r_val = p.r;
-            let max_hold = (def.vbus * 0.577 * 0.6) / r_val.max(0.001);
-            let hold = 2.0f32.min(max_hold).max(0.1);
+            let max_hold = (def.vbus * 0.577 * 0.6) / r_val.max(quantity(0.001));
+            let hold = 2.0f32.min(max_hold.value).max(0.1);
 
             let mut results = Vec::new();
             for freq in [1000.0f32, 2000.0, 5000.0] {
                 let l = with_sim(p, def.vbus, |hw| {
                     let params = InductanceParams {
                         motor_size: def.motor_size,
-                        resistance: ohms(r_val),
+                        resistance: r_val,
                         hold_current: amps(hold),
                         hfi_frequency: hertz(freq),
                         vbus: volts(def.vbus),
@@ -398,8 +399,8 @@ fn main() {
                     Ok((ld, lq)) => {
                         results.push(format!(
                             "{:+.1}/{:+.1}%",
-                            err_pct(ld.value, p.ld),
-                            err_pct(lq.value, p.lq)
+                            err_pct(ld.value, p.ld.value),
+                            err_pct(lq.value, p.lq.value)
                         ));
                     }
                     Err(_) => results.push("FAIL".to_string()),
@@ -426,8 +427,8 @@ fn main() {
         // from openloop_erpm and a back-EMF rise target of 0.2·vbus.
         let flux_params = FluxLinkageParams {
             motor_size: def.motor_size,
-            resistance: ohms(p.r),
-            inductance: henries((p.ld + p.lq) / 2.0),
+            resistance: p.r,
+            inductance: (p.ld + p.lq) / 2.0,
             pole_pairs: p.pole_pairs,
             spin_speed: erpm(def.openloop_erpm).to_mechanical(p.pole_pairs),
             v_target: volts(0.2 * def.vbus),
@@ -441,7 +442,7 @@ fn main() {
             ))
         });
         let q_s = match qaxis {
-            Ok(v) => format!("{:+.1}%", err_pct(v.value, p.lambda)),
+            Ok(v) => format!("{:+.1}%", err_pct(v.value, p.lambda.value)),
             Err(_) => "FAIL".to_string(),
         };
 
@@ -452,13 +453,13 @@ fn main() {
             >(hw, &flux_params))
         });
         let m_s = match mag {
-            Ok(v) => format!("{:+.1}%", err_pct(v.value, p.lambda)),
+            Ok(v) => format!("{:+.1}%", err_pct(v.value, p.lambda.value)),
             Err(_) => "FAIL".to_string(),
         };
 
         let prod_s = match (mag, qaxis) {
-            (Ok(m), _) => format!("{:+.1}%", err_pct(m.value, p.lambda)),
-            (Err(_), Ok(q)) => format!("{:+.1}%", err_pct(q.value, p.lambda)),
+            (Ok(m), _) => format!("{:+.1}%", err_pct(m.value, p.lambda.value)),
+            (Err(_), Ok(q)) => format!("{:+.1}%", err_pct(q.value, p.lambda.value)),
             _ => "FAIL".to_string(),
         };
 

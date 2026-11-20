@@ -176,8 +176,8 @@ fn main() -> std::io::Result<()> {
     // angle a lock captures), and the rotor's true position in that frame.
     let first = rig.step();
     let pos0 = rig.driver.position().as_angle().value;
-    let mut pos_true = pos0 + angle_difference(first.sample.angle_rad, pos0);
-    let mut prev_angle = first.sample.angle_rad;
+    let mut pos_true = pos0 + angle_difference(first.sample.angle.value, pos0);
+    let mut prev_angle = first.sample.angle.value;
     let initial = mode_for(&rig, &mode, set, pos0);
     rig.driver.set_mode(initial);
 
@@ -236,8 +236,8 @@ fn main() -> std::io::Result<()> {
         }
         let rec = if coulomb != 0.0 || cogging != 0.0 {
             let sample = rig.out;
-            let periodic_drive = cogging * (2.0 * (sample.angle_rad - cogging_phase)).cos();
-            let omega_m = sample.omega_e / f32::from(rig.params.pole_pairs);
+            let periodic_drive = cogging * (2.0 * (sample.angle.value - cogging_phase)).cos();
+            let omega_m = sample.omega_e.value / f32::from(rig.params.pole_pairs);
             let load = rig.load * (omega_m / 2.0).tanh() + rig.torque_disturbance - periodic_drive;
             // Outside the near-zero band use Coulomb friction. Inside it
             // limit the opposing load to what can stop the rotor in one
@@ -252,14 +252,14 @@ fn main() -> std::io::Result<()> {
         } else {
             rig.step()
         };
-        pos_true += angle_difference(rec.sample.angle_rad, prev_angle);
-        prev_angle = rec.sample.angle_rad;
+        pos_true += angle_difference(rec.sample.angle.value, prev_angle);
+        prev_angle = rec.sample.angle.value;
         if step % decim == 0 {
             let t = step as f32 * DT;
             let (id_true, iq_true) = rec.true_dq();
             let obs = rig.driver.phase().observer();
             let obs_raw_err = obs.phase_raw().map_or(f32::NAN, |p| {
-                angle_difference(p.value, rec.sample.angle_rad)
+                angle_difference(p.value, rec.sample.angle.value)
             });
             let iq_target = match rig.driver.mode() {
                 ControlMode::CurrentControl { iq_target, .. } => iq_target.value,
@@ -272,7 +272,7 @@ fn main() -> std::io::Result<()> {
                 } => {
                     // The lock's rest angle, unwrapped next to the rotor.
                     let rest = wrap_angle(angle_rad.value + FRAC_PI_2);
-                    pos_true + angle_difference(rest, rec.sample.angle_rad)
+                    pos_true + angle_difference(rest, rec.sample.angle.value)
                 }
                 _ => f32::NAN,
             };
@@ -280,7 +280,7 @@ fn main() -> std::io::Result<()> {
             writeln!(
                 w,
                 "{t:.6?},{:.5?},{:.5?},{obs_raw_err:.5?},{:.2?},{:.2?},{:.2?},{:.4?},{:.4?},{id_true:.4?},{iq_true:.4?},{:.4?},{:.4?},{:.5?},{:?},{:?},{iq_target:.3?},{pos_true:.4?},{pos_est:.4?},{pos_target:.4?},{:?}",
-                wrap_angle(rec.sample.angle_rad),
+                wrap_angle(rec.sample.angle.value),
                 rec.frame_err(),
                 rec.sample.omega_e,
                 rec.telem.velocity.value,

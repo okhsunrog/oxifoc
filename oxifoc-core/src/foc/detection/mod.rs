@@ -124,7 +124,8 @@ mod integration_tests {
     #[cfg(feature = "hfi-detect")]
     use super::types::InductanceParams;
     use crate::units::{
-        Sign, amps, erad, erad_per_s, erpm, hertz, ohms, seconds, si, volts, watts,
+        Linear, Sign, amps, erad, erad_per_s, erpm, henries, hertz, ohms, per_second, seconds,
+        volts, watts, webers,
     };
 
     /// Full-pipeline L tolerance, shared by the HFI and voltage-pulse configs
@@ -145,50 +146,51 @@ mod integration_tests {
     fn detect_resistance_matches_virtual_motor() {
         const DT: f32 = 1.0 / 20_000.0;
         let params = MotorParams::default(); // R = 0.5 Ω
-        let kp = params.ld * 1_000.0;
-        let ki = params.r * 1_000.0;
+        let kp = params.ld * per_second(1_000.0);
+        let ki = params.r * per_second(1_000.0);
 
         let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
-        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.id_pi = PIController::with_gains(kp, ki);
+        foc.iq_pi = PIController::with_gains(kp, ki);
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Settle for 2 000 steps (0.1 s ≈ 100 × Ld/R time constants).
         for _ in 0..2_000 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(1.0),
                 amps(0.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         }
 
         // Collect 500 steady-state (Vd, Id) samples.
         let mut meas = ResistanceMeasurement::new(500);
         for _ in 0..500 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(1.0),
                 amps(0.0),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
             meas.record(telem.vd, telem.id);
         }
 
-        let r_measured = meas.finish().unwrap().value;
-        let error = (r_measured - params.r).abs() / params.r;
+        let r_measured = meas.finish().unwrap();
+        let error = (r_measured - params.r).abs().ratio_to(params.r);
         assert!(
             error < 0.10,
-            "Resistance error too large: measured = {r_measured:.4} Ω, \
+            "Resistance error too large: measured = {:.4} Ω, \
              expected = {:.4} Ω, error = {:.1}%",
-            params.r,
+            r_measured.value,
+            params.r.value,
             error * 100.0
         );
     }
@@ -206,56 +208,59 @@ mod integration_tests {
             friction_b: 1e-3,
             ..MotorParams::default()
         };
-        let kp = params.ld * 1_000.0;
-        let ki = params.r * 1_000.0;
+        let kp = params.ld * per_second(1_000.0);
+        let ki = params.r * per_second(1_000.0);
 
         let mut foc = FocController::<SvpwmModulator>::new(volts(24.0));
-        foc.id_pi = PIController::with_gains(ohms(kp), si(ki));
-        foc.iq_pi = PIController::with_gains(ohms(kp), si(ki));
+        foc.id_pi = PIController::with_gains(kp, ki);
+        foc.iq_pi = PIController::with_gains(kp, ki);
         let mut motor = VirtualMotor::new(params);
         let mut out = VirtualMotorOutput::default();
 
         // Spin with iq_target = 0.5 A for 0.5 s (10 000 steps ≈ 5 time constants).
         for _ in 0..10_000 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(0.5),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
         }
 
         assert!(
-            out.omega_e > 10.0,
-            "motor must be spinning before measurement: ωe = {}",
+            out.omega_e > erad_per_s(10.0),
+            "motor must be spinning before measurement: ωe = {:?}",
             out.omega_e
         );
 
         // Collect 500 steady-state (Vq, Iq, ωe) samples.
-        let mut meas = FluxLinkageMeasurement::new(ohms(params.r), 500);
+        let mut meas = FluxLinkageMeasurement::new(params.r, 500);
         for _ in 0..500 {
             let telem = foc.step(
-                (amps(out.ia), amps(out.ib), amps(out.ic)),
-                erad(out.angle_rad),
+                (out.ia, out.ib, out.ic),
+                out.angle,
                 amps(0.0),
                 amps(0.5),
                 1000,
                 seconds(DT),
             );
-            out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
-            meas.record(telem.vq, telem.iq, erad_per_s(out.omega_e));
+            out = motor.step(telem.v_alpha, telem.v_beta, 0.0, seconds(DT));
+            meas.record(telem.vq, telem.iq, out.omega_e);
         }
 
-        let lambda_measured = meas.finish().unwrap().value;
-        let error = (lambda_measured - params.lambda).abs() / params.lambda;
+        let lambda_measured = meas.finish().unwrap();
+        let error = (lambda_measured - params.lambda)
+            .abs()
+            .ratio_to(params.lambda);
         assert!(
             error < 0.15,
-            "Flux linkage error too large: measured = {lambda_measured:.5} Wb, \
+            "Flux linkage error too large: measured = {:.5} Wb, \
              expected = {:.5} Wb, error = {:.1}%",
-            params.lambda,
+            lambda_measured.value,
+            params.lambda.value,
             error * 100.0
         );
     }
@@ -280,11 +285,11 @@ mod integration_tests {
 
         // Phase 1: lock rotor at angle 0 with DC holding voltage
         // At steady state: V = R × I, so V_hold = R × I_hold
-        let hold_current = 2.0;
+        let hold_current = amps(2.0);
         let hold_v = hold_current * params.r; // 1.0V for 2A × 0.5Ω
         for _ in 0..4_000 {
             // 200ms settle — alpha axis only (angle 0)
-            motor.step(hold_v, 0.0, 0.0, DT);
+            motor.step(hold_v, volts(0.0), 0.0, seconds(DT));
         }
 
         // Phase 2: inject HFI and collect inductance samples
@@ -292,8 +297,8 @@ mod integration_tests {
             hfi_frequency: hertz(1000.0),
             hfi_voltage: volts(3.0),
             num_cycles: 10,
-            hold_current: amps(hold_current),
-            resistance: ohms(params.r), // use known R for compensation
+            hold_current,
+            resistance: params.r, // use known R for compensation
             ..Default::default()
         };
 
@@ -314,16 +319,10 @@ mod integration_tests {
             // this voltage in the SAME step (zero pipeline), so the di seen
             // by record() is driven by exactly this command: pass it as-is
             // (record's pairing contract).
-            let out = motor.step(hold_v + v_inj_a.value, v_inj_b.value, 0.0, DT);
+            let out = motor.step(hold_v + v_inj_a, v_inj_b, 0.0, seconds(DT));
 
             let (i_alpha, i_beta) = transforms::clarke(out.ia, out.ib);
-            measurement.record(
-                amps(i_alpha),
-                amps(i_beta),
-                injection_angle,
-                v_inj_a,
-                v_inj_b,
-            );
+            measurement.record(i_alpha, i_beta, injection_angle, v_inj_a, v_inj_b);
         }
 
         let result = measurement.finish().unwrap();
@@ -331,22 +330,22 @@ mod integration_tests {
         // With carrier demodulation + R compensation, both axes should
         // be close to the true value for an SPM motor.
         let expected_l = params.ld;
-        let ld_error = (result.ld.value - expected_l).abs() / expected_l;
-        let lq_error = (result.lq.value - expected_l).abs() / expected_l;
+        let ld_error = (result.ld - expected_l).abs().ratio_to(expected_l);
+        let lq_error = (result.lq - expected_l).abs().ratio_to(expected_l);
 
         assert!(
             ld_error < 0.30,
             "Ld error too large: {:.1}% (measured {:.2} µH, expected {:.2} µH)",
             ld_error * 100.0,
             result.ld.value * 1e6,
-            expected_l * 1e6
+            expected_l.value * 1e6
         );
         assert!(
             lq_error < 0.30,
             "Lq error too large: {:.1}% (measured {:.2} µH, expected {:.2} µH)",
             lq_error * 100.0,
             result.lq.value * 1e6,
-            expected_l * 1e6
+            expected_l.value * 1e6
         );
 
         // SPM motor: Ld ≈ Lq, ratio should be close to 1.0.
@@ -389,14 +388,19 @@ mod integration_tests {
 
         assert!(result.params.is_complete());
 
-        let r_err = (result.params.resistance.value - motor_params.r).abs() / motor_params.r;
+        let r_err = (result.params.resistance - motor_params.r)
+            .abs()
+            .ratio_to(motor_params.r);
         assert!(r_err < 0.20, "R error {:.1}%", r_err * 100.0);
 
-        let l_err = (result.params.inductance_avg.value - motor_params.ld).abs() / motor_params.ld;
+        let l_err = (result.params.inductance_avg - motor_params.ld)
+            .abs()
+            .ratio_to(motor_params.ld);
         assert!(l_err < E2E_L_TOL, "L error {:.1}%", l_err * 100.0);
 
-        let lam_err =
-            (result.params.flux_linkage.value - motor_params.lambda).abs() / motor_params.lambda;
+        let lam_err = (result.params.flux_linkage - motor_params.lambda)
+            .abs()
+            .ratio_to(motor_params.lambda);
         assert!(lam_err < 0.05, "λ error {:.1}%", lam_err * 100.0);
 
         assert!(result.kp_current.is_positive() && result.kp_current.is_finite());
@@ -487,14 +491,14 @@ mod integration_tests {
         use super::virtual_harness::run_detection;
 
         let motor_params = MotorParams {
-            r: 8.0,
-            ld: 3e-3,
-            lq: 3e-3,
-            lambda: 0.005,
+            r: ohms(8.0),
+            ld: henries(3e-3),
+            lq: henries(3e-3),
+            lambda: webers(0.005),
             pole_pairs: 11,
             j: 5e-6,
             friction_b: 1e-5,
-            hall_offset: 0.0,
+            hall_offset: erad(0.0),
             ..MotorParams::default()
         };
 
@@ -511,14 +515,19 @@ mod integration_tests {
         let result = run_detection(motor_params, 12.0, det_params)
             .expect("gimbal-class detection must survive the low bus");
 
-        let r_err = (result.params.resistance.value - motor_params.r).abs() / motor_params.r;
+        let r_err = (result.params.resistance - motor_params.r)
+            .abs()
+            .ratio_to(motor_params.r);
         assert!(r_err < 0.05, "R error {:.1}%", r_err * 100.0);
 
-        let l_err = (result.params.inductance_avg.value - motor_params.ld).abs() / motor_params.ld;
+        let l_err = (result.params.inductance_avg - motor_params.ld)
+            .abs()
+            .ratio_to(motor_params.ld);
         assert!(l_err < E2E_L_TOL, "L error {:.1}%", l_err * 100.0);
 
-        let lam_err =
-            (result.params.flux_linkage.value - motor_params.lambda).abs() / motor_params.lambda;
+        let lam_err = (result.params.flux_linkage - motor_params.lambda)
+            .abs()
+            .ratio_to(motor_params.lambda);
         assert!(lam_err < 0.05, "λ error {:.1}%", lam_err * 100.0);
     }
 
@@ -542,17 +551,17 @@ mod integration_tests {
         const VBUS: f32 = 48.0;
         const ADC_LSB_A: f32 = 62.0 / 4096.0;
         let motor_params = MotorParams {
-            r: 0.035,
-            ld: 1.5e-5,
-            lq: 1.5e-5,
-            lambda: 0.0085,
+            r: ohms(0.035),
+            ld: henries(1.5e-5),
+            lq: henries(1.5e-5),
+            lambda: webers(0.0085),
             pole_pairs: 7,
             j: 1e-3,
             friction_b: 1e-3,
             substeps: 10,
-            dead_time_v: 300e-9 * 20_000.0 * VBUS,
-            adc_lsb_a: ADC_LSB_A,
-            adc_noise_a: ADC_LSB_A,
+            dead_time_voltage: volts(300e-9 * 20_000.0 * VBUS),
+            adc_lsb: amps(ADC_LSB_A),
+            adc_noise: amps(ADC_LSB_A),
             ..MotorParams::default()
         };
 
@@ -569,14 +578,19 @@ mod integration_tests {
         let result = run_detection(motor_params, VBUS, det_params)
             .expect("low-R detection must survive dead-time distortion");
 
-        let r_err = (result.params.resistance.value - motor_params.r).abs() / motor_params.r;
+        let r_err = (result.params.resistance - motor_params.r)
+            .abs()
+            .ratio_to(motor_params.r);
         assert!(r_err < 0.05, "R error {:.1}%", r_err * 100.0);
 
-        let l_err = (result.params.inductance_avg.value - motor_params.ld).abs() / motor_params.ld;
+        let l_err = (result.params.inductance_avg - motor_params.ld)
+            .abs()
+            .ratio_to(motor_params.ld);
         assert!(l_err < E2E_L_TOL, "L error {:.1}%", l_err * 100.0);
 
-        let lam_err =
-            (result.params.flux_linkage.value - motor_params.lambda).abs() / motor_params.lambda;
+        let lam_err = (result.params.flux_linkage - motor_params.lambda)
+            .abs()
+            .ratio_to(motor_params.lambda);
         assert!(lam_err < 0.02, "λ error {:.1}%", lam_err * 100.0);
     }
 
@@ -599,17 +613,17 @@ mod integration_tests {
         const VBUS: f32 = 48.0;
         const ADC_LSB_A: f32 = 62.0 / 4096.0;
         let motor_params = MotorParams {
-            r: 0.035,
-            ld: 1.5e-5,
-            lq: 1.5e-5,
-            lambda: 0.0085,
+            r: ohms(0.035),
+            ld: henries(1.5e-5),
+            lq: henries(1.5e-5),
+            lambda: webers(0.0085),
             pole_pairs: 7,
             j: 1e-3,
             friction_b: 1e-3,
             substeps: 10,
-            dead_time_v: 300e-9 * 20_000.0 * VBUS,
-            adc_lsb_a: ADC_LSB_A,
-            adc_noise_a: ADC_LSB_A,
+            dead_time_voltage: volts(300e-9 * 20_000.0 * VBUS),
+            adc_lsb: amps(ADC_LSB_A),
+            adc_noise: amps(ADC_LSB_A),
             actuation_delay: 1.0,
             ..MotorParams::default()
         };
@@ -627,14 +641,19 @@ mod integration_tests {
         let result = run_detection(motor_params, VBUS, det_params)
             .expect("detection must survive a one-cycle actuation pipeline");
 
-        let r_err = (result.params.resistance.value - motor_params.r).abs() / motor_params.r;
+        let r_err = (result.params.resistance - motor_params.r)
+            .abs()
+            .ratio_to(motor_params.r);
         assert!(r_err < 0.05, "R error {:.1}%", r_err * 100.0);
 
-        let l_err = (result.params.inductance_avg.value - motor_params.ld).abs() / motor_params.ld;
+        let l_err = (result.params.inductance_avg - motor_params.ld)
+            .abs()
+            .ratio_to(motor_params.ld);
         assert!(l_err < E2E_L_TOL, "L error {:.1}%", l_err * 100.0);
 
-        let lam_err =
-            (result.params.flux_linkage.value - motor_params.lambda).abs() / motor_params.lambda;
+        let lam_err = (result.params.flux_linkage - motor_params.lambda)
+            .abs()
+            .ratio_to(motor_params.lambda);
         assert!(lam_err < 0.02, "λ error {:.1}%", lam_err * 100.0);
     }
 
@@ -656,10 +675,10 @@ mod integration_tests {
         const LOCK_A: f32 = 4.0;
         const TARGET_DI_A: f32 = 5.0;
         let eskate = MotorParams {
-            r: 0.035,
-            ld: 1.5e-5,
-            lq: 1.5e-5,
-            lambda: 0.0085,
+            r: ohms(0.035),
+            ld: henries(1.5e-5),
+            lq: henries(1.5e-5),
+            lambda: webers(0.0085),
             pole_pairs: 7,
             j: 1e-3,
             friction_b: 1e-3,
@@ -680,8 +699,8 @@ mod integration_tests {
                 let (res, peak) = with_sim(plant, VBUS, |hw| {
                     let params = VoltagePulseParams {
                         hold_current: amps(LOCK_A),
-                        resistance: ohms(plant.r),
-                        pulse_voltage: volts(VBUS * 0.577 - plant.r * LOCK_A),
+                        resistance: plant.r,
+                        pulse_voltage: volts(VBUS * 0.577) - plant.r * amps(LOCK_A),
                         current_target: amps(TARGET_DI_A),
                         ..Default::default()
                     };
@@ -693,7 +712,7 @@ mod integration_tests {
                     (res, peak_phase_current())
                 });
                 let (ld, _) = res.expect("pulse measurement");
-                let l_err = (ld.value - plant.ld).abs() / plant.ld;
+                let l_err = (ld - plant.ld).abs().ratio_to(plant.ld);
                 // 6–8.7 A across these cases (was 27.8 A), L within 1.4%.
                 assert!(
                     peak < 1.05 * (LOCK_A + TARGET_DI_A),
@@ -725,17 +744,17 @@ mod integration_tests {
             (300e-6, 100e-6, 1.0, 0.2),
         ] {
             let plant = MotorParams {
-                r: 0.1,
-                ld,
-                lq,
-                lambda: 0.01,
+                r: ohms(0.1),
+                ld: henries(ld),
+                lq: henries(lq),
+                lambda: webers(0.01),
                 j: 5e-4,
                 friction_b: 0.001,
                 substeps: 10,
                 actuation_delay: delay,
-                dead_time_v,
-                adc_lsb_a: 0.015,
-                adc_noise_a: 0.015,
+                dead_time_voltage: volts(dead_time_v),
+                adc_lsb: amps(0.015),
+                adc_noise: amps(0.015),
                 ..MotorParams::default()
             };
             let (measured_d, measured_q) = with_sim(plant, 24.0, |hw| {
@@ -747,8 +766,8 @@ mod integration_tests {
                     hw,
                     &VoltagePulseParams {
                         hold_current: amps(4.0),
-                        resistance: ohms(plant.r),
-                        pulse_voltage: volts(24.0 * 0.577 - plant.r * 4.0),
+                        resistance: plant.r,
+                        pulse_voltage: volts(24.0 * 0.577) - plant.r * amps(4.0),
                         current_target: amps(5.0),
                         ..Default::default()
                     },
@@ -778,9 +797,9 @@ mod integration_tests {
         use crate::foc::trig::LibmSinCos;
         for (r, ld, lq) in [(0.031, 18e-6, 28e-6), (0.5, 0.5e-3, 0.5e-3)] {
             let plant = MotorParams {
-                r,
-                ld,
-                lq,
+                r: ohms(r),
+                ld: henries(ld),
+                lq: henries(lq),
                 j: 1e-3,
                 friction_b: 1e-3,
                 actuation_delay: 1.0,
@@ -826,10 +845,10 @@ mod integration_tests {
 
         const VBUS: f32 = 48.0;
         let plant = MotorParams {
-            r: 0.035,
-            ld: 1.5e-5,
-            lq: 1.5e-5,
-            lambda: 0.0085,
+            r: ohms(0.035),
+            ld: henries(1.5e-5),
+            lq: henries(1.5e-5),
+            lambda: webers(0.0085),
             pole_pairs: 7,
             j: 1e-3,
             friction_b: 1e-3,
@@ -840,7 +859,7 @@ mod integration_tests {
         let run = |pipeline_lag: i8| {
             with_sim(plant, VBUS, |hw| {
                 let ip = InductanceParams {
-                    resistance: ohms(plant.r),
+                    resistance: plant.r,
                     hold_current: amps(8.0),
                     max_current: amps(12.0),
                     vbus: volts(VBUS),
@@ -856,7 +875,9 @@ mod integration_tests {
         };
 
         let auto = run(-1).expect("auto-probed lag must measure accurately");
-        let l_err = ((auto.0 + auto.1).value / 2.0 - plant.ld).abs() / plant.ld;
+        let l_err = ((auto.0 + auto.1) / 2.0 - plant.ld)
+            .abs()
+            .ratio_to(plant.ld);
         assert!(l_err < 0.10, "auto-lag L error {:.1}%", l_err * 100.0);
 
         let forced_wrong = run(1);
