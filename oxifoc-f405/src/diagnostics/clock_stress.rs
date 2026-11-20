@@ -83,7 +83,7 @@ pub async fn run() {
     pac::ADC1.sqr1().modify(|w| w.set_l(0));
     pac::ADC1.sqr3().modify(|w| w.set_sq(0, 16));
     pac::ADC1
-        .smpr1()
+        .smpr(1)
         .modify(|w| w.set_smp(6, pac::adc::vals::SampleTime::Cycles480));
     let mut round = 1u32;
     let mut index = 0usize;
