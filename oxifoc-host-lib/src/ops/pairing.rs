@@ -3,10 +3,30 @@
 
 use anyhow::{Context, Result, bail};
 use oxifoc_core::types::pairing::{
-    BOND_NAME_LEN, BondEntry, BondName, BondRole, PairingRequest, PairingResponse,
+    BOND_NAME_LEN, BondEntry, BondName, BondRole, PairingError, PairingRequest, PairingResponse,
 };
 
 use crate::{CommandSender, HostCommand};
+
+/// The bridge answered with [`PairingResponse::Error`]. Callers may downcast
+/// the `anyhow::Error` to this type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refused(pub PairingError);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            PairingError::TableFull => "all bond slots are used; remove a bond first",
+            PairingError::WindowBusy => "another pairing window is open",
+            PairingError::NoSuchAttempt => "this pairing attempt is no longer active",
+            PairingError::NoSuchBond => "no such bond",
+            PairingError::NotStopped => "stop the motor before pairing",
+            PairingError::Storage => "the bridge could not write its flash",
+        })
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// No node on the link serves the pairing endpoint (no bridge, or the link
 /// is not up yet). Nothing was sent, so the request may be retried.
@@ -36,7 +56,7 @@ pub fn wait_for_bridge(cmd: &CommandSender, wait: std::time::Duration) -> Result
 }
 
 /// Send one pairing request and return the bridge's answer. Bridge-reported
-/// errors are returned as `Err`.
+/// errors are returned as `Err` wrapping [`Refused`].
 pub fn request(cmd: &CommandSender, request: PairingRequest) -> Result<PairingResponse> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     cmd.send(HostCommand::Pairing(request, tx))
@@ -45,7 +65,7 @@ pub fn request(cmd: &CommandSender, request: PairingRequest) -> Result<PairingRe
         .blocking_recv()
         .context("backend dropped the pairing request")??
     {
-        PairingResponse::Error(e) => bail!("bridge refused: {e:?}"),
+        PairingResponse::Error(e) => Err(Refused(e).into()),
         response => Ok(response),
     }
 }

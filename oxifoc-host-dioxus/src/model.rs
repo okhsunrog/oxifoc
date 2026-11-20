@@ -1,5 +1,6 @@
 use oxifoc_core::types::{ConfigGroupId, ControlMode};
 use oxifoc_core::units::amps;
+use oxifoc_host_lib::pairing_desk::{self, PairingDesk};
 use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, TransportType, motor_channel, ops, start_host,
 };
@@ -28,6 +29,9 @@ pub struct Snapshot {
     pub faults: u8,
     pub events: Vec<String>,
     pub pending: bool,
+    pub pairing: PairingDesk,
+    /// Counts pairing resets; results of requests sent before one are dropped.
+    pub pairing_epoch: u64,
 }
 pub struct Model {
     pub runtime: Arc<HostRuntime>,
@@ -81,6 +85,7 @@ impl Model {
         std::thread::spawn(move || {
             let mut ctx = None;
             let mut connected = false;
+            let mut relist_bonds = false;
             let mut clock = Instant::now();
             let mut count = 0u64;
             loop {
@@ -98,6 +103,20 @@ impl Model {
                     });
                     if !connected {
                         ctx = None;
+                    }
+                    let mut s = m.snapshot.lock().unwrap();
+                    if connected {
+                        if relist_bonds {
+                            relist_bonds = false;
+                            drop(s);
+                            m.pairing(pairing_desk::Op::List);
+                        }
+                    } else {
+                        // The link may come back to a different bridge: drop
+                        // its bonds and window, reread them after reconnecting.
+                        relist_bonds = s.pairing.bonds.is_some();
+                        s.pairing.reset();
+                        s.pairing_epoch += 1;
                     }
                 }
                 while let Ok(info) = m.runtime.device_info_rx.try_recv() {
@@ -142,6 +161,12 @@ impl Model {
                         m.plots[3].push_frame(&[s.temperature]);
                     }
                 }
+                for event in m.runtime.pairing_rx.try_iter() {
+                    s.pairing.apply(&event, Instant::now());
+                    s.events
+                        .push(format!("Pairing: {}", pairing_event_text(&event)));
+                }
+                s.pairing.tick(Instant::now());
                 for faults in m.runtime.fault_rx.try_iter() {
                     s.events.push(format!(
                         "Fault status: {} active; revision {}",
@@ -201,6 +226,30 @@ impl Model {
             m.snapshot.lock().unwrap().pending = false;
         });
     }
+    /// Send one pairing request on a worker thread. The bridge serves pairing,
+    /// so this works while the motor controller is absent too.
+    pub fn pairing(self: &Arc<Self>, op: pairing_desk::Op) {
+        let epoch = {
+            let mut s = self.snapshot.lock().unwrap();
+            if !s.pairing.begin(&op) {
+                return;
+            }
+            s.pairing_epoch
+        };
+        let m = self.clone();
+        std::thread::spawn(move || {
+            let result = op.run(&m.runtime.cmd_tx);
+            let mut s = m.snapshot.lock().unwrap();
+            if s.pairing_epoch != epoch {
+                return;
+            }
+            if let Err(e) = &result {
+                s.events
+                    .push(format!("Pairing request {op:?} failed: {e:#}"));
+            }
+            s.pairing.finish(&op, result, Instant::now());
+        });
+    }
     pub fn configuration_connection(&self) -> Option<u64> {
         let snapshot = self.snapshot.lock().unwrap();
         (snapshot.connected && self.runtime.connected.load(Ordering::Relaxed))
@@ -211,6 +260,29 @@ impl Drop for Model {
     fn drop(&mut self) {
         self.alive.store(false, Ordering::Relaxed);
         self.runtime.shutdown();
+    }
+}
+
+fn pairing_event_text(event: &oxifoc_core::types::pairing::PairingEvent) -> String {
+    use oxifoc_core::types::pairing::PairingEvent as E;
+    match event {
+        E::WindowOpened { attempt, role, .. } => {
+            format!(
+                "window {attempt} opened for {}",
+                pairing_desk::role_label(*role)
+            )
+        }
+        E::WindowClosed { attempt, reason } => format!("window {attempt} closed: {reason:?}"),
+        E::CandidateConnected { attempt, address } => format!(
+            "window {attempt}: candidate {}",
+            pairing_desk::format_address(address)
+        ),
+        E::ShowPasskey { attempt, .. } => format!("window {attempt}: passkey shown"),
+        E::EnterPasskey { attempt } => format!("window {attempt}: waiting for the passkey"),
+        E::CompareNumber { attempt, .. } => format!("window {attempt}: number comparison"),
+        E::Bonded(entry) => format!("bonded {} as {}", entry.name, entry.id),
+        E::BondRemoved { id } => format!("bond {id} removed"),
+        E::Failed { attempt, reason } => format!("window {attempt} failed: {reason:?}"),
     }
 }
 

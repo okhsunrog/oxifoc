@@ -1,4 +1,5 @@
 mod model;
+mod pairing;
 mod parameters;
 mod plot;
 mod viewport;
@@ -148,11 +149,11 @@ fn Studio(
     rsx! {
     style {"{oxifoc_ui::CSS}"}
     style {"{CSS}"}
-    div {class:if page()==1 {"shell parameter-shell"} else {"shell"},
+    div {class:if page()!=0 {"shell parameter-shell"} else {"shell"},
      aside {class:"rail",
       oxifoc_ui::Brand {}
       p {class:"rail-caption","Drive studio"}
-      nav {for (i,label) in ["Oscilloscope","Parameters","Session journal"].iter().enumerate(){
+      nav {for (i,label) in ["Oscilloscope","Parameters","Pairing","Session journal"].iter().enumerate(){
        button {class:if page()==i {"nav selected"} else {"nav"},onclick:move |_|page.set(i),onkeydown:move |e|{if oxifoc_ui::keyboard_activate(&e){page.set(i);}},"{label}"}
       }}
       div {class:"rail-bottom",strong {"Native workspace"} p {"Motor control & diagnostics"} span {"Experimental GUI"}}
@@ -188,6 +189,8 @@ fn Studio(
          }
         } else if page()==1 {
          parameters::Parameters {editor, model: model.clone(), connection, running: s.state == "Running"}
+        } else if page()==2 {
+         pairing::Pairing {model: model.clone(), desk: s.pairing.clone()}
         } else {
          div {class:"titlebar",
           div {

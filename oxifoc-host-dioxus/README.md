@@ -32,6 +32,13 @@ channel toggles, plot focus, motor parameter editing and session events.
 Parameters reads the motor model when first opened and reloads it after
 reconnecting. Apply to RAM uses the revision and boot epoch from the read.
 Save to flash persists the acknowledged revision.
+Pairing lists the bridge's bonds, renames and removes them, and opens a
+pairing window for a remote or a phone/computer. For a remote it asks for
+the code the remote shows. For a phone or computer it shows the number to
+compare. The bridge serves pairing, so the page works without the motor
+controller. To try it without hardware, start the virtual controller with
+`--simulate-pairing`. Its terminal prints the code of the simulated remote.
+Add `--no-controller` to simulate a bridge without its motor controller.
 Commissioning workflows are planned. Discovery and the connection page use
 the shared `oxifoc-ui` and `oxifoc-host-dioxus-ui` crates.
 

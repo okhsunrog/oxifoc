@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use clap::{Subcommand, ValueEnum};
 use oxifoc_core::types::pairing::{BondRole, PairingEvent};
+use oxifoc_host_lib::pairing_desk::format_address;
 use oxifoc_host_lib::{HostRuntime, ops::pairing as ops};
 use serde_json::json;
 
@@ -224,14 +225,4 @@ fn print_event(event: &PairingEvent, json: bool) {
         }
     };
     emit(json, serde_json::to_value(event).unwrap_or_default(), human);
-}
-
-/// Addresses travel little endian; print them as usual, most significant first.
-fn format_address(address: &[u8; 6]) -> String {
-    address
-        .iter()
-        .rev()
-        .map(|b| format!("{b:02X}"))
-        .collect::<Vec<_>>()
-        .join(":")
 }

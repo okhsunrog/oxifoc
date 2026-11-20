@@ -127,3 +127,124 @@
   .parameter-status, .parameter-group, .parameter-actions { padding-inline: 14px; }
   .parameter-buttons { margin-left: 0; }
 }
+
+/* Pairing page */
+.pairing { display: flex; flex-direction: column; gap: 18px; }
+.pairing .titlebar { margin-bottom: 6px; }
+.pairing .notice { margin: 0; }
+.pairing-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  min-width: 0;
+}
+.card-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.card-heading > span { color: var(--muted); font-size: 12px; }
+.card-heading p { font-size: 12px; margin-top: 3px; }
+.card-empty { padding: 26px 20px; font-size: 12px; }
+.outcome { padding: 12px 20px; border-bottom: 1px solid var(--border); }
+.outcome .status { font-size: 13px; white-space: normal; }
+.pair-form { padding: 6px 20px 20px; display: flex; flex-direction: column; gap: 6px; }
+.role-switch {
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  margin-top: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-width: 420px;
+}
+.role-option {
+  flex: 1;
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 550;
+}
+.role-option:hover { background: var(--hover); color: var(--text); }
+.role-option.active { background: var(--hover); color: var(--text); border-color: var(--accent); }
+.pair-form .field { max-width: 420px; }
+.pair-form .field label { color: var(--text); }
+.pair-how { font-size: 12px; margin-top: 8px; max-width: 520px; }
+.pair-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+.pair-actions p { font-size: 12px; }
+.window-card { border-color: var(--accent); }
+.countdown strong { font-size: 26px; font-weight: 550; }
+.countdown span { color: var(--muted); font-size: 12px; }
+.window-progress { height: 3px; background: var(--border); }
+.window-progress-fill { height: 3px; background: var(--accent); transition: width .1s linear; }
+.window-body { padding: 22px 20px; display: flex; flex-direction: column; gap: 14px; }
+.step { display: flex; gap: 14px; align-items: flex-start; }
+.step .spinner { margin-top: 3px; }
+.step strong, .prompt > strong { font-size: 15px; font-weight: 600; }
+.step p { font-size: 12px; margin-top: 4px; }
+.prompt { display: flex; flex-direction: column; gap: 12px; }
+.prompt p { font-size: 12px; }
+.code { font-size: 44px; font-weight: 600; letter-spacing: 4px; color: var(--accent); }
+.passkey-row { display: flex; gap: 10px; align-items: center; max-width: 380px; }
+.passkey-row .passkey {
+  flex: 1;
+  min-width: 0;
+  font-size: 24px;
+  letter-spacing: 4px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.prompt-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.window-footer { display: flex; justify-content: flex-end; padding: 10px 14px; border-top: 1px solid var(--border); }
+.bond-list { display: flex; flex-direction: column; }
+.bond-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.bond-row:last-child { border-bottom: 0; }
+.bond-glyph {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--accent);
+  font-size: 16px;
+}
+.bond-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.bond-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bond-title strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.role-badge {
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+.bond-meta { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; }
+.bond-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.bond-actions .ox-button, .rename-row .ox-button, .window-footer .ox-button { min-height: 34px; padding: 6px 12px; font-size: 12px; }
+.rename-row { display: flex; gap: 8px; align-items: center; }
+.rename-row .ox-input { flex: 1; min-width: 0; min-height: 34px; padding: 6px 10px; }
+.ox-dialog p + p { margin-top: 10px; }
+.dialog-note { font-size: 12px; }
+
+@media (max-width: 640px) {
+  .bond-row { flex-wrap: wrap; padding-inline: 14px; }
+  .bond-actions { width: 100%; justify-content: flex-end; }
+  .card-heading, .pair-form, .window-body, .outcome { padding-inline: 14px; }
+  .code { font-size: 36px; }
+}

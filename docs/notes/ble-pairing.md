@@ -15,8 +15,10 @@
 > and keeps a bridge link while no controller answers, so pairing also works
 > without the STM32. Verified on the bench with the STM32 halted: the USB
 > link held, bonds listed, and the host picked up the controller once it
-> ran again. Not yet: the stopped-controller check for opening a window, a
-> pairing button on the remote, GUI.
+> ran again. The Dioxus GUI has a Pairing page (state in
+> `oxifoc-host-lib::pairing_desk`), not yet tried by hand. Not yet: the
+> stopped-controller check for opening a window, a pairing button on the
+> remote, pairing in the Slint GUI.
 
 The C5 bridge is the BLE peripheral and the trust anchor. The remote, phones
 and laptops are centrals. The design targets accidental pairing and
