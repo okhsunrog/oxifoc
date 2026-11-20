@@ -234,6 +234,8 @@ pub(super) struct ProtectionSample {
 }
 
 impl ProtectionMonitor {
+    /// The installed overvoltage threshold for the failsafe's regen derate,
+    /// zero when no voltage limit is installed (its per-cycle "off").
     pub(super) fn overvoltage_threshold(&self) -> ElectricPotential {
         self.voltage
             .or(self.board_voltage)

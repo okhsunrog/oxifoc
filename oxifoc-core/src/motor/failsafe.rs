@@ -392,17 +392,20 @@ impl FailsafeController {
         };
     }
 
-    /// One ISR cycle.
+    /// One ISR cycle. Crate-internal: the driver passes its prepared
+    /// per-cycle values, in their per-cycle encodings.
     ///
     /// * `omega_e` — electrical velocity (rad/s) from the phase provider.
-    /// * `max_brake` — the general braking-current limit (0 = unset).
-    ///   Bounds the stop; the driver's clamps are still the real ceiling.
-    /// * `vbus`, `ov_threshold` — for the proactive regen derate near OV
-    ///   (`ov_threshold == 0` disables it; the OV fault is the backstop).
+    /// * `max_brake` — the general braking-current limit in the
+    ///   `CurrentLimits` encoding (zero = no limit). Bounds the stop; the
+    ///   driver's clamps are still the real ceiling.
+    /// * `vbus`, `ov_threshold` — for the proactive regen derate near OV;
+    ///   the threshold is zero when no voltage limit is installed, which
+    ///   disables the derate (the OV fault is the backstop).
     /// * `angle_trustworthy` — false when the (sensorless) angle source has
     ///   lost lock; braking blind would mis-commutate, so coast instead.
     #[allow(clippy::too_many_arguments)] // inputs the driver already has on hand
-    pub fn step(
+    pub(crate) fn step(
         &mut self,
         omega_e: ElectricalAngularVelocity,
         dt: Time,
