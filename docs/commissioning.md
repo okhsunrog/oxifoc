@@ -64,6 +64,22 @@ just cli-bridge config set motor-feedback mode=hall blend_low=150 blend_high=300
 just cli-bridge config get pwm-config
 ```
 
+## Back up and restore the configuration
+
+```sh
+just cli-bridge --json config dump > config-backup.json
+just cli-bridge config import config-backup.json
+```
+
+`config import` checks the whole file against the connected firmware's
+protocol version before writing anything, then persists each group and reads
+it back. Groups that are `null` (nothing stored), missing from the file, or
+measured at boot (`dc-offsets`) are left alone. A dump from another protocol
+version must be converted first: rename the fields and write unset values as
+`null`. The import writes the individual groups and installs no drive record,
+so restore a commissioned drive by commissioning it again if that record
+matters.
+
 See the [firmware session design](notes/motor-setup-wizard.md) for the
 operation contract and the [observer tuning note](notes/hall-observer-tuning.md)
 for the MK5 crossover baseline.

@@ -441,12 +441,123 @@ pub fn reset_all(cmd: &CommandSender) -> Result<()> {
     }
 }
 
+/// Groups the device measures again at every boot. An import leaves them
+/// alone: a stored copy is overwritten before it is used.
+pub const MEASURED_GROUPS: [ConfigGroupId; 1] = [ConfigGroupId::DcOffsets];
+
+/// What [`plan_import`] decided for one group of a snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImportStep {
+    /// Persist this value.
+    Write(ConfigValue),
+    /// `null` in the snapshot: nothing was stored, the device keeps its value.
+    NotStored,
+    /// Measured by the device at boot (see [`MEASURED_GROUPS`]).
+    Measured,
+}
+
+/// Validate a `config dump --json` snapshot before anything is written.
+///
+/// Every key must name a group of this protocol version, and every value
+/// must round-trip exactly through its typed struct: the structs accept
+/// unknown fields and read a missing `Option` as `None`, so a dump of an
+/// older version (`max_iq_a` instead of `max_iq`) would otherwise import as
+/// "unset". Groups missing from the snapshot are not touched. Steps come in
+/// [`GROUPS`] order, which writes the motor model before the limits that are
+/// checked against it.
+pub fn plan_import(snapshot: &Value) -> Result<Vec<(ConfigGroupId, ImportStep)>> {
+    let groups = snapshot
+        .as_object()
+        .context("a config snapshot is a JSON object of groups")?;
+    for name in groups.keys() {
+        parse_group(name).with_context(|| {
+            format!("unknown group '{name}'; convert a dump of another protocol version first")
+        })?;
+    }
+    let mut steps = Vec::new();
+    for (name, group) in GROUPS {
+        let Some(value) = groups.get(name) else {
+            continue;
+        };
+        let step = if value.is_null() {
+            ImportStep::NotStored
+        } else if MEASURED_GROUPS.contains(&group) {
+            ImportStep::Measured
+        } else {
+            let write = write_from_value(group, value.clone())
+                .with_context(|| format!("{name} does not match this protocol version"))?;
+            let typed = group_value(&write).context("config value is not JSON-serializable")?;
+            if !same_json(value, &typed) {
+                bail!(
+                    "{name} does not match this protocol version: it reads back as {typed};                      check field names and unset (null) values"
+                );
+            }
+            ImportStep::Write(write)
+        };
+        steps.push((group, step));
+    }
+    Ok(steps)
+}
+
+/// Persist the `Write` steps of a plan, then read every written group back.
+/// Fails on the first refused write or on a read-back that differs.
+pub fn run_import(cmd: &CommandSender, steps: &[(ConfigGroupId, ImportStep)]) -> Result<()> {
+    for (group, step) in steps {
+        let ImportStep::Write(write) = step else {
+            continue;
+        };
+        let commit = send_write(cmd, write.clone())
+            .with_context(|| format!("writing {}", group_name(*group)))?;
+        if !commit.persisted {
+            bail!(
+                "{} was applied but this device cannot persist it",
+                group_name(*group)
+            );
+        }
+    }
+    for (group, step) in steps {
+        let ImportStep::Write(write) = step else {
+            continue;
+        };
+        let wanted = group_value(write).context("config value is not JSON-serializable")?;
+        let (actual, state) = current_value(cmd, *group)?;
+        if !state.persisted || !same_json(&wanted, &actual) {
+            bail!(
+                "{} reads back as {actual} (persisted: {}), expected {wanted}",
+                group_name(*group),
+                state.persisted
+            );
+        }
+    }
+    Ok(())
+}
+
+/// JSON equality with numbers compared at the `f32` precision the device
+/// stores (`30` equals `30.0`, a dumped `0.06420059` equals itself).
+fn same_json(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
+            (Some(x), Some(y)) => x as f32 == y as f32,
+            _ => false,
+        },
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same_json(x, y))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(key, x)| y.get(key).is_some_and(|y| same_json(x, y)))
+        }
+        _ => a == b,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use oxifoc_core::storage::{MotorParamsConfig, VelocityLoopConfig, VoltageFeedforwardConfig};
     use oxifoc_core::types::VoltageFeedforwardMode;
-    use oxifoc_core::units::{erad, henries, ohms};
+    use oxifoc_core::units::{amps, erad, henries, ohms};
 
     #[test]
     fn hall_json_preserves_complete_optional_geometry_and_accepts_legacy_omission() {
@@ -629,5 +740,80 @@ mod tests {
             assert_ne!(name, "?", "{group:?} missing from GROUPS");
             assert_eq!(parse_group(name).unwrap(), group);
         }
+    }
+
+    fn default_snapshot() -> Value {
+        Value::Object(
+            GROUPS
+                .iter()
+                .map(|(name, group)| (name.to_string(), group_default_value(*group)))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn import_plans_every_group_in_protocol_order_except_measured_and_unstored() {
+        let mut snapshot = default_snapshot();
+        snapshot["failsafe"] = Value::Null;
+        let steps = plan_import(&snapshot).unwrap();
+        let order: Vec<_> = steps.iter().map(|(group, _)| *group).collect();
+        assert_eq!(order, GROUPS.map(|(_, group)| group));
+        for (group, step) in &steps {
+            match group {
+                ConfigGroupId::DcOffsets => assert_eq!(step, &ImportStep::Measured),
+                ConfigGroupId::Failsafe => assert_eq!(step, &ImportStep::NotStored),
+                _ => assert!(matches!(step, ImportStep::Write(w) if w.group() == *group)),
+            }
+        }
+        let partial = serde_json::json!({ "pwm-config": snapshot["pwm-config"].clone() });
+        let steps = plan_import(&partial).unwrap();
+        assert_eq!(
+            steps.len(),
+            1,
+            "groups missing from the file stay untouched"
+        );
+    }
+
+    #[test]
+    fn import_rejects_other_protocol_versions_instead_of_reading_them_as_unset() {
+        let mut snapshot = default_snapshot();
+        snapshot["current-limits"] = serde_json::json!({
+            "bus_in_max_a": 5.0, "bus_regen_max_a": 0.0, "max_brake_a": 0.0,
+            "max_dissipation_w": 0.0, "max_iq_a": 0.0, "max_phase_current_a": 30.0,
+        });
+        let error = plan_import(&snapshot).unwrap_err().to_string();
+        assert!(error.contains("current-limits"), "{error}");
+        let mut snapshot = default_snapshot();
+        snapshot["motor-params"]["resistance_ohm"] = serde_json::json!(0.064);
+        assert!(
+            plan_import(&snapshot).is_err(),
+            "an extra field must not be dropped"
+        );
+        let mut snapshot = default_snapshot();
+        snapshot
+            .as_object_mut()
+            .unwrap()
+            .insert("installed-drive".into(), Value::Null);
+        assert!(plan_import(&snapshot).is_err());
+    }
+
+    #[test]
+    fn import_accepts_integers_for_float_fields_and_keeps_the_values() {
+        let mut snapshot = default_snapshot();
+        snapshot["current-limits"] = serde_json::json!({
+            "max_iq": null, "max_brake": null, "max_phase_current": 30,
+            "bus_in_max": 5, "bus_regen_max": 0, "max_dissipation": 0,
+        });
+        let steps = plan_import(&snapshot).unwrap();
+        let (_, ImportStep::Write(ConfigValue::CurrentLimits(limits))) = steps
+            .iter()
+            .find(|(group, _)| *group == ConfigGroupId::CurrentLimits)
+            .unwrap()
+        else {
+            panic!("current limits must be written");
+        };
+        assert_eq!(limits.max_phase_current, Some(amps(30.0)));
+        assert_eq!(limits.bus_regen_max, Some(amps(0.0)));
+        assert_eq!(limits.max_iq, None);
     }
 }

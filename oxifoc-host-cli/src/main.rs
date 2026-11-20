@@ -13,6 +13,8 @@ mod watch;
 
 use oxifoc_core::types::MotorStatus;
 use oxifoc_host_cli::{config_cli, record};
+use oxifoc_host_lib::ops::config::{ImportStep, group_name, plan_import, run_import};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -591,6 +593,13 @@ enum ConfigAction {
         #[arg(long)]
         volatile: bool,
     },
+    /// Restore the groups of a `config dump --json` file and persist them.
+    /// The whole file is checked against this protocol version first; groups
+    /// that are null, missing or measured at boot (dc-offsets) are left alone.
+    Import {
+        #[arg(help = "Snapshot written by `config dump --json`")]
+        file: PathBuf,
+    },
     /// Erase ALL stored config groups (factory reset; requires --yes)
     Reset {
         #[arg(long, help = "Confirm the erase")]
@@ -1117,6 +1126,34 @@ fn main() -> Result<()> {
                     format!(
                         "Drive profile {profile:?}, duty taper starts at {}% of the limit",
                         start * 100.0
+                    ),
+                );
+            }
+            ConfigAction::Import { file } => {
+                let text = std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading {}", file.display()))?;
+                let snapshot: serde_json::Value = serde_json::from_str(&text)
+                    .with_context(|| format!("parsing {}", file.display()))?;
+                let steps = plan_import(&snapshot)?;
+                run_import(&runtime.cmd_tx, &steps)?;
+                let outcome = |wanted: fn(&ImportStep) -> bool| -> Vec<&str> {
+                    steps
+                        .iter()
+                        .filter(|(_, step)| wanted(step))
+                        .map(|(group, _)| group_name(*group))
+                        .collect()
+                };
+                let written = outcome(|step| matches!(step, ImportStep::Write(_)));
+                let not_stored = outcome(|step| matches!(step, ImportStep::NotStored));
+                let measured = outcome(|step| matches!(step, ImportStep::Measured));
+                emit(
+                    json,
+                    json!({ "written": written, "not_stored": not_stored, "measured": measured }),
+                    format!(
+                        "Written and verified: {}\nLeft alone (not stored): {}\nLeft alone (measured at boot): {}",
+                        written.join(", "),
+                        not_stored.join(", "),
+                        measured.join(", ")
                     ),
                 );
             }
