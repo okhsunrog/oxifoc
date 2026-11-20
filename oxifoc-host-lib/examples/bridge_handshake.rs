@@ -1,5 +1,5 @@
 //! Motor-inhibited full-route telemetry and simultaneous command qualification.
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use oxifoc_core::types::ControlMode;
 use oxifoc_host_lib::{HostCommand, HostConfig, TransportType, motor_channel, start_host};
 use serde_json::json;
@@ -34,7 +34,11 @@ fn main() -> Result<()> {
         "controller must be stopped without faults"
     );
     let ack = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, hz)?;
-    let step = u16::try_from(ack.decimation_m)?;
+    let step = u16::try_from(
+        ack.decimation_m
+            .context("device did not enable the stream")?
+            .get(),
+    )?;
     // Report the ordinary stream-enable transient separately; the existing
     // recorder uses the same 150-ms settling interval for the legacy stream.
     let warmup = Instant::now();

@@ -294,7 +294,7 @@ fn main() -> Result<()> {
         })
         .collect::<serde_json::Map<_, _>>();
     let mut cap = Capture::start(&runtime, 20_000)?;
-    if cap.decimation_m != 1 {
+    if cap.expected_step() != 1 {
         cap.stop(&runtime)?;
         bail!("device did not enable native-rate telemetry");
     }
@@ -406,7 +406,7 @@ fn main() -> Result<()> {
         "capture is too short or contains dropped samples"
     );
     ensure!(
-        cap.decimation_m == 1
+        cap.expected_step() == 1
             && cap
                 .samples
                 .windows(2)

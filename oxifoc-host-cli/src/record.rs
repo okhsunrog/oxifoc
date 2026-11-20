@@ -13,6 +13,7 @@
 //! scripted captures cannot silently analyze hole-ridden data.
 
 use std::fs::File;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -159,7 +160,9 @@ pub struct Capture {
     pub control_timing: ControlTiming,
     pub fast_hz_requested: u16,
     pub fast_hz_actual: u16,
-    pub decimation_m: u32,
+    /// FOC cycles between samples; `None` = unknown, inferred from the
+    /// smallest observed sequence step.
+    pub decimation_m: Option<NonZeroU32>,
     pub samples: Vec<FastTelemetry>,
     pub started: Instant,
     /// Host-side raw→engineering context (device `BoardCalib` + `dc_offsets` +
@@ -195,14 +198,14 @@ impl Capture {
         }
         let ack = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, fast_hz)?;
         let fast_hz_actual = ack.actual_fast_hz;
-        if fast_hz_actual == 0
-            || ack.decimation_m == 0
-            || !ack.control_timing.is_valid()
-            || ack.control_timing.stream_hz(ack.decimation_m) != fast_hz_actual
-        {
+        let Some(decimation_m) = ack.decimation_m.filter(|m| {
+            fast_hz_actual != 0
+                && ack.control_timing.is_valid()
+                && ack.control_timing.stream_hz(m.get()) == fast_hz_actual
+        }) else {
             let _ = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, 0);
             bail!("device acknowledged invalid capture timing: {ack:?}");
-        }
+        };
         let board_calibration = match crate::config_cli::read_group(
             &runtime.cmd_tx,
             oxifoc_core::types::ConfigGroupId::BoardCalibration,
@@ -213,7 +216,6 @@ impl Capture {
                 return Err(error).context("read active board calibration after stream ACK");
             }
         };
-        let decimation_m = ack.decimation_m;
         let control_timing = ack.control_timing;
 
         // Warm-up: the enable transient (queue wrap before the device stream
@@ -242,7 +244,7 @@ impl Capture {
             control_timing,
             fast_hz_requested: fast_hz,
             fast_hz_actual,
-            decimation_m,
+            decimation_m: Some(decimation_m),
             samples,
             started: Instant::now(),
             enrich,
@@ -319,8 +321,8 @@ impl Capture {
 
     /// Expected seq step between consecutive samples.
     pub fn expected_step(&self) -> u32 {
-        if self.decimation_m > 0 {
-            self.decimation_m
+        if let Some(decimation_m) = self.decimation_m {
+            decimation_m.get()
         } else {
             // Unknown FOC frequency: infer the step as the smallest observed delta.
             self.samples
@@ -1006,7 +1008,7 @@ mod tests {
             control_timing: ControlTiming::from_hz(1000),
             fast_hz_requested: 500,
             fast_hz_actual: 500,
-            decimation_m: 2,
+            decimation_m: NonZeroU32::new(2),
             samples: vec![
                 FastTelemetry {
                     seq: 2,

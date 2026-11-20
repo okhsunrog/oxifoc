@@ -24,6 +24,7 @@
 //! ```
 
 use core::cell::RefCell;
+use core::num::NonZeroU32;
 use core::pin::pin;
 
 use critical_section::Mutex as CriticalSectionMutex;
@@ -1139,7 +1140,11 @@ pub async fn telemetry_config_server<NS, const N: usize>(
                         "Telemetry config: fast_hz={requested_fast_hz}, period={period}, actual={actual_fast_hz}Hz"
                     );
 
-                    TelemetryConfigAck { actual_fast_hz, decimation_m: period, control_timing }
+                    TelemetryConfigAck {
+                        actual_fast_hz,
+                        decimation_m: NonZeroU32::new(period),
+                        control_timing,
+                    }
                 }
             })
             .await;

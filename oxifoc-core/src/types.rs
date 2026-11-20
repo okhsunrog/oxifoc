@@ -11,6 +11,8 @@
 //! oxifoc-core = { version = "0.1", default-features = false, features = ["types"] }
 //! ```
 
+use core::num::NonZeroU32;
+
 use crate::foc::controller::{CurrentKi, CurrentKp};
 use crate::foc::phase::PhaseSource;
 use crate::units::{
@@ -625,8 +627,8 @@ impl ControlTiming {
 pub struct TelemetryConfigAck {
     /// Derived fast rate rounded down to whole Hz. Use the ratio below for time.
     pub actual_fast_hz: u16,
-    /// FOC cycles between published samples; zero means disabled.
-    pub decimation_m: u32,
+    /// FOC cycles between published samples; `None` = streaming disabled.
+    pub decimation_m: Option<NonZeroU32>,
     pub control_timing: ControlTiming,
 }
 
@@ -650,7 +652,8 @@ pub struct TelemetryConfigAck {
 /// motor's manual current ceiling, power-loss class and fundamental
 /// inductances, the failsafe brake current, the velocity loop's ramp limit
 /// (`None` = no ramp) and the derating speed ceilings and ramps (`None` =
-/// off; ramps are `{start, end}` pairs). PI gains (stored and the detection override in
+/// off; ramps are `{start, end}` pairs). The telemetry ack's
+/// `decimation_m` is `None` when streaming is off (was `0`). PI gains (stored and the detection override in
 /// `ControlMode::OpenLoop`) are typed Ω and Ω/s.
 pub const ICD_PROTO_VERSION: u16 = 24;
 

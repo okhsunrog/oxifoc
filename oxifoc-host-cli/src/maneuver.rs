@@ -537,6 +537,7 @@ mod tests {
     use oxifoc_core::storage::CurrentLimitsConfig;
     use oxifoc_core::units::amps;
     use parquet::file::reader::{FileReader, SerializedFileReader};
+    use std::num::NonZeroU32;
 
     #[test]
     fn schedule_rejects_unrepresentable_time_before_execution() {
@@ -601,7 +602,7 @@ mod tests {
             control_timing: oxifoc_core::types::ControlTiming::from_hz(20_000),
             fast_hz_requested: 20_000,
             fast_hz_actual: 20_000,
-            decimation_m: 1,
+            decimation_m: Some(NonZeroU32::MIN),
             samples: Vec::new(),
             started: Instant::now(),
             enrich: None,

@@ -17,6 +17,7 @@ use crate::{
 };
 use crate::{raw_telemetry, state};
 use core::{
+    num::NonZeroU32,
     pin::pin,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
@@ -293,7 +294,7 @@ async fn control_request_with_options(
         status,
         timing: TelemetryConfigAck {
             actual_fast_hz: timing.stream_hz(period),
-            decimation_m: period,
+            decimation_m: NonZeroU32::new(period),
             control_timing: timing,
         },
     }
