@@ -489,7 +489,7 @@ pub fn plan_import(snapshot: &Value) -> Result<Vec<(ConfigGroupId, ImportStep)>>
             let typed = group_value(&write).context("config value is not JSON-serializable")?;
             if !same_json(value, &typed) {
                 bail!(
-                    "{name} does not match this protocol version: it reads back as {typed};                      check field names and unset (null) values"
+                    "{name} does not match this protocol version: it reads back as {typed}; check field names and unset (null) values"
                 );
             }
             ImportStep::Write(write)
@@ -781,8 +781,9 @@ mod tests {
             "bus_in_max_a": 5.0, "bus_regen_max_a": 0.0, "max_brake_a": 0.0,
             "max_dissipation_w": 0.0, "max_iq_a": 0.0, "max_phase_current_a": 30.0,
         });
-        let error = plan_import(&snapshot).unwrap_err().to_string();
+        let error = format!("{:#}", plan_import(&snapshot).unwrap_err());
         assert!(error.contains("current-limits"), "{error}");
+        assert!(!error.contains("  "), "one-line message: {error}");
         let mut snapshot = default_snapshot();
         snapshot["motor-params"]["resistance_ohm"] = serde_json::json!(0.064);
         assert!(
