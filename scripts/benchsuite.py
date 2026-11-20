@@ -137,7 +137,7 @@ SCENARIOS = {
         # Sensorless velocity loop (2026-07-08 tuning: kp .0037 / ki .012 /
         # accel_ff 1/8100). Holds gate steady-state error and smoothness;
         # the up-step gates ramp-lag overshoot (accel FF owns the ramp).
-        # No down-step gate: with bus_regen_max_a=0 (PSU-safe) braking
+        # No down-step gate: with bus_regen_max=0 (PSU-safe) braking
         # authority is friction-only and the undershoot is bench physics.
         holds=[  # (t_from, t_to, target el rad/s, ss_err_max, std_max)
             (2.0, 3.5, 300.0, 0.03, 0.05),

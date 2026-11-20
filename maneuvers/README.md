@@ -32,7 +32,7 @@ Commands are `start{iq,id}`, `velocity{rad_s}`, `throttle{fraction}`,
 `coast{}`, and `brake{}`.
 The `terminal` command (`stop`/`coast`/`brake`) is sent on EVERY exit path
 of the timeline, including errors. Before anything is sent the timeline is
-checked against the device's stored `max_iq_a` (`--force` skips the check;
+checked against the device's stored `max_iq` (`--force` skips the check;
 the device clamps regardless).
 
 The runner consumes telemetry while awaiting each motor response. Timeline

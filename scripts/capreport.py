@@ -268,7 +268,10 @@ def fmt_manifest(md, integ):
         f"Lq={mp.get('inductance_q', mp.get('inductance_q_h'))}H "
         f"λ={mp.get('flux_linkage', mp.get('flux_linkage_wb'))}Wb PP={mp.get('pole_pairs')}",
         f"pi-gains   : kp={pi.get('kp')} ki={pi.get('ki')} bw={pi.get('bandwidth_rad_s')}rad/s",
-        f"limits     : max_iq={lim.get('max_iq_a')}A bus_in={lim.get('bus_in_max_a')}A regen={lim.get('bus_regen_max_a')}A dissipation={lim.get('max_dissipation_w')}W",
+        f"limits     : max_iq={lim.get('max_iq', lim.get('max_iq_a'))}A "
+        f"bus_in={lim.get('bus_in_max', lim.get('bus_in_max_a'))}A "
+        f"regen={lim.get('bus_regen_max', lim.get('bus_regen_max_a'))}A "
+        f"dissipation={lim.get('max_dissipation', lim.get('max_dissipation_w'))}W",
         "caveat     : erpm/angle = ACTIVE phase source (startup openloop during"
         " starts, observer after handoff) — NOT ground-truth rotor",
     ]

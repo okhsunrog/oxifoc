@@ -101,8 +101,8 @@ The report includes weighted body means, maxima, events per second and full
 work combinations. Failed attempts remain listed separately.
 
 `velocity450` runs a finite +450 electrical-rad/s request. `brake-authority`
-uses the same request with volatile `max_dissipation_w=0.05` and
-`bus_regen_max_a=0` in HallToObserver. `transitions` runs a fixed 10.6-second
+uses the same request with volatile `max_dissipation=0.05` and
+`bus_regen_max=0` in HallToObserver. `transitions` runs a fixed 10.6-second
 sequence: 0.2-A current start, +120, +450, −120 and −450 electrical rad/s,
 Coast, a +120 restart and Stop. `brake-transitions` adds the brake-authority
 limits to that sequence. Each repeat resets the image, reinstalls

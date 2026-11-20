@@ -52,6 +52,17 @@ Snapshots carry the boot epoch for revisioned apply/persist and can report
 resolved values. PWM configuration is staged for the next boot. Hall tuning
 is applied on a stopped controller.
 
+ICD v24 types every physical field as a `uom` quantity in SI base units and
+drops the unit suffixes (`max_iq_a` → `max_iq`, `resistance_ohm` →
+`resistance`). Speeds that were eRPM are electrical rad/s. Values that used a
+number to mean "not set" are `Option`s: current limits, the motor's manual
+current ceiling, power-loss class and fundamental inductances, and the
+failsafe brake current (`null` in `config set`, e.g. `bus_in_max=null` for an
+unlimited supply). PI gains are Ω and Ω/s. Motor parameters, current limits,
+failsafe and the installed drive move to new flash keys: after updating, the
+device starts those groups from defaults and the motor must be commissioned
+again. Board calibration, DC offsets and Hall calibration are kept.
+
 
 The host validates, in order:
 
