@@ -70,16 +70,11 @@ bench-foc-sections-ram = ["bench-foc-distribution"]
 bench-foc-phase-ram = ["bench-foc-sections-ram", "oxifoc-core/isr-profile-phase"]
 # Exhaustive host-table/MCU temperature-model agreement before PWM setup.
 bench-ntc-check = []
-# Explicit bench build for a motor with no thermistor connected to TMP.
 # Finite ADC-owned records of the first and longest over-budget cycles.
 bench-cycle-outliers = ["isr-profiling"]
-bench-dissipative-inline = ["oxifoc-core/bench-dissipative-inline"]
-bench-hall-single-turn = ["oxifoc-core/bench-hall-single-turn"]
-bench-hall-bit-step = ["bench-hall-single-turn", "oxifoc-core/bench-hall-bit-step"]
 # Work classes indexed by PI/command/deadman/derating plus authority-ahead,
 # Hall seam, observer-error wrap and general angle wrap.
 bench-work-class-wraps = ["bench-foc-work"]
-bench-outline-circle = ["oxifoc-core/bench-outline-circle"]
 # A/B reproduction of the former periodic observer log inside ADC.
 bench-observer-logging = ["oxifoc-core/observer-logging"]
 # Finite Stopped-only CPU comparison; no transport I/O inside timed regions.
@@ -129,8 +124,6 @@ fast-telemetry = ["task-priority", "oxifoc-core/fast-telemetry"]
 bench-raw-usb = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
 bench-raw-rtt = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
 bench-raw-ergot = ["fast-telemetry", "oxifoc-core/diagnostic-telemetry-codecs"]
-# Compatibility alias for earlier benchmark commands.
-bench-scheduler-priority = ["task-priority"]
 # Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.
 bench-scheduler-deadline = ["embassy-executor/scheduler-deadline", "bench-executor-trace"]
 # Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.

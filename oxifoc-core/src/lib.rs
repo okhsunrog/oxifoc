@@ -362,73 +362,6 @@ pub mod foc {
         angle_difference_general(diff)
     }
 
-    /// Bench policy retaining the exact general-path boundary conventions.
-    #[cfg(feature = "bench-hall-single-turn")]
-    #[inline(always)]
-    pub fn angle_difference_single_turn<A: AngleRepr>(a: A, b: A) -> A {
-        let (a, b) = (a.radians(), b.radians());
-        A::from_radians(single_turn_difference(a, b))
-    }
-
-    #[cfg(feature = "bench-hall-single-turn")]
-    #[inline(always)]
-    fn single_turn_difference(a: f32, b: f32) -> f32 {
-        let diff = a - b;
-        let magnitude = diff.to_bits() & 0x7fff_ffff;
-        if magnitude < core::f32::consts::PI.to_bits() {
-            return diff;
-        }
-        let three_pi = TAU + core::f32::consts::PI;
-        #[cfg(feature = "bench-hall-bit-step")]
-        let single_turn = magnitude < three_pi.to_bits();
-        #[cfg(not(feature = "bench-hall-bit-step"))]
-        let single_turn = diff > -three_pi && diff <= three_pi;
-        if single_turn {
-            if diff.is_sign_negative() {
-                return diff + TAU;
-            }
-            if magnitude > core::f32::consts::PI.to_bits() {
-                return diff - TAU;
-            }
-            return diff;
-        }
-        angle_difference_general(diff)
-    }
-
-    #[cfg(feature = "bench-hall-single-turn")]
-    #[inline(always)]
-    pub fn wrap_angle_single_turn<A: AngleRepr>(angle: A) -> A {
-        A::from_radians(single_turn_wrap(angle.radians()))
-    }
-
-    #[cfg(feature = "bench-hall-single-turn")]
-    #[inline(always)]
-    fn single_turn_wrap(angle: f32) -> f32 {
-        if angle.to_bits() < TAU.to_bits() {
-            return angle;
-        }
-        #[cfg(feature = "bench-hall-bit-step")]
-        let single_turn = if angle.is_sign_negative() {
-            angle.to_bits() & 0x7fff_ffff <= TAU.to_bits()
-        } else {
-            angle.to_bits() < (2.0 * TAU).to_bits()
-        };
-        #[cfg(not(feature = "bench-hall-bit-step"))]
-        let single_turn = (-TAU..2.0 * TAU).contains(&angle);
-        if single_turn {
-            #[cfg(feature = "isr-work-events")]
-            isr_work::mark(isr_work::ANGLE_WRAP);
-            if angle < 0.0 {
-                return angle + TAU;
-            }
-            if angle >= TAU {
-                return angle - TAU;
-            }
-            return angle;
-        }
-        wrap_angle_general(angle)
-    }
-
     /// Signed atan2 angle minus a [0, 2*pi) angle: the difference lies in
     /// (-3*pi, pi], so only the negative side ever needs a turn. That side
     /// covers half of every revolution, hence the inline step. Results match
@@ -616,32 +549,6 @@ pub mod foc {
                 let b = (bits >> 8) as f32 / (1 << 24) as f32 * TAU;
                 assert!(same(
                     angle_difference_signed_minus_wrapped(a, b),
-                    frozen_difference(a, b)
-                ));
-            }
-        }
-
-        #[cfg(feature = "bench-hall-single-turn")]
-        #[test]
-        fn single_turn_paths_match_frozen_boundaries_and_random_values() {
-            edge_values(|a| {
-                assert!(same(wrap_angle_single_turn(a), frozen_wrap(a)));
-                edge_values(|b| {
-                    assert!(same(
-                        angle_difference_single_turn(a, b),
-                        frozen_difference(a, b)
-                    ));
-                });
-            });
-            let mut bits = 0x9e37_79b9_u32;
-            for _ in 0..1_000_000 {
-                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let a = f32::from_bits(bits);
-                bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let b = f32::from_bits(bits);
-                assert!(same(wrap_angle_single_turn(a), frozen_wrap(a)));
-                assert!(same(
-                    angle_difference_single_turn(a, b),
                     frozen_difference(a, b)
                 ));
             }

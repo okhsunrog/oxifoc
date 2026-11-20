@@ -53,7 +53,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--recovery-elf", type=Path, required=True)
-    parser.add_argument("--filter", choices=["z_bench_schedule", "z_bench_wrap_angle", "z_bench_hall_single_turn", "z_bench_brake", "deferred_logging"], default="z_bench_schedule")
+    parser.add_argument("--filter", choices=["z_bench_schedule", "z_bench_wrap_angle", "z_bench_brake", "deferred_logging"], default="z_bench_schedule")
     parser.add_argument("--repeats", type=int, default=3, choices=range(1, 6))
     parser.add_argument("--serial-path", default=PORT)
     parser.add_argument("--features", default="")

@@ -268,23 +268,16 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
             // q*sqrt(I²-q²) is concave for q>=0. With a feasible left
             // endpoint and an infeasible right one, there is exactly one
             // lower crossing. Retain the feasible side of the bracket.
-            #[cfg(feature = "bench-outline-circle")]
-            {
-                circle_crossing(boundary, q, i_sq, w, k, r, a)
-            }
-            #[cfg(not(feature = "bench-outline-circle"))]
-            {
-                let (mut lo, mut hi) = (boundary, q);
-                for _ in 0..16 {
-                    let mid = 0.5 * (lo + hi);
-                    if circle_charge(mid) <= a {
-                        lo = mid;
-                    } else {
-                        hi = mid;
-                    }
+            let (mut lo, mut hi) = (boundary, q);
+            for _ in 0..16 {
+                let mid = 0.5 * (lo + hi);
+                if circle_charge(mid) <= a {
+                    lo = mid;
+                } else {
+                    hi = mid;
                 }
-                lo
             }
+            lo
         } else {
             // Both endpoints violate a concave inequality: no solution
             // in this part of the current circle.
@@ -302,29 +295,6 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
         required_d(q, w, k, r, a).max(d_min)
     };
     Some((d, with_sign_of(q, iq)))
-}
-
-#[cfg(feature = "bench-outline-circle")]
-#[inline(never)]
-fn circle_crossing(
-    mut lo: ElectricCurrent,
-    mut hi: ElectricCurrent,
-    i_sq: CurrentSquared,
-    w: ElectricPotential,
-    k: ElectricalResistance,
-    r: ElectricalResistance,
-    a: Power,
-) -> ElectricCurrent {
-    for _ in 0..16 {
-        let mid = 0.5 * (lo + hi);
-        let charge = (w + k * sqrt_current(i_sq - mid * mid)) * mid - r * i_sq;
-        if charge <= a {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
 }
 
 /// Positive crossing of R d² - k q d - (w q - R q² - a) = 0.

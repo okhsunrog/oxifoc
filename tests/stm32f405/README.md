@@ -27,10 +27,6 @@ just bench-embedded-f405 NEW_OUTPUT_DIRECTORY VERIFIED_RECOVERY_ELF z_bench_wrap
 ```
 
 Use `z_bench_brake` as the filter for the dissipative-braking fixture.
-`z_bench_hall_single_turn` needs `--features bench-hall-single-turn` on the
-runner script: it compares the shipping `wrap_angle`/`angle_difference` with
-the inline single-turn helpers on ordinary and 0/2*pi seam inputs. The shipping
-rows use the production lean cold fallbacks enabled by default.
 Use `deferred_logging` for the separate `logging` target. It software-pends
 real ADC/USART2 handlers with PWM disabled, measures one ADC log per DWT
 window, and checks deferred output, queue overflow, oversized records,

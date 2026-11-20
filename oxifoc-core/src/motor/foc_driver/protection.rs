@@ -845,8 +845,7 @@ where
 
     // Keep the optional nonlinear solve out of the common torque grant: its
     // register requirements otherwise spill into motoring and plain braking.
-    #[cfg_attr(feature = "bench-dissipative-inline", inline(always))]
-    #[cfg_attr(not(feature = "bench-dissipative-inline"), inline(never))]
+    #[inline(never)]
     fn grant_dissipative_brake(
         &self,
         id_target: ElectricCurrent,

@@ -73,11 +73,6 @@ default = ["algorithms", "detection", "offset-diagnostics"]
 compact-foc = []
 # Fused atan2 polynomial. no_std builds with this policy require nightly.
 atan2-fma = []
-# Bounded MCU experiments for alternative dissipative and angle paths.
-bench-dissipative-inline = []
-bench-hall-single-turn = []
-bench-hall-bit-step = ["bench-hall-single-turn"]
-bench-outline-circle = []
 # ADC work tags, independent of nested DWT timers.
 isr-work-events = []
 
