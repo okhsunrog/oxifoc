@@ -172,9 +172,8 @@ for Ergot's upstream ping/reply, not continuous empty polling. Evidence is in
 
 ## CCM placement
 
-The normal MK5 SPI recipe enables `ccm-telemetry`. It places the 48 KiB
-fast telemetry queue in `.ccm_bss` (NOLOAD). Startup clears the queue before
-use. The queue does not add a 48 KiB payload to the flash image, and the
+Every F405 image places the 48 KiB fast telemetry queue in `.ccm_bss`
+(NOLOAD). Startup clears the queue before use. The queue does not add a 48 KiB payload to the flash image, and the
 SPI DMA buffers stay in ordinary SRAM.
 
 An assembly `__pre_init` enables CCM, copies `.ccm_data` from flash and

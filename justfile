@@ -28,7 +28,6 @@ replay-hall *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example replay_hall -- "$@"
 
 mk5_features := "transport-spi,board-vesc6-mk5,task-priority,fast-telemetry"
-mk5_release_features := mk5_features + ",ccm-telemetry"
 mk5_bench_features := "transport-usb,board-vesc6-mk5,task-priority,bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
@@ -55,7 +54,7 @@ bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
     cargo run --release --locked -p oxifoc-host-lib --features transport-bench --example usb_serial_jtag_bench -- {{quote(port)}} {{fps}} {{bytes}} {{seconds}}
 
 build-mk5-spi:
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_release_features + ",bench-calibrated-clock")}} --bin oxifoc-f405
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + ",bench-calibrated-clock")}} --bin oxifoc-f405
 
 flash-mk5-spi: build-mk5-spi
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
@@ -132,7 +131,7 @@ check-device:
     # The second F405 board must not rot. Keep board artifacts in separate
     # directories so no ELF path silently changes electrical meaning.
     echo "oxifoc-f405 (vesc6-mk5): build..."
-    (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/vesc6-mk5 --no-default-features --features {{ mk5_release_features }} 2>&1 | filter) || exit 1
+    (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/vesc6-mk5 --no-default-features --features {{ mk5_features }} 2>&1 | filter) || exit 1
 
 # Format all code (workspace + device crates)
 fmt:
@@ -200,12 +199,12 @@ flash-f405-cf2:
 # Build Flipsky Mini V6 MK5 firmware.
 build-f405-vesc6-mk5:
     cd oxifoc-f405 && cargo build --release --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ mk5_release_features }}
+        --features {{ mk5_features }}
 
 # Build and flash Flipsky Mini V6 MK5 firmware.
 flash-f405-vesc6-mk5:
     cd oxifoc-f405 && cargo run --release --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ mk5_release_features }}
+        --features {{ mk5_features }}
 
 # MK5 bench image with the UID-gated clock calibration and priority scheduler.
 build-mk5-bench:
@@ -587,7 +586,7 @@ size:
     measure oxifoc-g474 oxifoc-g474 memory.x target
     measure oxifoc-f405 oxifoc-f405-cf2 memory.x target/cf2 --no-default-features --features board-cf2,transport-usb
     measure oxifoc-f405 oxifoc-f405-vesc6-mk5 memory.x target/vesc6-mk5 --no-default-features \
-        --features {{ mk5_release_features }}
+        --features {{ mk5_features }}
 
 # Clean all build artifacts
 clean:
@@ -626,7 +625,7 @@ bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,v
 build-mk5-foc-profile detail="minimal" logging="quiet":
     @test {{quote(detail)}} = minimal -o {{quote(detail)}} = work -o {{quote(detail)}} = outliers -o {{quote(detail)}} = sections -o {{quote(detail)}} = sections-ram -o {{quote(detail)}} = phase-ram -o {{quote(detail)}} = deadline
     @test {{quote(logging)}} = timing -o {{quote(logging)}} = quiet
-    cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_release_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "work" { ",bench-foc-work" } else if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "sections" { ",isr-profiling" } else if detail == "sections-ram" { ",bench-foc-sections-ram,isr-profiling" } else if detail == "phase-ram" { ",bench-foc-phase-ram" } else if detail == "deadline" { ",bench-foc-deadline" } else { "" })}}
+    cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "work" { ",bench-foc-work" } else if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "sections" { ",isr-profiling" } else if detail == "sections-ram" { ",bench-foc-sections-ram,isr-profiling" } else if detail == "phase-ram" { ",bench-foc-phase-ram" } else if detail == "deadline" { ",bench-foc-deadline" } else { "" })}}
 
 flash-mk5-foc-profile detail="minimal" logging="quiet": (build-mk5-foc-profile detail logging)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}

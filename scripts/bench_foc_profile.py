@@ -100,7 +100,7 @@ WORK_NAMES = [
 ]
 ROOT = Path(__file__).resolve().parents[1]
 PORT = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00"
-BASE_FEATURES = "transport-spi,board-vesc6-mk5,task-priority,fast-telemetry,ccm-telemetry,bench-calibrated-clock,bench-foc-distribution"
+BASE_FEATURES = "transport-spi,board-vesc6-mk5,task-priority,fast-telemetry,bench-calibrated-clock,bench-foc-distribution"
 DETAIL_FEATURES = {
     "minimal": "", "work": "bench-foc-work", "sections": "isr-profiling",
     "sections-ram": "bench-foc-sections-ram,isr-profiling",

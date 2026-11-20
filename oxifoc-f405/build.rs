@@ -45,10 +45,8 @@ fn main() {
         println!("cargo:rustc-link-arg-bin=oxifoc-f405=-Tfoc-hot.x");
     }
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
-    if std::env::var_os("CARGO_FEATURE_CCM_TELEMETRY").is_some() {
-        std::fs::copy("ccm.x", std::path::Path::new(&out_dir).join("ccm.x")).unwrap();
-        println!("cargo:rustc-link-arg-bins=-Tccm.x");
-    }
+    std::fs::copy("ccm.x", std::path::Path::new(&out_dir).join("ccm.x")).unwrap();
+    println!("cargo:rustc-link-arg-bins=-Tccm.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
 
     // Parse FLASH region from memory.x and export firmware end offset for compile-time checks.

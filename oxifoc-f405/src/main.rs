@@ -51,7 +51,6 @@ unsafe fn USART1() {
 
 // Module declarations
 mod calibration;
-#[cfg(feature = "ccm-telemetry")]
 mod ccm;
 mod config;
 mod control;

@@ -29,7 +29,7 @@ bench = false
 # Current controller: MK5 with the C5 SPI bridge and fixed telemetry.
 # CF2 and diagnostic transports require an explicit feature selection.
 default = [
-    "transport-spi", "board-vesc6-mk5", "ccm-telemetry",
+    "transport-spi", "board-vesc6-mk5", "fast-telemetry",
 ]
 # Exactly one board feature must be enabled (compile_error in main.rs).
 # Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
@@ -45,8 +45,6 @@ bench-bridge-pins = []
 bench-bridge-pins-rx = ["bench-bridge-pins"]
 bench-bridge-spi = []
 bench-spi-cs-request = ["bench-bridge-spi"]
-# 48-KiB CPU-owned telemetry queue in zero-initialized CCM.
-ccm-telemetry = ["fast-telemetry", "oxifoc-core/ccm-telemetry"]
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
 transport-usb = ["dep:embassy-usb", "ergot/embassy-usb-v0_6-preview", "ergot/nostd-seed-router"]
 transport-spi = ["oxifoc-core/spi-link"]
@@ -161,7 +159,7 @@ postcard = { version = "1.1", features = ["use-defmt"] }
 # Core features are listed in full: this crate's own features must decide
 # what the image contains, never oxifoc-core's defaults.
 oxifoc-core = { path = "../oxifoc-core", default-features = false, features = [
-    "algorithms", "detection", "offset-diagnostics",
+    "algorithms", "detection", "offset-diagnostics", "ccm-telemetry",
     "defmt", "runtime", "storage", "embassy", "embassy-hal", "delivery", "hfi", "hfi-detect", "isr-speed",
 ] }
 ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a", version = "0.12.0", default-features = false, features = [
