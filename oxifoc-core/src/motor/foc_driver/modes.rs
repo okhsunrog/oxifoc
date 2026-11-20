@@ -567,10 +567,10 @@ where
                 | self.current_limit_flags(requested, before_grant, granted, omega),
             ..Default::default()
         };
-        frame.feedback = frame.quantize(omega.value, 8.0);
-        frame.requested_iq = frame.quantize(requested.value, 100.0);
-        frame.granted_iq = frame.quantize(granted.value, 100.0);
-        frame.granted_id = frame.quantize(id.value, 100.0);
+        frame.feedback = frame.quantize_speed(omega);
+        frame.requested_iq = frame.quantize_current(requested);
+        frame.granted_iq = frame.quantize_current(granted);
+        frame.granted_id = frame.quantize_current(id);
         self.last_current_debug = Some(frame);
     }
 

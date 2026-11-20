@@ -21,17 +21,38 @@ use embassy_time::{Duration, Timer};
 use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::current_offset::CurrentOffsetRequest;
 use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
+#[cfg(feature = "fast-telemetry")]
+use oxifoc_core::foc::sensors::HallSnapshot;
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, PwmSnapshot, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
+use oxifoc_core::isr_prof::Snapshot;
+#[cfg(feature = "bench-foc-work")]
+use oxifoc_core::isr_work;
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
+use oxifoc_core::motor::foc_driver::PreparedMotorModel;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
+#[cfg(feature = "fast-telemetry")]
+use oxifoc_core::runtime::velocity_debug;
+use oxifoc_core::state::model;
 use oxifoc_core::state::{
     BOOT_CURRENT_OFFSET_PENDING, CURRENT_OFFSET_DONE, DriverOperation, run_foc_cycle,
 };
 use oxifoc_core::storage::RuntimeConfig;
+#[cfg(any(
+    any(
+        feature = "bench-executor-trace",
+        feature = "bench-pwm-commit",
+        feature = "bench-netstack-trace"
+    ),
+    any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"),
+    feature = "bench-hall-crossover",
+    feature = "bench-raw-codec"
+))]
+use oxifoc_core::types::ControlMode;
 #[cfg(feature = "board-vesc6-mk5")]
 use oxifoc_core::types::ControlTiming;
+use oxifoc_core::{isr_prof, state};
 
 use crate::hardware::peripherals::AdcHandles;
 use crate::safety::feed_watchdog;
@@ -44,7 +65,13 @@ use crate::{FAULT_REGISTRY, STATE};
 
 #[path = "profiling_window.rs"]
 pub(crate) mod profiling_window;
-use oxifoc_core::units::{Fraction, amps, seconds, volts};
+#[cfg(feature = "bench-cycle-outliers")]
+use oxifoc_core::units::ToBits;
+#[cfg(feature = "fast-telemetry")]
+use oxifoc_core::units::amps;
+#[cfg(any(feature = "bench-cycle-outliers", feature = "isr-timing"))]
+use oxifoc_core::units::{ConstZero, ElectricalAngularVelocity};
+use oxifoc_core::units::{ElectricCurrent, Fraction, seconds, volts};
 use profiling_window::{DwtSample, DwtWindow};
 
 // ========== ADC Sample Storage (Global Atomics) ==========
@@ -169,7 +196,7 @@ fn publish_velocity_debug(
     driver: &FocDriverType,
     sequence: u32,
     tick_us: u64,
-    hall_snapshot: Option<oxifoc_core::foc::sensors::HallSnapshot>,
+    hall_snapshot: Option<HallSnapshot>,
 ) {
     use oxifoc_core::{runtime::velocity_debug, velocity_telemetry as trace};
     let update = driver.velocity_update_at(tick_us);
@@ -190,25 +217,21 @@ fn publish_velocity_debug(
             Direction::CounterClockwise => -1,
             Direction::Stopped => 0,
         };
-        let age = hall.edge_age.value * 10_000.0;
-        if age > f32::from(u16::MAX) {
-            frame.flags |= trace::HALL_AGE_CLIPPED;
-        }
-        frame.hall_age_100us = age as u16;
+        frame.set_hall_age(hall.edge_age);
     } else {
         frame.flags |= trace::HALL_UNAVAILABLE;
     }
     if let (Some(update), Some(snapshot)) = (update, driver.velocity_control_snapshot()) {
         frame.flags |= trace::ACTIVE | update.flags;
-        frame.target = frame.quantize(update.target.value, 8.0);
-        frame.reference = frame.quantize(snapshot.reference.value, 8.0);
-        frame.feedback = frame.quantize(update.feedback.value, 8.0);
-        frame.requested_iq = frame.quantize(snapshot.requested_iq.value, 100.0);
-        frame.granted_iq = frame.quantize(snapshot.granted_iq.value, 100.0);
-        frame.granted_id = frame.quantize(snapshot.granted_id.value, 100.0);
-        frame.integral = frame.quantize(driver.velocity_integral().value, 100.0);
-        frame.iq_min = frame.quantize(update.iq_min.value, 100.0);
-        frame.iq_max = frame.quantize(update.iq_max.value, 100.0);
+        frame.target = frame.quantize_speed(update.target);
+        frame.reference = frame.quantize_speed(snapshot.reference);
+        frame.feedback = frame.quantize_speed(update.feedback);
+        frame.requested_iq = frame.quantize_current(snapshot.requested_iq);
+        frame.granted_iq = frame.quantize_current(snapshot.granted_iq);
+        frame.granted_id = frame.quantize_current(snapshot.granted_id);
+        frame.integral = frame.quantize_current(driver.velocity_integral());
+        frame.iq_min = frame.quantize_current(update.iq_min);
+        frame.iq_max = frame.quantize_current(update.iq_max);
         if (snapshot.requested_iq - snapshot.granted_iq).abs() > amps(1e-4) {
             frame.flags |= trace::GRANT_CLIPPED;
         }
@@ -226,9 +249,12 @@ static FOC_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "board-vesc6-mk5")]
 mod detection_timing {
-    use super::{AtomicU32, CPU_HZ, ControlTiming, Duration, FocDriverType, ISR_BUDGET_CYCLES};
-    use super::{ISR_LAST_START, MotorPwm, Ordering, Timer, interrupt};
+    use super::{
+        AtomicU32, CPU_HZ, ControlTiming, Duration, FocDriverType, ISR_BUDGET_CYCLES,
+        ISR_LAST_START, MotorPwm, Ordering, Timer, interrupt,
+    };
     use embassy_stm32::{interrupt::typelevel::Interrupt, pac};
+    use oxifoc_core::state;
 
     const IDLE: u32 = 0;
     const AWAITING_SAMPLE: u32 = 0x1_0000;
@@ -298,8 +324,8 @@ mod detection_timing {
             REQUEST.store(REJECTED, Ordering::Release);
             return;
         };
-        if !oxifoc_core::state::DETECTION_ACTIVE.load(Ordering::Acquire)
-            || oxifoc_core::state::FLASH_OP_PENDING.load(Ordering::Acquire)
+        if !state::DETECTION_ACTIVE.load(Ordering::Acquire)
+            || state::FLASH_OP_PENDING.load(Ordering::Acquire)
         {
             REQUEST.store(REJECTED, Ordering::Release);
             return;
@@ -366,7 +392,7 @@ pub async fn init(
     config: &RuntimeConfig,
 ) {
     #[cfg(feature = "fast-telemetry")]
-    oxifoc_core::runtime::velocity_debug::register_producer();
+    velocity_debug::register_producer();
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
     let timing = motor_pwm.control_timing();
@@ -445,11 +471,8 @@ pub async fn init(
     );
     foc_driver.set_actuation_delay(actuation_delay_cycles);
 
-    let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
-        config,
-        volts(initial_vbus_v),
-        amps(BOARD.max_phase_current_a),
-    );
+    let mut model =
+        PreparedMotorModel::from_config(config, volts(initial_vbus_v), BOARD.max_phase_current);
     let _ = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
     let boot_source = config.boot_feedback_source();
     let source = if foc_driver.request_phase_source(boot_source) {
@@ -498,10 +521,9 @@ pub async fn init(
 
     if calibration_started {
         match CURRENT_OFFSET_DONE.wait().await {
-            Ok(report) => oxifoc_core::state::model::publish_boot_current_offsets(
-                &crate::RUNTIME_CONFIG,
-                report.offsets,
-            ),
+            Ok(report) => {
+                model::publish_boot_current_offsets(&crate::RUNTIME_CONFIG, report.offsets);
+            }
             Err(_) => defmt::error!("current-offset calibration failed"),
         }
     }
@@ -511,7 +533,7 @@ pub async fn init(
 }
 
 /// Map duty percent to target q-axis current
-pub fn duty_to_iq(duty: u8) -> f32 {
+pub fn duty_to_iq(duty: u8) -> ElectricCurrent {
     BOARD.duty_to_iq(duty)
 }
 
@@ -594,9 +616,9 @@ fn ADC() {
     crate::diagnostics::pwm_deadline::begin();
     let isr_t0 = isr_timing_now();
     #[cfg(feature = "bench-foc-work")]
-    oxifoc_core::isr_work::begin();
+    isr_work::begin();
     #[cfg(feature = "bench-cycle-outliers")]
-    let core_before = oxifoc_core::isr_prof::Snapshot::observe();
+    let core_before = Snapshot::observe();
     #[cfg(feature = "bench-executor-trace")]
     crate::diagnostics::trace::record(8, 0);
     #[cfg(all(
@@ -642,7 +664,7 @@ fn ADC() {
     let convert_temp = *SEQ & 127 == 0;
     #[cfg(feature = "bench-foc-work")]
     if convert_temp {
-        oxifoc_core::isr_work::mark(oxifoc_core::isr_work::TEMPERATURE);
+        isr_work::mark(isr_work::TEMPERATURE);
     }
 
     // Read ADC1 injected data (phase A current + board temp)
@@ -667,7 +689,7 @@ fn ADC() {
     IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
 
     MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
-    let motor_temp_c_x10 = oxifoc_core::state::motor_temperature_input_enabled().then(|| {
+    let motor_temp_c_x10 = state::motor_temperature_input_enabled().then(|| {
         if convert_temp {
             let t = temperature::motor_c_x10(motor_temp_raw);
             MOTOR_TEMP_C_X10.store(t, Ordering::Relaxed);
@@ -684,10 +706,10 @@ fn ADC() {
     IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
 
     // Convert VBUS raw ADC to millivolts
-    let vbus_mv = oxifoc_core::state::calibrated_vbus_mv(&STATE, board.vbus_mv_from_adc(vbus_raw));
+    let vbus_mv = state::calibrated_vbus_mv(&STATE, board.vbus_mv_from_adc(vbus_raw));
     VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
-    let prof_t1 = oxifoc_core::isr_prof::now();
+    let prof_t1 = isr_prof::now();
 
     // Voltage/temperature protection moved into core: run_foc_cycle's
     // run_protection covers them (with excursion integrators) for every
@@ -729,7 +751,7 @@ fn ADC() {
     // Get Hall snapshot
     let hall_snapshot = hall::get_snapshot(now_ticks);
 
-    let prof_t2 = oxifoc_core::isr_prof::now();
+    let prof_t2 = isr_prof::now();
 
     // Run FOC control loop (shared cycle logic in core)
     #[cfg(feature = "isr-timing")]
@@ -737,7 +759,7 @@ fn ADC() {
     #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
     let mut outlier_active = false;
     #[cfg(feature = "bench-cycle-outliers")]
-    let mut outlier_velocity = 0.0_f32;
+    let mut outlier_velocity = ElectricalAngularVelocity::ZERO;
     #[cfg(feature = "bench-raw-codec")]
     let mut codec_bench_stopped = false;
     // The release flag avoids touching the boot handoff while the task
@@ -747,7 +769,7 @@ fn ADC() {
     }
     let foc_telem = DRIVER.as_deref_mut().and_then(|driver| {
         #[cfg(feature = "fast-telemetry")]
-        let velocity_debug = oxifoc_core::runtime::velocity_debug::enabled();
+        let velocity_debug = velocity_debug::enabled();
         #[cfg(feature = "fast-telemetry")]
         {
             driver.record_velocity_updates(velocity_debug);
@@ -771,30 +793,28 @@ fn ADC() {
         #[cfg(feature = "bench-hall-phase")]
         HALL_PHASE.observe_velocity(*SEQ, || driver.velocity_control_snapshot());
         #[cfg(feature = "bench-hall-crossover")]
-        if matches!(
-            driver.mode(),
-            oxifoc_core::types::ControlMode::VelocityControl { .. }
-        ) {
+        if matches!(driver.mode(), ControlMode::VelocityControl { .. }) {
             HALL_PHASE.observe_crossover(*SEQ, driver.phase());
         }
         #[cfg(feature = "bench-hall-phase")]
         HALL_PHASE.observe_faults(*SEQ, || {
-            use oxifoc_core::foc::phase::PhaseProvider;
+            use oxifoc_core::foc::phase::{PhaseProvider, RotorVelocityEstimate};
             driver
                 .phase()
                 .rotor_velocity()
-                .map_or(f32::NAN, |v| v.velocity().value)
+                .map(RotorVelocityEstimate::velocity)
         });
         #[cfg(feature = "bench-raw-codec")]
         {
-            codec_bench_stopped = matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
+            codec_bench_stopped = matches!(driver.mode(), ControlMode::Stopped);
         }
         #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
         {
-            outlier_active = !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped);
+            outlier_active = !matches!(driver.mode(), ControlMode::Stopped);
             #[cfg(feature = "bench-cycle-outliers")]
             {
-                outlier_velocity = output.map_or(0.0, |sample| sample.velocity.value);
+                outlier_velocity =
+                    output.map_or(ElectricalAngularVelocity::ZERO, |sample| sample.velocity);
             }
         }
         #[cfg(feature = "isr-timing")]
@@ -803,7 +823,8 @@ fn ADC() {
             time_control_motion = matches!(
                 driver.mode(),
                 ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
-            ) && output.is_some_and(|sample| sample.velocity.value != 0.0);
+            ) && output
+                .is_some_and(|sample| sample.velocity != ElectricalAngularVelocity::ZERO);
         }
         #[cfg(any(
             feature = "bench-executor-trace",
@@ -815,12 +836,9 @@ fn ADC() {
                 feature = "bench-trace-excitation",
                 feature = "bench-pwm-commit"
             )) {
-            matches!(
-                driver.mode(),
-                oxifoc_core::types::ControlMode::DirectVoltage { .. }
-            )
+            matches!(driver.mode(), ControlMode::DirectVoltage { .. })
         } else {
-            !matches!(driver.mode(), oxifoc_core::types::ControlMode::Stopped)
+            !matches!(driver.mode(), ControlMode::Stopped)
         };
         #[cfg(any(
             feature = "bench-executor-trace",
@@ -835,7 +853,7 @@ fn ADC() {
         output
     });
 
-    let prof_t3 = oxifoc_core::isr_prof::now();
+    let prof_t3 = isr_prof::now();
 
     // Update global state + fast telemetry stream
     publish_cycle_telemetry(
@@ -846,15 +864,15 @@ fn ADC() {
         *SEQ,
     );
 
-    let prof_t4 = oxifoc_core::isr_prof::now();
+    let prof_t4 = isr_prof::now();
 
     // Feed the IWDG: a completed FOC cycle is the board's liveness signal.
     feed_watchdog();
 
-    oxifoc_core::isr_prof::add(&ISR_PROF_ADC, isr_t0, prof_t1);
-    oxifoc_core::isr_prof::add(&ISR_PROF_SNAP, prof_t1, prof_t2);
-    oxifoc_core::isr_prof::add(&ISR_PROF_FOC, prof_t2, prof_t3);
-    oxifoc_core::isr_prof::add(&ISR_PROF_PUB, prof_t3, prof_t4);
+    isr_prof::add(&ISR_PROF_ADC, isr_t0, prof_t1);
+    isr_prof::add(&ISR_PROF_SNAP, prof_t1, prof_t2);
+    isr_prof::add(&ISR_PROF_FOC, prof_t2, prof_t3);
+    isr_prof::add(&ISR_PROF_PUB, prof_t3, prof_t4);
 
     #[cfg(all(
         feature = "bench-netstack-trace",
@@ -872,7 +890,7 @@ fn ADC() {
         DWT_GENERATION.load(Ordering::Relaxed),
     );
     #[cfg(feature = "bench-cycle-outliers")]
-    let core_after = oxifoc_core::isr_prof::Snapshot::observe();
+    let core_after = Snapshot::observe();
     // Every recorder uses this same end point. Recorder/statistics work
     // contributes to entry intervals, beyond the measured control body.
     let isr_end = isr_timing_now();
@@ -990,7 +1008,7 @@ struct IsrStatistics {
     control: u32,
     publish: u32,
     intervals: (u32, u32, u32, u32, u32, u32),
-    core: oxifoc_core::isr_prof::Snapshot,
+    core: Snapshot,
     clock: DwtSample,
     rearmed: bool,
 }
@@ -1018,7 +1036,7 @@ impl IsrStatistics {
                     ISR_INTERVAL_LONG.swap(0, Ordering::Relaxed),
                     ISR_INTERVAL_SHORT.swap(0, Ordering::Relaxed),
                 ),
-                core: oxifoc_core::isr_prof::Snapshot::take(cs),
+                core: Snapshot::take(cs),
                 clock: dwt_sample(),
                 rearmed,
             }

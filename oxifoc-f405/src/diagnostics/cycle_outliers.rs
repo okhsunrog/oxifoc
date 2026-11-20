@@ -4,8 +4,9 @@
 //! counter observations perturb execution, so compare a minimal-timing image.
 
 use core::sync::atomic::{AtomicU32, Ordering};
+use oxifoc_core::isr_prof::Section;
 
-pub const SECTIONS: usize = oxifoc_core::isr_prof::Section::ObserverTail as usize + 1;
+pub const SECTIONS: usize = Section::ObserverTail as usize + 1;
 pub const WORDS: usize = 10 + SECTIONS;
 const KEEP: usize = 8;
 pub type Record = [u32; WORDS];

@@ -2,11 +2,8 @@
 //! defmt diagnostics retain a separate RTT channel (read via probe-rs).
 
 #[cfg(feature = "transport-usb")]
-use embassy_stm32::Peri;
-use embassy_stm32::rng;
-#[cfg(feature = "transport-usb")]
-use embassy_stm32::usb;
-use embassy_stm32::{bind_interrupts, peripherals};
+use embassy_stm32::{Peri, usb};
+use embassy_stm32::{bind_interrupts, peripherals, rng};
 use ergot::NetStack;
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::exports::maitake_sync::WaitQueue;
@@ -41,6 +38,7 @@ use crate::config::RTT_OUT_QUEUE_SIZE;
 use crate::config::USB_OUT_QUEUE_SIZE;
 #[cfg(feature = "transport-rtt")]
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
+use oxifoc_core::stm32_rng::ErgotRng;
 
 mod stack_mutex;
 
@@ -113,7 +111,7 @@ pub type McInterface = SpiInterface;
 
 // ========== Type Aliases ==========
 
-pub type Rng = oxifoc_core::stm32_rng::ErgotRng;
+pub type Rng = ErgotRng;
 /// Standalone diagnostic router capacity. Production SPI is a single leaf.
 #[cfg(not(feature = "transport-spi"))]
 const INTERFACES: usize =

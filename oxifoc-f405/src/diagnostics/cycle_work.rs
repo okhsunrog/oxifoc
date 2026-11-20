@@ -1,6 +1,7 @@
 //! ADC-owned work classes and over-budget records, exported after Stop.
 //! Updates follow the body's end timestamp and contribute to ISR entry gaps.
 use core::sync::atomic::{AtomicU32, Ordering};
+use oxifoc_core::isr_work;
 
 pub const CLASSES: usize = 256;
 pub const CLASS_WORDS: usize = 5; // count, max, over, sum low/high
@@ -58,7 +59,7 @@ pub fn arm() {
     }
     for (word, value) in FOC_WORK_HEADER.iter().zip([
         1,
-        oxifoc_core::isr_work::ISR_WORK_ENABLED.load(Ordering::Relaxed),
+        isr_work::ISR_WORK_ENABLED.load(Ordering::Relaxed),
         CLASSES as u32,
         CLASS_WORDS as u32,
         RECORD_WORDS as u32,
@@ -71,7 +72,7 @@ pub fn arm() {
 }
 
 pub fn observe(seq: u32, elapsed: u32, budget: u32) {
-    let mask = oxifoc_core::isr_work::events();
+    let mask = isr_work::events();
     let index = class_of(mask) * CLASS_WORDS;
     let words = &FOC_WORK_CLASSES[index..index + CLASS_WORDS];
     words[0].store(words[0].load(Ordering::Relaxed) + 1, Ordering::Relaxed);

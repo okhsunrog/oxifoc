@@ -1650,10 +1650,8 @@ where
             // ABS line (the dq-magnitude trip inside step() is the other
             // Kill detector; both deliberately single-sample — current
             // moves fast, unlike voltage).
-            let limit = board.max_phase_current_a;
-            if (telem.ia.value.abs() > limit
-                || telem.ib.value.abs() > limit
-                || telem.ic.value.abs() > limit)
+            let limit = board.max_phase_current;
+            if (telem.ia.abs() > limit || telem.ib.abs() > limit || telem.ic.abs() > limit)
                 && !fault_registry.has_category(FaultCategory::OverCurrent)
                 && let Some(f) = F::from_category(FaultCategory::OverCurrent)
             {

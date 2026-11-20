@@ -86,7 +86,7 @@ pub const MOTOR_ACK_TIMEOUT_MS: u64 = 1_000;
 #[cfg(feature = "storage")]
 use crate::storage::{FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig};
 #[cfg(feature = "storage")]
-use crate::units::{ConstZero, ElectricCurrent, amps, rad_per_s, volts};
+use crate::units::{ConstZero, ElectricCurrent, rad_per_s, volts};
 
 /// Device info server - responds to info requests from host
 ///
@@ -378,7 +378,7 @@ fn resolved_config(
                 .unwrap_or(ElectricCurrent::ZERO);
             let limits = CurrentLimits::from_stored(
                 cfg.current_limits.as_ref(),
-                amps(board.max_phase_current_a),
+                board.max_phase_current,
                 rating,
             );
             Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
@@ -443,7 +443,7 @@ pub async fn config_server<NS, T: Timer, const N: usize>(
 ) where
     NS: NetStackHandle,
 {
-    let hw_max_current = amps(board.max_phase_current_a);
+    let hw_max_current = board.max_phase_current;
     use crate::icd::ConfigGroupId;
     use crate::types::{ConfigSnapshot, ConfigValue, MotorState};
 

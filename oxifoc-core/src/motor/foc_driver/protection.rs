@@ -1005,7 +1005,7 @@ mod tests {
     use crate::foc::config::NtcConfig;
     use crate::foc::fault::StandardFault;
     use crate::types::CurrentSenseTopology;
-    use crate::units::{ToBits, erad_per_s};
+    use crate::units::{ToBits, amps, erad_per_s};
 
     #[test]
     fn temperature_multiply_error_is_below_sensor_quantization() {
@@ -1033,8 +1033,8 @@ mod tests {
         BoardConfig {
             calib: Default::default(),
             current_sense_topology: CurrentSenseTopology::TwoShunt,
-            max_iq_target_a: 10.0,
-            max_phase_current_a: 40.0,
+            max_iq_target: amps(10.0),
+            max_phase_current: amps(40.0),
             max_vbus_mv,
             min_vbus_mv,
             max_fet_temp_c: 100.0,

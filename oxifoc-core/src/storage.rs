@@ -1039,7 +1039,7 @@ impl InstalledDrive {
         })
     }
 
-    fn canonical(&self, board_trip_a: f32) -> Option<InstalledDriveV2> {
+    fn canonical(&self, board_trip: ElectricCurrent) -> Option<InstalledDriveV2> {
         let record = match self {
             Self::V1(record) => record,
             Self::V2(record) => return Some(record.clone()),
@@ -1048,7 +1048,7 @@ impl InstalledDrive {
         let setup = record
             .setup
             .clone()
-            .validate(amps(board_trip_a), amps(record.configured_trip_a))
+            .validate(board_trip, amps(record.configured_trip_a))
             .ok()?;
         Some(InstalledDriveV2::new(
             record
@@ -1066,8 +1066,8 @@ impl InstalledDrive {
         ))
     }
 
-    pub(crate) fn project(&self, config: &mut RuntimeConfig, board_trip_a: f32) -> bool {
-        let Some(record) = self.canonical(board_trip_a) else {
+    pub(crate) fn project(&self, config: &mut RuntimeConfig, board_trip: ElectricCurrent) -> bool {
+        let Some(record) = self.canonical(board_trip) else {
             return false;
         };
         let limits = record.limits();
@@ -1097,8 +1097,8 @@ impl InstalledDrive {
         }
     }
 
-    fn with_edit(&self, payload: &ConfigValue, board_trip_a: f32) -> Option<Self> {
-        let mut next = self.canonical(board_trip_a)?;
+    fn with_edit(&self, payload: &ConfigValue, board_trip: ElectricCurrent) -> Option<Self> {
+        let mut next = self.canonical(board_trip)?;
         let mut feedback = self.feedback();
         match payload {
             ConfigValue::MotorParams(value) => next.motor = value.clone(),
@@ -1183,7 +1183,7 @@ pub use channels::*;
 pub async fn run_storage_worker<F>(
     storage: &mut sequential_storage::map::MapStorage<ConfigKey, F, UncachedStorage<ConfigKey>>,
     buf: &mut [u8],
-    board_trip_a: f32,
+    board_trip: ElectricCurrent,
 ) -> !
 where
     F: embedded_storage_async::nor_flash::NorFlash,
@@ -1193,7 +1193,7 @@ where
     let mut installed = storage
         .fetch_item::<InstalledDrive>(buf, &ConfigKey::InstalledDrive)
         .await;
-    if !load_installed_drive(&mut cfg, &installed, board_trip_a) {
+    if !load_installed_drive(&mut cfg, &installed, board_trip) {
         state::set_drive_setup_recovery(true);
     }
     CONFIG_LOADED.signal(cfg);
@@ -1218,7 +1218,7 @@ where
             FlashOperation::Save(value) => {
                 if value.group().is_setup_component() && !matches!(&installed, Ok(None)) {
                     let success = if let Ok(Some(current)) = &installed
-                        && let Some(next) = current.with_edit(&value, board_trip_a)
+                        && let Some(next) = current.with_edit(&value, board_trip)
                     {
                         if storage
                             .store_item(buf, &ConfigKey::InstalledDrive, &next)
@@ -1327,10 +1327,10 @@ where
 fn load_installed_drive<E>(
     config: &mut RuntimeConfig,
     installed: &Result<Option<InstalledDrive>, E>,
-    board_trip_a: f32,
+    board_trip: ElectricCurrent,
 ) -> bool {
     match installed {
-        Ok(Some(record)) if record.project(config, board_trip_a) => return true,
+        Ok(Some(record)) if record.project(config, board_trip) => return true,
         Ok(None) => return true,
         _ => {}
     }
@@ -1469,11 +1469,11 @@ mod tests {
             &CurrentLimitsConfig::AUTO,
         ));
         let edited = installed
-            .with_edit(&ConfigValue::MotorFeedback(feedback), 70.0)
+            .with_edit(&ConfigValue::MotorFeedback(feedback), amps(70.0))
             .unwrap()
-            .with_edit(&ConfigValue::MotorParams(motor), 70.0)
+            .with_edit(&ConfigValue::MotorParams(motor), amps(70.0))
             .unwrap();
-        assert!(edited.project(&mut config, 70.0));
+        assert!(edited.project(&mut config, amps(70.0)));
         assert!(config.motor_feedback_is_valid());
         assert_eq!(
             config.boot_feedback_source(),
@@ -1520,7 +1520,7 @@ mod tests {
         .validate(amps(70.0), amps(30.0))
         .unwrap();
         let mut config = RuntimeConfig::default();
-        assert!(InstalledDrive::new(&setup).project(&mut config, 70.0));
+        assert!(InstalledDrive::new(&setup).project(&mut config, amps(70.0)));
         assert_eq!(config.motor_feedback.unwrap().mode, MotorFeedbackMode::Hall);
         let crossover = PhaseSource::HallToObserver {
             blend_low: erad_per_s(150.0),
@@ -1548,7 +1548,11 @@ mod tests {
             board_calibration: Some(BoardCalibrationConfig { vbus_gain: 1.01 }),
             ..Default::default()
         };
-        assert!(load_installed_drive(&mut legacy, &Ok::<_, ()>(None), 70.0));
+        assert!(load_installed_drive(
+            &mut legacy,
+            &Ok::<_, ()>(None),
+            amps(70.0)
+        ));
         assert_eq!(legacy.motor_params.as_ref().unwrap().resistance.value, 0.2);
         let setup = DriveSetup {
             motor: MotorParamsConfig {
@@ -1579,7 +1583,7 @@ mod tests {
         assert!(load_installed_drive(
             &mut legacy,
             &Ok::<_, ()>(Some(installed.clone())),
-            70.0
+            amps(70.0)
         ));
         assert_eq!(legacy.motor_params.as_ref(), Some(&setup.motor_policy()));
         assert_eq!(
@@ -1590,13 +1594,13 @@ mod tests {
         let mut limits = setup.current_policy();
         limits.bus_in_max.value = 8.0;
         let edited = installed
-            .with_edit(&ConfigValue::CurrentLimits(limits.clone()), 70.0)
+            .with_edit(&ConfigValue::CurrentLimits(limits.clone()), amps(70.0))
             .unwrap();
         assert!(matches!(edited, InstalledDrive::V3(_)));
         assert!(load_installed_drive(
             &mut legacy,
             &Ok::<_, ()>(Some(edited.clone())),
-            70.0
+            amps(70.0)
         ));
         assert_eq!(legacy.current_limits.as_ref(), Some(&limits));
         assert_eq!(legacy.motor_params.as_ref(), Some(&setup.motor_policy()));
@@ -1604,9 +1608,9 @@ mod tests {
         let mut motor = setup.motor_policy();
         motor.resistance.value *= 2.5;
         let edited = edited
-            .with_edit(&ConfigValue::MotorParams(motor.clone()), 70.0)
+            .with_edit(&ConfigValue::MotorParams(motor.clone()), amps(70.0))
             .unwrap();
-        assert!(edited.project(&mut legacy, 70.0));
+        assert!(edited.project(&mut legacy, amps(70.0)));
         assert_eq!(legacy.current_limits.as_ref(), Some(&limits));
         let rating = legacy
             .motor_params
@@ -1624,7 +1628,7 @@ mod tests {
             assert_eq!(effective.bus_regen_max, amps(0.0));
             assert_eq!(effective.overcurrent_threshold, amps(30.0));
         }
-        assert!(!load_installed_drive(&mut legacy, &Err(()), 70.0));
+        assert!(!load_installed_drive(&mut legacy, &Err(()), amps(70.0)));
         assert!(legacy.motor_params.is_none() && legacy.current_limits.is_none());
         assert_eq!(legacy.board_calibration.unwrap().vbus_gain, 1.01);
     }

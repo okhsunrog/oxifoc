@@ -9,8 +9,8 @@ fn board() -> BoardConfig {
     BoardConfig {
         calib: Default::default(),
         current_sense_topology: CurrentSenseTopology::ThreeShunt,
-        max_iq_target_a: 10.0,
-        max_phase_current_a: 70.0,
+        max_iq_target: amps(10.0),
+        max_phase_current: amps(70.0),
         min_vbus_mv: 6_000,
         max_vbus_mv: 57_000,
         max_fet_temp_c: 100.0,

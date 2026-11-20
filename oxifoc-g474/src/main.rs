@@ -5,6 +5,9 @@ use embassy_executor::Spawner;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::flash::InterruptHandler as FlashInterruptHandler;
 use embassy_time::{Duration, Timer};
+use oxifoc_core::foc::fault::StandardFault;
+use oxifoc_core::stm32_rng::ErgotRng;
+use oxifoc_core::storage::RuntimeConfig;
 
 // Bind FLASH interrupt for async flash operations
 bind_interrupts!(struct FlashIrqs {
@@ -33,13 +36,11 @@ mod sensors;
 use hardware::{AssignedResources, HallResources, MotorResources, StorageResources};
 
 // Define platform state with our fault type
-oxifoc_core::define_platform_state!(oxifoc_core::foc::fault::StandardFault);
+oxifoc_core::define_platform_state!(StandardFault);
 
 /// Global runtime config — loaded from flash at boot, read by config_server for protocol access.
-pub static RUNTIME_CONFIG: critical_section::Mutex<
-    core::cell::RefCell<oxifoc_core::storage::RuntimeConfig>,
-> = critical_section::Mutex::new(core::cell::RefCell::new(
-    oxifoc_core::storage::RuntimeConfig {
+pub static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig>> =
+    critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig {
         board_calibration: None,
         board_calibration_invalid: false,
         motor_params: None,
@@ -60,8 +61,7 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
         drive_invalid: false,
         motor_feedback: None,
         motor_feedback_invalid: false,
-    },
-));
+    }));
 
 use protocol::{DeviceState, get_device_state, set_device_state};
 
@@ -92,7 +92,7 @@ async fn main(spawner: Spawner) {
     let mut rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
     let boot_epoch =
         (u64::from(rng.blocking_next_u32()) << 32) | u64::from(rng.blocking_next_u32());
-    let stack = transport::init_stack(oxifoc_core::stm32_rng::ErgotRng::new(rng));
+    let stack = transport::init_stack(ErgotRng::new(rng));
 
     // ========== STEP 3: RTT (defmt sink; ergot interface when transport-rtt) ==
     #[cfg(not(feature = "transport-rtt"))]

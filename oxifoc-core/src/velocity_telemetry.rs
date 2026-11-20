@@ -2,6 +2,7 @@
 //! Wire units: speed 1/8 electrical rad/s, current 1/100 A, Hall age 100 us.
 //! Clipping and missing values are explicit flags, never plausible zero readings.
 
+use crate::units::{ElectricCurrent, ElectricalAngularVelocity, Time};
 use serde::{Deserialize, Serialize};
 
 pub const VELOCITY_RECORD_BYTES: usize = 32;
@@ -104,7 +105,27 @@ impl VelocityDebugFrame {
         })
     }
 
-    pub fn quantize(&mut self, value: f32, scale: f32) -> i16 {
+    /// An electrical speed in wire units of 1/8 rad/s.
+    pub fn quantize_speed(&mut self, speed: ElectricalAngularVelocity) -> i16 {
+        self.quantize(speed.value, 8.0)
+    }
+
+    /// A current in wire units of 1/100 A.
+    pub fn quantize_current(&mut self, current: ElectricCurrent) -> i16 {
+        self.quantize(current.value, 100.0)
+    }
+
+    /// Store the time since the last Hall edge in 100 us units, saturating
+    /// with [`HALL_AGE_CLIPPED`].
+    pub fn set_hall_age(&mut self, age: Time) {
+        let units = age.value * 10_000.0;
+        if units > f32::from(u16::MAX) {
+            self.flags |= HALL_AGE_CLIPPED;
+        }
+        self.hall_age_100us = units as u16;
+    }
+
+    fn quantize(&mut self, value: f32, scale: f32) -> i16 {
         let scaled = value * scale;
         if !scaled.is_finite() || scaled < f32::from(i16::MIN) || scaled > f32::from(i16::MAX) {
             self.flags |= QUANTIZATION_CLIPPED;
@@ -117,6 +138,7 @@ impl VelocityDebugFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{amps, erad_per_s, seconds};
     #[test]
     fn fixed_wire_preserves_signed_values_wraps_and_flags() {
         let f = VelocityDebugFrame {
@@ -137,12 +159,17 @@ mod tests {
     #[test]
     fn quantization_reports_overflow_and_nonfinite_data() {
         let mut f = VelocityDebugFrame::default();
-        assert_eq!(f.quantize(-0.453, 100.0), -45);
+        assert_eq!(f.quantize_current(amps(-0.453)), -45);
         assert_eq!(f.flags, 0);
-        assert_eq!(f.quantize(400.0, 100.0), i16::MAX);
+        assert_eq!(f.quantize_current(amps(400.0)), i16::MAX);
         assert_ne!(f.flags & QUANTIZATION_CLIPPED, 0);
         f.flags = 0;
-        f.quantize(f32::NAN, 8.0);
+        f.quantize_speed(erad_per_s(f32::NAN));
         assert_ne!(f.flags & QUANTIZATION_CLIPPED, 0);
+        f.flags = 0;
+        f.set_hall_age(seconds(0.0125));
+        assert_eq!((f.hall_age_100us, f.flags), (125, 0));
+        f.set_hall_age(seconds(10.0));
+        assert_ne!(f.flags & HALL_AGE_CLIPPED, 0);
     }
 }

@@ -100,8 +100,8 @@ pub fn board(max_current_a: f32) -> BoardConfig {
     BoardConfig {
         current_sense_topology: crate::CURRENT_SENSE_TOPOLOGY,
         calib: crate::VIRTUAL_CALIB,
-        max_iq_target_a: max_current_a,
-        max_phase_current_a: max_current_a,
+        max_iq_target: amps(max_current_a),
+        max_phase_current: amps(max_current_a),
         max_vbus_mv: 60_000,
         min_vbus_mv: 8_000,
         max_fet_temp_c: 100.0,
@@ -145,7 +145,7 @@ pub async fn foc_loop(
     let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
         &config,
         volts(vbus),
-        amps(board.max_phase_current_a),
+        board.max_phase_current,
     );
     let source = driver
         .apply_motor_model(&mut model)

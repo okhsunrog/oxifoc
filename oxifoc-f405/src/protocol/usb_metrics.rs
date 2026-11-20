@@ -4,6 +4,7 @@ use embassy_usb::driver::{
     Driver, Endpoint, EndpointAddress, EndpointAllocError, EndpointError, EndpointIn, EndpointInfo,
     EndpointType,
 };
+use oxifoc_core::runtime::streaming;
 
 pub static WRITES: AtomicU32 = AtomicU32::new(0);
 pub static MAX_WRITE_TICKS: AtomicU32 = AtomicU32::new(0);
@@ -20,8 +21,7 @@ impl<E: Endpoint> Endpoint for MeasuredIn<E> {
 }
 impl<E: EndpointIn> EndpointIn for MeasuredIn<E> {
     async fn write(&mut self, data: &[u8]) -> Result<(), EndpointError> {
-        let streaming =
-            oxifoc_core::runtime::streaming::FAST_TELEM_PERIOD.load(Ordering::Relaxed) != 0;
+        let streaming = streaming::FAST_TELEM_PERIOD.load(Ordering::Relaxed) != 0;
         // TIM5 is the free-running APB1 bench reference. Unlike DWT, it
         // keeps running when probe-rs detaches and clears DEMCR.TRCENA.
         let start = embassy_stm32::pac::TIM5.cnt().read();

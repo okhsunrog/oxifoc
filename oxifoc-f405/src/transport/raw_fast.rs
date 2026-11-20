@@ -1,7 +1,19 @@
 //! Bench sinks for the raw session stream. No sink runs in the ADC ISR.
 
 use embassy_time::{Duration, with_timeout};
+#[cfg(any(
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-usb",
+    feature = "fast-telemetry"
+))]
+use oxifoc_core::runtime::raw_stream;
 use oxifoc_core::runtime::raw_stream::{RawSinkError, RawTelemetrySink};
+#[cfg(any(
+    feature = "bench-raw-rtt",
+    feature = "bench-raw-usb",
+    feature = "fast-telemetry"
+))]
+use oxifoc_core::timer::EmbassyTimer;
 
 /// Bound a disconnected or unconsumed block without ever holding the producer gate.
 const BLOCK_TIMEOUT: Duration = Duration::from_millis(250);
@@ -73,10 +85,7 @@ pub async fn ergot_task(stack: &'static super::Stack) {
         clippy::large_futures,
         reason = "the fixed raw block belongs to this statically allocated Embassy task"
     )]
-    oxifoc_core::runtime::raw_stream::raw_telemetry_stream::<_, oxifoc_core::timer::EmbassyTimer>(
-        &mut sink,
-    )
-    .await;
+    raw_stream::raw_telemetry_stream::<_, EmbassyTimer>(&mut sink).await;
 }
 
 #[cfg(feature = "bench-raw-usb")]
@@ -160,10 +169,7 @@ pub async fn usb_task(ep: UsbIn) {
         clippy::large_futures,
         reason = "the fixed raw block belongs to this statically allocated Embassy task"
     )]
-    oxifoc_core::runtime::raw_stream::raw_telemetry_stream::<_, oxifoc_core::timer::EmbassyTimer>(
-        &mut sink,
-    )
-    .await;
+    raw_stream::raw_telemetry_stream::<_, EmbassyTimer>(&mut sink).await;
 }
 
 #[cfg(feature = "bench-raw-rtt")]
@@ -218,8 +224,5 @@ pub async fn rtt_task() {
         clippy::large_futures,
         reason = "the fixed raw block belongs to this statically allocated Embassy task"
     )]
-    oxifoc_core::runtime::raw_stream::raw_telemetry_stream::<_, oxifoc_core::timer::EmbassyTimer>(
-        &mut sink,
-    )
-    .await;
+    raw_stream::raw_telemetry_stream::<_, EmbassyTimer>(&mut sink).await;
 }

@@ -26,6 +26,8 @@ pub mod hall_edges;
 #[embassy_executor::task]
 pub async fn hall_task() {
     use core::sync::atomic::Ordering;
+    #[cfg(feature = "bench-hall")]
+    use oxifoc_core::motor::ControlMode;
     loop {
         // These are fresh observations, not a history buffer. If streaming
         // delays this task, skip missed observations instead of logging a
@@ -36,7 +38,7 @@ pub async fn hall_task() {
             (state.last_adc.seq, state.last_hall, state.control_mode)
         });
         if let (seq, Some(hall), mode) = snapshot
-            && mode != oxifoc_core::motor::ControlMode::Stopped
+            && mode != ControlMode::Stopped
         {
             defmt::info!(
                 "hall: seq={} raw={} logical={} angle={} omega={} errors={} over={}",

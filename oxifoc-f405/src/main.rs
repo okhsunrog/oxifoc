@@ -15,6 +15,9 @@ compile_error!("bench-calibrated-clock is an experiment for the measured MK5 dev
 use embassy_executor::Spawner;
 use embassy_stm32::{bind_interrupts, exti, interrupt};
 use embassy_time::Duration;
+use oxifoc_core::state;
+use oxifoc_core::stm32_rng::ErgotRng;
+use oxifoc_core::storage::RuntimeConfig;
 
 // Bind EXTI9_5 interrupt for nFAULT monitoring (PB7/EXTI7)
 bind_interrupts!(struct ExtiIrqs {
@@ -87,10 +90,8 @@ oxifoc_core::define_platform_state!(
 );
 
 /// Global runtime config — loaded from flash at boot, read by config_server for protocol access.
-pub static RUNTIME_CONFIG: critical_section::Mutex<
-    core::cell::RefCell<oxifoc_core::storage::RuntimeConfig>,
-> = critical_section::Mutex::new(core::cell::RefCell::new(
-    oxifoc_core::storage::RuntimeConfig {
+pub static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig>> =
+    critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig {
         board_calibration: None,
         board_calibration_invalid: false,
         motor_params: None,
@@ -111,8 +112,7 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<
         motor_feedback: None,
         motor_feedback_invalid: false,
         motor_temperature: None,
-    },
-));
+    }));
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -162,7 +162,7 @@ async fn main(spawner: Spawner) {
     let spi_epoch = rng.blocking_next_u32();
     let detection_boot =
         (u64::from(rng.blocking_next_u32()) << 32) | u64::from(rng.blocking_next_u32());
-    let stack = transport::init_stack(oxifoc_core::stm32_rng::ErgotRng::new(rng));
+    let stack = transport::init_stack(ErgotRng::new(rng));
 
     // ========== STEP 3: Initialize RTT-only defmt logging ==========
     #[cfg(not(feature = "transport-rtt"))]
@@ -280,9 +280,7 @@ async fn main(spawner: Spawner) {
             runtime_config.pwm_config = None;
         }
     }
-    oxifoc_core::state::set_motor_temperature_input(
-        runtime_config.motor_temperature.unwrap_or_default(),
-    );
+    state::set_motor_temperature_input(runtime_config.motor_temperature.unwrap_or_default());
     critical_section::with(|cs| RUNTIME_CONFIG.borrow(cs).replace(runtime_config.clone()));
     critical_section::with(|cs| {
         let mut state = STATE.borrow(cs).borrow_mut();
@@ -333,11 +331,11 @@ async fn main(spawner: Spawner) {
     let timing = motor_pwm.control_timing();
     defmt::unwrap!(config::CONTROL_TIMING.init(timing).map_err(|_| ()));
     defmt::info!(
-        "Control timing: requested={}Hz clock={}Hz period={}ticks dt={=f32}s rate={=f32}Hz",
+        "Control timing: requested={}Hz clock={}Hz period={}ticks dt={}s rate={=f32}Hz",
         pwm_config.pwm_freq_hz,
         timing.clock_hz,
         timing.period_ticks,
-        timing.dt().value,
+        timing.dt(),
         timing.frequency_hz()
     );
 
@@ -370,8 +368,8 @@ async fn main(spawner: Spawner) {
     );
     let board = config::measured_board();
     defmt::info!(
-        "Board config: shunt={=f32}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, vref={}mV, faults={}",
-        board.calib.shunt_ohms.value,
+        "Board config: shunt={}Ω, amp_gain={=f32} V/V, vbus_ratio={=f32}:1, vref={}mV, faults={}",
+        board.calib.shunt_ohms,
         board.calib.amp_gain,
         board.calib.vbus_divider_ratio,
         board.calib.adc_vref_mv,

@@ -181,7 +181,7 @@ mod tests {
     use super::*;
     use crate::foc::config::{BoardConfig, PhaseSense};
     use crate::types::{BoardCalib, CurrentSenseTopology};
-    use crate::units::{ohms, volts};
+    use crate::units::{amps, ohms, volts};
 
     const fn board(phase_sense: Option<PhaseSense>) -> BoardConfig {
         BoardConfig {
@@ -194,8 +194,8 @@ mod tests {
                 invert_current_sign: false,
                 vbus_divider_ratio: (39.0 + 2.2) / 2.2,
             },
-            max_iq_target_a: 10.0,
-            max_phase_current_a: 60.0,
+            max_iq_target: amps(10.0),
+            max_phase_current: amps(60.0),
             max_vbus_mv: 57_000,
             min_vbus_mv: 6_000,
             max_fet_temp_c: 100.0,

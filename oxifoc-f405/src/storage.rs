@@ -76,5 +76,5 @@ pub async fn storage_worker(flash: AsyncFlash) {
         WRITE_SIZE
     );
 
-    run_storage_worker(&mut storage, buf, crate::config::BOARD.max_phase_current_a).await;
+    run_storage_worker(&mut storage, buf, crate::config::BOARD.max_phase_current).await;
 }

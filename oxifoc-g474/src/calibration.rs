@@ -4,7 +4,10 @@
 //! platform-specific ADC atomics and board config.
 
 #![allow(dead_code)]
-#![allow(clippy::large_futures, reason = "Detection wrappers retain fixed packet buffers in the static Embassy task; no heap is used")]
+#![allow(
+    clippy::large_futures,
+    reason = "Detection wrappers retain fixed packet buffers in the static Embassy task; no heap is used"
+)]
 
 use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
@@ -15,16 +18,14 @@ use crate::config::BOARD;
 use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 
 // Re-export types from core for convenience
+use oxifoc_core::foc::detection::embassy_hw;
 pub use oxifoc_core::foc::detection::embassy_hw::{
     DetectionParams, DetectionResult, FluxLinkageParams, InductanceParams, ResistanceParams,
 };
 
 /// Measure motor phase resistance.
 pub async fn measure_resistance(params: &ResistanceParams) -> Result<f32, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_resistance(
-        params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
-    )
-    .await
+    embassy_hw::measure_resistance(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
 }
 
 /// Measure motor inductance using rotating HFI.
@@ -32,7 +33,7 @@ pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
     pwm_freq_hz: f32,
 ) -> Result<(f32, f32), DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_inductance::<S>(
+    embassy_hw::measure_inductance::<S>(
         params,
         pwm_freq_hz,
         &STATE,
@@ -46,27 +47,23 @@ pub async fn measure_inductance<S: SinCos>(
 
 /// Measure motor flux linkage via open-loop spinning.
 pub async fn measure_flux_linkage(params: &FluxLinkageParams) -> Result<f32, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_flux_linkage(
-        params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
-    )
-    .await
+    embassy_hw::measure_flux_linkage(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD)
+        .await
 }
 
 /// Run full motor parameter detection sequence.
 pub async fn run_full_detection<S: SinCos>(
     params: DetectionParams,
 ) -> Result<DetectionResult, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::run_full_detection::<S>(
-        params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
-    )
-    .await
+    embassy_hw::run_full_detection::<S>(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD)
+        .await
 }
 
 /// Run Hall sensor calibration.
 pub async fn calibrate_hall(
     params: HallCalibrationParams,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::calibrate_hall(
+    embassy_hw::calibrate_hall(
         params,
         &STATE,
         &IA_SAMPLE,

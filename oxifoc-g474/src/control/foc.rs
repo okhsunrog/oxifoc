@@ -22,7 +22,13 @@ use crate::cordic::CordicSinCos;
 use crate::motor::MotorPwm;
 use crate::sensors::{G474CurrentSensor, G474CurrentSensorExt, HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
-use oxifoc_core::units::{amps, volts};
+use oxifoc_core::motor::failsafe::FailsafeConfig;
+use oxifoc_core::motor::foc_driver::PreparedMotorModel;
+use oxifoc_core::runtime::streaming;
+use oxifoc_core::state;
+use oxifoc_core::state::model;
+use oxifoc_core::storage::RuntimeConfig;
+use oxifoc_core::units::volts;
 
 const PREPARED_BOARD: PreparedBoardConfig = PreparedBoardConfig::new(BOARD);
 
@@ -66,7 +72,7 @@ pub async fn init(
     adc1: InjectedAdc<'static, AdcRegs, Blocking>,
     adc2: InjectedAdc<'static, AdcRegs, Blocking>,
     cordic_peri: Peri<'static, peripherals::CORDIC>,
-    config: &oxifoc_core::storage::RuntimeConfig,
+    config: &RuntimeConfig,
 ) {
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
@@ -94,11 +100,8 @@ pub async fn init(
         phase_manager,
         PWM_CONFIG.dt(),
     );
-    let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
-        config,
-        volts(initial_vbus_v),
-        amps(BOARD.max_phase_current_a),
-    );
+    let mut model =
+        PreparedMotorModel::from_config(config, volts(initial_vbus_v), BOARD.max_phase_current);
     let source = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
     critical_section::with(|cs| {
         let mut state = STATE.borrow(cs).borrow_mut();
@@ -108,9 +111,7 @@ pub async fn init(
 
     // Failsafe: command-staleness deadman + reaction policy from stored config
     // (or board defaults); the OV trip feeds the regen-brake derate.
-    foc_driver.set_failsafe(oxifoc_core::motor::failsafe::FailsafeConfig::from_stored(
-        config.failsafe.as_ref(),
-    ));
+    foc_driver.set_failsafe(FailsafeConfig::from_stored(config.failsafe.as_ref()));
     foc_driver
         .configure_voltage_protection(&BOARD, config.voltage_limits.as_ref())
         .expect("stored voltage limits must fit the board");
@@ -132,14 +133,14 @@ pub async fn init(
     foc_driver.current_sensor_mut().calibrate().await;
 
     let (oa, ob, oc) = foc_driver.current_sensor().converter().get_offsets();
-    oxifoc_core::state::model::publish_boot_current_offsets(&crate::RUNTIME_CONFIG, [oa, ob, oc]);
+    model::publish_boot_current_offsets(&crate::RUNTIME_CONFIG, [oa, ob, oc]);
 
     // Install FOC driver for ISR-only access.
     FOC_DRIVER.lock(|cell| {
         cell.replace(Some(foc_driver));
     });
 
-    oxifoc_core::state::BOOT_CURRENT_OFFSET_PENDING.store(false, Ordering::Release);
+    state::BOOT_CURRENT_OFFSET_PENDING.store(false, Ordering::Release);
     defmt::info!("FOC driver initialized and calibrated");
 }
 
@@ -175,8 +176,7 @@ fn ADC1_2() {
             IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
 
             // Convert VBUS raw ADC to millivolts
-            vbus_mv =
-                oxifoc_core::state::calibrated_vbus_mv(&STATE, BOARD.vbus_mv_from_adc(samples[1]));
+            vbus_mv = state::calibrated_vbus_mv(&STATE, BOARD.vbus_mv_from_adc(samples[1]));
             VBUS_MV.store(vbus_mv, Ordering::Relaxed);
 
             // Convert temperature raw ADC to 0.1°C units
@@ -216,7 +216,7 @@ fn ADC1_2() {
     // Run FOC control loop (shared cycle logic in core)
     let foc_telem = FOC_DRIVER.lock(|cell| {
         cell.borrow_mut().as_mut().and_then(|driver| {
-            oxifoc_core::state::run_foc_cycle(
+            state::run_foc_cycle(
                 &STATE,
                 &FAULT_REGISTRY,
                 driver,
@@ -228,7 +228,7 @@ fn ADC1_2() {
     });
 
     // Update global state + fast telemetry stream
-    oxifoc_core::runtime::streaming::publish_cycle_telemetry(
+    streaming::publish_cycle_telemetry(
         &STATE,
         adc_snapshot,
         hall_snapshot,

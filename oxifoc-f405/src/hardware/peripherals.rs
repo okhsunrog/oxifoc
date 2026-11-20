@@ -4,6 +4,7 @@ use embassy_stm32::adc::{Adc, AdcChannel, Exten, InjectedAdc, InjectedAdcTrigger
 use embassy_stm32::{
     Config as StmConfig, Peri, Peripherals, mode::Blocking, pac, peripherals, time::Hertz,
 };
+use oxifoc_core::foc::config;
 
 /// Initialize the STM32F405 PLL from the external oscillator.
 /// Board defaults use 8 MHz; the device-specific bench feature uses its measured rate.
@@ -165,7 +166,7 @@ pub async fn init_adc(
         defmt::assert!(raw > 0 && raw < crate::config::BOARD.calib.adc_max_counts);
         sum += u32::from(raw);
     }
-    let reference_mv = defmt::unwrap!(oxifoc_core::foc::config::adc_reference_mv(
+    let reference_mv = defmt::unwrap!(config::adc_reference_mv(
         calibration_counts,
         3300,
         sum,

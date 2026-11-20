@@ -7,10 +7,13 @@ use ergot::{
     toolkits::embassy_usb_v0_6_preview as usb_kit,
 };
 use heapless::String;
-use oxifoc_core::runtime::run_all_servers_with_config;
+#[cfg(feature = "transport-rtt")]
+use oxifoc_core::runtime;
 use oxifoc_core::runtime::streaming::fault_topic_stream;
+use oxifoc_core::runtime::{run_all_servers_with_config, streaming};
 use oxifoc_core::timer::EmbassyTimer;
-use oxifoc_core::types::HardwareInfo;
+use oxifoc_core::types;
+use oxifoc_core::types::{ControlTiming, HardwareInfo};
 
 use crate::RUNTIME_CONFIG;
 use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE};
@@ -19,15 +22,12 @@ use crate::transport::UART_OUTQ;
 use crate::transport::{AppDriver, Stack, UartRxWorkerType, UartWriter, UsbQueue, UsbRxWorkerType};
 use crate::{FAULT_REGISTRY, STATE};
 
-use oxifoc_core::units::amps;
 #[cfg(feature = "transport-rtt")]
 use {
     crate::transport::{RTT_OUTQ, RttRxWorkerType},
     ergot::transport::rtt::RttWriter,
-    oxifoc_core::runtime::streaming::{
-        FAST_TELEM_PERIOD, fast_telemetry_stream, push_fast_telemetry,
-    },
     oxifoc_core::types::FastTelemetry,
+    runtime::streaming::{FAST_TELEM_PERIOD, fast_telemetry_stream, push_fast_telemetry},
 };
 
 // ========== Worker Tasks ==========
@@ -209,8 +209,8 @@ pub async fn protocol_servers(stack: &'static Stack, boot_epoch: u64) {
     let _ = mcu.push_str("STM32G474RE");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
     let device_info = HardwareInfo {
-        bootstrap_magic: oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
-        proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
+        bootstrap_magic: types::ICD_BOOTSTRAP_MAGIC,
+        proto_version: types::ICD_PROTO_VERSION,
         capabilities: BOARD.current_sense_topology.capability_bits(),
         reserved: [0; 8],
         hw,
@@ -218,7 +218,7 @@ pub async fn protocol_servers(stack: &'static Stack, boot_epoch: u64) {
         mcu,
         uuid,
         foc_freq_hz: PWM_CONFIG.pwm_freq_hz,
-        max_current_a: amps(BOARD.max_phase_current_a),
+        max_current_a: BOARD.max_phase_current,
         calib: BOARD.calib,
     };
 
@@ -233,7 +233,7 @@ pub async fn protocol_servers(stack: &'static Stack, boot_epoch: u64) {
         &FAULT_REGISTRY,
         &RUNTIME_CONFIG,
         PWM_CONFIG.pwm_freq_hz,
-        oxifoc_core::types::ControlTiming::from_hz(PWM_CONFIG.pwm_freq_hz),
+        ControlTiming::from_hz(PWM_CONFIG.pwm_freq_hz),
         &BOARD,
         boot_epoch,
         true,
@@ -285,7 +285,7 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
             // Fail-safe: drop link_active so the FOC loop forces ControlMode::Stopped.
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
             // Stop streaming telemetry into a dead link (host re-enables on reconnect).
-            oxifoc_core::runtime::streaming::set_fast_telemetry_period(0).await;
+            streaming::set_fast_telemetry_period(0).await;
             set_device_state(DeviceState::WaitingLink);
             any_was_active = false;
         }

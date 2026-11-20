@@ -14,21 +14,22 @@
 ///
 /// ```rust
 /// use oxifoc_core::foc::config::BoardConfig;
-/// use oxifoc_core::types::BoardCalib;
+/// use oxifoc_core::types::{BoardCalib, CurrentSenseTopology};
+/// use oxifoc_core::units::{amps, ohms};
 ///
 /// const BOARD: BoardConfig = BoardConfig {
 ///     calib: BoardCalib {
-///         shunt_ohms: oxifoc_core::units::ohms(0.003), // 3mΩ shunts
+///         shunt_ohms: ohms(0.003),     // 3mΩ shunts
 ///         amp_gain: 16.0,              // 16x OPAMP gain
 ///         adc_vref_mv: 3300,           // 3.3V reference
 ///         adc_max_counts: 4095,        // 12-bit ADC
 ///         invert_current_sign: true,   // Low-side shunts
 ///         vbus_divider_ratio: 10.39,   // VBUS divider
 ///     },
-///     current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
-///     max_iq_target_a: 10.0,       // Max torque current
+///     current_sense_topology: CurrentSenseTopology::ThreeShunt,
+///     max_iq_target: amps(10.0),   // Max torque current
 ///     // Fault thresholds
-///     max_phase_current_a: 40.0,   // Peak phase current limit
+///     max_phase_current: amps(40.0), // Peak phase current limit
 ///     max_vbus_mv: 60_000,         // Overvoltage at 60V
 ///     min_vbus_mv: 8_000,          // Undervoltage at 8V
 ///     max_fet_temp_c: 100.0,       // FET overtemp at 100°C
@@ -57,6 +58,7 @@
 ///
 /// See `foc::phase_voltage` for the converter and the per-cycle source decision.
 use crate::types::{BoardCalib, CurrentSenseTopology};
+use crate::units::ElectricCurrent;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhaseSense {
     /// Divider ratio Vphase / Vadc, e.g. `(39_000.0 + 2_200.0) / 2_200.0` for
@@ -77,11 +79,11 @@ pub struct BoardConfig {
     /// Valid current channels at the board's configured ADC sampling instant.
     pub current_sense_topology: CurrentSenseTopology,
     /// Maximum q-axis current target in Amperes
-    pub max_iq_target_a: f32,
+    pub max_iq_target: ElectricCurrent,
 
     // Fault thresholds
     /// Maximum peak phase current in Amperes (instantaneous trip)
-    pub max_phase_current_a: f32,
+    pub max_phase_current: ElectricCurrent,
     /// Maximum DC bus voltage in millivolts (overvoltage threshold)
     pub max_vbus_mv: u32,
     /// Minimum DC bus voltage in millivolts (undervoltage threshold)
@@ -164,9 +166,9 @@ impl BoardConfig {
     ///
     /// Linear mapping from duty percentage to current target.
     #[inline]
-    pub fn duty_to_iq(&self, duty: u8) -> f32 {
+    pub fn duty_to_iq(&self, duty: u8) -> ElectricCurrent {
         let duty = duty.min(100);
-        f32::from(duty) / 100.0 * self.max_iq_target_a
+        self.max_iq_target * (f32::from(duty) / 100.0)
     }
 }
 
@@ -278,7 +280,7 @@ impl NtcConfig {
 mod tests {
     use super::*;
     use crate::types::{BoardCalib, CurrentSenseTopology};
-    use crate::units::ohms;
+    use crate::units::{amps, ohms};
 
     const TEST_BOARD: BoardConfig = BoardConfig {
         current_sense_topology: CurrentSenseTopology::TwoShunt,
@@ -290,9 +292,9 @@ mod tests {
             invert_current_sign: false,
             vbus_divider_ratio: 10.39, // 187/18
         },
-        max_iq_target_a: 10.0,
+        max_iq_target: amps(10.0),
         // Fault thresholds
-        max_phase_current_a: 40.0,
+        max_phase_current: amps(40.0),
         max_vbus_mv: 60_000,
         min_vbus_mv: 8_000,
         max_fet_temp_c: 100.0,
@@ -367,10 +369,10 @@ mod tests {
 
     #[test]
     fn test_duty_to_iq() {
-        assert!((TEST_BOARD.duty_to_iq(0) - 0.0).abs() < 0.01);
-        assert!((TEST_BOARD.duty_to_iq(50) - 5.0).abs() < 0.01);
-        assert!((TEST_BOARD.duty_to_iq(100) - 10.0).abs() < 0.01);
-        assert!((TEST_BOARD.duty_to_iq(150) - 10.0).abs() < 0.01); // Clamped
+        assert!((TEST_BOARD.duty_to_iq(0) - amps(0.0)).abs() < amps(0.01));
+        assert!((TEST_BOARD.duty_to_iq(50) - amps(5.0)).abs() < amps(0.01));
+        assert!((TEST_BOARD.duty_to_iq(100) - amps(10.0)).abs() < amps(0.01));
+        assert!((TEST_BOARD.duty_to_iq(150) - amps(10.0)).abs() < amps(0.01)); // Clamped
     }
 
     #[test]

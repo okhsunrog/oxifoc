@@ -5,10 +5,18 @@
 //! sequence is the latest observed loop, not a simultaneous ADC capture.
 
 use core::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "bench-hall-crossover")]
+use oxifoc_core::foc::phase::RotorVelocityEstimate;
+#[cfg(feature = "bench-hall-phase")]
+use oxifoc_core::foc::phase::{HallHealth, PhaseManager, PhaseProvider};
+#[cfg(feature = "bench-hall-phase")]
+use oxifoc_core::foc::sensors::{AngleSensor, HallSnapshot};
+#[cfg(feature = "bench-hall-phase")]
+use oxifoc_core::foc::trig::SinCos;
 #[cfg(feature = "bench-hall-phase")]
 use oxifoc_core::motor::foc_driver::VelocityControlSnapshot;
 #[cfg(feature = "bench-hall-phase")]
-use oxifoc_core::units::{ToBits, erad_per_s};
+use oxifoc_core::units::{ConstZero, ElectricalAngle, ElectricalAngularVelocity, ToBits};
 
 // Covers a short 120 electrical rad/s velocity/braking capture, including
 // coast. These CPU-only records cost 8 KiB in bench images only.
@@ -57,8 +65,8 @@ pub static BENCH_FAULT_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(feature = "bench-hall-phase")]
 pub struct PhaseRecorder {
-    previous_health: Option<oxifoc_core::foc::phase::HallHealth>,
-    previous_angle: f32,
+    previous_health: Option<HallHealth>,
+    previous_angle: ElectricalAngle,
     last_velocity_sequence: u32,
     #[cfg(feature = "bench-hall-crossover")]
     last_crossover_sequence: u32,
@@ -70,7 +78,7 @@ impl PhaseRecorder {
     pub const fn new() -> Self {
         Self {
             previous_health: None,
-            previous_angle: 0.0,
+            previous_angle: ElectricalAngle::ZERO,
             last_velocity_sequence: 0,
             #[cfg(feature = "bench-hall-crossover")]
             last_crossover_sequence: 0,
@@ -80,16 +88,11 @@ impl PhaseRecorder {
 
     /// Sample the selected phase and physical speed alongside the observer at 40 Hz.
     #[cfg(feature = "bench-hall-crossover")]
-    pub fn observe_crossover<
-        H: oxifoc_core::foc::sensors::AngleSensor,
-        E: oxifoc_core::foc::sensors::AngleSensor,
-        S: oxifoc_core::foc::trig::SinCos,
-    >(
+    pub fn observe_crossover<H: AngleSensor, E: AngleSensor, S: SinCos>(
         &mut self,
         sequence: u32,
-        phase: &oxifoc_core::foc::phase::PhaseManager<H, E, S>,
+        phase: &PhaseManager<H, E, S>,
     ) {
-        use oxifoc_core::foc::phase::{HallHealth, PhaseProvider};
         if sequence.wrapping_sub(self.last_crossover_sequence) < 500 {
             return;
         }
@@ -107,14 +110,11 @@ impl PhaseRecorder {
             sequence,
             flags,
             phase.bench_observer_weight().unwrap_or(f32::NAN).to_bits(),
-            output.angle.value.to_bits(),
-            output.velocity.value.to_bits(),
-            phase
-                .rotor_velocity()
-                .map_or(f32::NAN, |v| v.velocity().value)
-                .to_bits(),
-            observer.phase().map_or(f32::NAN, |v| v.value).to_bits(),
-            observer.velocity().map_or(f32::NAN, |v| v.value).to_bits(),
+            output.angle.to_bits(),
+            output.velocity.to_bits(),
+            bits(phase.rotor_velocity().map(RotorVelocityEstimate::velocity)),
+            bits(observer.phase()),
+            bits(observer.velocity()),
         ];
         for (word, value) in slot.iter().zip(values) {
             word.store(value, Ordering::Relaxed);
@@ -122,7 +122,11 @@ impl PhaseRecorder {
         BENCH_CROSSOVER_COUNT.store(index as u32 + 1, Ordering::Release);
     }
 
-    pub fn observe_faults(&mut self, sequence: u32, speed: impl FnOnce() -> f32) {
+    pub fn observe_faults(
+        &mut self,
+        sequence: u32,
+        speed: impl FnOnce() -> Option<ElectricalAngularVelocity>,
+    ) {
         use oxifoc_core::foc::fault::PlatformFault;
         let registry = &crate::FAULT_REGISTRY;
         let generation = registry.generation();
@@ -140,10 +144,7 @@ impl PhaseRecorder {
             .snapshot()
             .iter()
             .fold(0_u32, |mask, fault| mask | (1 << fault.category() as u32));
-        for (word, value) in slot
-            .iter()
-            .zip([sequence, generation, mask, speed().to_bits()])
-        {
+        for (word, value) in slot.iter().zip([sequence, generation, mask, bits(speed())]) {
             word.store(value, Ordering::Relaxed);
         }
         BENCH_FAULT_COUNT.store(index as u32 + 1, Ordering::Release);
@@ -171,7 +172,7 @@ impl PhaseRecorder {
             sequence,
             sample.target.to_bits(),
             sample.reference.to_bits(),
-            sample.feedback.unwrap_or(erad_per_s(f32::NAN)).to_bits(),
+            bits(sample.feedback),
             sample.requested_iq.to_bits(),
             sample.granted_iq.to_bits(),
             sample.measured_iq.to_bits(),
@@ -183,21 +184,16 @@ impl PhaseRecorder {
         BENCH_VELOCITY_COUNT.store(index as u32 + 1, Ordering::Release);
     }
 
-    pub fn observe<
-        H: oxifoc_core::foc::sensors::AngleSensor,
-        E: oxifoc_core::foc::sensors::AngleSensor,
-        S: oxifoc_core::foc::trig::SinCos,
-    >(
+    pub fn observe<H: AngleSensor, E: AngleSensor, S: SinCos>(
         &mut self,
         sequence: u32,
-        phase: &oxifoc_core::foc::phase::PhaseManager<H, E, S>,
-        hall: Option<oxifoc_core::foc::sensors::HallSnapshot>,
+        phase: &PhaseManager<H, E, S>,
+        hall: Option<HallSnapshot>,
     ) {
-        use oxifoc_core::foc::phase::{HallHealth, PhaseProvider};
         let health = phase.hall_health();
         let output = phase.get();
         let previous_angle = self.previous_angle;
-        self.previous_angle = output.angle.value;
+        self.previous_angle = output.angle;
         if self.previous_health.replace(health) == Some(health) {
             return;
         }
@@ -211,36 +207,35 @@ impl PhaseRecorder {
             HallHealth::Invalid => 2,
             HallHealth::NotPresent => 3,
         };
-        let observer = phase
-            .debug_observer()
-            .map_or((f32::NAN, f32::NAN, f32::NAN, f32::NAN), |(a, b, c, d)| {
-                (a.value, b.value, c.value, d.value)
-            });
-        let validity = phase
-            .observer()
-            .validity()
-            .map_or((f32::NAN, f32::NAN), |(e, t)| (e.value, t.value));
+        let observer = phase.debug_observer();
+        let validity = phase.observer().validity();
         let values = [
             sequence,
             health_code,
             u32::from(phase.angle_trustworthy()),
             previous_angle.to_bits(),
-            output.angle.value.to_bits(),
-            output.velocity.value.to_bits(),
-            observer.0.to_bits(),
-            observer.2.to_bits(),
-            observer.3.to_bits(),
-            hall.map_or(f32::NAN, |h| h.angle.value).to_bits(),
-            hall.map_or(f32::NAN, |h| h.velocity.value).to_bits(),
-            hall.map_or(f32::NAN, |h| h.edge_age.value).to_bits(),
-            validity.0.to_bits(),
-            validity.1.to_bits(),
+            output.angle.to_bits(),
+            output.velocity.to_bits(),
+            bits(observer.map(|o| o.0)),
+            bits(observer.map(|o| o.2)),
+            bits(observer.map(|o| o.3)),
+            bits(hall.map(|h| h.angle)),
+            bits(hall.map(|h| h.velocity)),
+            bits(hall.map(|h| h.edge_age)),
+            bits(validity.map(|v| v.0)),
+            bits(validity.map(|v| v.1)),
         ];
         for (word, value) in slot.iter().zip(values) {
             word.store(value, Ordering::Relaxed);
         }
         BENCH_HALL_PHASE_COUNT.store(index as u32 + 1, Ordering::Release);
     }
+}
+
+/// The capture word of a sample; a missing sample reads back as NaN.
+#[cfg(feature = "bench-hall-phase")]
+fn bits(sample: Option<impl ToBits>) -> u32 {
+    sample.map_or(f32::NAN.to_bits(), ToBits::to_bits)
 }
 
 #[repr(C)]

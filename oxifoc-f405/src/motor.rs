@@ -14,6 +14,7 @@ use embassy_stm32::timer::simple_pwm::PwmPin;
 
 use crate::hardware::resources::MotorResources;
 use oxifoc_core::foc::pwm::{self, MotorPwmConfig, PhasePwm, PhaseState};
+use oxifoc_core::types::ControlTiming;
 
 /// Boot-only frozen UEV observations: CNT[14:0], DIR[15], UIF[16], CEN[17].
 #[cfg(feature = "bench-pwm-commit")]
@@ -41,12 +42,12 @@ pub struct MotorPwm<'d> {
 impl<'d> MotorPwm<'d> {
     /// One ADC/FOC cycle per full center-aligned TIM1 period. The counter runs
     /// 0..ARR..0 in 2*ARR ticks, unlike edge-aligned PWM's ARR+1 period.
-    pub fn control_timing(&self) -> oxifoc_core::types::ControlTiming {
+    pub fn control_timing(&self) -> ControlTiming {
         let regs = embassy_stm32::pac::TIM1;
         let period_ticks =
             2 * u32::from(regs.arr().read().arr()) * (u32::from(regs.psc().read()) + 1);
         let clock_hz = embassy_stm32::rcc::frequency::<peripherals::TIM1>().0;
-        let timing = oxifoc_core::types::ControlTiming {
+        let timing = ControlTiming {
             clock_hz,
             period_ticks,
         };

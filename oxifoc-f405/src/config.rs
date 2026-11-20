@@ -5,7 +5,17 @@ use embassy_sync::once_lock::OnceLock;
 use oxifoc_core::foc::config::{BoardConfig, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
-use oxifoc_core::types::BoardCalib;
+#[cfg(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "fast-telemetry"
+))]
+use oxifoc_core::raw_telemetry;
+use oxifoc_core::storage::PwmConfigLimits;
+use oxifoc_core::types;
+#[cfg(any(feature = "board-cf2", feature = "board-vesc6-mk5"))]
+use oxifoc_core::types::CurrentSenseTopology;
+use oxifoc_core::types::{BoardCalib, ControlTiming};
 use oxifoc_core::units::{ElectricCurrent, amps, ohms};
 
 /// USART1 USB executor and NetStack BASEPRI ceiling share one typed priority.
@@ -16,7 +26,7 @@ pub const USB_EXECUTOR_PRIORITY: embassy_stm32::interrupt::Priority =
 static MEASURED_BOARD: OnceLock<PreparedBoardConfig> = OnceLock::new();
 /// Published once after TIM1 is configured, before control IRQs start. Protocol
 /// tasks may wait for it while boot calibration is still in progress.
-pub static CONTROL_TIMING: OnceLock<oxifoc_core::types::ControlTiming> = OnceLock::new();
+pub static CONTROL_TIMING: OnceLock<ControlTiming> = OnceLock::new();
 
 /// Freeze the measured ADC reference before protocol tasks or control IRQs run.
 pub fn init_measured_board(adc_vref_mv: u32) {
@@ -56,7 +66,7 @@ const MAX_MOTOR_TEMP_C: f32 = 120.0;
 /// - Max VBUS: 57V (VESC HW_LIM_VIN, FET Vds=60V with margin)
 #[cfg(feature = "board-cf2")]
 pub const BOARD: BoardConfig = BoardConfig {
-    current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
+    current_sense_topology: CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
         shunt_ohms: ohms(0.0005),               // 0.5mΩ (two 1mΩ in parallel)
         amp_gain: 10.0,                         // DRV8301 10 V/V gain
@@ -65,12 +75,12 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: false,             // DRV8301: standard polarity
         vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
     },
-    max_iq_target_a: 10.0, // Max torque current
+    max_iq_target: amps(10.0), // Max torque current
     // Fault thresholds (matched to VESC hwconf)
-    max_phase_current_a: 60.0, // Peak phase current limit (FET rating)
-    max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN)
-    min_vbus_mv: 6_000,        // Undervoltage at 6V (VESC HW_LIM_VIN)
-    max_fet_temp_c: 100.0,     // FET overtemp at 100°C
+    max_phase_current: amps(60.0), // Peak phase current limit (FET rating)
+    max_vbus_mv: 57_000,           // Overvoltage at 57V (VESC HW_LIM_VIN)
+    min_vbus_mv: 6_000,            // Undervoltage at 6V (VESC HW_LIM_VIN)
+    max_fet_temp_c: 100.0,         // FET overtemp at 100°C
     max_motor_temp_c: MAX_MOTOR_TEMP_C,
     // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus divider
     // (39k/2.2k). No RC phase filters on this board → usable only undriven
@@ -94,7 +104,7 @@ pub const BOARD: BoardConfig = BoardConfig {
 ///   power the bench from ≥14V
 #[cfg(feature = "board-vesc6-mk5")]
 pub const BOARD: BoardConfig = BoardConfig {
-    current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
+    current_sense_topology: CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
         shunt_ohms: ohms(0.0005), // 0.5mΩ in-line phase shunts
         amp_gain: 20.0,           // DRV8301 20 V/V gain (must match drv8301.rs SHUNT_AMP_GAIN)
@@ -103,11 +113,11 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: false, // hw60 does NOT define INVERTED_SHUNT_POLARITY
         vbus_divider_ratio: (39.0 + 2.2) / 2.2, // ~18.73:1
     },
-    max_iq_target_a: 10.0,     // Max torque current
-    max_phase_current_a: 70.0, // Flipsky continuous rating (200A "instantaneous" ignored)
-    max_vbus_mv: 57_000,       // Overvoltage at 57V (VESC HW_LIM_VIN; vendor abs max 60V)
-    min_vbus_mv: 6_000,        // UV fault floor (VESC HW_LIM_VIN; operating min is 14V)
-    max_fet_temp_c: 100.0,     // Conservative (original hw60 cutoff: 110°C)
+    max_iq_target: amps(10.0),     // Max torque current
+    max_phase_current: amps(70.0), // Flipsky continuous rating (200A "instantaneous" ignored)
+    max_vbus_mv: 57_000,           // Overvoltage at 57V (VESC HW_LIM_VIN; vendor abs max 60V)
+    min_vbus_mv: 6_000,            // UV fault floor (VESC HW_LIM_VIN; operating min is 14V)
+    max_fet_temp_c: 100.0,         // Conservative (original hw60 cutoff: 110°C)
     max_motor_temp_c: MAX_MOTOR_TEMP_C,
     // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus
     // divider. MK5 has switchable RC phase filters (enabled via PC13 at
@@ -126,15 +136,14 @@ pub const BOARD: BoardConfig = BoardConfig {
 pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new().with_dead_time_ns(360);
 // VESC HW_DEAD_TIME_NSEC fallback: 360ns — neither CF2 nor hw60 overrides it
 
-pub const PWM_CONFIG_LIMITS: Option<oxifoc_core::storage::PwmConfigLimits> =
-    if cfg!(feature = "board-vesc6-mk5") {
-        Some(oxifoc_core::storage::PwmConfigLimits {
-            frequencies_hz: &[15_000, 20_000],
-            max_duty_percent: PWM_CONFIG.max_duty_percent,
-        })
-    } else {
-        None
-    };
+pub const PWM_CONFIG_LIMITS: Option<PwmConfigLimits> = if cfg!(feature = "board-vesc6-mk5") {
+    Some(PwmConfigLimits {
+        frequencies_hz: &[15_000, 20_000],
+        max_duty_percent: PWM_CONFIG.max_duty_percent,
+    })
+} else {
+    None
+};
 
 #[cfg(feature = "board-vesc6-mk5")]
 pub mod detection_pwm {
@@ -319,11 +328,8 @@ pub const MAX_PACKET_SIZE: usize = if cfg!(any(
     feature = "bench-raw-rtt",
     feature = "fast-telemetry"
 ))]
-const _: () = assert!(MAX_PACKET_SIZE >= oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES + 30);
+const _: () = assert!(MAX_PACKET_SIZE >= raw_telemetry::RAW_MAX_BLOCK_BYTES + 30);
 
 // This value is also every interface's TX MTU: a full fast-telemetry batch
 // plus wire overhead must fit or full batches silently fail to broadcast.
-const _: () = assert!(
-    MAX_PACKET_SIZE
-        >= oxifoc_core::types::FAST_BATCH_BYTES + oxifoc_core::types::FAST_BATCH_WIRE_OVERHEAD
-);
+const _: () = assert!(MAX_PACKET_SIZE >= types::FAST_BATCH_BYTES + types::FAST_BATCH_WIRE_OVERHEAD);

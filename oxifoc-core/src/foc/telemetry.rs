@@ -773,8 +773,8 @@ mod tests {
         let bc = BoardConfig {
             current_sense_topology: CurrentSenseTopology::TwoShunt,
             calib: calib(),
-            max_iq_target_a: 5.0,
-            max_phase_current_a: 10.0,
+            max_iq_target: amps(5.0),
+            max_phase_current: amps(10.0),
             max_vbus_mv: 45_000,
             min_vbus_mv: 8_000,
             max_fet_temp_c: 85.0,

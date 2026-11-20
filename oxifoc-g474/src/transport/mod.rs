@@ -23,8 +23,7 @@ use ergot::interface_manager::profiles::router::{Router, RouterFrameProcessor};
 use ergot::interface_manager::transports::eio::RxWorker as EioRxWorker;
 use ergot::interface_manager::transports::eusb_0_6_preview::RxWorker as UsbRxWorker;
 use ergot::interface_manager::utils::{cobs_stream, framed_stream};
-use ergot::toolkits::embassy_usb_v0_6_preview as usb_kit;
-use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
+use ergot::toolkits::{embassy_usb_v0_6_preview as usb_kit, embedded_io_async_v0_7 as io_kit};
 #[cfg(feature = "transport-rtt")]
 use ergot::transport::rtt::{RttReader, RttWriter};
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
@@ -32,8 +31,11 @@ use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
-use crate::config::{MAX_PACKET_SIZE, UART_BAUD, UART_BUF_LEN, USB_LIVENESS_TIMEOUT_MS};
-use crate::config::{RTT_OUT_QUEUE_SIZE, UART_OUT_QUEUE_SIZE, USB_OUT_QUEUE_SIZE};
+use crate::config::{
+    MAX_PACKET_SIZE, RTT_OUT_QUEUE_SIZE, UART_BAUD, UART_BUF_LEN, UART_OUT_QUEUE_SIZE,
+    USB_LIVENESS_TIMEOUT_MS, USB_OUT_QUEUE_SIZE,
+};
+use oxifoc_core::stm32_rng::ErgotRng;
 
 // ========== Multi-Interface Definition ==========
 //
@@ -56,7 +58,7 @@ ergot::multi_interface! {
 
 // ========== Type Aliases ==========
 
-pub type Rng = oxifoc_core::stm32_rng::ErgotRng;
+pub type Rng = ErgotRng;
 pub type McRouter = Router<McInterface, Rng, 3, 0>;
 pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
 

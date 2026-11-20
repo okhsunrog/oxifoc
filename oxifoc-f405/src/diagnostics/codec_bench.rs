@@ -553,6 +553,7 @@ pub async fn report_task(stack: &'static crate::transport::Stack) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxifoc_core::icd::RawTelemetryBlock;
     use oxifoc_core::raw_telemetry::decode_raw_block;
 
     #[test]
@@ -616,8 +617,7 @@ mod tests {
             assert_eq!(&grant[..], &expected);
             let decoded = ergot::wire_frames::de_frame(&grant).unwrap();
             assert_eq!(decoded.hdr, header);
-            let owned: oxifoc_core::icd::RawTelemetryBlock =
-                postcard::from_bytes(decoded.body.unwrap()).unwrap();
+            let owned: RawTelemetryBlock = postcard::from_bytes(decoded.body.unwrap()).unwrap();
             assert_eq!(&owned.data[..], bytes);
             grant.release();
             assert!(consumer.read().is_err());
@@ -654,8 +654,7 @@ mod tests {
         for _ in 0..count {
             let grant = consumer.read().unwrap();
             let decoded = ergot::wire_frames::de_frame(&grant).unwrap();
-            let actual: oxifoc_core::icd::RawTelemetryBlock =
-                postcard::from_bytes(decoded.body.unwrap()).unwrap();
+            let actual: RawTelemetryBlock = postcard::from_bytes(decoded.body.unwrap()).unwrap();
             assert_eq!(&actual.data[..], body.data);
             grant.release();
         }

@@ -4,8 +4,9 @@
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
-use oxifoc_core::types::BoardCalib;
-use oxifoc_core::units::ohms;
+use oxifoc_core::types;
+use oxifoc_core::types::{BoardCalib, CurrentSenseTopology};
+use oxifoc_core::units::{amps, ohms};
 
 // ============================================================================
 // Board Hardware Configuration (X-NUCLEO-IHM08M1)
@@ -32,7 +33,7 @@ use oxifoc_core::units::ohms;
 /// - VBUS divider: 169k / 9.31k ⇒ ratio 19.15
 #[allow(dead_code)]
 pub const BOARD: BoardConfig = BoardConfig {
-    current_sense_topology: oxifoc_core::types::CurrentSenseTopology::ThreeShunt,
+    current_sense_topology: CurrentSenseTopology::ThreeShunt,
     calib: BoardCalib {
         shunt_ohms: ohms(0.01),     // 0.010Ω 1W shunts (R43-45)
         amp_gain: 5.18,             // TSV994 diff amp on shield (verify vs JP2)
@@ -41,14 +42,14 @@ pub const BOARD: BoardConfig = BoardConfig {
         invert_current_sign: false, // Amp non-inverting (+5.18·Vshunt + 1.71 V); verify on bench
         vbus_divider_ratio: 19.15,  // (169k + 9.31k) / 9.31k
     },
-    max_iq_target_a: 5.0, // Conservative default for testing
+    max_iq_target: amps(5.0), // Conservative default for testing
     // Fault thresholds
-    max_phase_current_a: 10.0, // Conservative limit (hw OCP trips at ~30 A)
-    max_vbus_mv: 45_000,       // Max 45V (board rated 10-48V, leave margin)
-    min_vbus_mv: 8_000,        // Undervoltage at 8V
-    max_fet_temp_c: 85.0,      // Conservative overtemp threshold
-    max_motor_temp_c: 0.0,     // no motor NTC wired
-    phase_sense: None,         // X-NUCLEO-IHM08M1: no phase-voltage sensing wired
+    max_phase_current: amps(10.0), // Conservative limit (hw OCP trips at ~30 A)
+    max_vbus_mv: 45_000,           // Max 45V (board rated 10-48V, leave margin)
+    min_vbus_mv: 8_000,            // Undervoltage at 8V
+    max_fet_temp_c: 85.0,          // Conservative overtemp threshold
+    max_motor_temp_c: 0.0,         // no motor NTC wired
+    phase_sense: None,             // X-NUCLEO-IHM08M1: no phase-voltage sensing wired
 };
 
 /// NTC configuration for X-NUCLEO-IHM08M1
@@ -89,10 +90,7 @@ pub const MAX_PACKET_SIZE: usize = 1024;
 
 // This value is also every interface's TX MTU: a full fast-telemetry batch
 // plus wire overhead must fit or full batches silently fail to broadcast.
-const _: () = assert!(
-    MAX_PACKET_SIZE
-        >= oxifoc_core::types::FAST_BATCH_BYTES + oxifoc_core::types::FAST_BATCH_WIRE_OVERHEAD
-);
+const _: () = assert!(MAX_PACKET_SIZE >= types::FAST_BATCH_BYTES + types::FAST_BATCH_WIRE_OVERHEAD);
 
 /// USB liveness timeout (ms): mark the USB interface Down if no frame arrives
 /// within this window. Shorter than the UART/ICD timeout for faster reaction.

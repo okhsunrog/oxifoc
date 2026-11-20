@@ -14,6 +14,7 @@ use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationR
 use oxifoc_core::foc::trig::SinCos;
 
 // Re-export types from core for convenience
+use oxifoc_core::foc::detection::embassy_hw;
 pub use oxifoc_core::foc::detection::embassy_hw::{
     DetectionParams, DetectionResult, FluxLinkageParams, InductanceParams, ResistanceParams,
 };
@@ -39,15 +40,7 @@ pub async fn measure_resistance(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_resistance(
-        params,
-        state_mutex,
-        ia,
-        ib,
-        ic,
-        board,
-    )
-    .await
+    embassy_hw::measure_resistance(params, state_mutex, ia, ib, ic, board).await
 }
 
 /// Measure motor inductance using rotating HFI.
@@ -60,16 +53,7 @@ pub async fn measure_inductance<S: SinCos>(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<(f32, f32), DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_inductance::<S>(
-        params,
-        pwm_freq_hz,
-        state_mutex,
-        ia,
-        ib,
-        ic,
-        board,
-    )
-    .await
+    embassy_hw::measure_inductance::<S>(params, pwm_freq_hz, state_mutex, ia, ib, ic, board).await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
@@ -81,15 +65,7 @@ pub async fn measure_flux_linkage(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<f32, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::measure_flux_linkage(
-        params,
-        state_mutex,
-        ia,
-        ib,
-        ic,
-        board,
-    )
-    .await
+    embassy_hw::measure_flux_linkage(params, state_mutex, ia, ib, ic, board).await
 }
 
 /// Run full motor parameter detection sequence.
@@ -101,15 +77,7 @@ pub async fn run_full_detection<S: SinCos>(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<DetectionResult, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::run_full_detection::<S>(
-        params,
-        state_mutex,
-        ia,
-        ib,
-        ic,
-        board,
-    )
-    .await
+    embassy_hw::run_full_detection::<S>(params, state_mutex, ia, ib, ic, board).await
 }
 
 /// Run Hall sensor calibration.
@@ -121,7 +89,7 @@ pub async fn calibrate_hall(
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
 ) -> Result<HallCalibrationResult, DetectionError> {
-    oxifoc_core::foc::detection::embassy_hw::calibrate_hall(
+    embassy_hw::calibrate_hall(
         params,
         state_mutex,
         ia,

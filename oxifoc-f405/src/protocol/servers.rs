@@ -7,6 +7,19 @@ use ergot::{
     toolkits::embassy_usb_v0_6_preview as usb_kit,
 };
 use heapless::String;
+use oxifoc_core::foc::current_offset::{
+    CurrentOffsetError, CurrentOffsetReport, CurrentOffsetRequest,
+};
+#[cfg(any(
+    feature = "bench-raw-usb",
+    feature = "bench-raw-rtt",
+    feature = "fast-telemetry"
+))]
+use oxifoc_core::runtime::raw_stream;
+use oxifoc_core::types::PhaseVoltageInfo;
+#[cfg(feature = "board-vesc6-mk5")]
+use oxifoc_core::types::{DetectError, DetectRequest};
+use oxifoc_core::{runtime, state, types};
 
 use crate::transport::Stack;
 #[cfg(feature = "transport-usb")]
@@ -36,7 +49,6 @@ use crate::config::{BOARD, PWM_CONFIG_LIMITS, measured_board};
 #[cfg(feature = "transport-usb")]
 use crate::config::{MAX_PACKET_SIZE, USB_OUT_QUEUE_SIZE};
 use crate::control::foc::measured_vbus_mv;
-use oxifoc_core::units::amps;
 
 // ========== Worker Tasks ==========
 
@@ -156,8 +168,8 @@ pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32, boot_epoc
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
     let mut device_info = HardwareInfo {
-        bootstrap_magic: oxifoc_core::types::ICD_BOOTSTRAP_MAGIC,
-        proto_version: oxifoc_core::types::ICD_PROTO_VERSION,
+        bootstrap_magic: types::ICD_BOOTSTRAP_MAGIC,
+        proto_version: types::ICD_PROTO_VERSION,
         capabilities: BOARD.current_sense_topology.capability_bits(),
         reserved: [0; 8],
         hw,
@@ -165,15 +177,15 @@ pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32, boot_epoc
         mcu,
         uuid,
         foc_freq_hz,
-        max_current_a: amps(BOARD.max_phase_current_a),
+        max_current_a: BOARD.max_phase_current,
         calib: measured_board().calib,
     };
     #[cfg(feature = "board-vesc6-mk5")]
     {
-        device_info.capabilities |= oxifoc_core::types::CAP_PWM_TIMING_FROM_ARR;
+        device_info.capabilities |= types::CAP_PWM_TIMING_FROM_ARR;
     }
     if let Some(phase) = measured_board().phase_sense {
-        device_info.set_phase_voltage_info(oxifoc_core::types::PhaseVoltageInfo {
+        device_info.set_phase_voltage_info(PhaseVoltageInfo {
             divider_ratio: phase.divider_ratio,
             current_to_voltage_ns: crate::hardware::peripherals::current_to_phase_sample_ns(),
             filtered: phase.has_filters,
@@ -330,11 +342,11 @@ pub async fn detect_server(stack: &'static Stack, boot_epoch: u64) {
     embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(1);
-    oxifoc_core::runtime::detect_server(
+    runtime::detect_server(
         stack.endpoints(),
         F405Backend,
         boot_epoch,
-        BOARD.max_phase_current_a,
+        BOARD.max_phase_current.value,
         crate::config::CONTROL_TIMING.get().await.frequency_hz(),
         Some(&RUNTIME_CONFIG),
     )
@@ -355,9 +367,9 @@ impl DetectionBackend for F405Backend {
     #[cfg(feature = "board-vesc6-mk5")]
     async fn prepare_timing(
         &mut self,
-        request: &oxifoc_core::types::DetectRequest,
+        request: &DetectRequest,
         drive_foc_hz: f32,
-    ) -> Result<f32, oxifoc_core::types::DetectError> {
+    ) -> Result<f32, DetectError> {
         use crate::config::detection_pwm;
         use oxifoc_core::types::{ControlTiming, DetectError, DetectRequest};
 
@@ -422,14 +434,9 @@ impl DetectionBackend for F405Backend {
     }
     fn measure_current_offsets(
         &mut self,
-        request: oxifoc_core::foc::current_offset::CurrentOffsetRequest,
-    ) -> impl Future<
-        Output = Result<
-            oxifoc_core::foc::current_offset::CurrentOffsetReport,
-            oxifoc_core::foc::current_offset::CurrentOffsetError,
-        >,
-    > {
-        oxifoc_core::state::measure_current_offsets(request)
+        request: CurrentOffsetRequest,
+    ) -> impl Future<Output = Result<CurrentOffsetReport, CurrentOffsetError>> {
+        state::measure_current_offsets(request)
     }
 }
 
@@ -465,7 +472,7 @@ async fn raw_telemetry_server_task(stack: &'static Stack) {
         .await
         .set_priority(2);
     let timing = *crate::config::CONTROL_TIMING.get().await;
-    let raw = oxifoc_core::runtime::raw_stream::raw_telemetry_server::<_, 2>(
+    let raw = raw_stream::raw_telemetry_server::<_, 2>(
         stack.endpoints(),
         timing.frequency_hz() as u32,
         timing,
@@ -473,7 +480,7 @@ async fn raw_telemetry_server_task(stack: &'static Stack) {
     #[cfg(feature = "fast-telemetry")]
     embassy_futures::join::join(
         raw,
-        oxifoc_core::runtime::raw_stream::velocity_debug_arm_server::<_, 2>(
+        raw_stream::velocity_debug_arm_server::<_, 2>(
             stack.endpoints(),
             timing.frequency_hz() as u32,
             timing,

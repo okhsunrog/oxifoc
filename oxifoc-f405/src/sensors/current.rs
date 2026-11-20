@@ -10,5 +10,6 @@
 //! - **ADC**: 12-bit injected channels, synchronized by TIM1_CC4
 //! - **Sampling**: Phase A (ADC1 PC0), Phase B (ADC2 PC1), Phase C (ADC3 PC2)
 
-pub use oxifoc_core::foc::sensors::EmbassyCurrentSensor as F405CurrentSensor;
-pub use oxifoc_core::foc::sensors::EmbassyCurrentSensorExt as F405CurrentSensorExt;
+pub use oxifoc_core::foc::sensors::{
+    EmbassyCurrentSensor as F405CurrentSensor, EmbassyCurrentSensorExt as F405CurrentSensorExt,
+};
