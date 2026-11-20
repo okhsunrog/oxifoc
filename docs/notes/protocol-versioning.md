@@ -61,7 +61,14 @@ failsafe brake current (`null` in `config set`, e.g. `bus_in_max=null` for an
 unlimited supply). PI gains are Ω and Ω/s. Motor parameters, current limits,
 failsafe and the installed drive move to new flash keys: after updating, the
 device starts those groups from defaults and the motor must be commissioned
-again. Board calibration, DC offsets and Hall calibration are kept.
+again. Settings that a commissioned v23 device kept inside its installed-drive
+record, such as the Hall calibration and the feedback mode, start from defaults
+as well. The pre-geometry Hall record (key 2) is no longer read. Board
+calibration and a Hall calibration saved on its own (key 14) are kept.
+
+From v24 on, the firmware skips flash keys it does not know and keeps them
+through compaction. v23 and older fail every read once the map holds a v24
+key, so roll back to them only together with their own storage image.
 
 
 The host validates, in order:

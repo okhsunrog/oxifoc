@@ -43,22 +43,57 @@ pub type UncachedStorage<KEY> = sequential_storage::cache::Cache<
 // Storage Keys
 // ============================================================================
 
-/// Keys for configuration groups stored in flash.
-///
-/// Each key maps to a small struct serialized with postcard.
-/// New firmware preserves existing key numbers. Older firmware that does not
-/// recognize a newly written key may fail to scan this map: use a full backup
-/// when rolling back across a storage-schema change.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ConfigKey {
+/// Declares [`ConfigKey`] from one tag table, so `tag` and `from_tag` cannot
+/// drift apart (a repeated tag is an unreachable pattern in `from_tag`).
+macro_rules! config_keys {
+    ($($(#[$meta:meta])* $name:ident = $tag:literal,)+) => {
+        /// Keys for configuration groups stored in flash.
+        ///
+        /// Each key maps to a small struct serialized with postcard. Tags are
+        /// never reused: a superseded layout keeps its tag as `ReservedN` and is
+        /// never read. A tag this firmware does not know (written by an older or
+        /// newer firmware) decodes to [`Self::Unknown`] with its byte, so a scan
+        /// skips the item instead of failing and flash compaction keeps the
+        /// newest item of each such tag. Firmware before this rule (ICD 23 and
+        /// older) fails every fetch once the map holds a tag it does not know:
+        /// roll back to it only with that firmware's own storage image.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+        pub enum ConfigKey {
+            $($(#[$meta])* $name,)+
+            /// A tag this firmware does not know, kept byte-exact.
+            Unknown(u8),
+        }
+
+        impl ConfigKey {
+            /// The one-byte tag stored in flash.
+            pub const fn tag(self) -> u8 {
+                match self {
+                    $(Self::$name => $tag,)+
+                    Self::Unknown(tag) => tag,
+                }
+            }
+
+            /// Decode a stored tag; unknown tags are kept as [`Self::Unknown`].
+            pub const fn from_tag(tag: u8) -> Self {
+                match tag {
+                    $($tag => Self::$name,)+
+                    other => Self::Unknown(other),
+                }
+            }
+        }
+    };
+}
+
+config_keys! {
     /// Superseded motor parameters with zero-valued "unknown" fields. The
     /// tag stays recognizable during flash compaction; the value is never
     /// read, so a firmware with the `Option` layout starts from defaults.
     Reserved1 = 1,
-    /// Legacy Hall sector angles. Read-only migration source; new saves use 14.
-    HallCalibration = 2,
+    /// Superseded Hall sector angles without edge geometry. Never read: a
+    /// missing [`Self::HallCalibrationRecord`] means "not calibrated", not
+    /// an older calibration.
+    Reserved2 = 2,
     /// Current sensor DC offsets
     DcOffsets = 3,
     /// Superseded current limits with negative/zero "unset" sentinels.
@@ -108,47 +143,18 @@ pub enum ConfigKey {
 
 impl Key for ConfigKey {
     fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-        if buffer.is_empty() {
+        let Some(first) = buffer.first_mut() else {
             return Err(SerializationError::BufferTooSmall);
-        }
-        buffer[0] = *self as u8;
+        };
+        *first = self.tag();
         Ok(1)
     }
 
     fn deserialize_from(buffer: &[u8]) -> Result<(Self, usize), SerializationError> {
-        if buffer.is_empty() {
+        let Some(&tag) = buffer.first() else {
             return Err(SerializationError::BufferTooSmall);
-        }
-        let key = match buffer[0] {
-            1 => Self::Reserved1,
-            2 => Self::HallCalibration,
-            3 => Self::DcOffsets,
-            4 => Self::Reserved4,
-            5 => Self::VoltageLimits,
-            6 => Self::PwmConfig,
-            7 => Self::PiGains,
-            8 => Self::HallTuning,
-            9 => Self::Reserved9,
-            10 => Self::Velocity,
-            11 => Self::Reserved11,
-            12 => Self::BoardCalibration,
-            13 => Self::VoltageFeedforward,
-            14 => Self::HallCalibrationRecord,
-            15 => Self::Reserved15,
-            16 => Self::MotorTemperature,
-            17 => Self::Reserved17,
-            18 => Self::Reserved18,
-            19 => Self::Reserved19,
-            20 => Self::Drive,
-            21 => Self::Derating,
-            22 => Self::MotorFeedback,
-            23 => Self::MotorParams,
-            24 => Self::CurrentLimits,
-            25 => Self::Failsafe,
-            26 => Self::InstalledDrive,
-            _ => return Err(SerializationError::InvalidFormat),
         };
-        Ok((key, 1))
+        Ok((Self::from_tag(tag), 1))
     }
 }
 
@@ -331,16 +337,7 @@ pub use crate::types::measurement::HallCalibrationConfig;
 // These flash layouts are frozen. Evolving the public/wire config requires a
 // new record variant and explicit conversions, never adding fields to V1.
 // A quantity serializes as its f32 SI value, so typed angle fields keep the
-// frozen bytes (pinned by `hall_record_freezes_legacy_bytes_...`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg(any(feature = "runtime", test))]
-struct LegacyHallCalibrationConfig {
-    angles: [ElectricalAngle; 8],
-    valid: [bool; 8],
-}
-#[cfg(any(feature = "runtime", test))]
-impl PostcardValue<'_> for LegacyHallCalibrationConfig {}
-
+// frozen bytes (pinned by `hall_record_freezes_bytes_and_wire_ids`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg(any(feature = "runtime", test))]
 enum HallCalibrationRecord {
@@ -389,18 +386,6 @@ impl HallCalibrationRecord {
                 entry_angles: g.entry_angles,
                 next_states: g.next_states,
             }),
-        };
-        config.is_calibrated().then_some(config)
-    }
-}
-
-#[cfg(any(feature = "runtime", test))]
-impl LegacyHallCalibrationConfig {
-    fn validated(self) -> Option<HallCalibrationConfig> {
-        let config = HallCalibrationConfig {
-            angles: self.angles,
-            valid: self.valid,
-            geometry: None,
         };
         config.is_calibrated().then_some(config)
     }
@@ -1427,17 +1412,9 @@ where
             cfg.hall_calibration = record.validated();
             cfg.hall_calibration_invalid = cfg.hall_calibration.is_none();
         }
-        Ok(None) => match storage
-            .fetch_item::<LegacyHallCalibrationConfig>(buf, &ConfigKey::HallCalibration)
-            .await
-        {
-            Ok(None) => {}
-            Ok(Some(record)) => {
-                cfg.hall_calibration = record.validated();
-                cfg.hall_calibration_invalid = cfg.hall_calibration.is_none();
-            }
-            Err(_) => cfg.hall_calibration_invalid = true,
-        },
+        // The superseded sector-angle record (`Reserved2`) is never read: an
+        // older calibration without geometry must not stand in for a missing one.
+        Ok(None) => {}
         Err(_) => cfg.hall_calibration_invalid = true,
     }
 
@@ -1683,26 +1660,15 @@ mod tests {
     }
 
     #[test]
-    fn hall_record_freezes_legacy_bytes_and_appends_versioned_storage_without_moving_wire_ids() {
+    fn hall_record_freezes_bytes_and_wire_ids() {
         use crate::types::{ConfigGroupId, ConfigValue};
-        let legacy = LegacyHallCalibrationConfig {
+        let uncalibrated_geometry = HallCalibrationConfig {
             angles: [erad(0.0); 8],
             valid: [false, true, true, true, true, true, true, false],
+            geometry: None,
         };
-        let mut expected = [0u8; 40];
-        expected[33..39].fill(1);
         let mut buf = [0; 128];
-        assert_eq!(postcard::to_slice(&legacy, &mut buf).unwrap(), expected);
-        let migrated = postcard::from_bytes::<LegacyHallCalibrationConfig>(&expected)
-            .unwrap()
-            .validated()
-            .unwrap();
-        assert!(migrated.geometry.is_none());
-        assert!(
-            postcard::from_bytes::<HallCalibrationConfig>(&expected).is_err(),
-            "legacy flash must use its explicit frozen decoder"
-        );
-        let record = HallCalibrationRecord::from(migrated);
+        let record = HallCalibrationRecord::from(uncalibrated_geometry);
         let mut versioned = [0u8; 42];
         versioned[34..40].fill(1);
         assert_eq!(postcard::to_slice(&record, &mut buf).unwrap(), versioned);
@@ -1710,7 +1676,7 @@ mod tests {
             postcard::from_bytes::<HallCalibrationRecord>(&versioned)
                 .unwrap()
                 .validated(),
-            Some(migrated)
+            Some(uncalibrated_geometry)
         );
         versioned[0] = 1;
         assert!(postcard::from_bytes::<HallCalibrationRecord>(&versioned).is_err());
@@ -1736,7 +1702,7 @@ mod tests {
             Some(config)
         );
         let mut key = [0];
-        ConfigKey::HallCalibration.serialize_into(&mut key).unwrap();
+        ConfigKey::Reserved2.serialize_into(&mut key).unwrap();
         assert_eq!(key, [2]);
         ConfigKey::HallCalibrationRecord
             .serialize_into(&mut key)
@@ -1791,7 +1757,7 @@ mod tests {
 
     #[cfg(feature = "runtime")]
     #[test]
-    fn hall_flash_migrates_legacy_prefers_v1_and_never_falls_back_from_invalid_new_records() {
+    fn hall_flash_ignores_superseded_angles_and_never_falls_back_from_invalid_records() {
         use sequential_storage::cache::Cache;
         use sequential_storage::map::{MapConfig, MapStorage};
         use sequential_storage::mock_flash::{MockFlashBase, WriteCountCheck};
@@ -1812,15 +1778,20 @@ mod tests {
         let mut buf = [0; 128];
         let absent = ready(load_all(&mut storage, &mut buf));
         assert!(absent.hall_calibration.is_none() && absent.hall_calibration_is_valid());
+        // A complete, valid superseded record (eight f32 angles, eight valid
+        // flags) under the reserved key: never read, so still not calibrated.
         let old = HallCalibrationConfig::default();
-        let legacy = LegacyHallCalibrationConfig {
-            angles: old.angles,
-            valid: old.valid,
-        };
-        ready(storage.store_item(&mut buf, &ConfigKey::HallCalibration, &legacy)).unwrap();
+        let mut superseded = [0u8; 40];
+        let (angle_words, _) = superseded[..32].as_chunks_mut::<4>();
+        for (word, angle) in angle_words.iter_mut().zip(old.angles) {
+            *word = angle.value.to_le_bytes();
+        }
+        for (flag, valid) in superseded[32..].iter_mut().zip(old.valid) {
+            *flag = u8::from(valid);
+        }
+        ready(storage.store_item(&mut buf, &ConfigKey::Reserved2, &superseded)).unwrap();
         let loaded = ready(load_all(&mut storage, &mut buf));
-        assert_eq!(loaded.hall_calibration, Some(old));
-        assert!(loaded.hall_calibration_is_valid());
+        assert!(loaded.hall_calibration.is_none() && loaded.hall_calibration_is_valid());
         let new = measured_hall_config();
         ready(storage.store_item(
             &mut buf,
@@ -1832,7 +1803,7 @@ mod tests {
             ready(load_all(&mut storage, &mut buf)).hall_calibration,
             Some(new)
         );
-        // A present unknown version shadows the still-valid legacy key.
+        // A present record of an unknown version reads as invalid, not absent.
         ready(storage.store_item(&mut buf, &ConfigKey::HallCalibrationRecord, &99u8)).unwrap();
         let invalid = ready(load_all(&mut storage, &mut buf));
         assert!(invalid.hall_calibration.is_none() && invalid.hall_calibration_invalid);
@@ -1854,10 +1825,76 @@ mod tests {
         ready(storage.erase_all()).unwrap();
         let erased = ready(load_all(&mut storage, &mut buf));
         assert!(erased.hall_calibration.is_none() && erased.hall_calibration_is_valid());
-        ready(storage.store_item(&mut buf, &ConfigKey::HallCalibration, &0u8)).unwrap();
-        let legacy_invalid = ready(load_all(&mut storage, &mut buf));
+        ready(storage.store_item(&mut buf, &ConfigKey::Reserved2, &0u8)).unwrap();
+        let superseded_only = ready(load_all(&mut storage, &mut buf));
         assert!(
-            legacy_invalid.hall_calibration.is_none() && legacy_invalid.hall_calibration_invalid
+            superseded_only.hall_calibration.is_none()
+                && superseded_only.hall_calibration_is_valid()
+        );
+    }
+
+    #[test]
+    fn every_tag_round_trips_and_unknown_tags_keep_their_byte() {
+        for tag in 0..=u8::MAX {
+            let key = ConfigKey::from_tag(tag);
+            assert_eq!(key.tag(), tag);
+            let mut stored = [0u8];
+            assert_eq!(key.serialize_into(&mut stored), Ok(1));
+            assert_eq!(ConfigKey::deserialize_from(&stored), Ok((key, 1)));
+            let known = !matches!(key, ConfigKey::Unknown(_));
+            assert_eq!(known, (1..=26).contains(&tag), "tag {tag}");
+        }
+    }
+
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn foreign_tags_neither_block_loading_nor_vanish_in_compaction() {
+        use sequential_storage::cache::Cache;
+        use sequential_storage::map::{MapConfig, MapStorage};
+        use sequential_storage::mock_flash::{MockFlashBase, WriteCountCheck};
+        fn ready<T>(future: impl Future<Output = T>) -> T {
+            let mut future = core::pin::pin!(future);
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            match future.as_mut().poll(&mut cx) {
+                core::task::Poll::Ready(v) => v,
+                core::task::Poll::Pending => panic!("mock flash unexpectedly yielded"),
+            }
+        }
+        type Flash = MockFlashBase<4, 4, 64>;
+        let mut storage = MapStorage::new(
+            Flash::new(WriteCountCheck::TwiceWithZero, None, true),
+            MapConfig::new(Flash::FULL_FLASH_RANGE),
+            Cache::new_uncached(),
+        );
+        let mut buf = [0; 128];
+        let hall = measured_hall_config();
+        ready(storage.store_item(
+            &mut buf,
+            &ConfigKey::HallCalibrationRecord,
+            &HallCalibrationRecord::from(hall),
+        ))
+        .unwrap();
+        // Items of a newer firmware: two tags, one of them rewritten.
+        let (newer, other) = (ConfigKey::from_tag(200), ConfigKey::from_tag(201));
+        ready(storage.store_item(&mut buf, &newer, &[1u8, 1, 1, 1])).unwrap();
+        ready(storage.store_item(&mut buf, &other, &[2u8, 2, 2, 2])).unwrap();
+        ready(storage.store_item(&mut buf, &newer, &[3u8, 3, 3, 3])).unwrap();
+        // Churn one known key until every page has been compacted repeatedly.
+        for value in 0..200u32 {
+            ready(storage.store_item(&mut buf, &ConfigKey::PwmConfig, &value)).unwrap();
+        }
+        let fetch = |storage: &mut MapStorage<_, _, _>, key| {
+            ready(storage.fetch_item::<[u8; 4]>(&mut [0; 128], &key)).unwrap()
+        };
+        assert_eq!(fetch(&mut storage, newer), Some([3; 4]));
+        assert_eq!(fetch(&mut storage, other), Some([2; 4]));
+        assert_eq!(
+            ready(storage.fetch_item::<u32>(&mut buf, &ConfigKey::PwmConfig)).unwrap(),
+            Some(199)
+        );
+        assert_eq!(
+            ready(load_all(&mut storage, &mut buf)).hall_calibration,
+            Some(hall)
         );
     }
 
