@@ -19,7 +19,7 @@ use oxifoc_core::types::{
     ConfigGroupId, ControlMode, CurrentOffsetMethod, CurrentOffsetReport, DetectRequest,
     DetectResponse, MotorState,
 };
-use oxifoc_core::units::{henries, ohms};
+use oxifoc_core::units::{henries, ohms, unit::electrical};
 use serde_json::json;
 
 use super::config;
@@ -45,11 +45,11 @@ impl From<&MotorPreset> for DetectionPlan {
     fn from(preset: &MotorPreset) -> Self {
         Self {
             pole_pairs: preset.pole_pairs,
-            max_power_loss_w: preset.max_power_loss_w,
+            max_power_loss_w: preset.max_power_loss.value,
             motor_class: preset.class,
             source: None,
             // VESC's lower open-loop ERPM is for subsequent riding startup.
-            flux_target_erpm: preset.sensorless_erpm,
+            flux_target_erpm: preset.sensorless_speed.get::<electrical::erpm>(),
             current_limit_a: None,
             calibrate_hall: true,
         }
@@ -90,7 +90,7 @@ impl DetectionOutcome {
             "incomplete feedback result"
         );
         anyhow::ensure!(
-            plan.max_power_loss_w == plan.motor_class.preset().max_power_loss_w,
+            plan.max_power_loss_w == plan.motor_class.preset().max_power_loss.value,
             "inconsistent motor class"
         );
         Ok(DriveSetup {
@@ -274,7 +274,7 @@ pub fn run_sequence(
     );
     preflight(cmd)?;
     anyhow::ensure!(
-        max_power_loss_w == motor_class.preset().max_power_loss_w,
+        max_power_loss_w == motor_class.preset().max_power_loss.value,
         "motor class does not match excitation profile"
     );
     let confirmed = CommissioningPlan {

@@ -1,7 +1,6 @@
 //! Motor classes and immutable commissioning conditions shared by every client.
 use super::DetectRequest;
-use crate::units::unit::electrical;
-use crate::units::{ElectricCurrent, ElectricalAngularVelocity, Sign};
+use crate::units::{ElectricCurrent, ElectricalAngularVelocity, Power, Sign, erpm, watts};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, postcard_schema::Schema,
@@ -56,8 +55,8 @@ impl CommissioningPlan {
     pub fn is_valid(self) -> bool {
         self.source.is_valid()
             && self.pole_pairs > 0
-            && self.flux_target_speed.get::<electrical::erpm>().is_finite()
-            && self.flux_target_speed.get::<electrical::erpm>() > 0.0
+            && self.flux_target_speed.is_finite()
+            && self.flux_target_speed.is_positive()
             && self
                 .current_limit
                 .is_none_or(|v| v.is_finite() && v.value >= 0.5)
@@ -65,37 +64,35 @@ impl CommissioningPlan {
     /// Stage requests may supply freshly measured prerequisites, but cannot
     /// silently change the conditions confirmed when the session was opened.
     pub fn allows(self, request: DetectRequest) -> bool {
-        let loss = self.motor_class.preset().max_power_loss_w;
+        let loss = self.motor_class.preset().max_power_loss;
         match request {
             DetectRequest::MeasureResistance {
-                max_power_loss: max_power_loss_w,
-                current_limit: current_limit_a,
+                max_power_loss,
+                current_limit,
             }
             | DetectRequest::MeasureInductance {
-                max_power_loss: max_power_loss_w,
-                current_limit: current_limit_a,
+                max_power_loss,
+                current_limit,
                 ..
-            } => max_power_loss_w.value == loss && current_limit_a == self.current_limit,
+            } => max_power_loss == loss && current_limit == self.current_limit,
             DetectRequest::MeasureFlux {
-                max_power_loss: max_power_loss_w,
-                current_limit: current_limit_a,
+                max_power_loss,
+                current_limit,
                 pole_pairs,
-                openloop_speed: openloop_erpm,
+                openloop_speed,
                 ..
             } => {
-                max_power_loss_w.value == loss
-                    && current_limit_a == self.current_limit
+                max_power_loss == loss
+                    && current_limit == self.current_limit
                     && pole_pairs == self.pole_pairs
-                    && openloop_erpm == self.flux_target_speed
+                    && openloop_speed == self.flux_target_speed
             }
             DetectRequest::CalibrateHall {
-                max_power_loss: max_power_loss_w,
-                current_limit: current_limit_a,
+                max_power_loss,
+                current_limit,
                 ..
             } => {
-                self.calibrate_hall
-                    && max_power_loss_w.value == loss
-                    && current_limit_a == self.current_limit
+                self.calibrate_hall && max_power_loss == loss && current_limit == self.current_limit
             }
             DetectRequest::MeasureCurrentOffsets { .. } => false,
         }
@@ -112,12 +109,12 @@ pub struct MotorPreset {
     pub name: &'static str,
     /// Number of magnetic pole pairs (poles / 2)
     pub pole_pairs: u8,
-    /// Maximum power dissipation during detection (W)
-    pub max_power_loss_w: f32,
-    /// Open-loop ERPM for sensorless startup
-    pub openloop_erpm: f32,
-    /// ERPM threshold for sensorless transition
-    pub sensorless_erpm: f32,
+    /// Maximum power dissipation during detection
+    pub max_power_loss: Power,
+    /// Open-loop speed for sensorless startup
+    pub openloop_speed: ElectricalAngularVelocity,
+    /// Speed threshold for sensorless transition
+    pub sensorless_speed: ElectricalAngularVelocity,
 }
 
 pub static PRESETS: &[MotorPreset] = &[
@@ -126,80 +123,80 @@ pub static PRESETS: &[MotorPreset] = &[
         id: "mini-outrunner",
         name: "Mini Outrunner (~75g)",
         pole_pairs: 7,
-        max_power_loss_w: 20.0,
-        openloop_erpm: 1400.0,
-        sensorless_erpm: 4000.0,
+        max_power_loss: watts(20.0),
+        openloop_speed: erpm(1400.0),
+        sensorless_speed: erpm(4000.0),
     },
     MotorPreset {
         class: MotorClass::SmallOutrunner,
         id: "small-outrunner",
         name: "Small Outrunner (~200g)",
         pole_pairs: 7,
-        max_power_loss_w: 50.0,
-        openloop_erpm: 1400.0,
-        sensorless_erpm: 4000.0,
+        max_power_loss: watts(50.0),
+        openloop_speed: erpm(1400.0),
+        sensorless_speed: erpm(4000.0),
     },
     MotorPreset {
         class: MotorClass::MediumOutrunner,
         id: "medium-outrunner",
         name: "Medium Outrunner (~750g)",
         pole_pairs: 7,
-        max_power_loss_w: 120.0,
-        openloop_erpm: 700.0,
-        sensorless_erpm: 4000.0,
+        max_power_loss: watts(120.0),
+        openloop_speed: erpm(700.0),
+        sensorless_speed: erpm(4000.0),
     },
     MotorPreset {
         class: MotorClass::LargeOutrunner,
         id: "large-outrunner",
         name: "Large Outrunner (~2kg)",
         pole_pairs: 7,
-        max_power_loss_w: 400.0,
-        openloop_erpm: 700.0,
-        sensorless_erpm: 4000.0,
+        max_power_loss: watts(400.0),
+        openloop_speed: erpm(700.0),
+        sensorless_speed: erpm(4000.0),
     },
     MotorPreset {
         class: MotorClass::SmallInrunner,
         id: "small-inrunner",
         name: "Small Inrunner (~200g)",
         pole_pairs: 1,
-        max_power_loss_w: 50.0,
-        openloop_erpm: 1400.0,
-        sensorless_erpm: 4000.0,
+        max_power_loss: watts(50.0),
+        openloop_speed: erpm(1400.0),
+        sensorless_speed: erpm(4000.0),
     },
     MotorPreset {
         class: MotorClass::MediumInrunner,
         id: "medium-inrunner",
         name: "Medium Inrunner (~750g)",
         pole_pairs: 2,
-        max_power_loss_w: 140.0,
-        openloop_erpm: 1400.0,
-        sensorless_erpm: 4000.0,
+        max_power_loss: watts(140.0),
+        openloop_speed: erpm(1400.0),
+        sensorless_speed: erpm(4000.0),
     },
     MotorPreset {
         class: MotorClass::LargeInrunner,
         id: "large-inrunner",
         name: "Large Inrunner (~2kg)",
         pole_pairs: 2,
-        max_power_loss_w: 400.0,
-        openloop_erpm: 1000.0,
-        sensorless_erpm: 4000.0,
+        max_power_loss: watts(400.0),
+        openloop_speed: erpm(1000.0),
+        sensorless_speed: erpm(4000.0),
     },
     MotorPreset {
         class: MotorClass::Hub,
         id: "hub",
         name: "E-Bike DD Hub Motor",
         pole_pairs: 23,
-        max_power_loss_w: 150.0,
-        openloop_erpm: 300.0,
-        sensorless_erpm: 2000.0,
+        max_power_loss: watts(150.0),
+        openloop_speed: erpm(300.0),
+        sensorless_speed: erpm(2000.0),
     },
     MotorPreset {
         class: MotorClass::SmallEdf,
         id: "small-edf",
         name: "EDF Inrunner Small (~200g)",
         pole_pairs: 3,
-        max_power_loss_w: 110.0,
-        openloop_erpm: 1400.0,
-        sensorless_erpm: 4000.0,
+        max_power_loss: watts(110.0),
+        openloop_speed: erpm(1400.0),
+        sensorless_speed: erpm(4000.0),
     },
 ];

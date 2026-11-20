@@ -1,9 +1,14 @@
 //! Frozen flash representation. Evolve by appending a variant, never by
 //! changing V1 or embedding mutable wire/config structs in its layout.
+//! Quantities serialize as their bare `f32`, so typed fields keep the
+//! on-flash bytes of the original `f32` layout.
 use super::{DriveCurrent, DriveSetup, Feedback, SetupError, ValidatedDriveSetup};
 use crate::storage::{HallCalibrationConfig, HallTransitionGeometryConfig, MotorParamsConfig};
 use crate::types::commissioning::SourceLimits;
-use crate::units::{ElectricCurrent, ElectricalAngle, amps, henries, ohms, watts, webers};
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricalAngle, ElectricalResistance, Inductance, MagneticFlux,
+    Power,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -14,17 +19,17 @@ impl sequential_storage::map::PostcardValue<'_> for SetupRecord {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetupV1 {
-    resistance: f32,
-    ld: f32,
-    lq: f32,
-    flux: f32,
+    resistance: ElectricalResistance,
+    ld: Inductance,
+    lq: Inductance,
+    flux: MagneticFlux,
     pole_pairs: u8,
-    power_loss: f32,
-    ld_fundamental: f32,
-    lq_fundamental: f32,
+    power_loss: Power,
+    ld_fundamental: Inductance,
+    lq_fundamental: Inductance,
     feedback: FeedbackV1,
-    input_a: f32,
-    regen_a: f32,
+    input: ElectricCurrent,
+    regen: ElectricCurrent,
     current: CurrentV1,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,14 +57,14 @@ impl From<&ValidatedDriveSetup> for SetupRecord {
         let setup = value.setup();
         let motor = &setup.motor;
         Self::V1(SetupV1 {
-            resistance: motor.resistance.value,
-            ld: motor.inductance_d.value,
-            lq: motor.inductance_q.value,
-            flux: motor.flux_linkage.value,
+            resistance: motor.resistance,
+            ld: motor.inductance_d,
+            lq: motor.inductance_q,
+            flux: motor.flux_linkage,
             pole_pairs: motor.pole_pairs,
-            power_loss: motor.max_power_loss.value,
-            ld_fundamental: motor.ld_fundamental.value,
-            lq_fundamental: motor.lq_fundamental.value,
+            power_loss: motor.max_power_loss,
+            ld_fundamental: motor.ld_fundamental,
+            lq_fundamental: motor.lq_fundamental,
             feedback: match &setup.feedback {
                 Feedback::Sensorless => FeedbackV1::Sensorless,
                 Feedback::Hall(h) => FeedbackV1::Hall {
@@ -71,8 +76,8 @@ impl From<&ValidatedDriveSetup> for SetupRecord {
                     }),
                 },
             },
-            input_a: setup.source.input.value,
-            regen_a: setup.source.regen.value,
+            input: setup.source.input,
+            regen: setup.source.regen,
             current: match setup.current {
                 DriveCurrent::Auto => CurrentV1::Auto,
                 DriveCurrent::Override(a) => CurrentV1::Override(a),
@@ -90,16 +95,16 @@ impl SetupRecord {
         let Self::V1(v) = self;
         DriveSetup {
             motor: MotorParamsConfig {
-                resistance: ohms(v.resistance),
-                inductance_d: henries(v.ld),
-                inductance_q: henries(v.lq),
-                flux_linkage: webers(v.flux),
+                resistance: v.resistance,
+                inductance_d: v.ld,
+                inductance_q: v.lq,
+                flux_linkage: v.flux,
                 pole_pairs: v.pole_pairs,
-                max_power_loss: watts(v.power_loss),
-                ld_fundamental: henries(v.ld_fundamental),
-                lq_fundamental: henries(v.lq_fundamental),
+                max_power_loss: v.power_loss,
+                ld_fundamental: v.ld_fundamental,
+                lq_fundamental: v.lq_fundamental,
                 // Derived by validation, not stored twice.
-                max_current: amps(0.0),
+                max_current: ElectricCurrent::ZERO,
             },
             feedback: match v.feedback {
                 FeedbackV1::Sensorless => Feedback::Sensorless,
@@ -117,8 +122,8 @@ impl SetupRecord {
                 }),
             },
             source: SourceLimits {
-                input: amps(v.input_a),
-                regen: amps(v.regen_a),
+                input: v.input,
+                regen: v.regen,
             },
             current: match v.current {
                 CurrentV1::Auto => DriveCurrent::Auto,
@@ -173,7 +178,7 @@ mod tests {
         .unwrap();
         let mut next = old.setup().clone();
         next.feedback = Feedback::Sensorless;
-        next.motor.resistance.value = 0.05;
+        next.motor.resistance = ohms(0.05);
         next.source = SourceLimits {
             input: amps(12.0),
             regen: amps(2.0),

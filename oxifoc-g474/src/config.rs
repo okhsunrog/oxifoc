@@ -58,8 +58,8 @@ pub const BOARD: BoardConfig = BoardConfig {
 /// fixed-resistor value against the board at a known temperature.
 #[allow(dead_code)]
 pub const NTC: NtcConfig = NtcConfig {
-    r_fixed_ohm: 10_000.0,          // pull-up per schematic Fig. 4
-    r0_ohm: 10_000.0,               // NTC = 10kΩ @ 25°C
+    r_fixed: ohms(10_000.0),        // pull-up per schematic Fig. 4
+    r0: ohms(10_000.0),             // NTC = 10kΩ @ 25°C
     beta: 3435.0,                   // Typical NTC beta (verify)
     t0_k: 273.15 + 25.0,            // Reference temp 25°C
     topology: NtcTopology::LowSide, // NTC to GND, pull-up to VCC

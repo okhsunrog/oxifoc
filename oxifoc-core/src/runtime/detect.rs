@@ -664,34 +664,31 @@ mod tests {
         // Mirror of the per-arm guards in `run_step`, kept in one place so
         // the boundary rules stay unit-testable without an async backend.
         match *req {
-            DetectRequest::MeasureResistance {
-                max_power_loss: max_power_loss_w,
-                ..
-            } => pos(max_power_loss_w),
+            DetectRequest::MeasureResistance { max_power_loss, .. } => pos(max_power_loss),
             DetectRequest::MeasureInductance {
-                max_power_loss: max_power_loss_w,
-                resistance: resistance_ohm,
+                max_power_loss,
+                resistance,
                 ..
-            } => pos(max_power_loss_w) && pos(resistance_ohm),
+            } => pos(max_power_loss) && pos(resistance),
             DetectRequest::MeasureFlux {
-                max_power_loss: max_power_loss_w,
-                resistance: resistance_ohm,
-                inductance: inductance_h,
+                max_power_loss,
+                resistance,
+                inductance,
                 pole_pairs,
-                openloop_speed: openloop_erpm,
+                openloop_speed,
                 ..
             } => {
-                pos(max_power_loss_w)
-                    && pos(resistance_ohm)
-                    && pos(inductance_h)
+                pos(max_power_loss)
+                    && pos(resistance)
+                    && pos(inductance)
                     && pole_pairs >= 1
-                    && pos(openloop_erpm)
+                    && pos(openloop_speed)
             }
             DetectRequest::CalibrateHall {
-                max_power_loss: max_power_loss_w,
-                resistance: resistance_ohm,
+                max_power_loss,
+                resistance,
                 ..
-            } => pos(max_power_loss_w) && pos(resistance_ohm),
+            } => pos(max_power_loss) && pos(resistance),
             DetectRequest::MeasureCurrentOffsets { .. } => true,
         }
     }

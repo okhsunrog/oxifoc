@@ -486,7 +486,7 @@ pub struct CurrentLimitsConfig {
     /// `1.5·R·id²` — instead of cutting the brake torque
     /// (`motor::dissipation`). The d current stays inside the `max_iq`
     /// circle, so the total copper loss never exceeds the motor's rating
-    /// (`MotorParamsConfig::max_power_loss_w`); this sets how much of it a
+    /// (`MotorParamsConfig::max_power_loss`); this sets how much of it a
     /// long descent may use. Needs detected motor params (R, λ).
     /// `<= 0` = off.
     pub max_dissipation: Power,
@@ -948,7 +948,7 @@ pub enum InstalledDrive {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstalledDriveV1 {
     setup: SetupRecord,
-    configured_trip_a: f32,
+    configured_trip: ElectricCurrent,
     // The legacy records below already have fixed on-flash layouts.
     motor_override: Option<MotorParamsConfig>,
     limits_override: Option<CurrentLimitsConfig>,
@@ -963,7 +963,7 @@ pub struct InstalledDriveV2 {
     hall: Option<HallCalibrationRecord>,
     source: InstalledSourceLimits,
     phase: InstalledPhaseLimits,
-    trip_a: f32,
+    trip: ElectricCurrent,
 }
 
 #[cfg(any(feature = "runtime", test))]
@@ -976,16 +976,16 @@ pub struct InstalledDriveV3 {
 #[cfg(any(feature = "runtime", test))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct InstalledSourceLimits {
-    input_a: f32,
-    regen_a: f32,
+    input: ElectricCurrent,
+    regen: ElectricCurrent,
 }
 
 #[cfg(any(feature = "runtime", test))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct InstalledPhaseLimits {
-    drive_a: f32,
-    brake_a: f32,
-    dissipation_w: f32,
+    drive: ElectricCurrent,
+    brake: ElectricCurrent,
+    dissipation: Power,
 }
 
 #[cfg(any(feature = "runtime", test))]
@@ -999,26 +999,26 @@ impl InstalledDriveV2 {
             motor,
             hall,
             source: InstalledSourceLimits {
-                input_a: limits.bus_in_max.value,
-                regen_a: limits.bus_regen_max.value,
+                input: limits.bus_in_max,
+                regen: limits.bus_regen_max,
             },
             phase: InstalledPhaseLimits {
-                drive_a: limits.max_iq.value,
-                brake_a: limits.max_brake.value,
-                dissipation_w: limits.max_dissipation.value,
+                drive: limits.max_iq,
+                brake: limits.max_brake,
+                dissipation: limits.max_dissipation,
             },
-            trip_a: limits.max_phase_current.value,
+            trip: limits.max_phase_current,
         }
     }
 
     fn limits(&self) -> CurrentLimitsConfig {
         CurrentLimitsConfig {
-            max_iq: amps(self.phase.drive_a),
-            max_brake: amps(self.phase.brake_a),
-            max_phase_current: amps(self.trip_a),
-            bus_in_max: amps(self.source.input_a),
-            bus_regen_max: amps(self.source.regen_a),
-            max_dissipation: watts(self.phase.dissipation_w),
+            max_iq: self.phase.drive,
+            max_brake: self.phase.brake,
+            max_phase_current: self.trip,
+            bus_in_max: self.source.input,
+            bus_regen_max: self.source.regen,
+            max_dissipation: self.phase.dissipation,
         }
     }
 }
@@ -1048,7 +1048,7 @@ impl InstalledDrive {
         let setup = record
             .setup
             .clone()
-            .validate(board_trip, amps(record.configured_trip_a))
+            .validate(board_trip, record.configured_trip)
             .ok()?;
         Some(InstalledDriveV2::new(
             record
@@ -1575,7 +1575,7 @@ mod tests {
         .unwrap();
         let installed = InstalledDrive::V1(InstalledDriveV1 {
             setup: (&setup).into(),
-            configured_trip_a: 30.0,
+            configured_trip: amps(30.0),
             motor_override: None,
             limits_override: None,
             hall_override: None,

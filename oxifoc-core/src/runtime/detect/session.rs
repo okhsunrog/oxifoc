@@ -7,7 +7,7 @@ use crate::types::ReqId;
 use crate::types::commissioning::CommissioningPlan;
 use crate::types::measurement::*;
 use crate::types::{ConfigGroupId, DetectError, DetectRequest, DetectResponse};
-use crate::units::{henries, ohms, watts, webers};
+use crate::units::{henries, ohms, webers};
 
 pub struct Session {
     id: SessionId,
@@ -262,7 +262,7 @@ impl Session {
                     inductance_q: henries(inductance_q_h),
                     flux_linkage: webers(flux_linkage_wb),
                     pole_pairs: plan.pole_pairs,
-                    max_power_loss: watts(plan.motor_class.preset().max_power_loss_w),
+                    max_power_loss: plan.motor_class.preset().max_power_loss,
                     ..Default::default()
                 },
                 feedback,
@@ -410,7 +410,7 @@ mod plan_tests {
     use crate::drive_setup::Feedback;
     use crate::types::ReqId;
     use crate::types::commissioning::{MotorClass, SourceLimits};
-    use crate::units::{amps, erpm};
+    use crate::units::{amps, erpm, watts};
     fn plan() -> CommissioningPlan {
         CommissioningPlan {
             source: SourceLimits {

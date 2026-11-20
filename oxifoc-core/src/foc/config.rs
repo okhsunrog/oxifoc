@@ -59,7 +59,7 @@ use crate::foc::sensors::PhaseCurrents;
 ///
 /// See `foc::phase_voltage` for the converter and the per-cycle source decision.
 use crate::types::{BoardCalib, CurrentSenseTopology};
-use crate::units::{ElectricCurrent, volts};
+use crate::units::{ElectricCurrent, ElectricalResistance, Linear, volts};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhaseSense {
     /// Divider ratio Vphase / Vadc, e.g. `(39_000.0 + 2_200.0) / 2_200.0` for
@@ -204,10 +204,10 @@ pub enum NtcTopology {
 /// Supports both high-side and low-side NTC topologies.
 #[derive(Clone, Copy, Debug)]
 pub struct NtcConfig {
-    /// Fixed resistor in voltage divider (Ohms) - pull-up for low-side, pull-down for high-side
-    pub r_fixed_ohm: f32,
-    /// NTC resistance at reference temperature T0 (Ohms)
-    pub r0_ohm: f32,
+    /// Fixed resistor in voltage divider - pull-up for low-side, pull-down for high-side
+    pub r_fixed: ElectricalResistance,
+    /// NTC resistance at reference temperature T0
+    pub r0: ElectricalResistance,
     /// Beta parameter (K)
     pub beta: f32,
     /// Reference temperature in Kelvin (typically 298.15K = 25°C)
@@ -258,18 +258,18 @@ impl NtcConfig {
             NtcTopology::LowSide => {
                 // NTC to GND, pull-up to Vref
                 // R_ntc = R_pullup / (Vmax/Vadc - 1)
-                self.r_fixed_ohm * adc / (adc_max - adc)
+                self.r_fixed * (adc / (adc_max - adc))
             }
             NtcTopology::HighSide => {
                 // NTC to Vref, pull-down to GND
                 // R_ntc = R_pulldown * (Vmax/Vadc - 1)
-                self.r_fixed_ohm * (adc_max - adc) / adc
+                self.r_fixed * ((adc_max - adc) / adc)
             }
         };
 
         // Beta-model temperature calculation
         // T = 1 / (ln(R/R0)/Beta + 1/T0)
-        let ln_term = libm::logf(r_ntc / self.r0_ohm);
+        let ln_term = libm::logf(r_ntc.ratio_to(self.r0));
         let temp_k = 1.0 / (ln_term / self.beta + 1.0 / self.t0_k);
         temp_k - 273.15 // Convert to Celsius
     }
@@ -381,8 +381,8 @@ mod tests {
     fn test_ntc_temp_low_side() {
         // Test low-side NTC with 4.7k pull-up (like B-G431B-ESC1)
         let ntc = NtcConfig {
-            r_fixed_ohm: 4700.0,
-            r0_ohm: 10_000.0,
+            r_fixed: ohms(4700.0),
+            r0: ohms(10_000.0),
             beta: 3455.0,
             t0_k: 273.15 + 25.0,
             topology: NtcTopology::LowSide,
@@ -398,8 +398,8 @@ mod tests {
     fn ntc_rails_report_invalid_instead_of_a_cold_board() {
         for topology in [NtcTopology::HighSide, NtcTopology::LowSide] {
             let ntc = NtcConfig {
-                r_fixed_ohm: 10_000.0,
-                r0_ohm: 10_000.0,
+                r_fixed: ohms(10_000.0),
+                r0: ohms(10_000.0),
                 beta: 3380.0,
                 t0_k: 298.15,
                 topology,
@@ -420,8 +420,8 @@ mod tests {
     fn test_ntc_temp_high_side() {
         // Test high-side NTC with 10k pull-down (like Cheap FOCer 2 board temp)
         let ntc = NtcConfig {
-            r_fixed_ohm: 10_000.0,
-            r0_ohm: 10_000.0,
+            r_fixed: ohms(10_000.0),
+            r0: ohms(10_000.0),
             beta: 3380.0,
             t0_k: 273.15 + 25.0,
             topology: NtcTopology::HighSide,
