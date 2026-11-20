@@ -1083,6 +1083,6 @@ fn drive_setup_save_replays_exact_request_and_commits_all_groups() {
     let Some(ConfigValue::MotorParams(motor)) = motor.value else {
         panic!("missing motor")
     };
-    assert_eq!(motor.resistance.value, outcome.resistance_ohm);
-    assert_eq!(motor.flux_linkage.value, outcome.flux_linkage_wb);
+    assert_eq!(motor.resistance, outcome.resistance);
+    assert_eq!(motor.flux_linkage, outcome.flux_linkage);
 }

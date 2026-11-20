@@ -12,7 +12,8 @@ use oxifoc_host_lib::ops::detect::{self, DetectionOutcome, DetectionPlan, PRESET
 use slint::{ComponentHandle, SharedString};
 
 use super::{App, SharedRuntime, parse_field};
-use oxifoc_core::units::amps;
+use oxifoc_core::units::unit::{ampere, electrical, microhenry, milliohm, milliweber, ohm};
+use oxifoc_core::units::{amps, erpm};
 
 pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<AtomicU64>) {
     let result = Arc::new(Mutex::new(
@@ -45,7 +46,12 @@ pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<Ato
             {
                 let plan = DetectionPlan::from(preset);
                 app.set_detect_pole_pairs(i32::from(plan.pole_pairs));
-                app.set_detect_flux_erpm(plan.flux_target_erpm.to_string().into());
+                app.set_detect_flux_erpm(
+                    plan.flux_target_speed
+                        .get::<electrical::erpm>()
+                        .to_string()
+                        .into(),
+                );
                 app.set_detect_current_limit(SharedString::default());
                 app.set_detect_resistance(SharedString::default());
                 app.set_detect_status(SharedString::default());
@@ -83,11 +89,15 @@ pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<Ato
             if app.get_detect_advanced() {
                 let mut error = None;
                 plan.pole_pairs = app.get_detect_pole_pairs() as u8;
-                plan.flux_target_erpm =
-                    parse_field("flux spin ERPM", &app.get_detect_flux_erpm(), &mut error);
+                plan.flux_target_speed = erpm(parse_field(
+                    "flux spin ERPM",
+                    &app.get_detect_flux_erpm(),
+                    &mut error,
+                ));
                 let limit = app.get_detect_current_limit();
                 if !limit.trim().is_empty() {
-                    plan.current_limit_a = Some(parse_field("current ceiling", &limit, &mut error));
+                    plan.current_limit =
+                        Some(amps(parse_field("current ceiling", &limit, &mut error)));
                 }
                 if let Some(error) = error {
                     app.set_detect_status(error.into());
@@ -237,14 +247,21 @@ pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<Ato
 }
 
 fn show_result(app: &App, plan: DetectionPlan, out: DetectionOutcome) {
-    app.set_detect_resistance(format!("{:.2}", out.resistance_ohm * 1e3).into());
-    app.set_detect_inductance_d(format!("{:.2}", out.inductance_d_h * 1e6).into());
-    app.set_detect_inductance_q(format!("{:.2}", out.inductance_q_h * 1e6).into());
-    app.set_detect_flux_linkage(format!("{:.3}", out.flux_linkage_wb * 1e3).into());
+    let resistance = out.resistance.get::<milliohm>();
+    app.set_detect_resistance(format!("{resistance:.2}").into());
+    let ld = out.inductance_d.get::<microhenry>();
+    app.set_detect_inductance_d(format!("{ld:.2}").into());
+    let lq = out.inductance_q.get::<microhenry>();
+    app.set_detect_inductance_q(format!("{lq:.2}").into());
+    let flux = out.flux_linkage.get::<milliweber>();
+    app.set_detect_flux_linkage(format!("{flux:.3}").into());
     app.set_detect_kv(format!("{:.1}", out.kv_rpm_per_v).into());
-    let rating = detect::rating_from_loss(out.resistance_ohm, plan.max_power_loss_w);
+    // Unknown values show as zero, as before.
+    let rating = detect::rating_from_loss(out.resistance, plan.max_power_loss)
+        .map_or(0.0, |a| a.get::<ampere>());
     app.set_detect_max_current(format!("{rating:.1}").into());
-    let (kp, ki) = detect::suggested_pi_gains(out.resistance_ohm, out.l_avg());
+    let (kp, ki) = detect::suggested_pi_gains(out.resistance, out.l_avg())
+        .map_or((0.0, 0.0), |(kp, ki)| (kp.get::<ohm>(), ki.value));
     app.set_detect_kp(format!("{kp:.4}").into());
     app.set_detect_ki(format!("{ki:.2}").into());
     if let Some(source) = plan.source {

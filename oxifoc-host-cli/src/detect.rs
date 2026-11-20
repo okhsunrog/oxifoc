@@ -14,7 +14,8 @@ use serde_json::json;
 use crate::config_cli::{self, config_snapshot};
 use crate::record;
 use crate::{DetectStep, OffsetMethodArg, emit};
-use oxifoc_core::units::{amps, erpm, henries, ohms, watts};
+use oxifoc_core::units::unit::{microhenry, milliohm, milliweber, ohm};
+use oxifoc_core::units::{amps, henries, ohms};
 
 /// Stored motor-params as JSON (defaults when not stored).
 fn motor_params_value(runtime: &HostRuntime) -> Result<serde_json::Value> {
@@ -119,16 +120,16 @@ pub fn run_detect(
     });
     let DetectionPlan {
         pole_pairs: pp,
-        max_power_loss_w,
-        flux_target_erpm,
-        current_limit_a,
+        max_power_loss,
+        flux_target_speed,
+        current_limit,
         ..
     } = plan;
 
     let req = match step {
         DetectStep::Resistance => DetectRequest::MeasureResistance {
-            max_power_loss: watts(max_power_loss_w),
-            current_limit: current_limit_a.map(amps),
+            max_power_loss,
+            current_limit,
         },
         DetectStep::Inductance => {
             if r <= 0.0 {
@@ -137,8 +138,8 @@ pub fn run_detect(
                 );
             }
             DetectRequest::MeasureInductance {
-                max_power_loss: watts(max_power_loss_w),
-                current_limit: current_limit_a.map(amps),
+                max_power_loss,
+                current_limit,
                 resistance: ohms(r),
             }
         }
@@ -150,12 +151,12 @@ pub fn run_detect(
                 );
             }
             DetectRequest::MeasureFlux {
-                max_power_loss: watts(max_power_loss_w),
-                current_limit: current_limit_a.map(amps),
+                max_power_loss,
+                current_limit,
                 resistance: ohms(r),
                 inductance: henries(l),
                 pole_pairs: pp,
-                openloop_speed: erpm(flux_target_erpm),
+                openloop_speed: flux_target_speed,
             }
         }
         DetectStep::Hall => {
@@ -167,8 +168,8 @@ pub fn run_detect(
                 );
             }
             DetectRequest::CalibrateHall {
-                max_power_loss: watts(max_power_loss_w),
-                current_limit: current_limit_a.map(amps),
+                max_power_loss,
+                current_limit,
                 resistance: ohms(r),
             }
         }
@@ -252,10 +253,10 @@ fn run_all(
     let apply = if !apply && !json && std::io::stdin().is_terminal() {
         eprintln!(
             "R {:.3} mΩ · Ld/Lq {:.3}/{:.3} µH · Flux {:.3} mWb · {}",
-            outcome.resistance_ohm * 1e3,
-            outcome.inductance_d_h * 1e6,
-            outcome.inductance_q_h * 1e6,
-            outcome.flux_linkage_wb * 1e3,
+            outcome.resistance.get::<milliohm>(),
+            outcome.inductance_d.get::<microhenry>(),
+            outcome.inductance_q.get::<microhenry>(),
+            outcome.flux_linkage.get::<milliweber>(),
             if outcome.hall_ok {
                 "Hall"
             } else {
@@ -278,7 +279,9 @@ fn run_all(
     if apply {
         detect::apply_sequence(&runtime.cmd_tx, &outcome, plan, current)?;
     }
-    let (kp, ki) = detect::suggested_pi_gains(outcome.resistance_ohm, outcome.l_avg());
+    // Unknown gains print as zero, as before.
+    let (kp, ki) = detect::suggested_pi_gains(outcome.resistance, outcome.l_avg())
+        .map_or((0.0, 0.0), |(kp, ki)| (kp.get::<ohm>(), ki.value));
     emit(
         json,
         json!({"setup": setup, "plan": plan, "result": outcome, "kp": kp, "ki": ki, "applied": apply, "thermal_current_a": thermal, "effective_drive_current_a": effective, "captures": captures}),
@@ -499,6 +502,7 @@ pub fn confirm_source(
 mod hardware_tests {
     use super::*;
     use oxifoc_core::types::{ControlMode, MotorState};
+    use oxifoc_core::units::watts;
     use oxifoc_host_lib::{CommandSender, HostConfig, TransportType, motor_channel, start_host};
 
     fn stop(cmd: &CommandSender) -> Result<oxifoc_core::types::MotorStatus> {
@@ -571,7 +575,7 @@ mod hardware_tests {
         let request = oxifoc_host_lib::new_detection(
             &runtime.cmd_tx,
             DetectRequest::MeasureInductance {
-                max_power_loss: watts(DetectionPlan::from(&detect::PRESETS[2]).max_power_loss_w),
+                max_power_loss: DetectionPlan::from(&detect::PRESETS[2]).max_power_loss,
                 current_limit: None,
                 resistance: ohms(resistance),
             },

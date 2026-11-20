@@ -52,10 +52,10 @@ pub mod unit {
     pub use uom::si::angular_velocity::revolution_per_minute as rpm;
     pub use uom::si::electric_current::ampere;
     pub use uom::si::electric_potential::volt;
-    pub use uom::si::electrical_resistance::ohm;
+    pub use uom::si::electrical_resistance::{milliohm, ohm};
     pub use uom::si::frequency::hertz;
-    pub use uom::si::inductance::henry;
-    pub use uom::si::magnetic_flux::weber;
+    pub use uom::si::inductance::{henry, microhenry};
+    pub use uom::si::magnetic_flux::{milliweber, weber};
     pub use uom::si::power::watt;
     pub use uom::si::time::second;
 }

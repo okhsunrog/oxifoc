@@ -19,7 +19,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use oxifoc_core::types::{ConfigGroupId, ControlMode, FaultCategory, FaultClearTarget};
-use oxifoc_core::units::{amps, erad, erad_per_s, volts};
+use oxifoc_core::units::{self, amps, erad, erad_per_s, volts};
 use oxifoc_host_lib::{
     HostCommand, HostConfig, HostRuntime, TransportType, init_tracing, list_probes,
     list_serial_ports, motor_channel, start_host,
@@ -1197,8 +1197,8 @@ fn main() -> Result<()> {
                 .context("unknown motor class")?;
             let mut plan = oxifoc_host_lib::ops::detect::DetectionPlan::from(preset);
             plan.pole_pairs = pole_pairs.unwrap_or(plan.pole_pairs);
-            plan.flux_target_erpm = erpm.unwrap_or(plan.flux_target_erpm);
-            plan.current_limit_a = current_limit_a;
+            plan.flux_target_speed = erpm.map_or(plan.flux_target_speed, units::erpm);
+            plan.current_limit = current_limit_a.map(amps);
             plan.calibrate_hall = !sensorless;
             if matches!(step, DetectStep::All) {
                 plan.source = Some(detect::confirm_source(input_current_a, regen_current_a)?);

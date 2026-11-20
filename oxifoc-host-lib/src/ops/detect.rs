@@ -10,34 +10,39 @@
 //! front-end can *show* the operator what the device will use.
 
 use anyhow::{Context, Result, bail};
+use oxifoc_core::foc::controller::{CurrentKi, CurrentKp};
 use oxifoc_core::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH, calculate_current_gains};
 use oxifoc_core::foc::detection::resistance::calculate_max_current;
 use oxifoc_core::foc::detection::types::MotorSize;
+use oxifoc_core::storage::MotorParamsConfig;
 use oxifoc_core::types::commissioning::{CommissioningPlan, MotorClass, SourceLimits};
 use oxifoc_core::types::measurement::{HallCalibrationConfig, Measurement, SessionId};
 use oxifoc_core::types::{
     ConfigGroupId, ControlMode, CurrentOffsetMethod, CurrentOffsetReport, DetectRequest,
     DetectResponse, MotorState,
 };
-use oxifoc_core::units::{henries, ohms, unit::electrical};
+use oxifoc_core::units::{
+    ElectricCurrent, ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux,
+    Power, Sign, amps, watts,
+};
 use serde_json::json;
 
 use super::config;
 use crate::{CommandSender, HostCommand, detect_channel, motor_channel};
-use oxifoc_core::units::{amps, erpm, watts, webers};
 
 mod presets;
 pub use presets::{MotorPreset, PRESETS};
 
 /// Resolved profile used throughout a commissioning run and its later apply.
+/// Serialized (CLI `--json`) with quantities in SI base units.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct DetectionPlan {
     pub pole_pairs: u8,
-    pub max_power_loss_w: f32,
+    pub max_power_loss: Power,
     pub motor_class: MotorClass,
     pub source: Option<SourceLimits>,
-    pub flux_target_erpm: f32,
-    pub current_limit_a: Option<f32>,
+    pub flux_target_speed: ElectricalAngularVelocity,
+    pub current_limit: Option<ElectricCurrent>,
     pub calibrate_hall: bool,
 }
 
@@ -45,28 +50,29 @@ impl From<&MotorPreset> for DetectionPlan {
     fn from(preset: &MotorPreset) -> Self {
         Self {
             pole_pairs: preset.pole_pairs,
-            max_power_loss_w: preset.max_power_loss.value,
+            max_power_loss: preset.max_power_loss,
             motor_class: preset.class,
             source: None,
             // VESC's lower open-loop ERPM is for subsequent riding startup.
-            flux_target_erpm: preset.sensorless_speed.get::<electrical::erpm>(),
-            current_limit_a: None,
+            flux_target_speed: preset.sensorless_speed,
+            current_limit: None,
             calibrate_hall: true,
         }
     }
 }
 
-/// Collected results of a full detection sequence.
+/// Collected results of a full detection sequence, serialized with
+/// quantities in SI base units.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct DetectionOutcome {
-    /// Phase resistance (Ω).
-    pub resistance_ohm: f32,
-    /// d-axis inductance (H).
-    pub inductance_d_h: f32,
-    /// q-axis inductance (H).
-    pub inductance_q_h: f32,
-    /// Flux linkage (Wb).
-    pub flux_linkage_wb: f32,
+    /// Phase resistance.
+    pub resistance: ElectricalResistance,
+    /// d-axis inductance.
+    pub inductance_d: Inductance,
+    /// q-axis inductance.
+    pub inductance_q: Inductance,
+    /// Flux linkage.
+    pub flux_linkage: MagneticFlux,
     /// Motor velocity constant (RPM/V).
     pub kv_rpm_per_v: f32,
     /// Whether Hall calibration was requested and succeeded.
@@ -90,22 +96,18 @@ impl DetectionOutcome {
             "incomplete feedback result"
         );
         anyhow::ensure!(
-            plan.max_power_loss_w == plan.motor_class.preset().max_power_loss.value,
+            plan.max_power_loss == plan.motor_class.preset().max_power_loss,
             "inconsistent motor class"
         );
         Ok(DriveSetup {
-            motor: oxifoc_core::storage::MotorParamsConfig {
-                resistance: ohms(self.resistance_ohm),
-                inductance_d: henries(self.inductance_d_h),
-                inductance_q: henries(self.inductance_q_h),
-                flux_linkage: webers(self.flux_linkage_wb),
+            motor: MotorParamsConfig {
+                resistance: self.resistance,
+                inductance_d: self.inductance_d,
+                inductance_q: self.inductance_q,
+                flux_linkage: self.flux_linkage,
                 pole_pairs: plan.pole_pairs,
-                max_power_loss: Some(watts(plan.max_power_loss_w)),
-                max_current: Some(amps(rating_from_loss(
-                    self.resistance_ohm,
-                    plan.max_power_loss_w,
-                )))
-                .filter(|a| a.value > 0.0),
+                max_power_loss: Some(plan.max_power_loss),
+                max_current: rating_from_loss(self.resistance, plan.max_power_loss),
                 ..Default::default()
             },
             feedback: self.hall.map_or(Feedback::Sensorless, Feedback::Hall),
@@ -116,38 +118,33 @@ impl DetectionOutcome {
 
     /// Average of the d/q inductances.
     #[must_use]
-    pub fn l_avg(&self) -> f32 {
-        (self.inductance_d_h + self.inductance_q_h) / 2.0
+    pub fn l_avg(&self) -> Inductance {
+        (self.inductance_d + self.inductance_q) / 2.0
     }
 }
 
 /// The PI gains the device will compute from these params on a config write
-/// (identical math: `calculate_current_gains` at the default bandwidth).
-/// For display only — the front-ends must not write these back.
+/// (identical math: `calculate_current_gains` at the default bandwidth),
+/// when both inputs are positive. For display only — the front-ends must not
+/// write these back.
 #[must_use]
-pub fn suggested_pi_gains(resistance_ohm: f32, l_avg_h: f32) -> (f32, f32) {
-    if l_avg_h > 0.0 && resistance_ohm > 0.0 {
-        let (kp, ki) =
-            calculate_current_gains(ohms(resistance_ohm), henries(l_avg_h), DEFAULT_BANDWIDTH);
-        (kp.value, ki.value)
-    } else {
-        (0.0, 0.0)
-    }
+pub fn suggested_pi_gains(
+    resistance: ElectricalResistance,
+    l_avg: Inductance,
+) -> Option<(CurrentKp, CurrentKi)> {
+    (l_avg.is_positive() && resistance.is_positive())
+        .then(|| calculate_current_gains(resistance, l_avg, DEFAULT_BANDWIDTH))
 }
 
-/// Continuous-current rating from the VESC thermal solve (√(P/R/1.5)).
-/// Returns 0.0 (= "unknown", board defaults apply) when inputs are invalid.
+/// Continuous-current rating from the VESC thermal solve (√(P/R/1.5)), when
+/// both inputs are positive; otherwise unknown and the board defaults apply.
 #[must_use]
-pub fn rating_from_loss(resistance_ohm: f32, max_power_loss_w: f32) -> f32 {
-    if resistance_ohm > 0.0 && max_power_loss_w > 0.0 {
-        calculate_max_current(
-            ohms(resistance_ohm),
-            MotorSize::Custom(watts(max_power_loss_w)),
-        )
-        .value
-    } else {
-        0.0
-    }
+pub fn rating_from_loss(
+    resistance: ElectricalResistance,
+    max_power_loss: Power,
+) -> Option<ElectricCurrent> {
+    (resistance.is_positive() && max_power_loss.is_positive())
+        .then(|| calculate_max_current(resistance, MotorSize::Custom(max_power_loss)))
 }
 
 /// Run one detection step and wait for the device's response (blocking).
@@ -260,33 +257,33 @@ pub fn run_sequence(
 ) -> Result<DetectionOutcome> {
     let DetectionPlan {
         pole_pairs,
-        max_power_loss_w,
-        flux_target_erpm,
-        current_limit_a,
+        max_power_loss,
+        flux_target_speed,
+        current_limit,
         calibrate_hall,
         motor_class,
         source,
     } = plan;
     anyhow::ensure!(
         pole_pairs > 0
-            && max_power_loss_w.is_finite()
-            && max_power_loss_w > 0.0
-            && flux_target_erpm.is_finite()
-            && flux_target_erpm > 0.0
-            && current_limit_a.is_none_or(|a| a.is_finite() && a >= 0.5),
+            && max_power_loss.is_finite()
+            && max_power_loss.is_positive()
+            && flux_target_speed.is_finite()
+            && flux_target_speed.is_positive()
+            && current_limit.is_none_or(|a| a.is_finite() && a >= amps(0.5)),
         "invalid detection profile or override"
     );
     preflight(cmd)?;
     anyhow::ensure!(
-        max_power_loss_w == motor_class.preset().max_power_loss.value,
+        max_power_loss == motor_class.preset().max_power_loss,
         "motor class does not match excitation profile"
     );
     let confirmed = CommissioningPlan {
         source: source.context("confirm input and regenerative current limits before detection")?,
         motor_class,
         pole_pairs,
-        flux_target_speed: erpm(flux_target_erpm),
-        current_limit: current_limit_a.map(amps),
+        flux_target_speed,
+        current_limit,
         calibrate_hall,
     };
     let mut session = crate::DetectionSession::open(cmd, Some(confirmed))?;
@@ -300,11 +297,11 @@ pub fn run_sequence(
     match measure(
         "resistance",
         DetectRequest::MeasureResistance {
-            max_power_loss: watts(max_power_loss_w),
-            current_limit: current_limit_a.map(amps),
+            max_power_loss,
+            current_limit,
         },
     )? {
-        DetectResponse::Resistance { resistance } => out.resistance_ohm = resistance.value,
+        DetectResponse::Resistance { resistance } => out.resistance = resistance,
         DetectResponse::Error(e) => bail!("R: {e:?}"),
         other => bail!("R: unexpected response {other:?}"),
     }
@@ -313,17 +310,17 @@ pub fn run_sequence(
     match measure(
         "inductance",
         DetectRequest::MeasureInductance {
-            max_power_loss: watts(max_power_loss_w),
-            current_limit: current_limit_a.map(amps),
-            resistance: ohms(out.resistance_ohm),
+            max_power_loss,
+            current_limit,
+            resistance: out.resistance,
         },
     )? {
         DetectResponse::Inductance {
-            inductance_d: inductance_d_h,
-            inductance_q: inductance_q_h,
+            inductance_d,
+            inductance_q,
         } => {
-            out.inductance_d_h = inductance_d_h.value;
-            out.inductance_q_h = inductance_q_h.value;
+            out.inductance_d = inductance_d;
+            out.inductance_q = inductance_q;
         }
         DetectResponse::Error(e) => bail!("L: {e:?}"),
         other => bail!("L: unexpected response {other:?}"),
@@ -333,19 +330,19 @@ pub fn run_sequence(
     match measure(
         "flux",
         DetectRequest::MeasureFlux {
-            max_power_loss: watts(max_power_loss_w),
-            current_limit: current_limit_a.map(amps),
-            resistance: ohms(out.resistance_ohm),
-            inductance: henries(out.l_avg()),
+            max_power_loss,
+            current_limit,
+            resistance: out.resistance,
+            inductance: out.l_avg(),
             pole_pairs,
-            openloop_speed: erpm(flux_target_erpm),
+            openloop_speed: flux_target_speed,
         },
     )? {
         DetectResponse::FluxLinkage {
-            flux_linkage: flux_linkage_wb,
+            flux_linkage,
             kv_rpm_per_v,
         } => {
-            out.flux_linkage_wb = flux_linkage_wb.value;
+            out.flux_linkage = flux_linkage;
             out.kv_rpm_per_v = kv_rpm_per_v;
         }
         DetectResponse::Error(e) => bail!("Flux: {e:?}"),
@@ -356,9 +353,9 @@ pub fn run_sequence(
         match measure(
             "hall",
             DetectRequest::CalibrateHall {
-                max_power_loss: watts(max_power_loss_w),
-                current_limit: current_limit_a.map(amps),
-                resistance: ohms(out.resistance_ohm),
+                max_power_loss,
+                current_limit,
+                resistance: out.resistance,
             },
         )? {
             DetectResponse::HallCalibrated(hall) => {
@@ -472,33 +469,26 @@ pub fn apply_step(cmd: &CommandSender, resp: &DetectResponse) -> Result<serde_js
                 .as_object_mut()
                 .context("motor-params is not a JSON object")?;
             match measured {
-                DetectResponse::Resistance {
-                    resistance: resistance_ohm,
-                } => {
-                    obj.insert("resistance".into(), json!(resistance_ohm));
-                    let ploss = obj
+                DetectResponse::Resistance { resistance } => {
+                    obj.insert("resistance".into(), json!(resistance));
+                    let loss = obj
                         .get("max_power_loss")
                         .and_then(serde_json::Value::as_f64)
-                        .unwrap_or(0.0) as f32;
-                    if ploss > 0.0 {
-                        obj.insert(
-                            "max_current".into(),
-                            json!(rating_from_loss(resistance_ohm.value, ploss)),
-                        );
+                        .map(|w| watts(w as f32));
+                    if let Some(rating) = loss.and_then(|loss| rating_from_loss(*resistance, loss))
+                    {
+                        obj.insert("max_current".into(), json!(rating));
                     }
                 }
                 DetectResponse::Inductance {
-                    inductance_d: inductance_d_h,
-                    inductance_q: inductance_q_h,
+                    inductance_d,
+                    inductance_q,
                 } => {
-                    obj.insert("inductance_d".into(), json!(inductance_d_h));
-                    obj.insert("inductance_q".into(), json!(inductance_q_h));
+                    obj.insert("inductance_d".into(), json!(inductance_d));
+                    obj.insert("inductance_q".into(), json!(inductance_q));
                 }
-                DetectResponse::FluxLinkage {
-                    flux_linkage: flux_linkage_wb,
-                    ..
-                } => {
-                    obj.insert("flux_linkage".into(), json!(flux_linkage_wb));
+                DetectResponse::FluxLinkage { flux_linkage, .. } => {
+                    obj.insert("flux_linkage".into(), json!(flux_linkage));
                 }
                 _ => bail!("unexpected detect response: {measured:?}"),
             }
