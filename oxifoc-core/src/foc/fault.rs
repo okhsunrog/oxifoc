@@ -353,6 +353,33 @@ pub struct FaultRegistry<F: PlatformFault> {
 const SUMMARY_KILL: u32 = 1 << 16;
 #[cfg(feature = "runtime")]
 const SUMMARY_STOPPING: u32 = 1 << 17;
+/// Category bits, below the Kill and stopping flags.
+#[cfg(feature = "runtime")]
+const SUMMARY_CATEGORIES: u32 = SUMMARY_KILL - 1;
+
+// Each category's discriminant is its summary bit and must stay below the
+// flag bits. The match has no wildcard, so a new category stops compiling
+// here: move the assert to the new last variant.
+#[cfg(feature = "runtime")]
+const _: () = {
+    match FaultCategory::None {
+        FaultCategory::None
+        | FaultCategory::OverCurrent
+        | FaultCategory::OverVoltage
+        | FaultCategory::UnderVoltage
+        | FaultCategory::OverTemp
+        | FaultCategory::DriverFault
+        | FaultCategory::HallError
+        | FaultCategory::Stall
+        | FaultCategory::CalibrationFault
+        | FaultCategory::CommTimeout
+        | FaultCategory::Derating => {}
+    }
+    assert!(
+        1u32 << (FaultCategory::Derating as u32) <= SUMMARY_CATEGORIES,
+        "fault categories overflow the registry summary into its flag bits"
+    );
+};
 
 #[cfg(feature = "runtime")]
 fn summary_of<F: PlatformFault>(faults: &Vec<F, MAX_FAULTS>) -> u32 {
@@ -511,7 +538,7 @@ impl<F: PlatformFault> FaultRegistry<F> {
 
     /// Returns true if any fault is active
     pub fn any(&self) -> bool {
-        self.summary.load(core::sync::atomic::Ordering::Relaxed) & 0xFFFF != 0
+        self.summary.load(core::sync::atomic::Ordering::Relaxed) & SUMMARY_CATEGORIES != 0
     }
 
     /// Returns true if any Kill-class fault is active (immediate high-Z)
