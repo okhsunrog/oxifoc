@@ -61,12 +61,6 @@ pub static GATE_CURR: AtomicU32 = AtomicU32::new(0);
 pub static OUT_TRK: AtomicU32 = AtomicU32::new(0);
 /// Due-only outer velocity update, including both torque-authority probes.
 pub static VELOCITY_REQUEST: AtomicU32 = AtomicU32::new(0);
-/// Negative-current authority probe inside the due-only velocity update.
-#[cfg(feature = "isr-profiling")]
-pub static AUTHORITY_NEGATIVE: AtomicU32 = AtomicU32::new(0);
-/// Positive-current authority probe inside the due-only velocity update.
-#[cfg(feature = "isr-profiling")]
-pub static AUTHORITY_POSITIVE: AtomicU32 = AtomicU32::new(0);
 /// Nonlinear winding-power solver inside a dissipative torque grant.
 #[cfg(feature = "isr-profiling")]
 pub static DISSIPATIVE_SOLVE: AtomicU32 = AtomicU32::new(0);
@@ -124,10 +118,6 @@ pub enum Section {
     SensorSampling,
     PhaseVoltage,
     #[cfg(feature = "isr-profiling")]
-    AuthorityNegative,
-    #[cfg(feature = "isr-profiling")]
-    AuthorityPositive,
-    #[cfg(feature = "isr-profiling")]
     DissipativeSolve,
     #[cfg(feature = "isr-profiling")]
     StartupConfirm,
@@ -167,10 +157,6 @@ impl Snapshot {
             &VELOCITY_REQUEST,
             &EST_SENSE,
             &EST_VOLTAGE,
-            #[cfg(feature = "isr-profiling")]
-            &AUTHORITY_NEGATIVE,
-            #[cfg(feature = "isr-profiling")]
-            &AUTHORITY_POSITIVE,
             #[cfg(feature = "isr-profiling")]
             &DISSIPATIVE_SOLVE,
             #[cfg(feature = "isr-profiling")]

@@ -110,7 +110,7 @@ DETAIL_FEATURES = {
 SECTION_NAMES = ["command", "protection", "step", "tail", "pwm_off", "stopped_phase",
     "gate", "control", "trig", "post", "estimator", "observer", "startup", "phase_output",
     "current_read", "phase_tracker", "velocity_request", "sensor_sampling", "phase_voltage",
-    "authority_negative", "authority_positive", "dissipative_solve", "startup_confirm",
+    "dissipative_solve", "startup_confirm",
     "startup_log", "startup_seed", "observer_tail"]
 
 
