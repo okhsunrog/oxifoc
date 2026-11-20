@@ -10,6 +10,7 @@ use serde_json::Value;
 // Re-export the shared, presentation-agnostic config ops so existing call
 // sites (`config_cli::parse_group`, `config_cli::current_value`, …) and the
 // `detect` module keep working unchanged.
+use oxifoc_host_lib::ops::config::write_from_value;
 pub use oxifoc_host_lib::ops::config::{
     GROUPS, config_snapshot, current_value, group_value, parse_group, read_group, set_fields,
 };
@@ -89,7 +90,10 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
                 println!("        {field}: Some({struct_name} {{");
                 if let Some(obj) = v.as_object() {
                     for (k, val) in obj {
-                        println!("            {k}: {},", rust_field_literal(group, k, val)?);
+                        println!(
+                            "            {k}: {},",
+                            rust_field_literal(group, &v, k, val)?
+                        );
                     }
                 }
                 println!("        }}),");
@@ -133,27 +137,11 @@ fn rust_struct_name(group: oxifoc_core::types::ConfigGroupId) -> &'static str {
 
 fn rust_field_literal(
     group: oxifoc_core::types::ConfigGroupId,
+    whole: &Value,
     field: &str,
     value: &Value,
 ) -> Result<String> {
     use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
-    if group == ConfigGroupId::Derating
-        && let Some(obj) = value.as_object()
-    {
-        let type_name = match field {
-            "speed" => "oxifoc_core::motor::derating::SpeedDerating",
-            "modulation" => "oxifoc_core::motor::derating::ModulationDerating",
-            "temperature" => "oxifoc_core::motor::derating::TemperatureDerating",
-            "bus_voltage" => "oxifoc_core::motor::derating::BusVoltageDerating",
-            _ => anyhow::bail!("unexpected nested derating field {field}"),
-        };
-        let fields = obj
-            .iter()
-            .map(|(k, v)| format!("{k}: {}", rust_literal(v)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Ok(format!("{type_name} {{ {fields} }}"));
-    }
     if group == ConfigGroupId::MotorTemperature && field == "sensor" {
         use oxifoc_core::storage::MotorTemperatureSensor;
         let sensor = serde_json::from_value::<MotorTemperatureSensor>(value.clone())?;
@@ -189,7 +177,71 @@ fn rust_field_literal(
             },
         );
     }
-    Ok(rust_literal(value))
+    nested_literal(group, whole, &[field], value)
+}
+
+/// A field at `path` of the group's JSON, wrapped in `Some(..)`/`None` when
+/// the field is an `Option` and spelled as a struct literal when it is one
+/// of derating's nested structs.
+fn nested_literal(
+    group: oxifoc_core::types::ConfigGroupId,
+    whole: &Value,
+    path: &[&str],
+    value: &Value,
+) -> Result<String> {
+    use oxifoc_core::types::ConfigGroupId;
+    let optional = accepts_null(group, whole, path);
+    if value.is_null() {
+        anyhow::ensure!(optional, "{} is null but not optional", path.join("."));
+        return Ok("None".into());
+    }
+    let inner = match value.as_object() {
+        Some(fields) if group == ConfigGroupId::Derating => {
+            let type_name = match path {
+                ["speed"] => "oxifoc_core::motor::derating::SpeedDerating",
+                ["modulation"] => "oxifoc_core::motor::derating::ModulationDerating",
+                ["temperature"] => "oxifoc_core::motor::derating::TemperatureDerating",
+                ["bus_voltage"] => "oxifoc_core::motor::derating::BusVoltageDerating",
+                [_, _] => "oxifoc_core::motor::derating::Ramp",
+                _ => anyhow::bail!("unexpected nested derating field {}", path.join(".")),
+            };
+            let fields = fields
+                .iter()
+                .map(|(k, v)| {
+                    let mut nested = path.to_vec();
+                    nested.push(k);
+                    Ok(format!(
+                        "{k}: {}",
+                        nested_literal(group, whole, &nested, v)?
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join(", ");
+            format!("{type_name} {{ {fields} }}")
+        }
+        _ => rust_literal(value),
+    };
+    Ok(if optional {
+        format!("Some({inner})")
+    } else {
+        inner
+    })
+}
+
+/// Whether the group's typed struct still deserializes with `null` at
+/// `path`, i.e. the field there is an `Option`. JSON alone cannot tell a
+/// set `Option` from a plain value.
+fn accepts_null(group: oxifoc_core::types::ConfigGroupId, whole: &Value, path: &[&str]) -> bool {
+    let mut probe = whole.clone();
+    let mut slot = &mut probe;
+    for key in path {
+        match slot.get_mut(*key) {
+            Some(next) => slot = next,
+            None => return false,
+        }
+    }
+    *slot = Value::Null;
+    write_from_value(group, probe).is_ok()
 }
 
 /// Render a JSON value as a Rust literal for baked_config emission.
@@ -219,12 +271,14 @@ mod tests {
     use super::*;
     use oxifoc_core::types::{ConfigGroupId, VoltageFeedforwardMode};
     use oxifoc_core::units::erad;
+    use oxifoc_host_lib::ops::config::group_default_value;
 
     #[test]
     fn baked_hall_geometry_is_a_rust_optional_struct() {
         let group = ConfigGroupId::HallCalibration;
+        let whole = group_default_value(group);
         assert_eq!(
-            rust_field_literal(group, "geometry", &Value::Null).unwrap(),
+            rust_field_literal(group, &whole, "geometry", &Value::Null).unwrap(),
             "None"
         );
         let json = serde_json::to_value(oxifoc_core::storage::HallTransitionGeometryConfig {
@@ -233,15 +287,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            rust_field_literal(group, "geometry", &json).unwrap(),
+            rust_field_literal(group, &whole, "geometry", &json).unwrap(),
             "Some(HallTransitionGeometryConfig { entry_angles: [si(0.0), si(0.0), si(0.0), si(0.0), si(0.0), si(0.0), si(0.0), si(0.0)], next_states: [0, 0, 0, 0, 0, 0, 0, 0] })"
         );
         assert_eq!(
-            rust_field_literal(group, "valid", &serde_json::json!([false, true])).unwrap(),
+            rust_field_literal(group, &whole, "valid", &serde_json::json!([false, true])).unwrap(),
             "[false, true]"
         );
         assert!(
-            rust_field_literal(group, "geometry", &serde_json::json!({"next_states": []})).is_err()
+            rust_field_literal(
+                group,
+                &whole,
+                "geometry",
+                &serde_json::json!({"next_states": []})
+            )
+            .is_err()
         );
     }
 
@@ -260,6 +320,7 @@ mod tests {
             assert_eq!(
                 rust_field_literal(
                     ConfigGroupId::VoltageFeedforward,
+                    &group_default_value(ConfigGroupId::VoltageFeedforward),
                     "mode",
                     &serde_json::to_value(mode).unwrap()
                 )
@@ -270,6 +331,7 @@ mod tests {
         assert!(
             rust_field_literal(
                 ConfigGroupId::VoltageFeedforward,
+                &group_default_value(ConfigGroupId::VoltageFeedforward),
                 "mode",
                 &Value::String("enabled".into())
             )
@@ -279,5 +341,35 @@ mod tests {
             rust_literal(&serde_json::json!([1.0, 2.0])),
             "[si(1.0), si(2.0)]"
         );
+    }
+
+    #[test]
+    fn baked_options_are_some_or_none() {
+        let group = ConfigGroupId::CurrentLimits;
+        let whole = serde_json::json!({
+            "max_iq": null, "max_brake": null, "max_phase_current": 30.0,
+            "bus_in_max": 5.0, "bus_regen_max": 0.0, "max_dissipation": 0.0,
+        });
+        let field = |name: &str| rust_field_literal(group, &whole, name, &whole[name]).unwrap();
+        assert_eq!(field("max_iq"), "None");
+        assert_eq!(field("max_phase_current"), "Some(si(30.0))");
+        assert_eq!(field("bus_regen_max"), "Some(si(0.0))");
+        assert_eq!(field("max_dissipation"), "si(0.0)", "not an Option");
+    }
+
+    #[test]
+    fn baked_derating_spells_nested_structs_and_ramps() {
+        let group = ConfigGroupId::Derating;
+        let mut whole = group_default_value(group);
+        whole["bus_voltage"]["cut"] = serde_json::json!({"start": 40.0, "end": 36.0});
+        assert_eq!(
+            rust_field_literal(group, &whole, "bus_voltage", &whole["bus_voltage"]).unwrap(),
+            "oxifoc_core::motor::derating::BusVoltageDerating { \
+             cut: Some(oxifoc_core::motor::derating::Ramp { end: si(36.0), start: si(40.0) }), \
+             regen: None }"
+        );
+        let speed = rust_field_literal(group, &whole, "speed", &whole["speed"]).unwrap();
+        assert!(speed.contains("max_forward: None"), "{speed}");
+        assert!(speed.contains("speed_start_frac: si(0.8)"), "{speed}");
     }
 }
