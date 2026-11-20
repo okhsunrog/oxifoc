@@ -3718,7 +3718,7 @@ mod severity_gate {
     use crate::foc::hall_sensor::HallFaultKind;
     use crate::foc::phase::{PhaseManager, RotorVelocityEstimate};
     use crate::foc::trig::LibmSinCos;
-    use crate::motor::derating::BusVoltageDerating;
+    use crate::motor::derating::{BusVoltageDerating, Ramp};
     use crate::state::{
         CMD_CHANNEL, DriverCommand, MotorControlState, process_commands, run_foc_cycle,
     };
@@ -4787,8 +4787,10 @@ mod severity_gate {
         let mut h = running_harness();
         h.driver.set_derating(DeratingConfig {
             bus_voltage: BusVoltageDerating {
-                cut_start: volts(22.0),
-                cut_end: volts(18.0),
+                cut: Some(Ramp {
+                    start: volts(22.0),
+                    end: volts(18.0),
+                }),
                 ..Default::default()
             },
             ..Default::default()

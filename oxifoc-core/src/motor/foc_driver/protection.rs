@@ -15,7 +15,7 @@ use crate::foc::trig::SinCos;
 use crate::isr_prof;
 #[cfg(all(feature = "isr-work-events", feature = "runtime"))]
 use crate::isr_work;
-use crate::motor::derating::{DeratingConfig, DeratingScales};
+use crate::motor::derating::{DeratingConfig, DeratingScales, PreparedDerating};
 #[cfg(feature = "iq-authority")]
 use crate::motor::dissipation;
 use crate::motor::dissipation::{RegenBudget, WindingModel, dissipate_with_id, heat_current_limit};
@@ -191,7 +191,7 @@ pub(super) struct ProtectionMonitor {
     pub(super) service_slots: super::velocity_schedule::ServiceSlots,
     board_voltage: Option<PreparedVoltageLimits>,
     voltage: Option<PreparedVoltageLimits>,
-    config: DeratingConfig,
+    config: PreparedDerating,
     drive: DriveConfig,
     #[cfg(feature = "storage")]
     drive_config_valid: bool,
@@ -234,7 +234,7 @@ impl ProtectionMonitor {
             service_slots: super::velocity_schedule::ServiceSlots::new(dt),
             board_voltage: None,
             voltage: None,
-            config: DeratingConfig::default(),
+            config: PreparedDerating::new(&DeratingConfig::default()),
             drive: DriveConfig::default(),
             #[cfg(feature = "storage")]
             drive_config_valid: true,
@@ -252,7 +252,7 @@ impl ProtectionMonitor {
         }
     }
 
-    pub(super) fn configure(&mut self, config: DeratingConfig) {
+    pub(super) fn configure(&mut self, config: PreparedDerating) {
         self.config = config;
     }
 
@@ -264,7 +264,7 @@ impl ProtectionMonitor {
         self.voltage_decay = voltage_decay(dt);
     }
 
-    pub(super) fn config(&self) -> &DeratingConfig {
+    pub(super) fn config(&self) -> &PreparedDerating {
         &self.config
     }
     pub(super) fn scales(&self) -> DeratingScales {
@@ -443,8 +443,15 @@ where
         }
     }
 
-    /// Apply derating configuration (boot / live config write).
+    /// Apply derating configuration (boot / live config write). The caller
+    /// checked [`DeratingConfig::is_sane`].
     pub fn set_derating(&mut self, cfg: DeratingConfig) {
+        self.set_derating_prepared(PreparedDerating::new(&cfg));
+    }
+
+    /// [`Self::set_derating`] for a configuration converted outside the
+    /// control ISR (live config updates).
+    pub(crate) fn set_derating_prepared(&mut self, cfg: PreparedDerating) {
         if self.protection.config.modulation != cfg.modulation {
             self.reset_duty_utilization();
         }
@@ -538,8 +545,8 @@ where
     }
 
     /// Current derating configuration.
-    pub fn derating_cfg(&self) -> &DeratingConfig {
-        self.protection.config()
+    pub fn derating_cfg(&self) -> DeratingConfig {
+        self.protection.config().config()
     }
 
     /// Live derating scales (1.0/1.0 = no derate).

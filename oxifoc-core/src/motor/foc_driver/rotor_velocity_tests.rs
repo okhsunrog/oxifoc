@@ -58,8 +58,8 @@ fn inverted_directional_limits_follow_rider_and_preserve_braking() {
         .unwrap();
     driver.set_derating(DeratingConfig {
         speed: SpeedDerating {
-            max_forward: erad_per_s(100.0),
-            max_reverse: erad_per_s(50.0),
+            max_forward: Some(erad_per_s(100.0)),
+            max_reverse: Some(erad_per_s(50.0)),
             ..Default::default()
         },
         ..Default::default()
@@ -181,7 +181,7 @@ fn velocity_authority_and_final_current_grant_share_physical_speed() {
     let mut driver = split_driver(1000.0, Some(20.0));
     let derating = DeratingConfig {
         speed: SpeedDerating {
-            max_forward: erad_per_s(100.0),
+            max_forward: Some(erad_per_s(100.0)),
             ..Default::default()
         },
         ..Default::default()

@@ -31,7 +31,7 @@ use crate::foc::velocity::PreparedVelocityConfig;
 use crate::isr_prof;
 #[cfg(feature = "isr-work-events")]
 use crate::isr_work;
-use crate::motor::derating::{DeratingConfig, DeratingScales};
+use crate::motor::derating::{DeratingScales, PreparedDerating};
 use crate::motor::failsafe::{BRAKE_ENTRY_MAX_SPEED, FailsafeConfig};
 use crate::motor::foc_driver::MotorModelError;
 #[cfg(any(
@@ -123,7 +123,7 @@ pub enum DriverCommand {
     /// Apply cruise velocity-loop tuning (gains + accel limit)
     SetVelocityConfig(PreparedVelocityConfig),
     /// Apply graduated derating ramps (thermal/voltage/speed)
-    SetDerating(DeratingConfig),
+    SetDerating(PreparedDerating),
     /// Begin a single-flight, ISR-owned current-offset measurement.
     #[cfg(feature = "offset-diagnostics")]
     StartCurrentOffsetCalibration(CurrentOffsetRequest),
@@ -1051,7 +1051,7 @@ where
             }
             DriverCommand::SetDerating(cfg) => {
                 // Config, not a setpoint — does NOT affirm the deadman.
-                foc.set_derating(cfg);
+                foc.set_derating_prepared(cfg);
                 continue;
             }
             #[cfg(feature = "offset-diagnostics")]

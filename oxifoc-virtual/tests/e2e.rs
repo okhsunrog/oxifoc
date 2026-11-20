@@ -22,6 +22,7 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use oxifoc_core::motor::derating::{DeratingConfig, SpeedDerating};
 use oxifoc_core::storage::{CurrentLimitsConfig, FailsafeConfigStored};
 use oxifoc_core::types::{
     ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, ConfigValue, ControlMode,
@@ -644,10 +645,10 @@ fn drive_config_applies_to_the_throttle_command() {
     let drive = DriveConfig {
         invert_direction: true,
     };
-    let derating = oxifoc_core::motor::derating::DeratingConfig {
-        speed: oxifoc_core::motor::derating::SpeedDerating {
-            max_forward: erad_per_s(350.0),
-            max_reverse: erad_per_s(120.0),
+    let derating = DeratingConfig {
+        speed: SpeedDerating {
+            max_forward: Some(erad_per_s(350.0)),
+            max_reverse: Some(erad_per_s(120.0)),
             ..Default::default()
         },
         ..Default::default()

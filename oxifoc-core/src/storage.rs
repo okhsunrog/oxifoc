@@ -131,7 +131,9 @@ config_keys! {
     Reserved18 = 18,
     Reserved19 = 19,
     Drive = 20,
-    Derating = 21,
+    /// Superseded derating with zero "off" thresholds. Never read; see
+    /// [`Self::Reserved1`].
+    Reserved21 = 21,
     MotorFeedback = 22,
     /// Motor electrical parameters (R, L, λ, pole pairs)
     MotorParams = 23,
@@ -142,6 +144,8 @@ config_keys! {
     InstalledDrive = 26,
     /// Cruise velocity-loop tuning (`accel_limit: None` = no ramp)
     Velocity = 27,
+    /// Graduated derating (`None` ramps and ceilings are off)
+    Derating = 28,
 }
 
 impl Key for ConfigKey {
@@ -1441,7 +1445,7 @@ mod tests {
     use super::*;
     use crate::foc::hall_calibration::HallCalibrationResult;
     #[cfg(feature = "runtime")]
-    use crate::motor::derating::TemperatureDerating;
+    use crate::motor::derating::{Ramp, TemperatureDerating};
     use crate::units::{
         amps, erad, erad_per_s, erpm, henries, rad_per_s, seconds, volts, watts, webers,
     };
@@ -1845,7 +1849,7 @@ mod tests {
             assert_eq!(key.serialize_into(&mut stored), Ok(1));
             assert_eq!(ConfigKey::deserialize_from(&stored), Ok((key, 1)));
             let known = !matches!(key, ConfigKey::Unknown(_));
-            assert_eq!(known, (1..=27).contains(&tag), "tag {tag}");
+            assert_eq!(known, (1..=28).contains(&tag), "tag {tag}");
         }
     }
 
@@ -2043,7 +2047,10 @@ mod tests {
         };
         let derating = DeratingConfig {
             temperature: TemperatureDerating {
-                temp_fet_start_c: 80.0,
+                fet_c: Some(Ramp {
+                    start: 80.0,
+                    end: 100.0,
+                }),
                 ..Default::default()
             },
             ..DeratingConfig::default()

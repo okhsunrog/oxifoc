@@ -50,7 +50,7 @@ review and remains subject to the inverter limits.
 | Group | Behavior |
 |---|---|
 | `drive` | `invert_direction` defines forward in rider commands. |
-| `derating` | Independent forward/reverse speed ceilings and taper start. A zero ceiling disables that direction's speed limit. The E-Skate profile sets duty taper start to 85%. |
+| `derating` | Independent forward/reverse speed ceilings and taper start, FET/motor temperature ramps and battery-cutoff/regen-overvoltage ramps. An unset (`null`) ceiling or ramp is off, e.g. `config set derating speed.max_reverse=null` or `bus_voltage.cut='{"start":40,"end":36}'`. The E-Skate profile sets duty taper start to 85%. |
 | `voltage-feedforward` | Select `Disabled`, `CrossCoupling`, `BackEmf` or `Both`. |
 | `motor-feedback` | Set the commissioned source and crossover band in electrical rad/s while stopped. The temporary `source` command is useful for bench A/B. |
 | `pwm-config` | Choose the supported PWM frequency. The active rate changes after reboot and is reported alongside the staged value. |

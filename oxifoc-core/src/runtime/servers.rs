@@ -766,7 +766,7 @@ pub async fn config_server<NS, T: Timer, const N: usize>(
                                 ConfigValue::DcOffsets(v) => Some(TuningUpdate::DcOffsets(v)),
                                 ConfigValue::Failsafe(v) => Some(TuningUpdate::Failsafe(v)),
                                 ConfigValue::Velocity(v) => Some(TuningUpdate::velocity(v)),
-                                ConfigValue::Derating(v) => Some(TuningUpdate::Derating(v)),
+                                ConfigValue::Derating(v) => Some(TuningUpdate::derating(v)),
                                 ConfigValue::HallTuning(v) => Some(TuningUpdate::HallTuning(v)),
                                 ConfigValue::PwmConfig(v) => {
                                     critical_section::with(|cs| {

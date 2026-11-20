@@ -16,7 +16,7 @@ use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
 use crate::foc::velocity::{PreparedVelocityConfig, VelocityLoopConfig};
 use crate::motor::FocDriver;
-use crate::motor::derating::DeratingConfig;
+use crate::motor::derating::{DeratingConfig, PreparedDerating};
 use crate::motor::drive::DriveConfig;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::foc_driver::{CurrentLimits, MotorModelError, PreparedVoltageLimits};
@@ -190,10 +190,15 @@ pub(crate) enum TuningUpdate {
     Failsafe(FailsafeConfigStored),
     /// The stored value and its ISR form, converted on the task side.
     Velocity(VelocityLoopConfig, PreparedVelocityConfig),
-    Derating(DeratingConfig),
+    /// The stored value and its ISR form, converted on the task side.
+    Derating(DeratingConfig, PreparedDerating),
 }
 
 impl TuningUpdate {
+    pub(crate) fn derating(value: DeratingConfig) -> Self {
+        Self::Derating(value, PreparedDerating::new(&value))
+    }
+
     pub(crate) fn velocity(value: VelocityLoopConfig) -> Self {
         Self::Velocity(value, PreparedVelocityConfig::new(value))
     }
@@ -206,7 +211,7 @@ impl TuningUpdate {
             Self::HallTuning(_) => ConfigGroupId::HallTuning,
             Self::Failsafe(_) => ConfigGroupId::Failsafe,
             Self::Velocity(..) => ConfigGroupId::Velocity,
-            Self::Derating(_) => ConfigGroupId::Derating,
+            Self::Derating(..) => ConfigGroupId::Derating,
         }
     }
 
@@ -218,7 +223,7 @@ impl TuningUpdate {
             Self::HallTuning(v) => config.hall_tuning = Some(v.clone()),
             Self::Failsafe(v) => config.failsafe = Some(v.clone()),
             Self::Velocity(v, _) => config.velocity = Some(*v),
-            Self::Derating(v) => config.derating = Some(*v),
+            Self::Derating(v, _) => config.derating = Some(*v),
         }
     }
 
@@ -724,7 +729,7 @@ pub(super) fn apply<P, C, Ph, S>(
                         foc.set_failsafe(FailsafeConfig::from(v));
                     }
                     TuningUpdate::Velocity(_, prepared) => foc.set_velocity_prepared(*prepared),
-                    TuningUpdate::Derating(v) => foc.set_derating(*v),
+                    TuningUpdate::Derating(_, prepared) => foc.set_derating_prepared(*prepared),
                 }
                 if let TuningUpdate::HallTuning(v) = value
                     && !foc.phase_mut().apply_hall_tuning(v)
