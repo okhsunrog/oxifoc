@@ -30,8 +30,9 @@ use crate::state::DetectionActiveGuard;
 use crate::state::model::CONFIG_COORDINATOR;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse};
-use crate::units::unit::electrical;
-use crate::units::{amps, henries, ohms, webers};
+use crate::units::{
+    ConstZero, ElectricCurrent, Sign, amps, henries, ohms, unit::electrical, webers,
+};
 
 struct ReadySetup {
     session: crate::types::measurement::SessionId,
@@ -297,7 +298,7 @@ async fn run_step<B: DetectionBackend>(
     if !detection.begin::<B::Timer>(prepared).await {
         return DetectResponse::Error(DetectError::Busy);
     }
-    let result = measure_step(backend, req, prepared.current_ceiling_a(), foc_freq_hz).await;
+    let result = measure_step(backend, req, prepared.current_ceiling().value, foc_freq_hz).await;
     let limited = crate::state::detection_source_limited();
     if !detection.end::<B::Timer>().await {
         return DetectResponse::Error(DetectError::HardwareFault);
@@ -542,22 +543,23 @@ fn prepare_commissioning(
             })
         })
         .ok_or(DetectError::Unsafe)?;
-    let source = PowerSourceLimits::new(source.input.value, source.regen.value)
-        .map_err(|_| DetectError::Unsafe)?;
+    let source =
+        PowerSourceLimits::new(source.input, source.regen).map_err(|_| DetectError::Unsafe)?;
+    let platform_max = amps(platform_max);
     // A fresh board has no user override. Its independent platform trip still
     // applies; an explicitly stored stricter protection always survives.
-    let configured_trip = limits.map_or(0.0, |limits| limits.max_phase_current.value);
-    if !configured_trip.is_finite() || configured_trip < 0.0 {
+    let configured_trip = limits.map_or(ElectricCurrent::ZERO, |limits| limits.max_phase_current);
+    if !configured_trip.is_finite() || configured_trip.is_negative() {
         return Err(DetectError::Unsafe);
     }
-    let trip = if configured_trip == 0.0 {
+    let trip = if configured_trip == ElectricCurrent::ZERO {
         platform_max
     } else {
         configured_trip
     };
-    let prepared = PreparedCommissioning::new(platform_max, trip, source, test_ceiling_a)
+    let prepared = PreparedCommissioning::new(platform_max, trip, source, test_ceiling_a.map(amps))
         .map_err(|_| DetectError::Unsafe)?;
-    if prepared.current_ceiling_a() < 0.5 {
+    if prepared.current_ceiling() < amps(0.5) {
         return Err(DetectError::OutOfRange);
     }
     Ok(prepared)
@@ -596,6 +598,7 @@ fn config_revisions() -> [u32; crate::types::ConfigGroupId::COUNT] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::motor::foc_driver::OVERCURRENT_HEADROOM;
     use crate::units::{amps, erpm, henries, ohms, watts};
 
     #[test]
@@ -617,14 +620,14 @@ mod tests {
         assert_eq!(
             prepare_commissioning(70.0, Some(&cfg), None, None)
                 .unwrap()
-                .current_ceiling_a(),
-            30.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
+                .current_ceiling(),
+            amps(30.0 / OVERCURRENT_HEADROOM),
         );
         assert_eq!(
             prepare_commissioning(70.0, Some(&cfg), Some(4.0), None)
                 .unwrap()
-                .current_ceiling_a(),
-            4.0
+                .current_ceiling(),
+            amps(4.0),
         );
         assert!(prepare_commissioning(70.0, Some(&cfg), Some(f32::NAN), None).is_err());
         cfg.current_limits.as_mut().unwrap().bus_regen_max.value = -1.0;
@@ -636,14 +639,14 @@ mod tests {
         assert_eq!(
             prepare_commissioning(70.0, Some(&cfg), None, Some(confirmed))
                 .unwrap()
-                .current_ceiling_a(),
-            30.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
+                .current_ceiling(),
+            amps(30.0 / OVERCURRENT_HEADROOM),
         );
         assert_eq!(
             prepare_commissioning(70.0, Some(&RuntimeConfig::default()), None, Some(confirmed))
                 .unwrap()
-                .current_ceiling_a(),
-            70.0 / crate::motor::foc_driver::OVERCURRENT_HEADROOM
+                .current_ceiling(),
+            amps(70.0 / OVERCURRENT_HEADROOM),
         );
     }
 

@@ -11,6 +11,7 @@
 //! to convert nanoseconds to timer ticks.
 
 use super::svpwm;
+use crate::units::{Time, seconds};
 
 /// Direct per-phase output state (brake / coast / float control)
 ///
@@ -60,12 +61,11 @@ impl MotorPwmConfig {
         }
     }
 
-    /// Get the control loop period (dt) in seconds
-    ///
-    /// This is the inverse of the PWM frequency, used for PI controller updates.
+    /// The control loop period: the inverse of the PWM frequency, used for
+    /// PI controller updates.
     #[inline]
-    pub const fn dt_s(&self) -> f32 {
-        1.0 / self.pwm_freq_hz as f32
+    pub const fn dt(&self) -> Time {
+        seconds(1.0 / self.pwm_freq_hz as f32)
     }
 
     /// Set PWM switching frequency in Hz

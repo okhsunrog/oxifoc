@@ -5,6 +5,8 @@
 //! sequence is the latest observed loop, not a simultaneous ADC capture.
 
 use core::sync::atomic::{AtomicU32, Ordering};
+use oxifoc_core::motor::foc_driver::VelocityControlSnapshot;
+use oxifoc_core::units::{ToBits, erad_per_s};
 
 // Covers a short 120 electrical rad/s velocity/braking capture, including
 // coast. These CPU-only records cost 8 KiB in bench images only.
@@ -150,7 +152,7 @@ impl PhaseRecorder {
     pub fn observe_velocity(
         &mut self,
         sequence: u32,
-        snapshot: impl FnOnce() -> Option<oxifoc_core::motor::foc_driver::VelocityControlSnapshot>,
+        snapshot: impl FnOnce() -> Option<VelocityControlSnapshot>,
     ) {
         if sequence.wrapping_sub(self.last_velocity_sequence) < 1000 {
             return;
@@ -165,13 +167,13 @@ impl PhaseRecorder {
         };
         let values = [
             sequence,
-            sample.target_rad_s.to_bits(),
-            sample.reference_rad_s.to_bits(),
-            sample.feedback_rad_s.unwrap_or(f32::NAN).to_bits(),
-            sample.requested_iq_a.to_bits(),
-            sample.granted_iq_a.to_bits(),
-            sample.measured_iq_a.to_bits(),
-            sample.granted_id_a.to_bits(),
+            sample.target.to_bits(),
+            sample.reference.to_bits(),
+            sample.feedback.unwrap_or(erad_per_s(f32::NAN)).to_bits(),
+            sample.requested_iq.to_bits(),
+            sample.granted_iq.to_bits(),
+            sample.measured_iq.to_bits(),
+            sample.granted_id.to_bits(),
         ];
         for (word, value) in slot.iter().zip(values) {
             word.store(value, Ordering::Relaxed);

@@ -201,7 +201,7 @@ pub fn bind(app: &App, runtime: &SharedRuntime, motor_config_generation: Arc<Ato
         }
         let current = if app.get_detect_drive_override() {
             match app.get_detect_drive_override_a().trim().parse::<f32>() {
-                Ok(a) if a.is_finite() && a > 0.0 => DriveCurrent::Override(a),
+                Ok(a) if a.is_finite() && a > 0.0 => DriveCurrent::Override(amps(a)),
                 _ => {
                     app.set_detect_status("Enter a finite, positive drive current".into());
                     return;

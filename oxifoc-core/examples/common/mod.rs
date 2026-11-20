@@ -13,7 +13,7 @@ use oxifoc_core::foc::controller::{FocController, FocOutput};
 use oxifoc_core::foc::hall_sensor::{HallSensor, PreparedHallCalibration};
 use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
 use oxifoc_core::foc::pwm::SvpwmModulator;
-use oxifoc_core::foc::sensors::CurrentSensor;
+use oxifoc_core::foc::sensors::{CurrentSensor, PhaseCurrents};
 use oxifoc_core::foc::transforms::{clarke, park};
 use oxifoc_core::foc::trig::LibmSinCos;
 use oxifoc_core::motor::FocDriver;
@@ -22,6 +22,7 @@ use oxifoc_core::storage::{
     CurrentLimitsConfig, HallCalibrationConfig, HallTransitionGeometryConfig, MotorParamsConfig,
     RuntimeConfig,
 };
+use oxifoc_core::units::{amps, seconds};
 use oxifoc_core::units::{henries, ohms, per_second, volts, webers};
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
@@ -34,8 +35,9 @@ pub use oxifoc_core::virtual_motor::io::VirtualPwm as Pwm;
 pub struct Currents(pub (f32, f32, f32));
 
 impl CurrentSensor for Currents {
-    fn read_currents(&self) -> (f32, f32, f32) {
-        self.0
+    fn read_currents(&self) -> PhaseCurrents {
+        let (a, b, c) = self.0;
+        (amps(a), amps(b), amps(c))
     }
     fn read_raw(&self) -> (u16, u16, u16) {
         (0, 0, 0)
@@ -213,10 +215,10 @@ impl Rig {
             duties: [0; 3],
             enabled: false,
         };
-        let mut driver = FocDriver::new(foc, pwm, Currents((0.0, 0.0, 0.0)), phase, DT);
+        let mut driver = FocDriver::new(foc, pwm, Currents((0.0, 0.0, 0.0)), phase, seconds(DT));
         let limits = cfg.current_limits.as_ref().map_or_else(
-            || CurrentLimits::from_max_current(i_max),
-            |limits| CurrentLimits::from_config_clamped(limits, i_max, 0.0),
+            || CurrentLimits::from_max_current(amps(i_max)),
+            |limits| CurrentLimits::from_config_clamped(limits, amps(i_max), amps(0.0)),
         );
         driver.set_current_limits(limits);
         driver.set_actuation_delay(cfg.delay);

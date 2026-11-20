@@ -26,13 +26,13 @@ use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
 use crate::foc::trig::SinCos;
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::{DeratingConfig, DeratingScales};
-use crate::motor::failsafe::{BRAKE_ENTRY_MAX_E_RAD_S, FailsafeConfig};
+use crate::motor::failsafe::{BRAKE_ENTRY_MAX_SPEED, FailsafeConfig};
 use crate::motor::foc_driver::{CurrentLimits, PreparedBoardConfig, StepError};
 use crate::motor::{ControlMode, FocDriver};
 use crate::types::{
     DriveOwnership, DriveSessionId, MotorCommand, MotorCommandOutcome, MotorRequest, MotorState,
 };
-use crate::units::si;
+use crate::units::{ElectricPotential, si};
 
 // ============================================================================
 // Global Communication Channels
@@ -124,10 +124,10 @@ impl DriverCommand {
             Self::SetMode(mode) => mode.is_finite(),
             Self::Motor(request) => request.command.is_finite(),
             Self::SetCurrentLimits(limits) => {
-                limits.max_current_a.is_finite()
-                    && limits.overcurrent_threshold_a.is_finite()
-                    && limits.bus_in_max_a.is_finite()
-                    && limits.bus_regen_max_a.is_finite()
+                limits.max_current.is_finite()
+                    && limits.overcurrent_threshold.is_finite()
+                    && limits.bus_in_max.is_finite()
+                    && limits.bus_regen_max.is_finite()
             }
             Self::SetPiGains { kp, ki } => {
                 kp.is_finite() && ki.is_finite() && kp > 0.0 && ki >= 0.0
@@ -1175,7 +1175,7 @@ where
                         | ControlMode::VelocityControl { .. }
                         | ControlMode::PositionControl { .. }
                 ) || mode == ControlMode::Brake
-                    && foc.torque_speed().abs() > BRAKE_ENTRY_MAX_E_RAD_S)
+                    && foc.torque_speed().abs() > BRAKE_ENTRY_MAX_SPEED)
             {
                 return MotorCommandOutcome::RejectedSafety;
             }
@@ -1188,7 +1188,7 @@ where
             // machinery as the failsafe but user-commanded, so it does not
             // set the re-arm latch. Falls back to rejecting when the current
             // sensor is uncalibrated (can't current-brake).
-            if mode == ControlMode::Brake && foc.torque_speed().abs() > BRAKE_ENTRY_MAX_E_RAD_S {
+            if mode == ControlMode::Brake && foc.torque_speed().abs() > BRAKE_ENTRY_MAX_SPEED {
                 if foc.enter_brake_ramp() {
                     #[cfg(feature = "defmt")]
                     defmt::info!("Brake at speed: ramping to standstill first");
@@ -1319,7 +1319,7 @@ pub fn run_foc_cycle<P, C, Ph, S, F>(
     state_mutex: &CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &FaultRegistry<F>,
     driver: &mut FocDriver<P, C, Ph, S>,
-    vbus_v: f32,
+    vbus: ElectricPotential,
     now_ticks: u64,
     prepared_board: &PreparedBoardConfig,
 ) -> Option<FocOutput>
@@ -1331,7 +1331,7 @@ where
     F: PlatformFault,
 {
     let board = prepared_board.board();
-    driver.set_vbus(vbus_v);
+    driver.set_vbus(vbus);
     let check_deadman = driver.deadman_check_due();
     #[cfg(feature = "isr-work-events")]
     if check_deadman {
@@ -1452,7 +1452,7 @@ where
     let prof_t1 = crate::isr_prof::now();
     crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t0, prof_t1);
 
-    driver.run_protection(fault_registry, prepared_board, vbus_v, fet_t, motor_t);
+    driver.run_protection(fault_registry, prepared_board, vbus, fet_t, motor_t);
     if fault_registry.any_stopping() {
         cancel_detection();
         driver.end_commissioning();
@@ -1569,7 +1569,7 @@ where
                 cancel_detection();
                 return Some(BurstAction::Stop);
             }
-            if let Err(e) = ex.check_timing(cycle, now_ticks as u32, driver.dt()) {
+            if let Err(e) = ex.check_timing(cycle, now_ticks as u32, driver.dt().value) {
                 ex.abort(e);
                 cancel_detection();
                 return Some(BurstAction::Stop);
@@ -1600,7 +1600,13 @@ where
                     angle,
                     compensation_current,
                 } => {
-                    driver.set_detection_voltage(vd, vq, angle, compensation_current);
+                    use crate::units::{amps, erad, volts};
+                    driver.set_detection_voltage(
+                        volts(vd),
+                        volts(vq),
+                        erad(angle),
+                        (amps(compensation_current.0), amps(compensation_current.1)),
+                    );
                     driver.mode()
                 }
                 BurstAction::Hold(program) => program.hold_mode(),

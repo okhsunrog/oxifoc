@@ -25,24 +25,29 @@ use crate::motor::dissipation::dissipate_with_id;
 use crate::motor::dissipation::heat_current_limit;
 use crate::motor::drive::DriveConfig;
 use crate::units::{
-    ElectricPotential, Linear, Sign, amps, erad_per_s, henries, ohms, unit::ampere, volts, watts,
-    webers,
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngularVelocity, Fraction, Frequency,
+    Linear, MagneticFlux, Power, Scalar, Sign, Time, per_second, seconds,
 };
+#[cfg(any(feature = "storage", feature = "runtime"))]
+use crate::units::{quantity, volts};
+
+/// `V·s`: the integrated bus-voltage excursion of the OV/UV protection.
+type VoltSeconds = MagneticFlux;
 
 struct BusIqBounds {
-    lo: f32,
-    hi: f32,
+    lo: ElectricCurrent,
+    hi: ElectricCurrent,
 }
 
 impl BusIqBounds {
     const IDENTITY: Self = Self {
-        lo: f32::NEG_INFINITY,
-        hi: f32::INFINITY,
+        lo: ElectricCurrent::NEG_INFINITY,
+        hi: ElectricCurrent::INFINITY,
     };
 
     #[inline(always)]
-    fn clamp(&self, iq: f32) -> f32 {
-        clamp_f32(iq, self.lo, self.hi)
+    fn clamp(&self, iq: ElectricCurrent) -> ElectricCurrent {
+        iq.clamp_to(self.lo, self.hi)
     }
 }
 
@@ -52,9 +57,9 @@ impl BusIqBounds {
 /// dissipative brake remains request-dependent and is solved for each request.
 pub(super) struct TorqueConstraints {
     bus: BusIqBounds,
-    omega: f32,
-    drive_limit: f32,
-    plain_brake_limit: f32,
+    omega: ElectricalAngularVelocity,
+    drive_limit: ElectricCurrent,
+    plain_brake_limit: ElectricCurrent,
 }
 
 /// Immutable board configuration and its voltage-protection constants.
@@ -77,10 +82,10 @@ pub struct PreparedVoltageLimits {
     min_mv: u32,
     #[cfg(feature = "storage")]
     max_mv: u32,
-    max_vbus_v: f32,
-    min_vbus_v: f32,
-    trip_vs: f32,
-    integral_ceiling: f32,
+    max_vbus: ElectricPotential,
+    min_vbus: ElectricPotential,
+    trip: VoltSeconds,
+    integral_ceiling: VoltSeconds,
 }
 
 #[cfg(feature = "storage")]
@@ -139,18 +144,19 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
 impl PreparedVoltageLimits {
     #[cfg(any(feature = "storage", feature = "runtime"))]
     const fn from_bounds(min_mv: u32, max_mv: u32) -> Self {
-        let max_vbus_v = max_mv as f32 / 1000.0;
-        let min_vbus_v = min_mv as f32 / 1000.0;
-        let trip_vs = 5e-5 * max_vbus_v;
-        let integral_ceiling = trip_vs * 4.0;
+        // Plain f32 arithmetic: quantity operators are not `const`.
+        let max_vbus = max_mv as f32 / 1000.0;
+        let min_vbus = min_mv as f32 / 1000.0;
+        let trip = 5e-5 * max_vbus;
+        let integral_ceiling_vs = trip * 4.0;
         Self {
             min_mv,
             #[cfg(feature = "storage")]
             max_mv,
-            max_vbus_v,
-            min_vbus_v,
-            trip_vs,
-            integral_ceiling,
+            max_vbus: volts(max_vbus),
+            min_vbus: volts(min_vbus),
+            trip: quantity(trip),
+            integral_ceiling: quantity(integral_ceiling_vs),
         }
     }
 
@@ -201,30 +207,30 @@ pub(super) struct ProtectionMonitor {
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     protection_tick: u16,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
-    ov_integral_vs: f32,
+    ov_integral: VoltSeconds,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
-    uv_integral_vs: f32,
+    uv_integral: VoltSeconds,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     voltage_decay: f32,
 }
 
 #[cfg(feature = "runtime")]
 pub(super) struct ProtectionSample {
-    pub dt: f32,
-    pub vbus_v: f32,
-    pub velocity: f32,
+    pub dt: Time,
+    pub vbus: ElectricPotential,
+    pub velocity: ElectricalAngularVelocity,
     pub fet_temp_c_x10: Option<i16>,
     pub motor_temp_c_x10: Option<i16>,
 }
 
 impl ProtectionMonitor {
-    pub(super) fn overvoltage_threshold(&self) -> f32 {
+    pub(super) fn overvoltage_threshold(&self) -> ElectricPotential {
         self.voltage
             .or(self.board_voltage)
-            .map_or(0.0, |v| v.max_vbus_v)
+            .map_or(ElectricPotential::ZERO, |v| v.max_vbus)
     }
 
-    pub(super) fn new(dt: f32) -> Self {
+    pub(super) fn new(dt: Time) -> Self {
         Self {
             #[cfg(feature = "service-slots")]
             service_slots: super::velocity_schedule::ServiceSlots::new(dt),
@@ -242,9 +248,9 @@ impl ProtectionMonitor {
             duty_utilization: 0.0,
             scales: DeratingScales::default(),
             protection_tick: 0,
-            ov_integral_vs: 0.0,
-            uv_integral_vs: 0.0,
-            voltage_decay: 1.0 - (dt / 0.005).min(1.0),
+            ov_integral: VoltSeconds::ZERO,
+            uv_integral: VoltSeconds::ZERO,
+            voltage_decay: voltage_decay(dt),
         }
     }
 
@@ -252,12 +258,12 @@ impl ProtectionMonitor {
         self.config = config;
     }
 
-    pub(super) fn set_control_period(&mut self, dt: f32) {
+    pub(super) fn set_control_period(&mut self, dt: Time) {
         #[cfg(feature = "service-slots")]
         {
             self.service_slots = super::velocity_schedule::ServiceSlots::new(dt);
         }
-        self.voltage_decay = 1.0 - (dt / 0.005).min(1.0);
+        self.voltage_decay = voltage_decay(dt);
     }
 
     pub(super) fn config(&self) -> &DeratingConfig {
@@ -271,17 +277,19 @@ impl ProtectionMonitor {
         self.scales = scales;
     }
 
-    fn speed_ceiling(&self, physical_direction: f32) -> f32 {
+    fn speed_ceiling(
+        &self,
+        physical_direction: ElectricalAngularVelocity,
+    ) -> ElectricalAngularVelocity {
         self.config
             .speed
             .speed_ceiling(self.drive.rider_sign(physical_direction))
-            .value
     }
 
-    fn drive_cut(&self, omega: f32) -> f32 {
+    fn drive_cut(&self, omega: ElectricalAngularVelocity) -> f32 {
         self.config
             .speed
-            .speed_cut(erad_per_s(self.drive.rider_sign(omega)))
+            .speed_cut(self.drive.rider_sign(omega))
             .min(self.duty_cut())
     }
 
@@ -305,9 +313,9 @@ impl ProtectionMonitor {
     ) {
         let board = prepared.board();
         // --- Voltage excursion integrals (every cycle) ---
-        // Leaky-bucket trip: integrate the excursion, fire past `trip_vs`,
+        // Leaky-bucket trip: integrate the excursion, fire past `trip`,
         // bleed it off in-range with τ≈5 ms. The integral is capped at a few
-        // × `trip_vs` so a long excursion can't bank unbounded "credit" and
+        // × `trip` so a long excursion can't bank unbounded "credit" and
         // make a later marginal spike trip instantly; the cap sits above the
         // trip point, so first-trip latency is unchanged.
         //
@@ -317,42 +325,40 @@ impl ProtectionMonitor {
         // reachable — mirrors the host-boundary "reject NaN" philosophy (the
         // ISR trusts its own sense path).
         let voltage = self.voltage.unwrap_or(prepared.voltage);
-        let max_v = voltage.max_vbus_v;
-        let min_v = voltage.min_vbus_v;
-        let trip_vs = voltage.trip_vs;
+        let max_v = voltage.max_vbus;
+        let min_v = voltage.min_vbus;
+        let trip = voltage.trip;
         let integral_ceiling = voltage.integral_ceiling;
         let decay = self.voltage_decay;
-        if sample.vbus_v > max_v {
-            self.ov_integral_vs =
-                (self.ov_integral_vs + (sample.vbus_v - max_v) * sample.dt).min(integral_ceiling);
-            if self.ov_integral_vs > trip_vs
+        if sample.vbus > max_v {
+            self.ov_integral =
+                (self.ov_integral + (sample.vbus - max_v) * sample.dt).min(integral_ceiling);
+            if self.ov_integral > trip
                 && !registry.has_category(FaultCategory::OverVoltage)
                 && let Some(f) = F::from_category(FaultCategory::OverVoltage)
             {
                 registry.set(f);
                 #[cfg(feature = "defmt")]
-                defmt::error!("OverVoltage FAULT: vbus = {} V (integrated)", sample.vbus_v);
+                defmt::error!("OverVoltage FAULT: vbus = {} V (integrated)", sample.vbus);
             }
         } else {
-            self.ov_integral_vs *= decay;
+            self.ov_integral *= decay;
         }
-        if sample.vbus_v < min_v {
-            self.uv_integral_vs =
-                (self.uv_integral_vs + (min_v - sample.vbus_v) * sample.dt).min(integral_ceiling);
-            if self.uv_integral_vs > trip_vs
+        if sample.vbus < min_v {
+            self.uv_integral =
+                (self.uv_integral + (min_v - sample.vbus) * sample.dt).min(integral_ceiling);
+            if self.uv_integral > trip
                 && !registry.has_category(FaultCategory::UnderVoltage)
                 && let Some(f) = F::from_category(FaultCategory::UnderVoltage)
             {
                 registry.set(f);
                 #[cfg(feature = "defmt")]
-                defmt::error!(
-                    "UnderVoltage FAULT: vbus = {} V (integrated)",
-                    sample.vbus_v
-                );
+                defmt::error!("UnderVoltage FAULT: vbus = {} V (integrated)", sample.vbus);
             }
         } else {
-            self.uv_integral_vs *= decay;
-            if sample.vbus_v * 1000.0 > voltage.min_mv.saturating_add(VOLTAGE_HYSTERESIS_MV) as f32
+            self.uv_integral *= decay;
+            if sample.vbus * 1000.0
+                > volts(voltage.min_mv.saturating_add(VOLTAGE_HYSTERESIS_MV) as f32)
                 && registry.has_category(FaultCategory::UnderVoltage)
             {
                 registry.clear(FaultCategory::UnderVoltage);
@@ -390,7 +396,7 @@ impl ProtectionMonitor {
             crate::isr_work::mark(crate::isr_work::DERATING);
             let omega = sample.velocity;
             let temperature = self.config.thermal_scales(fet_c, motor_c);
-            let bus_voltage = self.config.bus_voltage_scales(volts(sample.vbus_v));
+            let bus_voltage = self.config.bus_voltage_scales(sample.vbus);
             self.environment_drive = temperature.drive.min(bus_voltage.drive);
             #[cfg(feature = "fast-telemetry")]
             {
@@ -486,7 +492,10 @@ where
         self.protection.drive.orient(mode)
     }
 
-    pub(super) fn speed_ceiling(&self, physical_direction: f32) -> f32 {
+    pub(super) fn speed_ceiling(
+        &self,
+        physical_direction: ElectricalAngularVelocity,
+    ) -> ElectricalAngularVelocity {
         self.protection.speed_ceiling(physical_direction)
     }
 
@@ -500,7 +509,7 @@ where
         &mut self,
         vd: ElectricPotential,
         vq: ElectricPotential,
-        dt: f32,
+        dt: Time,
     ) {
         if self.protection.config.modulation.duty_start_frac < 1.0 {
             let voltage_limit = self.controller.voltage_limit();
@@ -509,24 +518,24 @@ where
                     .sqrt_with(sqrtf)
                     .ratio_to(voltage_limit)
                     .min(1.0);
-                let alpha = (dt / 0.002).min(1.0);
+                let alpha = dt.ratio_to(DUTY_UTILIZATION_TAU).min(1.0);
                 self.protection.duty_utilization +=
                     alpha * (utilization - self.protection.duty_utilization);
             }
         }
     }
 
-    pub(super) fn throttle_current(&self, fraction: f32) -> f32 {
+    pub(super) fn throttle_current(&self, fraction: f32) -> ElectricCurrent {
         let omega = self.torque_speed();
-        let limit = if fraction * omega >= 0.0 {
-            self.current_limits.max_current_a
+        let limit = if (fraction * omega).is_non_negative() {
+            self.current_limits.max_current
         } else {
-            self.current_limits.max_brake_a
+            self.current_limits.max_brake
         };
         let (_, full_request) = self
             .current_limits
-            .clamp_targets(0.0, limit.copysign(fraction));
-        let (_, available) = self.grant_torque(0.0, full_request, omega);
+            .clamp_targets(ElectricCurrent::ZERO, limit.copysign(fraction));
+        let (_, available) = self.grant_torque(ElectricCurrent::ZERO, full_request, omega);
         available * fraction.abs()
     }
 
@@ -573,7 +582,7 @@ where
         &mut self,
         registry: &FaultRegistry<F>,
         board: &PreparedBoardConfig,
-        vbus_v: f32,
+        vbus: ElectricPotential,
         fet_temp_c_x10: Option<i16>,
         motor_temp_c_x10: Option<i16>,
     ) {
@@ -587,7 +596,7 @@ where
             board,
             ProtectionSample {
                 dt: self.dt,
-                vbus_v,
+                vbus,
                 velocity: self.torque_speed(),
                 fet_temp_c_x10,
                 motor_temp_c_x10,
@@ -598,9 +607,10 @@ where
     /// Low-pass the final PWM q-axis modulation (the duty
     /// factor in `i_bus ≈ iq·mod_q`). τ ≈ 2 ms — slow enough to ignore
     /// per-cycle voltage ripple, fast enough to track real speed changes.
-    pub(super) fn update_bus_mod_q(&mut self, mod_q: QAxisModulation, dt: f32) {
-        const TAU_S: f32 = 0.002;
-        let alpha = (dt * (1.0 / TAU_S)).min(1.0);
+    pub(super) fn update_bus_mod_q(&mut self, mod_q: QAxisModulation, dt: Time) {
+        // `dt · (1/τ)`: a constant reciprocal, no divide per cycle.
+        const INV_TAU: Frequency = per_second(1.0 / 0.002);
+        let alpha = (dt * INV_TAU).fraction().min(1.0);
         self.bus_mod_q_filt += alpha * (mod_q.coefficient() - self.bus_mod_q_filt);
     }
 
@@ -610,14 +620,14 @@ where
     /// anti-windup bounds from it.
     ///
     /// - iq·ω ≥ 0 is motoring (standstill counts: pulling away is
-    ///   acceleration), limited by `max_current_a` × the drive derate
+    ///   acceleration), limited by `max_current` × the drive derate
     ///   (heat, sag, speed). The speed cut is re-evaluated FRESH each cycle
     ///   on top of the decimated scales — a 78 Hz-stale cut bang-bangs the
     ///   torque around the ceiling on a fast free rotor (see
     ///   [`crate::motor::derating::SpeedDerating::speed_cut`]).
-    /// - Opposing is braking: `max_brake_a` × the brake derate (heat only,
+    /// - Opposing is braking: `max_brake` × the brake derate (heat only,
     ///   never speed). The regen the supply refuses (the regen-OV derate,
-    ///   `bus_regen_max_a`) is burned in the windings when dissipation is
+    ///   `bus_regen_max`) is burned in the windings when dissipation is
     ///   on ([`dissipation`](crate::motor::dissipation)); with it off, the
     ///   regen derate scales the torque instead.
     /// - The bus-current clamp last — except for a brake the dissipation
@@ -631,28 +641,33 @@ where
         ),
         unsafe(link_section = ".text.foc_grant")
     )]
-    pub(super) fn grant_torque(&self, id_target: f32, iq_target: f32, omega: f32) -> (f32, f32) {
+    pub(super) fn grant_torque(
+        &self,
+        id_target: ElectricCurrent,
+        iq_target: ElectricCurrent,
+        omega: ElectricalAngularVelocity,
+    ) -> (ElectricCurrent, ElectricCurrent) {
         let limits = &self.current_limits;
         if !limits.is_enabled() {
             return (id_target, self.clamp_iq_for_bus(iq_target));
         }
-        if iq_target * omega >= 0.0 {
-            let lim = limits.max_current_a
+        if (iq_target * omega).is_non_negative() {
+            let lim = limits.max_current
                 * self
                     .protection
                     .environment_drive
                     .min(self.protection.drive_cut(omega));
             return (
                 id_target,
-                self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
+                self.clamp_iq_for_bus(iq_target.clamp_to(-lim, lim)),
             );
         }
         let brake = self.derating().brake;
         let Some(model) = self.dissipation_model() else {
-            let lim = limits.max_brake_a * brake.min(self.derating().regen);
+            let lim = limits.max_brake * brake.min(self.derating().regen);
             return (
                 id_target,
-                self.clamp_iq_for_bus(clamp_f32(iq_target, -lim, lim)),
+                self.clamp_iq_for_bus(iq_target.clamp_to(-lim, lim)),
             );
         };
         self.grant_dissipative_brake(id_target, iq_target, omega, brake, model, None)
@@ -662,42 +677,41 @@ where
     #[inline(never)]
     pub(super) fn current_limit_flags(
         &self,
-        requested: f32,
-        (clamped, before_grant): (f32, f32),
-        granted: f32,
-        omega: f32,
+        requested: ElectricCurrent,
+        (clamped, before_grant): (ElectricCurrent, ElectricCurrent),
+        granted: ElectricCurrent,
+        omega: ElectricalAngularVelocity,
     ) -> u16 {
+        use crate::units::amps;
         use crate::velocity_telemetry as trace;
-        if (requested - granted).abs() <= 1e-4 {
+        const EPS: ElectricCurrent = amps(1e-4);
+        if (requested - granted).abs() <= EPS {
             return 0;
         }
         let mut flags = trace::GRANT_CLIPPED;
-        if (requested - clamped).abs() > 1e-4 {
+        if (requested - clamped).abs() > EPS {
             flags |= trace::LIMIT_PHASE_CURRENT;
         }
-        if (clamped - before_grant).abs() > 1e-4 {
+        if (clamped - before_grant).abs() > EPS {
             flags |= if !self.phase.angle_trustworthy() {
                 trace::LIMIT_ANGLE
             } else {
                 trace::STARTUP_CURRENT_SHAPING
             };
         }
-        if (before_grant - granted).abs() <= 1e-4 {
+        if (before_grant - granted).abs() <= EPS {
             return flags;
         }
         let limits = &self.current_limits;
         let mut phase = before_grant;
-        if limits.is_enabled() && before_grant * omega >= 0.0 {
+        if limits.is_enabled() && (before_grant * omega).is_non_negative() {
             let p = &self.protection;
-            let speed = p
-                .config
-                .speed
-                .speed_cut(erad_per_s(p.drive.rider_sign(omega)));
+            let speed = p.config.speed.speed_cut(p.drive.rider_sign(omega));
             let duty = p.duty_cut();
             let scale = p.environment_drive.min(speed.min(duty));
-            let ceiling = limits.max_current_a * scale;
-            phase = clamp_f32(before_grant, -ceiling, ceiling);
-            if (before_grant - phase).abs() > 1e-4 {
+            let ceiling = limits.max_current * scale;
+            phase = before_grant.clamp_to(-ceiling, ceiling);
+            if (before_grant - phase).abs() > EPS {
                 for (value, reason) in [
                     (speed, trace::LIMIT_SPEED),
                     (duty, trace::LIMIT_MODULATION),
@@ -712,14 +726,14 @@ where
         } else if limits.is_enabled() {
             let thermal = self.protection.scales.brake;
             let regen = self.protection.scales.regen;
-            let ceiling = limits.max_brake_a * thermal.min(regen);
+            let ceiling = limits.max_brake * thermal.min(regen);
             if self.dissipation_model().is_some() {
                 // The dissipative solver may change both axes. Do not infer
                 // individual limits from its nonlinear grant.
                 return flags;
             }
-            phase = clamp_f32(before_grant, -ceiling, ceiling);
-            if (before_grant - phase).abs() > 1e-4 {
+            phase = before_grant.clamp_to(-ceiling, ceiling);
+            if (before_grant - phase).abs() > EPS {
                 if thermal <= regen && thermal < 1.0 {
                     flags |= trace::LIMIT_TEMPERATURE;
                 }
@@ -731,7 +745,7 @@ where
                 }
             }
         }
-        if (phase - granted).abs() > 1e-4 {
+        if (phase - granted).abs() > EPS {
             flags |= trace::LIMIT_BUS_CURRENT;
         }
         flags
@@ -740,19 +754,19 @@ where
     /// Prepare shared scalar bounds for the velocity PI's two authority probes
     /// and its actual current request. Ordinary current control keeps the
     /// direct grant path, without constructing this local value.
-    pub(super) fn torque_constraints(&self, omega: f32) -> TorqueConstraints {
+    pub(super) fn torque_constraints(&self, omega: ElectricalAngularVelocity) -> TorqueConstraints {
         let limits = &self.current_limits;
         let (drive_limit, plain_brake_limit) = if limits.is_enabled() {
             (
-                limits.max_current_a
+                limits.max_current
                     * self
                         .protection
                         .environment_drive
                         .min(self.protection.drive_cut(omega)),
-                limits.max_brake_a * self.derating().brake.min(self.derating().regen),
+                limits.max_brake * self.derating().brake.min(self.derating().regen),
             )
         } else {
-            (f32::INFINITY, f32::INFINITY)
+            (ElectricCurrent::INFINITY, ElectricCurrent::INFINITY)
         };
         TorqueConstraints {
             bus: self.bus_iq_bounds().unwrap_or(BusIqBounds::IDENTITY),
@@ -764,25 +778,25 @@ where
 
     pub(super) fn grant_torque_constrained(
         &self,
-        id_target: f32,
-        iq_target: f32,
+        id_target: ElectricCurrent,
+        iq_target: ElectricCurrent,
         constraints: &TorqueConstraints,
-    ) -> (f32, f32) {
+    ) -> (ElectricCurrent, ElectricCurrent) {
         if !self.current_limits.is_enabled() {
             return (id_target, constraints.bus.clamp(iq_target));
         }
-        if iq_target * constraints.omega >= 0.0 {
+        if (iq_target * constraints.omega).is_non_negative() {
             let lim = constraints.drive_limit;
             return (
                 id_target,
-                constraints.bus.clamp(clamp_f32(iq_target, -lim, lim)),
+                constraints.bus.clamp(iq_target.clamp_to(-lim, lim)),
             );
         }
         let Some(model) = self.dissipation_model() else {
             let lim = constraints.plain_brake_limit;
             return (
                 id_target,
-                constraints.bus.clamp(clamp_f32(iq_target, -lim, lim)),
+                constraints.bus.clamp(iq_target.clamp_to(-lim, lim)),
             );
         };
         self.grant_dissipative_brake(
@@ -798,36 +812,36 @@ where
     #[cfg(feature = "iq-authority")]
     pub(super) fn grant_iq_authority(
         &self,
-        iq_target: f32,
+        iq_target: ElectricCurrent,
         constraints: &TorqueConstraints,
-    ) -> f32 {
+    ) -> ElectricCurrent {
         let limits = &self.current_limits;
-        if !limits.is_enabled() || iq_target * constraints.omega >= 0.0 {
-            return self.grant_torque_constrained(0.0, iq_target, constraints).1;
+        if !limits.is_enabled() || (iq_target * constraints.omega).is_non_negative() {
+            return self
+                .grant_torque_constrained(ElectricCurrent::ZERO, iq_target, constraints)
+                .1;
         }
         let Some(model) = self.dissipation_model() else {
-            return self.grant_torque_constrained(0.0, iq_target, constraints).1;
+            return self
+                .grant_torque_constrained(ElectricCurrent::ZERO, iq_target, constraints)
+                .1;
         };
         let brake = self.derating().brake;
         let (_, iq) = limits.clamp_targets(
-            0.0,
-            clamp_f32(
-                iq_target,
-                -limits.max_brake_a * brake,
-                limits.max_brake_a * brake,
-            ),
+            ElectricCurrent::ZERO,
+            iq_target.clamp_to(-limits.max_brake * brake, limits.max_brake * brake),
         );
         let budget = self.regen_budget();
-        let id_max = heat_current_limit(watts(limits.max_dissipation_w * brake), model.resistance);
+        let id_max = heat_current_limit(limits.max_dissipation * brake, model.resistance);
         crate::motor::dissipation::dissipate_iq(
-            amps(iq),
-            erad_per_s(constraints.omega),
+            iq,
+            constraints.omega,
             &model,
             &budget,
             id_max,
-            amps(limits.max_current_a),
+            limits.max_current,
         )
-        .map_or_else(|| constraints.bus.clamp(iq), |q| q.get::<ampere>())
+        .unwrap_or_else(|| constraints.bus.clamp(iq))
     }
 
     // Keep the optional nonlinear solve out of the common torque grant: its
@@ -836,31 +850,31 @@ where
     #[cfg_attr(not(feature = "bench-dissipative-inline"), inline(never))]
     fn grant_dissipative_brake(
         &self,
-        id_target: f32,
-        iq_target: f32,
-        omega: f32,
+        id_target: ElectricCurrent,
+        iq_target: ElectricCurrent,
+        omega: ElectricalAngularVelocity,
         brake: f32,
         model: WindingModel,
         bus: Option<&BusIqBounds>,
-    ) -> (f32, f32) {
+    ) -> (ElectricCurrent, ElectricCurrent) {
         let limits = &self.current_limits;
-        let lim = limits.max_brake_a * brake;
-        let (id_target, iq) = limits.clamp_targets(id_target, clamp_f32(iq_target, -lim, lim));
+        let lim = limits.max_brake * brake;
+        let (id_target, iq) = limits.clamp_targets(id_target, iq_target.clamp_to(-lim, lim));
         let budget = self.regen_budget();
         // The heat budget buys id_max = √(W / 1.5·R), and follows the
         // thermal brake derate: a hot motor or board burns less (and so
         // brakes less on a full pack).
-        let id_max = heat_current_limit(watts(limits.max_dissipation_w * brake), model.resistance);
+        let id_max = heat_current_limit(limits.max_dissipation * brake, model.resistance);
         #[cfg(feature = "isr-profiling")]
         let solve_start = crate::isr_prof::now();
         let result = dissipate_with_id(
-            amps(id_target),
-            amps(iq),
-            erad_per_s(omega),
+            id_target,
+            iq,
+            omega,
             &model,
             &budget,
             id_max,
-            amps(limits.max_current_a),
+            limits.max_current,
         );
         #[cfg(feature = "isr-profiling")]
         crate::isr_prof::add(
@@ -871,7 +885,7 @@ where
         match result {
             // The solver preserves an explicit d-axis direction and uses
             // aligning current when it introduces a new heat request.
-            Some((id, iq)) => (id.get::<ampere>(), iq.get::<ampere>()),
+            Some((id, iq)) => (id, iq),
             // Plugging: the brake draws from the supply, nothing to shape.
             None => (
                 id_target,
@@ -884,16 +898,16 @@ where
     }
 
     /// The winding model dissipative braking runs on: `Some` when it is on
-    /// (`max_dissipation_w > 0`) and the motor params carry R and λ.
+    /// (`max_dissipation > 0`) and the motor params carry R and λ.
     fn dissipation_model(&self) -> Option<WindingModel> {
         let d = self
             .controller
             .decoupling()
-            .filter(|_| self.current_limits.max_dissipation_w > 0.0)?;
-        (d.resistance.value > 0.0 && d.flux_linkage.value > 0.0).then_some(WindingModel {
-            resistance: ohms(d.resistance.value),
-            flux_linkage: webers(d.flux_linkage.value),
-            saliency: henries((d.lq.value - d.ld.value).abs()),
+            .filter(|_| self.current_limits.max_dissipation.is_positive())?;
+        (d.resistance.is_positive() && d.flux_linkage.is_positive()).then_some(WindingModel {
+            resistance: d.resistance,
+            flux_linkage: d.flux_linkage,
+            saliency: (d.lq - d.ld).abs(),
         })
     }
 
@@ -903,24 +917,24 @@ where
         let limits = &self.current_limits;
         RegenBudget {
             frac: self.derating().regen,
-            max_power: if limits.bus_regen_max_a >= 0.0 {
-                volts(self.vbus) * amps(limits.bus_regen_max_a)
+            max_power: if limits.bus_regen_max.is_non_negative() {
+                self.vbus * limits.bus_regen_max
             } else {
-                watts(f32::INFINITY)
+                Power::INFINITY
             },
         }
     }
 
     /// Clamp the iq target so the implied bus current stays inside
-    /// `[-bus_regen_max_a, bus_in_max_a]` (VESC mcpwm_foc.c:3629-3637).
+    /// `[-bus_regen_max, bus_in_max]` (VESC mcpwm_foc.c:3629-3637).
     ///
     /// `i_bus ≈ iq·mod_q` (electrical power over vbus, q-axis only — the
     /// d-axis share is losses/HFI carrier, small and consumption-side).
-    /// With `bus_regen_max_a = 0` no energy is ever pushed into the supply:
+    /// With `bus_regen_max = 0` no energy is ever pushed into the supply:
     /// without dissipation, current braking degrades to ~zero torque in the
     /// regen zone (a lab PSU cannot absorb reverse current). The
     /// windings-short parking brake is unaffected — it never sees the bus.
-    pub(super) fn clamp_iq_for_bus(&self, iq_target: f32) -> f32 {
+    pub(super) fn clamp_iq_for_bus(&self, iq_target: ElectricCurrent) -> ElectricCurrent {
         match self.bus_iq_bounds() {
             Some(bounds) => bounds.clamp(iq_target),
             None => iq_target,
@@ -943,9 +957,9 @@ where
 
     #[inline(always)]
     fn bus_iq_bounds(&self) -> Option<BusIqBounds> {
-        let in_max = self.current_limits.bus_in_max_a;
-        let regen_max = self.current_limits.bus_regen_max_a;
-        if in_max < 0.0 && regen_max < 0.0 {
+        let in_max = self.current_limits.bus_in_max;
+        let regen_max = self.current_limits.bus_regen_max;
+        if in_max.is_negative() && regen_max.is_negative() {
             return None; // both unlimited (the default)
         }
         let mod_q = self.bus_mod_q_filt;
@@ -954,11 +968,15 @@ where
         if mod_q.abs() < 1e-3 {
             return None;
         }
-        let hi_bus = if in_max >= 0.0 { in_max } else { f32::INFINITY };
-        let lo_bus = if regen_max >= 0.0 {
+        let hi_bus = if in_max.is_non_negative() {
+            in_max
+        } else {
+            ElectricCurrent::INFINITY
+        };
+        let lo_bus = if regen_max.is_non_negative() {
             -regen_max
         } else {
-            f32::NEG_INFINITY
+            ElectricCurrent::NEG_INFINITY
         };
         let inv_mod_q = 1.0 / mod_q;
         let (lo_iq, hi_iq) = if mod_q > 0.0 {
@@ -973,6 +991,14 @@ where
     }
 }
 
+/// Duty utilization low-pass time constant.
+const DUTY_UTILIZATION_TAU: Time = seconds(0.002);
+
+/// Per-cycle decay of the OV/UV integrals: a 5 ms time constant.
+fn voltage_decay(dt: Time) -> f32 {
+    1.0 - dt.ratio_to(seconds(0.005)).min(1.0)
+}
+
 #[cfg(feature = "runtime")]
 #[inline]
 fn temperature_c(tenths: i16) -> f32 {
@@ -984,6 +1010,7 @@ mod tests {
     use super::*;
     use crate::foc::config::NtcConfig;
     use crate::foc::fault::StandardFault;
+    use crate::units::{ToBits, erad_per_s};
 
     #[test]
     fn temperature_multiply_error_is_below_sensor_quantization() {
@@ -1035,12 +1062,12 @@ mod tests {
         fn update(&mut self, board: &BoardConfig, dt: f32, vbus_v: f32) {
             let max_v = board.max_vbus_mv as f32 / 1000.0;
             let min_v = board.min_vbus_mv as f32 / 1000.0;
-            let trip_vs = 5e-5 * max_v;
-            let integral_ceiling = trip_vs * 4.0;
+            let trip = 5e-5 * max_v;
+            let integral_ceiling = trip * 4.0;
             let decay = 1.0 - (dt / 0.005).min(1.0);
             if vbus_v > max_v {
                 self.ov = (self.ov + (vbus_v - max_v) * dt).min(integral_ceiling);
-                if self.ov > trip_vs {
+                if self.ov > trip {
                     self.over_voltage = true;
                 }
             } else {
@@ -1048,7 +1075,7 @@ mod tests {
             }
             if vbus_v < min_v {
                 self.uv = (self.uv + (min_v - vbus_v) * dt).min(integral_ceiling);
-                if self.uv > trip_vs {
+                if self.uv > trip {
                     self.under_voltage = true;
                 }
             } else {
@@ -1073,20 +1100,20 @@ mod tests {
             registry,
             prepared,
             ProtectionSample {
-                dt,
-                vbus_v,
-                velocity: 0.0,
+                dt: seconds(dt),
+                vbus: volts(vbus_v),
+                velocity: erad_per_s(0.0),
                 fet_temp_c_x10: None,
                 motor_temp_c_x10: None,
             },
         );
         assert_eq!(
-            monitor.ov_integral_vs.to_bits(),
+            monitor.ov_integral.to_bits(),
             legacy.ov.to_bits(),
             "OV dt={dt} v={vbus_v}"
         );
         assert_eq!(
-            monitor.uv_integral_vs.to_bits(),
+            monitor.uv_integral.to_bits(),
             legacy.uv.to_bits(),
             "UV dt={dt} v={vbus_v}"
         );
@@ -1106,7 +1133,7 @@ mod tests {
             let prepared = PreparedBoardConfig::new(board(max_mv, min_mv));
             for dt in [0.000025, 0.00005, 0.0001, 0.001, 0.005, 0.01] {
                 for over_voltage in [false, true] {
-                    let mut monitor = ProtectionMonitor::new(dt);
+                    let mut monitor = ProtectionMonitor::new(seconds(dt));
                     let registry = FaultRegistry::new();
                     let mut legacy = LegacyVoltage::default();
                     let excursion = if over_voltage {
@@ -1169,13 +1196,13 @@ mod tests {
         let dt = 0.00005;
         let mut source = board(60_000, 8_000);
         let first = PreparedBoardConfig::new(source);
-        let mut monitor = ProtectionMonitor::new(dt);
+        let mut monitor = ProtectionMonitor::new(seconds(dt));
         let registry = FaultRegistry::new();
         let mut legacy = LegacyVoltage::default();
         for _ in 0..100 {
             compare_sample(&mut monitor, &registry, &mut legacy, &first, dt, 70.0);
         }
-        let accumulated = monitor.ov_integral_vs;
+        let accumulated = monitor.ov_integral;
         source.max_vbus_mv = 20_001;
         source.min_vbus_mv = 16_001;
         let replacement = PreparedBoardConfig::new(source);
@@ -1184,11 +1211,11 @@ mod tests {
         legacy.over_voltage = false;
         compare_sample(&mut monitor, &registry, &mut legacy, &replacement, dt, 17.0);
         assert_eq!(
-            monitor.ov_integral_vs.to_bits(),
+            monitor.ov_integral.to_bits(),
             (accumulated * (1.0 - dt / 0.005)).to_bits()
         );
         assert!(
-            monitor.ov_integral_vs > replacement.voltage.integral_ceiling,
+            monitor.ov_integral > replacement.voltage.integral_ceiling,
             "healthy samples decay history instead of resetting or clamping it"
         );
         compare_sample(&mut monitor, &registry, &mut legacy, &replacement, dt, 21.0);
@@ -1203,7 +1230,7 @@ mod tests {
         for (max_mv, min_mv) in [(0, 0), (8_000, 12_000), (u32::MAX, 0)] {
             let prepared = PreparedBoardConfig::new(board(max_mv, min_mv));
             for dt in [0.0, -0.0, -0.001, f32::NAN, f32::INFINITY] {
-                let mut monitor = ProtectionMonitor::new(dt);
+                let mut monitor = ProtectionMonitor::new(seconds(dt));
                 let registry = FaultRegistry::new();
                 let mut legacy = LegacyVoltage::default();
                 for vbus in [24.0, 0.0, -1.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
@@ -1214,7 +1241,7 @@ mod tests {
         // The old UV hysteresis sum overflows only when its healthy branch
         // executes. Preparation must not eagerly add it for malformed boards.
         let prepared = PreparedBoardConfig::new(board(60_000, u32::MAX));
-        let mut monitor = ProtectionMonitor::new(0.00005);
+        let mut monitor = ProtectionMonitor::new(seconds(0.00005));
         let registry = FaultRegistry::new();
         compare_sample(
             &mut monitor,
@@ -1244,7 +1271,7 @@ mod tests {
             let prepared = PreparedBoardConfig::new(source);
             for fet in readings {
                 for motor in readings {
-                    let mut monitor = ProtectionMonitor::new(0.00005);
+                    let mut monitor = ProtectionMonitor::new(seconds(0.00005));
                     let registry = FaultRegistry::<StandardFault>::new();
                     #[cfg(feature = "service-slots")]
                     let first_refresh = 11;
@@ -1255,9 +1282,9 @@ mod tests {
                             &registry,
                             &prepared,
                             ProtectionSample {
-                                dt: 0.00005,
-                                vbus_v: 24.0,
-                                velocity: 0.0,
+                                dt: seconds(0.00005),
+                                vbus: volts(24.0),
+                                velocity: erad_per_s(0.0),
                                 fet_temp_c_x10: fet,
                                 motor_temp_c_x10: motor,
                             },
@@ -1291,7 +1318,7 @@ mod tests {
         for hz in [15_000_u32, 20_000] {
             let frame_length = hz / 1_000;
             let dt = 1.0 / hz as f32;
-            let mut monitor = ProtectionMonitor::new(dt);
+            let mut monitor = ProtectionMonitor::new(seconds(dt));
             let registry = FaultRegistry::<StandardFault>::new();
             let retained = DeratingScales {
                 drive: 0.123,
@@ -1307,9 +1334,9 @@ mod tests {
                     &registry,
                     &prepared,
                     ProtectionSample {
-                        dt,
-                        vbus_v: 24.0,
-                        velocity: 0.0,
+                        dt: seconds(dt),
+                        vbus: volts(24.0),
+                        velocity: erad_per_s(0.0),
                         fet_temp_c_x10: Some(1000),
                         motor_temp_c_x10: None,
                     },

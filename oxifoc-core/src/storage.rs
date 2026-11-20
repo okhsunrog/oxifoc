@@ -10,14 +10,14 @@
 //! giving them automatic postcard serialization for sequential-storage.
 
 pub use crate::foc::velocity::VelocityLoopConfig;
+use crate::motor::dissipation::heat_current_limit;
 pub use crate::motor::{derating::DeratingConfig, drive::DriveConfig};
 use crate::types::ConfigValue;
 pub use crate::types::VoltageFeedforwardMode;
-use crate::units::unit::electrical;
 use crate::units::{
     AngularVelocity, CurrentRate, ElectricCurrent, ElectricalAngle, ElectricalAngularAcceleration,
     ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux, Power, Sign, amps,
-    amps_per_s, erad, erad_per_s, erad_per_s2, erpm, rad_per_s, watts,
+    erad, erad_per_s, erpm, rad_per_s, unit::electrical, watts,
 };
 use sequential_storage::map::{Key, PostcardValue, SerializationError};
 use serde::{Deserialize, Serialize};
@@ -261,26 +261,24 @@ impl MotorParamsConfig {
     }
 
     /// The continuous-current estimate from the configured copper-loss budget.
-    pub fn thermal_current_a(&self) -> Option<f32> {
+    pub fn thermal_current(&self) -> Option<ElectricCurrent> {
         if self.resistance.is_finite()
             && self.resistance.is_positive()
             && self.max_power_loss.is_finite()
             && self.max_power_loss.is_positive()
         {
-            let current =
-                crate::motor::dissipation::heat_current_limit(self.max_power_loss, self.resistance)
-                    .value;
-            (current.is_finite() && current > 0.0).then_some(current)
+            let current = heat_current_limit(self.max_power_loss, self.resistance);
+            (current.is_finite() && current.is_positive()).then_some(current)
         } else {
             None
         }
     }
 
     /// Continuous current allowed by both the estimate and a manual ceiling.
-    pub fn rating_current_a(&self) -> Option<f32> {
-        let thermal = self.thermal_current_a();
+    pub fn rating_current(&self) -> Option<ElectricCurrent> {
+        let thermal = self.thermal_current();
         if self.max_current.is_finite() && self.max_current.is_positive() {
-            return Some(thermal.map_or(self.max_current.value, |a| a.min(self.max_current.value)));
+            return Some(thermal.map_or(self.max_current, |a| a.min(self.max_current)));
         }
         thermal
     }
@@ -720,10 +718,10 @@ impl Default for FailsafeConfigStored {
         Self {
             staleness_timeout_ms: (config.staleness_timeout_us / 1_000) as u32,
             policy: config.policy as u8,
-            brake_current: amps(config.brake_current_a),
-            slew: amps_per_s(config.slew_a_per_s),
-            standstill: erad_per_s(config.standstill_rad_s),
-            decel: erad_per_s2(config.decel_rad_s2),
+            brake_current: config.brake_current,
+            slew: config.slew,
+            standstill: config.standstill,
+            decel: config.decel,
             terminal: config.terminal as u8,
         }
     }
@@ -1052,7 +1050,7 @@ impl InstalledDrive {
         let setup = record
             .setup
             .clone()
-            .validate(board_trip_a, record.configured_trip_a)
+            .validate(amps(board_trip_a), amps(record.configured_trip_a))
             .ok()?;
         Some(InstalledDriveV2::new(
             record
@@ -1518,7 +1516,7 @@ mod tests {
             },
             current: DriveCurrent::Auto,
         }
-        .validate(70.0, 30.0)
+        .validate(amps(70.0), amps(30.0))
         .unwrap();
         let mut config = RuntimeConfig::default();
         assert!(InstalledDrive::new(&setup).project(&mut config, 70.0));
@@ -1568,7 +1566,7 @@ mod tests {
             },
             current: DriveCurrent::Auto,
         }
-        .validate(70.0, 30.0)
+        .validate(amps(70.0), amps(30.0))
         .unwrap();
         let installed = InstalledDrive::V1(InstalledDriveV1 {
             setup: (&setup).into(),
@@ -1613,17 +1611,17 @@ mod tests {
             .motor_params
             .as_ref()
             .unwrap()
-            .rating_current_a()
+            .rating_current()
             .unwrap();
-        assert!((rating - setup.thermal_current_a() / libm::sqrtf(2.5)).abs() < 1e-5);
+        assert!((rating - setup.thermal_current() / libm::sqrtf(2.5)).abs() < amps(1e-5));
         #[cfg(feature = "algorithms")]
         {
-            let effective =
-                crate::motor::foc_driver::CurrentLimits::from_config_clamped(&limits, 70.0, rating);
-            assert_eq!(effective.max_current_a, rating);
-            assert_eq!(effective.bus_in_max_a, 8.0);
-            assert_eq!(effective.bus_regen_max_a, 0.0);
-            assert_eq!(effective.overcurrent_threshold_a, 30.0);
+            use crate::motor::foc_driver::CurrentLimits;
+            let effective = CurrentLimits::from_config_clamped(&limits, amps(70.0), rating);
+            assert_eq!(effective.max_current, rating);
+            assert_eq!(effective.bus_in_max, amps(8.0));
+            assert_eq!(effective.bus_regen_max, amps(0.0));
+            assert_eq!(effective.overcurrent_threshold, amps(30.0));
         }
         assert!(!load_installed_drive(&mut legacy, &Err(()), 70.0));
         assert!(legacy.motor_params.is_none() && legacy.current_limits.is_none());

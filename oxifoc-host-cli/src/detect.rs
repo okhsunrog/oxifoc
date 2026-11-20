@@ -49,7 +49,9 @@ pub fn run_detect(
             resistance.is_none() && inductance.is_none(),
             "full detection measures its own resistance and inductance"
         );
-        let current = drive_current_a.map_or(DriveCurrent::Auto, DriveCurrent::Override);
+        let current = drive_current_a
+            .map(amps)
+            .map_or(DriveCurrent::Auto, DriveCurrent::Override);
         anyhow::ensure!(
             drive_current_a.is_none_or(|a| a.is_finite() && a > 0.0),
             "drive current must be finite and positive"
@@ -245,7 +247,7 @@ fn run_all(
         .or(hardware)
         .context("controller hardware info unavailable")?;
     let preview = detect::preview_setup(&runtime.cmd_tx, setup.clone(), info.max_current_a.value)?;
-    let thermal = preview.thermal_current_a();
+    let thermal = preview.thermal_current().value;
     let effective = preview.limits().max_iq.value;
     let apply = if !apply && !json && std::io::stdin().is_terminal() {
         eprintln!(

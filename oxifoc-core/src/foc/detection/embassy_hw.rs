@@ -292,7 +292,7 @@ fn coast_sample(
     if alpha * alpha + beta * beta < voltage_floor * voltage_floor {
         return Err(DetectionError::InsufficientSamples);
     }
-    Ok((alpha, beta, hall.velocity.value))
+    Ok((alpha.value, beta.value, hall.velocity.value))
 }
 
 async fn wait_next_telemetry(
@@ -324,7 +324,7 @@ fn resistance_sample(
     let (sin, cos) = FastSinCos::sin_cos(foc.angle.value);
     let (voltage_v, _) = crate::foc::transforms::park(alpha, beta, sin, cos);
     Ok(ResistanceSample {
-        voltage_v,
+        voltage_v: voltage_v.value,
         current_a: foc.id.value,
         source: ResistanceVoltageSource::FilteredPhaseAdc,
     })
@@ -522,12 +522,13 @@ pub async fn calibrate_hall_default(
 mod tests {
     use super::*;
     use crate::foc::sensors::AdcSnapshot;
+    use crate::units::{amps, erad, erad_per_s, ohms, volts};
     use core::{future::Future, pin::pin, task::Context};
 
     fn board(filtered: bool) -> BoardConfig {
         BoardConfig {
             calib: crate::types::BoardCalib {
-                shunt_ohms: 0.0005,
+                shunt_ohms: ohms(0.0005),
                 amp_gain: 20.0,
                 adc_vref_mv: 3300,
                 adc_max_counts: 3300, // 1 mV/count makes the projection explicit.
@@ -552,9 +553,9 @@ mod tests {
     fn filtered_sample_projects_measured_voltage_at_the_matching_foc_angle() {
         let adc = AdcSnapshot::default().with_phase_voltages([1000, 1100, 900]);
         let foc = FocOutput {
-            vd: -0.5,
-            id: 1.5,
-            angle_rad: core::f32::consts::FRAC_PI_2,
+            vd: volts(-0.5),
+            id: amps(1.5),
+            angle: erad(core::f32::consts::FRAC_PI_2),
             ..FocOutput::empty()
         };
         let sample = resistance_sample(&board(true), adc, foc).unwrap();
@@ -568,7 +569,7 @@ mod tests {
     fn coast_uses_terminal_adc_and_independent_hall_speed_even_without_filters() {
         let adc = AdcSnapshot::default().with_phase_voltages([1200, 900, 900]);
         let hall = HallSnapshot {
-            velocity_rad_s: -123.0,
+            velocity: erad_per_s(-123.0),
             error_count: 4,
             ..Default::default()
         };
@@ -583,7 +584,7 @@ mod tests {
     fn coast_rejects_missing_or_faulted_sensors_and_an_energized_bridge() {
         let adc = AdcSnapshot::default().with_phase_voltages([1200, 900, 900]);
         let hall = HallSnapshot {
-            velocity_rad_s: 123.0,
+            velocity: erad_per_s(123.0),
             ..Default::default()
         };
         assert_eq!(
@@ -596,7 +597,7 @@ mod tests {
                 ..hall
             },
             HallSnapshot {
-                velocity_rad_s: f32::NAN,
+                velocity: erad_per_s(f32::NAN),
                 ..hall
             },
         ] {
@@ -624,7 +625,7 @@ mod tests {
     #[test]
     fn coast_voltage_floor_scales_with_adc_resolution_and_rejects_noise() {
         let hall = HallSnapshot {
-            velocity_rad_s: 123.0,
+            velocity: erad_per_s(123.0),
             ..Default::default()
         };
         let adc = AdcSnapshot::default().with_phase_voltages([1200, 1199, 1201]);
@@ -641,7 +642,7 @@ mod tests {
             &state,
             AdcSnapshot::default(),
             Some(HallSnapshot {
-                velocity_rad_s: 100.0,
+                velocity: erad_per_s(100.0),
                 ..Default::default()
             }),
             FocOutput::empty(),
@@ -672,8 +673,8 @@ mod tests {
                 board.phase_sense = None;
             }
             let foc = FocOutput {
-                vd: 0.25,
-                id: 2.0,
+                vd: volts(0.25),
+                id: amps(2.0),
                 ..FocOutput::empty()
             };
             let sample = resistance_sample(&board, AdcSnapshot::default(), foc).unwrap();
@@ -688,7 +689,7 @@ mod tests {
             AdcSnapshot::new(2048, 2048, 2048, 24_000, seq),
             None,
             FocOutput {
-                vd,
+                vd: volts(vd),
                 ..FocOutput::empty()
             },
         );
@@ -706,7 +707,7 @@ mod tests {
         let Poll::Ready(output) = future.as_mut().poll(&mut context) else {
             panic!("new ADC cycle did not complete the wait");
         };
-        assert_eq!(output.vd, 0.2);
+        assert_eq!(output.vd, volts(0.2));
     }
 
     #[test]
@@ -721,7 +722,7 @@ mod tests {
         let Poll::Ready(output) = future.as_mut().poll(&mut context) else {
             panic!("wrapped ADC counter did not complete the wait");
         };
-        assert_eq!(output.vd, 0.3);
+        assert_eq!(output.vd, volts(0.3));
     }
 
     #[test]
@@ -736,8 +737,8 @@ mod tests {
             AdcSnapshot::new(1, 2, 3, 24_000, 42).with_phase_voltages([4, 5, 6]),
             None,
             FocOutput {
-                vd: -0.1,
-                id: 2.0,
+                vd: volts(-0.1),
+                id: amps(2.0),
                 ..FocOutput::empty()
             },
         );
@@ -746,7 +747,7 @@ mod tests {
         };
         assert_eq!(adc.seq, 42);
         assert_eq!(adc.vphase, Some([4, 5, 6]));
-        assert_eq!(foc.id, 2.0);
-        assert_eq!(foc.vd, -0.1);
+        assert_eq!(foc.id, amps(2.0));
+        assert_eq!(foc.vd, volts(-0.1));
     }
 }

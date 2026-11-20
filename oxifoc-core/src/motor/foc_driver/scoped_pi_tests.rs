@@ -7,7 +7,7 @@ const DETECTION_GAINS: (f32, f32) = (0.01, 10.0);
 
 fn driver() -> FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSensor>> {
     let mut driver = grant_driver(
-        CurrentLimits::from_max_current(3.0),
+        CurrentLimits::from_max_current(amps(3.0)),
         DeratingScales::IDENTITY,
     );
     driver
@@ -103,7 +103,7 @@ fn temporary_pi_scope_ends_on_fault_stop_brake_ramp_and_failsafe() {
     }
     for voltage_packet in [false, true] {
         let mut driver = driver();
-        driver.current_limits.overcurrent_threshold_a = 6.0;
+        driver.current_limits.overcurrent_threshold = amps(6.0);
         driver.set_mode(hold(Some(DETECTION_GAINS)));
         if voltage_packet {
             driver.set_mode(ControlMode::DirectVoltage {
@@ -162,7 +162,7 @@ fn persistent_pi_tuning_supersedes_temporary_scope_without_later_rollback() {
 fn prepared_model_pi_replaces_working_tuning_after_detection() {
     let mut driver = driver();
     let config = model_config();
-    let mut prepared = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+    let mut prepared = PreparedMotorModel::from_config(&config, volts(24.0), amps(3.0));
     let expected = FocController::<SvpwmModulator>::from_runtime_config(&config, volts(24.0));
     driver.set_mode(hold(Some(DETECTION_GAINS)));
     assert_eq!(

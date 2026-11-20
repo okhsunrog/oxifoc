@@ -336,6 +336,7 @@ mod tests {
     use crate::foc::hall_calibration::HallCalibrationResult;
     use crate::foc::hall_sensor::HALL_STATE_TABLE;
     use crate::foc::phase::{PhaseInput, PhaseManager, PhaseProvider};
+    use crate::units::{ToBits, erad, erad_per_s, seconds};
 
     // This is the only host test that owns the shared estimator. Exercise the
     // same live-apply API as embassy_hw::calibrate_hall, rather than a direct
@@ -346,7 +347,7 @@ mod tests {
         update_hall_edge(1, 0);
         let mut manager = PhaseManager::with_hall(HallAngleProxy::new());
         let input = PhaseInput {
-            dt: 0.00005,
+            dt: seconds(0.00005),
             ..Default::default()
         };
         let sequence = [1, 3, 2, 6, 4, 5];
@@ -357,12 +358,12 @@ mod tests {
             }
             manager.update(&input, step * 50);
         }
-        assert!(manager.get().velocity > 10.0);
+        assert!(manager.get().velocity > erad_per_s(10.0));
         let mut proxy = HallAngleProxy::new();
         let epoch = proxy.sample_for_control(30_000).unwrap().reference_epoch;
         let mut calibration = HallCalibrationResult {
             geometry: None,
-            angles: [0.0; 8],
+            angles: [erad(0.0); 8],
             valid: [false; 8],
             valid_count: 0,
         };
@@ -373,7 +374,7 @@ mod tests {
         );
         manager.update(&input, 30_050);
         assert!(
-            manager.get().velocity > 10.0,
+            manager.get().velocity > erad_per_s(10.0),
             "rejected calibration keeps motion history"
         );
 
@@ -383,7 +384,7 @@ mod tests {
             .iter_mut()
             .zip(&HALL_STATE_TABLE[1..7])
         {
-            *angle = f32::from(*logical) * core::f32::consts::TAU / 6.0 + 0.3;
+            *angle = erad(f32::from(*logical) * core::f32::consts::TAU / 6.0 + 0.3);
         }
         assert!(apply_detected_calibration(&calibration));
         let frame = proxy.sample_for_control(30_100).unwrap();
@@ -391,7 +392,7 @@ mod tests {
         manager.update(&input, 30_100);
         assert_eq!(
             manager.get().velocity,
-            0.0,
+            erad_per_s(0.0),
             "new table starts a fresh derivative"
         );
 
@@ -403,7 +404,7 @@ mod tests {
         assert!(proxy.sample_for_control(30_150).is_none());
         update_hall_edge(1, 30_200);
         manager.update(&input, 30_200);
-        assert_eq!(manager.get().velocity, 0.0);
+        assert_eq!(manager.get().velocity, erad_per_s(0.0));
 
         HALL_ESTIMATOR.lock(|est| est.borrow_mut().reference_epoch = u32::MAX);
         assert!(apply_detected_calibration(&calibration));
@@ -411,15 +412,15 @@ mod tests {
         manager.update(&input, 30_250);
         assert_eq!(
             manager.get().velocity,
-            0.0,
+            erad_per_s(0.0),
             "epoch rollover is a reference change too"
         );
         let prepared = PreparedHallCalibration::from_result(&calibration).unwrap();
         assert!(proxy.apply_prepared_hall_calibration(&prepared).is_some());
         assert_eq!(proxy.sample_for_control(30_300).unwrap().reference_epoch, 1);
-        assert_eq!(proxy.sample(30_300).unwrap().omega, 0.0);
+        assert_eq!(proxy.sample(30_300).unwrap().omega, erad_per_s(0.0));
         manager.update(&input, 30_300);
-        assert_eq!(manager.get().velocity, 0.0);
+        assert_eq!(manager.get().velocity, erad_per_s(0.0));
         HALL_ESTIMATOR.lock(|est| est.borrow_mut().sensor = None);
         assert!(proxy.apply_prepared_hall_calibration(&prepared).is_none());
         assert_eq!(HALL_ESTIMATOR.lock(|est| est.borrow().reference_epoch), 1);
@@ -448,7 +449,7 @@ mod tests {
                 live.angle.to_bits(),
                 "boot and live share the same installed reference"
             );
-            assert_eq!(live.omega, 0.0);
+            assert_eq!(live.omega, erad_per_s(0.0));
         }
     }
 }

@@ -385,7 +385,7 @@ pub fn preview_setup(
         _ => bail!("controller returned an unexpected current-limits value"),
     };
     setup
-        .validate(board_trip_a, trip)
+        .validate(amps(board_trip_a), amps(trip))
         .map_err(|e| anyhow::anyhow!("invalid drive setup: {e:?}"))
 }
 

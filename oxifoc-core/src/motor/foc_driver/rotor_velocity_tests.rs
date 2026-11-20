@@ -3,7 +3,7 @@ use crate::foc::phase::{PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::{DeratingConfig, ModulationDerating, SpeedDerating};
 use crate::motor::drive::DriveConfig;
-use crate::units::{amps, erad, erad_per_s, erad_per_s2, henries, ohms, volts, webers};
+use crate::units::{amps, erad, erad_per_s, erad_per_s2, henries, ohms, seconds, volts, webers};
 
 struct SplitPhase {
     frame_velocity: f32,
@@ -41,9 +41,9 @@ fn split_driver(
             frame_velocity,
             rotor_velocity,
         },
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(3.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(3.0)));
     driver
 }
 
@@ -63,11 +63,26 @@ fn inverted_directional_limits_follow_rider_and_preserve_braking() {
         },
         ..Default::default()
     });
-    assert_eq!(driver.speed_ceiling(-90.0), 100.0);
-    assert_eq!(driver.speed_ceiling(90.0), 50.0);
-    assert_eq!(driver.grant_torque(0.0, -3.0, -90.0).1, -1.5);
-    assert_eq!(driver.grant_torque(0.0, 3.0, 90.0).1, 0.0);
-    assert_eq!(driver.grant_torque(0.0, 1.0, -90.0).1, 1.0);
+    assert_eq!(driver.speed_ceiling(erad_per_s(-90.0)), erad_per_s(100.0));
+    assert_eq!(driver.speed_ceiling(erad_per_s(90.0)), erad_per_s(50.0));
+    assert_eq!(
+        driver
+            .grant_torque(amps(0.0), amps(-3.0), erad_per_s(-90.0))
+            .1,
+        amps(-1.5)
+    );
+    assert_eq!(
+        driver
+            .grant_torque(amps(0.0), amps(3.0), erad_per_s(90.0))
+            .1,
+        amps(0.0)
+    );
+    assert_eq!(
+        driver
+            .grant_torque(amps(0.0), amps(1.0), erad_per_s(-90.0))
+            .1,
+        amps(1.0)
+    );
 
     let mode = ControlMode::Throttle { fraction: 0.5 };
     #[cfg(feature = "runtime")]
@@ -76,7 +91,7 @@ fn inverted_directional_limits_follow_rider_and_preserve_braking() {
     {
         driver.set_mode(mode);
         driver.step(50).unwrap();
-        assert_eq!(driver.last_granted_iq, -0.75);
+        assert_eq!(driver.last_granted_iq, amps(-0.75));
         assert!(driver.set_drive_config(DriveConfig::DEFAULT).is_err());
     }
     #[cfg(not(feature = "runtime"))]
@@ -93,13 +108,30 @@ fn duty_taper_scales_throttle_and_clamps_only_larger_amp_requests() {
         ..Default::default()
     });
     let voltage_limit = driver.controller.voltage_limit();
-    driver.update_duty_utilization(volts(0.0), 0.925 * voltage_limit, 0.002);
-    assert!((driver.throttle_current(0.5) - 0.75).abs() < 1e-5);
-    assert!((driver.grant_torque(0.0, 3.0, 100.0).1 - 1.5).abs() < 1e-5);
-    assert_eq!(driver.grant_torque(0.0, 1.0, 100.0).1, 1.0);
-    assert_eq!(driver.grant_torque(0.0, -3.0, 100.0).1, -3.0);
+    driver.update_duty_utilization(volts(0.0), 0.925 * voltage_limit, seconds(0.002));
+    assert!((driver.throttle_current(0.5) - amps(0.75)).abs() < amps(1e-5));
+    assert!(
+        (driver
+            .grant_torque(amps(0.0), amps(3.0), erad_per_s(100.0))
+            .1
+            - amps(1.5))
+        .abs()
+            < amps(1e-5)
+    );
+    assert_eq!(
+        driver
+            .grant_torque(amps(0.0), amps(1.0), erad_per_s(100.0))
+            .1,
+        amps(1.0)
+    );
+    assert_eq!(
+        driver
+            .grant_torque(amps(0.0), amps(-3.0), erad_per_s(100.0))
+            .1,
+        amps(-3.0)
+    );
     driver.set_mode(ControlMode::Stopped);
-    assert_eq!(driver.throttle_current(0.5), 1.5);
+    assert_eq!(driver.throttle_current(0.5), amps(1.5));
 }
 
 #[test]
@@ -185,13 +217,13 @@ fn velocity_authority_and_final_current_grant_share_physical_speed() {
     driver.phase.rotor_velocity = None;
     assert_eq!(
         driver.torque_speed(),
-        1000.0,
+        erad_per_s(1000.0),
         "unknown motion preserves the explicit legacy/startup grant fallback"
     );
     driver.phase.rotor_velocity = Some(0.0);
     assert_eq!(
         driver.torque_speed(),
-        0.0,
+        erad_per_s(0.0),
         "credible zero must not select fallback"
     );
 }

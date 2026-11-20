@@ -1043,7 +1043,9 @@ fn drive_setup_save_replays_exact_request_and_commits_all_groups() {
         ReqId(0x5516),
         SaveDriveSetup {
             session: outcome.session.unwrap(),
-            setup: outcome.setup(plan, DriveCurrent::Override(10.0)).unwrap(),
+            setup: outcome
+                .setup(plan, DriveCurrent::Override(amps(10.0)))
+                .unwrap(),
         },
     );
     let send = |request| {

@@ -15,7 +15,8 @@ use oxifoc_core::foc::hall_sensor::{Direction, HallSensor};
 use oxifoc_core::foc::phase::PhaseManager;
 use oxifoc_core::foc::pwm::SvpwmModulator;
 use oxifoc_core::foc::sensors::{
-    AdcSnapshot, AngleSensor, CurrentSensor, HallSensorTrait, HallSnapshot, TempSensorId,
+    AdcSnapshot, AngleSensor, CurrentSensor, HallSensorTrait, HallSnapshot, PhaseCurrents,
+    TempSensorId,
 };
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
@@ -23,7 +24,7 @@ use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
 use oxifoc_core::state::{MotorControlState, run_foc_cycle};
 use oxifoc_core::storage::RuntimeConfig;
-use oxifoc_core::units::{erad, erad_per_s, seconds, volts};
+use oxifoc_core::units::{amps, erad, erad_per_s, quantity, seconds, volts};
 use oxifoc_core::virtual_motor::io::VirtualPwm;
 use oxifoc_core::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 use tracing::info;
@@ -75,7 +76,7 @@ impl CurrentSensor for Currents {
         crate::CURRENT_SENSE_TOPOLOGY
     }
 
-    fn read_currents(&self) -> (f32, f32, f32) {
+    fn read_currents(&self) -> PhaseCurrents {
         self.converter
             .convert_raw(self.raw[0], self.raw[1], self.raw[2])
     }
@@ -139,12 +140,12 @@ pub async fn foc_loop(
         duties: [0; 3],
         enabled: false,
     };
-    let mut driver = FocDriver::new(controller, pwm, Currents::new(&config), phase, dt);
+    let mut driver = FocDriver::new(controller, pwm, Currents::new(&config), phase, seconds(dt));
     driver.set_actuation_delay(params.actuation_delay);
     let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
         &config,
-        vbus,
-        board.max_phase_current_a,
+        volts(vbus),
+        amps(board.max_phase_current_a),
     );
     let source = driver
         .apply_motor_model(&mut model)
@@ -211,7 +212,7 @@ pub async fn foc_loop(
                 state_mutex,
                 fault_registry,
                 &mut driver,
-                measured_vbus,
+                quantity(measured_vbus),
                 now,
                 &prepared_board,
             )

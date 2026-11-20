@@ -22,7 +22,7 @@ use crate::cordic::CordicSinCos;
 use crate::motor::MotorPwm;
 use crate::sensors::{G474CurrentSensor, G474CurrentSensorExt, HallAngleProxy};
 use crate::{FAULT_REGISTRY, STATE};
-use oxifoc_core::units::volts;
+use oxifoc_core::units::{amps, volts};
 
 const PREPARED_BOARD: PreparedBoardConfig = PreparedBoardConfig::new(BOARD);
 
@@ -92,12 +92,12 @@ pub async fn init(
         motor_pwm,
         current_sensor,
         phase_manager,
-        PWM_CONFIG.dt_s(),
+        PWM_CONFIG.dt(),
     );
     let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
         config,
-        initial_vbus_v,
-        BOARD.max_phase_current_a,
+        volts(initial_vbus_v),
+        amps(BOARD.max_phase_current_a),
     );
     let source = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
     critical_section::with(|cs| {

@@ -5,6 +5,8 @@ use crate::foc::phase::provider::{PhaseInput, PhaseProvider, RotorVelocityEstima
 use crate::foc::sensors::{AngleSample, AngleSensor, ControlAngleSample};
 use crate::foc::wrap_angle;
 use crate::units::{ToBits, erad, erad_per_s, henries, ohms, seconds, volts, webers};
+#[cfg(feature = "hfi")]
+use crate::units::{amps, hertz, per_second, quantity};
 
 // The angle already represents the sensor's control sample. Its corrections
 // deliberately differ from the independent edge-period velocity.
@@ -458,9 +460,9 @@ fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
 
     let mut manager =
         PhaseManager::with_hall(VelocitySensor::new()).with_encoder(VelocitySensor::new());
-    let mut hfi = HfiObserver::new(1000.0, 3.0);
-    hfi.set_phase(0.0); // Trusted polarity; isolate demod readiness from its probe.
-    hfi.set_pll_gains(0.0, 0.0);
+    let mut hfi = HfiObserver::new(hertz(1000.0), volts(3.0));
+    hfi.set_phase(erad(0.0)); // Trusted polarity; isolate demod readiness from its probe.
+    hfi.set_pll_gains(per_second(0.0), quantity(0.0));
     manager.set_hfi_observer(hfi);
     manager.set_source(PhaseSource::Hfi).unwrap();
     for step in 0..1000_u16 {
@@ -469,7 +471,7 @@ fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
         let _injection = manager.injection();
         manager.update(
             &PhaseInput {
-                i_alpha: 0.2 * libm::sinf(carrier),
+                i_alpha: amps(0.2 * libm::sinf(carrier.value)),
                 ..input()
             },
             u64::from(step) * 50,
@@ -485,22 +487,22 @@ fn downward_hfi_reseed_does_not_publish_copied_frame_velocity() {
         .unwrap();
     manager.crossover_latched = true;
     manager.output = PhaseOutput {
-        angle: 0.5,
-        velocity: 123.0,
+        angle: erad(0.5),
+        velocity: erad_per_s(123.0),
     };
     let out = manager.compute_phase_with_fallback(
         None,
         None,
         Some(AngleSample {
-            angle: 0.4,
-            omega: 10.0,
+            angle: erad(0.4),
+            omega: erad_per_s(10.0),
             direction: Direction::Clockwise,
         }),
         input().dt,
         false,
     );
     assert!(!manager.crossover_latched);
-    assert_eq!(out.velocity, 123.0); // The commutation handoff is unchanged.
+    assert_eq!(out.velocity, erad_per_s(123.0)); // The commutation handoff is unchanged.
     assert!(manager.hfi_observer().unwrap().is_ready());
     assert_eq!(rotor_speed(&manager), None);
 }

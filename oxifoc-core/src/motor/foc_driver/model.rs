@@ -6,9 +6,9 @@ use crate::foc::phase::{PhaseProvider, PhaseSource, PreparedPhaseModel};
 use crate::foc::pwm::{PhasePwm, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::{LibmSinCos, SinCos};
-use crate::storage::RuntimeConfig;
+use crate::storage::{MotorParamsConfig, RuntimeConfig};
 use crate::types::VoltageFeedforwardMode;
-use crate::units::volts;
+use crate::units::{ConstZero, ElectricCurrent, ElectricPotential};
 
 /// Model construction can evaluate filter coefficients; installing this value
 /// only replaces prepared state and scalar settings. Keep it out of ISR queues.
@@ -37,21 +37,25 @@ impl PreparedMotorModel {
         self.phase.as_mut()?.prepare_setup_feedback(hall)
     }
 
-    pub fn from_config(config: &RuntimeConfig, vbus: f32, board_max_current_a: f32) -> Self {
+    pub fn from_config(
+        config: &RuntimeConfig,
+        vbus: ElectricPotential,
+        board_max_current: ElectricCurrent,
+    ) -> Self {
         let controller =
-            FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(config, volts(vbus));
+            FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(config, vbus);
         let motor = config.motor_params.as_ref().filter(|mp| mp.is_valid());
         Self {
-            phase: Some(PreparedPhaseModel::from_config(config, volts(vbus))),
+            phase: Some(PreparedPhaseModel::from_config(config, vbus)),
             gains: controller.id_pi.gains(),
             decoupling: controller.decoupling(),
             voltage_feedforward_mode: controller.voltage_feedforward_mode(),
             limits: CurrentLimits::from_stored(
                 config.current_limits.as_ref(),
-                board_max_current_a,
+                board_max_current,
                 motor
-                    .and_then(crate::storage::MotorParamsConfig::rating_current_a)
-                    .unwrap_or(0.0),
+                    .and_then(MotorParamsConfig::rating_current)
+                    .unwrap_or(ElectricCurrent::ZERO),
             ),
             pole_pairs: motor.map_or(0, |mp| mp.pole_pairs),
         }

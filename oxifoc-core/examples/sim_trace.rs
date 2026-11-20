@@ -175,7 +175,7 @@ fn main() -> std::io::Result<()> {
     // One standing step: latches the driver's position frame (and the
     // angle a lock captures), and the rotor's true position in that frame.
     let first = rig.step();
-    let pos0 = rig.driver.position().as_rad();
+    let pos0 = rig.driver.position().as_angle().value;
     let mut pos_true = pos0 + angle_difference(first.sample.angle_rad, pos0);
     let mut prev_angle = first.sample.angle_rad;
     let initial = mode_for(&rig, &mode, set, pos0);
@@ -214,7 +214,7 @@ fn main() -> std::io::Result<()> {
             rig.driver.set_mode(ControlMode::Coast);
         }
         if mode == "anchor" {
-            let err = rig.driver.position().as_rad() - pos0;
+            let err = rig.driver.position().as_angle().value - pos0;
             let want = if err.abs() < anchor_db {
                 ControlMode::Brake
             } else {
@@ -276,7 +276,7 @@ fn main() -> std::io::Result<()> {
                 }
                 _ => f32::NAN,
             };
-            let pos_est = rig.driver.position().as_rad();
+            let pos_est = rig.driver.position().as_angle().value;
             writeln!(
                 w,
                 "{t:.6?},{:.5?},{:.5?},{obs_raw_err:.5?},{:.2?},{:.2?},{:.2?},{:.4?},{:.4?},{id_true:.4?},{iq_true:.4?},{:.4?},{:.4?},{:.5?},{:?},{:?},{iq_target:.3?},{pos_true:.4?},{pos_est:.4?},{pos_target:.4?},{:?}",

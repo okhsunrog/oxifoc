@@ -170,15 +170,17 @@ impl FastTelemetry {
             .and_then(|sense| phase_voltage_v.map(|_| sense.alpha_beta(self.vphase_adc)));
         let measured_dq = measured_ab
             .map(|(alpha, beta)| park(alpha, beta, libm::sinf(angle_rad), libm::cosf(angle_rad)));
+        // RichSample is the host's display record, in plain SI numbers.
         RichSample {
-            ia,
-            ib,
-            ic,
-            i_sum: (ctx.topology == CurrentSenseTopology::ThreeShunt).then_some(ia + ib + ic),
-            i_alpha,
-            i_beta,
-            id,
-            iq,
+            ia: ia.value,
+            ib: ib.value,
+            ic: ic.value,
+            i_sum: (ctx.topology == CurrentSenseTopology::ThreeShunt)
+                .then_some((ia + ib + ic).value),
+            i_alpha: i_alpha.value,
+            i_beta: i_beta.value,
+            id: id.value,
+            iq: iq.value,
             vbus_v: self.vbus_v(),
             vd: self.vd_v(),
             vq: self.vq_v(),
@@ -187,11 +189,11 @@ impl FastTelemetry {
             mech_rpm,
             erpm: mech_rpm * f32::from(ctx.pole_pairs),
             seq: self.seq,
-            phase_voltage_v,
-            v_alpha_measured: measured_ab.map(|v| v.0),
-            v_beta_measured: measured_ab.map(|v| v.1),
-            vd_measured: measured_dq.map(|v| v.0),
-            vq_measured: measured_dq.map(|v| v.1),
+            phase_voltage_v: phase_voltage_v.map(|v| v.map(|v| v.value)),
+            v_alpha_measured: measured_ab.map(|v| v.0.value),
+            v_beta_measured: measured_ab.map(|v| v.1.value),
+            vd_measured: measured_dq.map(|v| v.0.value),
+            vq_measured: measured_dq.map(|v| v.1.value),
         }
     }
 }

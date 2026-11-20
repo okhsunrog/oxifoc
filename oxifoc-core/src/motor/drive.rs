@@ -17,7 +17,7 @@ impl DriveConfig {
         invert_direction: false,
     };
 
-    pub(super) fn rider_sign(self, value: f32) -> f32 {
+    pub(super) fn rider_sign<T: core::ops::Neg<Output = T>>(self, value: T) -> T {
         if self.invert_direction { -value } else { value }
     }
 

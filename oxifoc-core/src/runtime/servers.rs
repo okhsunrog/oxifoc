@@ -62,7 +62,7 @@ pub const MOTOR_ACK_TIMEOUT_MS: u64 = 1_000;
 #[cfg(feature = "storage")]
 use crate::storage::{FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig};
 #[cfg(feature = "storage")]
-use crate::units::{amps, rad_per_s, volts, watts};
+use crate::units::{ConstZero, ElectricCurrent, amps, rad_per_s, volts};
 
 /// Device info server - responds to info requests from host
 ///
@@ -345,7 +345,7 @@ fn resolved_config(
     use crate::types::{ConfigGroupId, ConfigValue};
     match group {
         ConfigGroupId::MotorParams => cfg.motor_params.clone().map(|mut motor| {
-            motor.max_current.value = motor.rating_current_a().unwrap_or(0.0);
+            motor.max_current = motor.rating_current().unwrap_or(ElectricCurrent::ZERO);
             ConfigValue::MotorParams(motor)
         }),
         ConfigGroupId::VoltageLimits => Some(ConfigValue::VoltageLimits(
@@ -358,20 +358,20 @@ fn resolved_config(
             let rating = cfg
                 .motor_params
                 .as_ref()
-                .and_then(crate::storage::MotorParamsConfig::rating_current_a)
-                .unwrap_or(0.0);
+                .and_then(crate::storage::MotorParamsConfig::rating_current)
+                .unwrap_or(ElectricCurrent::ZERO);
             let limits = crate::motor::foc_driver::CurrentLimits::from_stored(
                 cfg.current_limits.as_ref(),
-                board.max_phase_current_a,
+                amps(board.max_phase_current_a),
                 rating,
             );
             Some(ConfigValue::CurrentLimits(CurrentLimitsConfig {
-                max_iq: amps(limits.max_current_a),
-                max_brake: amps(limits.max_brake_a),
-                max_phase_current: amps(limits.overcurrent_threshold_a),
-                bus_in_max: amps(limits.bus_in_max_a),
-                bus_regen_max: amps(limits.bus_regen_max_a),
-                max_dissipation: watts(limits.max_dissipation_w),
+                max_iq: limits.max_current,
+                max_brake: limits.max_brake,
+                max_phase_current: limits.overcurrent_threshold,
+                bus_in_max: limits.bus_in_max,
+                bus_regen_max: limits.bus_regen_max,
+                max_dissipation: limits.max_dissipation,
             }))
         }
         ConfigGroupId::PiGains => {
@@ -427,7 +427,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
 ) where
     NS: NetStackHandle,
 {
-    let hw_max_current_a = board.max_phase_current_a;
+    let hw_max_current = amps(board.max_phase_current_a);
     use crate::icd::ConfigGroupId;
     use crate::types::{ConfigSnapshot, ConfigValue, MotorState};
 
@@ -736,13 +736,13 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     return ConfigResponse::Invalid;
                                 }
                                 let vbus = critical_section::with(|cs| {
-                                    state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0
+                                    state_mutex.borrow(cs).borrow().last_adc.vbus()
                                 });
                                 let model =
                                     crate::motor::foc_driver::PreparedMotorModel::from_config(
                                         &config,
                                         vbus,
-                                        hw_max_current_a,
+                                        hw_max_current,
                                     );
                                 let Some(guard) = ModelApplyGuard::prepare(
                                     model,
@@ -781,7 +781,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             if let Some(tuning) = tuning {
                                 let Some(guard) = ModelApplyGuard::prepare_tuning(
                                     tuning,
-                                    hw_max_current_a,
+                                    hw_max_current,
                                     runtime_config,
                                     &CONFIG_COORDINATOR,
                                     keyed.id,
@@ -902,7 +902,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 &request,
                                 runtime_config,
                                 state_mutex,
-                                hw_max_current_a,
+                                hw_max_current,
                                 persist,
                             )
                             .await;
@@ -954,12 +954,12 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             });
                             let config = RuntimeConfig::default();
                             let vbus = critical_section::with(|cs| {
-                                state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0
+                                state_mutex.borrow(cs).borrow().last_adc.vbus()
                             });
                             let model = crate::motor::foc_driver::PreparedMotorModel::from_config(
                                 &config,
                                 vbus,
-                                hw_max_current_a,
+                                hw_max_current,
                             );
                             let Some(guard) = ModelApplyGuard::prepare_reset(
                                 model,
@@ -1019,7 +1019,7 @@ async fn save_drive_setup<T: crate::timer::Timer>(
     request: &crate::types::Keyed<crate::types::SaveDriveSetup>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-    board_trip_a: f32,
+    board_trip: ElectricCurrent,
     persist: bool,
 ) -> ConfigResponse {
     use crate::state::DETECTION_ACTIVE;
@@ -1047,20 +1047,20 @@ async fn save_drive_setup<T: crate::timer::Timer>(
         (
             runtime_config.borrow(cs).borrow().clone(),
             CONFIG_COORDINATOR.revisions.borrow(cs).borrow()[ConfigGroupId::MotorParams.index()],
-            state_mutex.borrow(cs).borrow().last_adc.vbus_mv as f32 / 1000.0,
+            state_mutex.borrow(cs).borrow().last_adc.vbus(),
         )
     });
     let trip = config
         .current_limits
         .as_ref()
-        .map_or(0.0, |limits| limits.max_phase_current.value);
-    let Ok(setup) = request.inner.setup.clone().validate(board_trip_a, trip) else {
+        .map_or(ElectricCurrent::ZERO, |limits| limits.max_phase_current);
+    let Ok(setup) = request.inner.setup.clone().validate(board_trip, trip) else {
         return ConfigResponse::Invalid;
     };
     let record = crate::storage::InstalledDrive::new(&setup);
     setup.project(&mut config);
     let mut model =
-        crate::motor::foc_driver::PreparedMotorModel::from_config(&config, vbus, board_trip_a);
+        crate::motor::foc_driver::PreparedMotorModel::from_config(&config, vbus, board_trip);
     if model.prepare_setup_feedback(setup.hall()).is_none() {
         return ConfigResponse::Invalid;
     }

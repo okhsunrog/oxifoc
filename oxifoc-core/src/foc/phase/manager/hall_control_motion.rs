@@ -1,6 +1,9 @@
 //! Control velocity from the Hall commutation angle, separate from edge timing.
 
+#[cfg(not(feature = "bench-hall-single-turn"))]
 use crate::foc::angle_difference;
+#[cfg(feature = "bench-hall-single-turn")]
+use crate::foc::angle_difference_single_turn;
 use crate::foc::fast_math::u64_to_f32;
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::ControlAngleSample;
@@ -163,8 +166,7 @@ impl HallControlMotion {
                                 angle,
                             );
                             #[cfg(feature = "bench-hall-single-turn")]
-                            let delta =
-                                crate::foc::angle_difference_single_turn(sample.angle, angle);
+                            let delta = angle_difference_single_turn(sample.angle, angle);
                             #[cfg(not(feature = "bench-hall-single-turn"))]
                             let delta = angle_difference(sample.angle, angle);
                             self.velocity =

@@ -7,6 +7,8 @@ use crate::foc::phase::provider::{PhaseInput, PhaseProvider};
 use crate::foc::phase::source::PhaseSourceError;
 use crate::foc::sensors::AngleSample;
 use crate::foc::wrap_angle;
+#[cfg(feature = "hfi")]
+use crate::units::hertz;
 use crate::units::{
     ElectricalAngle, amps, erad, erad_per_s, henries, ohms, per_second, quantity, seconds, volts,
     webers,
@@ -275,20 +277,20 @@ fn ready_background_observer_does_not_certify_a_cold_hfi_angle() {
         },
     ] {
         let mut mgr = PhaseManager::sensorless();
-        let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
-        observer.force_phase(2.0);
-        observer.set_velocity(100.0);
+        let mut observer = BackEmfObserver::new(ohms(0.1), henries(100e-6), webers(0.02));
+        observer.force_phase(erad(2.0));
+        observer.set_velocity(erad_per_s(100.0));
         mgr.set_observer(Observer::BackEmf(observer));
-        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+        mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
         mgr.set_source(source).unwrap();
         let (s, c) = 2.0f32.sin_cos();
         mgr.update(
             &PhaseInput {
-                v_alpha: -2.0 * s,
-                v_beta: 2.0 * c,
-                i_alpha: 0.0,
-                i_beta: 0.0,
-                dt: 0.00005,
+                v_alpha: volts(-2.0 * s),
+                v_beta: volts(2.0 * c),
+                i_alpha: amps(0.0),
+                i_beta: amps(0.0),
+                dt: seconds(0.00005),
             },
             50,
         );
@@ -307,11 +309,11 @@ fn partial_hfi_blend_requires_hfi_but_full_observer_crossover_does_not() {
     use crate::foc::phase::{BackEmfObserver, HfiObserver};
     for (speed, trustworthy) in [(900.0, false), (1100.0, true)] {
         let mut mgr = PhaseManager::sensorless();
-        let mut observer = BackEmfObserver::new(0.1, 100e-6, 0.02);
-        observer.force_phase(2.0);
-        observer.set_velocity(speed);
+        let mut observer = BackEmfObserver::new(ohms(0.1), henries(100e-6), webers(0.02));
+        observer.force_phase(erad(2.0));
+        observer.set_velocity(erad_per_s(speed));
         mgr.set_observer(Observer::BackEmf(observer));
-        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+        mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
         mgr.set_source(PhaseSource::HfiToObserver {
             min_vel: erad_per_s(1000.0),
             min_confidence: 0.5,
@@ -320,11 +322,11 @@ fn partial_hfi_blend_requires_hfi_but_full_observer_crossover_does_not() {
         let (s, c) = 2.0f32.sin_cos();
         mgr.update(
             &PhaseInput {
-                v_alpha: -speed * 0.02 * s,
-                v_beta: speed * 0.02 * c,
-                i_alpha: 0.0,
-                i_beta: 0.0,
-                dt: 0.00005,
+                v_alpha: volts(-speed * 0.02 * s),
+                v_beta: volts(speed * 0.02 * c),
+                i_alpha: amps(0.0),
+                i_beta: amps(0.0),
+                dt: seconds(0.00005),
             },
             50,
         );
@@ -504,19 +506,26 @@ fn injection_forwarded_only_in_hfi_regimes() {
     use crate::foc::phase::{BackEmfObserver, HfiObserver, Observer};
 
     let mut phase = PhaseManager::sensorless();
-    phase.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+    phase.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
     // HfiToObserver below also needs the fast slot configured.
-    phase.set_observer(Observer::BackEmf(BackEmfObserver::new(0.1, 1e-4, 0.01)));
+    phase.set_observer(Observer::BackEmf(BackEmfObserver::new(
+        ohms(0.1),
+        henries(1e-4),
+        webers(0.01),
+    )));
 
     // Manual source: HFI estimator configured but not commutating —
     // injecting would just heat the motor during calibration.
-    assert_eq!(phase.injection(), (0.0, 0.0));
+    assert_eq!(phase.injection(), (volts(0.0), volts(0.0)));
 
     // Pure HFI: carrier must flow (fresh carrier phase 0 → vd = A).
     phase.set_source(PhaseSource::Hfi).unwrap();
     let (vd, vq) = phase.injection();
-    assert!(vd.abs() > 1.0, "expected carrier voltage, got vd = {vd}");
-    assert_eq!(vq, 0.0, "pulsating injection is d-axis only");
+    assert!(
+        vd.abs() > volts(1.0),
+        "expected carrier voltage, got vd = {vd:?}"
+    );
+    assert_eq!(vq, volts(0.0), "pulsating injection is d-axis only");
 
     // Crossover source: inject below the latch; above the latch the
     // carrier stays on only inside the pre-heat margin
@@ -527,18 +536,18 @@ fn injection_forwarded_only_in_hfi_regimes() {
             min_confidence: 0.5,
         })
         .unwrap();
-    assert!(phase.injection().0.abs() > 1.0);
+    assert!(phase.injection().0.abs() > volts(1.0));
     phase.crossover_latched = true;
     // Latched but near the release threshold: pre-heat — carrier back
     // on so the demod locks before any blend weight arrives.
-    phase.output.velocity = 110.0;
+    phase.output.velocity = erad_per_s(110.0);
     assert!(
-        phase.injection().0.abs() > 1.0,
+        phase.injection().0.abs() > volts(1.0),
         "carrier must pre-heat inside the margin above the latch"
     );
     // Latched and clear of the band: carrier off.
-    phase.output.velocity = 100.0 * (1.0 + CROSSOVER_HYSTERESIS) + 10.0;
-    assert_eq!(phase.injection(), (0.0, 0.0));
+    phase.output.velocity = erad_per_s(100.0 * (1.0 + CROSSOVER_HYSTERESIS) + 10.0);
+    assert_eq!(phase.injection(), (volts(0.0), volts(0.0)));
 }
 
 #[test]
@@ -548,7 +557,7 @@ fn hfi_to_sensor_is_untrusted_until_hfi_ready_or_sensor_latched() {
 
     let mut phase =
         PhaseManager::with_hall(MockHallSensor::new()).with_encoder(MockHallSensor::new());
-    phase.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+    phase.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
 
     phase
         .set_source(PhaseSource::HfiToEncoder {
@@ -1464,18 +1473,18 @@ fn closed_loop_hfi_to_observer_crossover() {
     motor.set_angle(2.5);
 
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
 
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        params.lambda,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        webers(params.lambda),
     )));
-    mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+    mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
     mgr.set_source(PhaseSource::HfiToObserver {
         min_vel: erad_per_s(MIN_VEL),
         min_confidence: 0.5,
@@ -1514,26 +1523,32 @@ fn closed_loop_hfi_to_observer_crossover() {
         let angle = mgr.get().angle;
         let (vd_inj, vq_inj) = mgr.injection();
         let telem = foc.step_with_injection(
-            (out.ia, out.ib, out.ic),
+            (amps(out.ia), amps(out.ib), amps(out.ic)),
             angle,
-            0.0, // velocity (no decoupling configured here)
-            0.0, // id_target
-            iq_target,
+            erad_per_s(0.0),
+            amps(
+                // velocity (no decoupling configured here)
+                0.0,
+            ),
+            amps(
+                // id_target
+                iq_target,
+            ),
             vd_inj,
             vq_inj,
             1000,
-            DT,
+            seconds(DT),
         );
         out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha.value,
-                v_beta: telem.v_beta.value,
-                i_alpha: i_a,
-                i_beta: i_b,
-                dt: DT,
+                v_alpha: telem.v_alpha,
+                v_beta: telem.v_beta,
+                i_alpha: amps(i_a),
+                i_beta: amps(i_b),
+                dt: seconds(DT),
             },
             step * 50,
         );
@@ -1541,13 +1556,13 @@ fn closed_loop_hfi_to_observer_crossover() {
         if step == SPIN_STEPS - 1 {
             spun_up = out.omega_e > MIN_VEL * 1.5;
             // Fully blended at speed → the carrier must be off.
-            was_latched_at_speed = mgr.injection() == (0.0, 0.0);
+            was_latched_at_speed = mgr.injection() == (volts(0.0), volts(0.0));
         }
 
         // Downward handoff (coast phase): pre-heat + lock-before-weight.
         if step > SPIN_STEPS {
             let latched_now = mgr.crossover_latched;
-            if latched_now && mgr.injection() != (0.0, 0.0) {
+            if latched_now && mgr.injection() != (volts(0.0), volts(0.0)) {
                 preheat_seen = true;
             }
             if was_latched && !latched_now && released_with_ready.is_none() {
@@ -1560,10 +1575,10 @@ fn closed_loop_hfi_to_observer_crossover() {
 
         if step == STANDSTILL_STEPS - 1 {
             // HFI must have found the flipped rotor at standstill.
-            let err = angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
+            let err = angle_difference(mgr.get().angle, wrap_angle(erad(out.angle_rad))).abs();
             assert!(
-                err < 0.2,
-                "HFI standstill lock failed: est {} vs rotor {} (err {} full-circle)",
+                err < erad(0.2),
+                "HFI standstill lock failed: est {:?} vs rotor {:?} (err {:?} full-circle)",
                 mgr.get().angle,
                 wrap_angle(out.angle_rad),
                 err
@@ -1575,10 +1590,10 @@ fn closed_loop_hfi_to_observer_crossover() {
         let new_angle = mgr.get().angle;
         if out.omega_e > 100.0 {
             if let Some(prev) = prev_angle {
-                let jump = angle_difference(new_angle, prev).abs();
-                max_step_at_speed = max_step_at_speed.max(jump);
+                let jump = angle_difference(new_angle, erad(prev)).abs();
+                max_step_at_speed = max_step_at_speed.max(jump.value);
             }
-            prev_angle = Some(new_angle);
+            prev_angle = Some(new_angle.value);
         } else {
             prev_angle = None;
         }
@@ -1599,14 +1614,14 @@ fn closed_loop_hfi_to_observer_crossover() {
     );
     assert_ne!(
         mgr.injection(),
-        (0.0, 0.0),
+        (volts(0.0), volts(0.0)),
         "carrier must be back on below the crossover band"
     );
     let true_angle = wrap_angle(out.angle_rad);
-    let err = angle_difference(mgr.get().angle, true_angle).abs();
+    let err = angle_difference(mgr.get().angle, erad(true_angle)).abs();
     assert!(
-        err < 0.25,
-        "managed angle {} vs true {} (err {} rad) after the down handoff",
+        err < erad(0.25),
+        "managed angle {:?} vs true {:?} (err {:?} rad) after the down handoff",
         mgr.get().angle,
         true_angle,
         err
@@ -1670,18 +1685,18 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
     let mut motor = VirtualMotor::new(params);
 
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
 
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        params.lambda,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        webers(params.lambda),
     )));
-    mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+    mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
     mgr.set_source(PhaseSource::HfiToObserver {
         min_vel: erad_per_s(MIN_VEL),
         min_confidence: 0.5,
@@ -1718,26 +1733,26 @@ fn closed_loop_hfi_jam_gates_torque_until_relock() {
         let angle = mgr.get().angle;
         let (vd_inj, vq_inj) = mgr.injection();
         let telem = foc.step_with_injection(
-            (out.ia, out.ib, out.ic),
+            (amps(out.ia), amps(out.ib), amps(out.ic)),
             angle,
-            0.0,
-            0.0,
-            iq_target,
+            erad_per_s(0.0),
+            amps(0.0),
+            amps(iq_target),
             vd_inj,
             vq_inj,
             1000,
-            DT,
+            seconds(DT),
         );
         out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha.value,
-                v_beta: telem.v_beta.value,
-                i_alpha: i_a,
-                i_beta: i_b,
-                dt: DT,
+                v_alpha: telem.v_alpha,
+                v_beta: telem.v_beta,
+                i_alpha: amps(i_a),
+                i_beta: amps(i_b),
+                dt: seconds(DT),
             },
             step * 50,
         );
@@ -1840,13 +1855,13 @@ fn closed_loop_hfi_saliency_collapse_loses_tracking_silently() {
         };
         let mut motor = VirtualMotor::new(params);
         let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-            params.r,
-            (params.ld + params.lq) / 2.0,
-            24.0,
+            ohms(params.r),
+            henries((params.ld + params.lq) / 2.0),
+            volts(24.0),
         );
 
         let mut mgr = PhaseManager::sensorless();
-        mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+        mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
         mgr.set_source(PhaseSource::Hfi).unwrap();
 
         let mut out = VirtualMotorOutput::default();
@@ -1866,33 +1881,33 @@ fn closed_loop_hfi_saliency_collapse_loses_tracking_silently() {
             let angle = mgr.get().angle;
             let (vd_inj, vq_inj) = mgr.injection();
             let telem = foc.step_with_injection(
-                (out.ia, out.ib, out.ic),
+                (amps(out.ia), amps(out.ib), amps(out.ic)),
                 angle,
-                0.0,
-                0.0,
-                iq_target,
+                erad_per_s(0.0),
+                amps(0.0),
+                amps(iq_target),
                 vd_inj,
                 vq_inj,
                 1000,
-                DT,
+                seconds(DT),
             );
             out = motor.step(telem.v_alpha.value, telem.v_beta.value, load, DT);
 
             let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
             mgr.update(
                 &PhaseInput {
-                    v_alpha: telem.v_alpha.value,
-                    v_beta: telem.v_beta.value,
-                    i_alpha: i_a,
-                    i_beta: i_b,
-                    dt: DT,
+                    v_alpha: telem.v_alpha,
+                    v_beta: telem.v_beta,
+                    i_alpha: amps(i_a),
+                    i_beta: amps(i_b),
+                    dt: seconds(DT),
                 },
                 step * 50,
             );
 
             if step >= LOCK_STEPS + 1_000 {
-                let err = angle_difference(mgr.get().angle, out.angle_rad).abs();
-                max_err = max_err.max(err);
+                let err = angle_difference(mgr.get().angle, erad(out.angle_rad)).abs();
+                max_err = max_err.max(err.value);
                 if let Some(h) = mgr.hfi_observer() {
                     min_conf = min_conf.min(h.confidence());
                 }
@@ -1959,18 +1974,18 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
     motor.set_angle(0.5);
 
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
 
     let mut mgr = PhaseManager::sensorless();
     mgr.set_observer(Observer::BackEmf(BackEmfObserver::new(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        params.lambda,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        webers(params.lambda),
     )));
-    mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+    mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
     mgr.set_source(PhaseSource::HfiToObserverVolts {
         toggle: volts(TOGGLE_V),
         min_confidence: 0.5,
@@ -1997,26 +2012,26 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
         let angle = mgr.get().angle;
         let (vd_inj, vq_inj) = mgr.injection();
         let telem = foc.step_with_injection(
-            (out.ia, out.ib, out.ic),
+            (amps(out.ia), amps(out.ib), amps(out.ic)),
             angle,
-            0.0,
-            0.0,
-            iq_target,
+            erad_per_s(0.0),
+            amps(0.0),
+            amps(iq_target),
             vd_inj,
             vq_inj,
             1000,
-            DT,
+            seconds(DT),
         );
         out = motor.step(telem.v_alpha.value, telem.v_beta.value, 0.0, DT);
 
         let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
         mgr.update(
             &PhaseInput {
-                v_alpha: telem.v_alpha.value,
-                v_beta: telem.v_beta.value,
-                i_alpha: i_a,
-                i_beta: i_b,
-                dt: DT,
+                v_alpha: telem.v_alpha,
+                v_beta: telem.v_beta,
+                i_alpha: amps(i_a),
+                i_beta: amps(i_b),
+                dt: seconds(DT),
             },
             step * 50,
         );
@@ -2027,8 +2042,9 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
                 "motor did not spin up: ωe = {}",
                 out.omega_e
             );
-            latched_at_speed = mgr.injection() == (0.0, 0.0);
-            err_at_speed = angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
+            latched_at_speed = mgr.injection() == (volts(0.0), volts(0.0));
+            err_at_speed =
+                (angle_difference(mgr.get().angle, wrap_angle(erad(out.angle_rad))).abs()).value;
         }
     }
 
@@ -2043,19 +2059,19 @@ fn closed_loop_hfi_to_observer_volts_crossover() {
 
     // Coasted down: bemf proxy below the band → back on HFI, carrier on.
     assert!(
-        out.omega_e.abs() * params.lambda < TOGGLE_V - HFI_VOLTS_HYSTERESIS,
+        out.omega_e.abs() * params.lambda < TOGGLE_V - HFI_VOLTS_HYSTERESIS.value,
         "motor should have coasted below the voltage band: ωe = {}",
         out.omega_e
     );
     assert_ne!(
         mgr.injection(),
-        (0.0, 0.0),
+        (volts(0.0), volts(0.0)),
         "carrier must be back on below the voltage band"
     );
-    let err = angle_difference(mgr.get().angle, wrap_angle(out.angle_rad)).abs();
+    let err = angle_difference(mgr.get().angle, wrap_angle(erad(out.angle_rad))).abs();
     assert!(
-        err < 0.3,
-        "angle error {err} rad after the downward voltage handoff"
+        err < erad(0.3),
+        "angle error {err:?} rad after the downward voltage handoff"
     );
 }
 
@@ -2203,8 +2219,10 @@ fn model_replacement_preserves_hardware_source_and_clears_partial_estimators() {
         let first = manager.hfi_observer().unwrap().get_injection().0;
         config.motor_params.as_mut().unwrap().inductance_d.value *= 0.5;
         config.motor_params.as_mut().unwrap().inductance_q.value *= 0.5;
-        manager.configure_observers_from_config(&config, 24.0);
-        assert!((manager.hfi_observer().unwrap().get_injection().0 - first * 0.5).abs() < 1e-6);
+        manager.configure_observers_from_config(&config, volts(24.0));
+        assert!(
+            (manager.hfi_observer().unwrap().get_injection().0 - first * 0.5).abs() < volts(1e-6)
+        );
     }
     config.motor_params.as_mut().unwrap().flux_linkage.value = 0.0;
     manager.configure_observers_from_config(&config, volts(24.0));

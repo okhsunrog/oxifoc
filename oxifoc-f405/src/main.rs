@@ -337,7 +337,7 @@ async fn main(spawner: Spawner) {
         pwm_config.pwm_freq_hz,
         timing.clock_hz,
         timing.period_ticks,
-        timing.dt_s(),
+        timing.dt().value,
         timing.frequency_hz()
     );
 

@@ -1,6 +1,6 @@
 //! ISR-owned current-offset calibration sequenced ahead of the mode arm.
 
-use super::{CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S, ControlMode, FocDriver};
+use super::{CURRENT_OFFSET_STANDSTILL_MAX_SPEED, ControlMode, FocDriver};
 use crate::foc::controller::FocOutput;
 use crate::foc::current_offset::CurrentOffsetError;
 use crate::foc::current_offset::CurrentOffsetMethod;
@@ -12,6 +12,7 @@ use crate::foc::pwm::PhasePwm;
 use crate::foc::pwm::PhaseState;
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
+use crate::units::Sign;
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -36,7 +37,7 @@ where
                 return Err(CurrentOffsetError::RequiresExistingCalibration);
             }
             let velocity = self.torque_speed();
-            if !velocity.is_finite() || velocity.abs() > CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S {
+            if !velocity.is_finite() || velocity.abs() > CURRENT_OFFSET_STANDSTILL_MAX_SPEED {
                 return Err(CurrentOffsetError::UnsafeWhileMoving);
             }
         }
@@ -91,10 +92,10 @@ where
         if request.method == CurrentOffsetMethod::AllPhases50 {
             let velocity = self.torque_speed();
             let currents = self.current_sensor.read_currents();
-            let limit = self.current_limits.overcurrent_threshold_a;
+            let limit = self.current_limits.overcurrent_threshold;
             let moving =
-                !velocity.is_finite() || velocity.abs() > CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S;
-            let overcurrent = limit > 0.0
+                !velocity.is_finite() || velocity.abs() > CURRENT_OFFSET_STANDSTILL_MAX_SPEED;
+            let overcurrent = limit.is_positive()
                 && (currents.0.abs() > limit
                     || currents.1.abs() > limit
                     || currents.2.abs() > limit);

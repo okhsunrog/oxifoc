@@ -3,7 +3,7 @@
 use super::{DriveCurrent, DriveSetup, Feedback, SetupError, ValidatedDriveSetup};
 use crate::storage::{HallCalibrationConfig, HallTransitionGeometryConfig, MotorParamsConfig};
 use crate::types::commissioning::SourceLimits;
-use crate::units::{ElectricalAngle, amps, henries, ohms, watts, webers};
+use crate::units::{ElectricCurrent, ElectricalAngle, amps, henries, ohms, watts, webers};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,7 +44,7 @@ struct GeometryV1 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum CurrentV1 {
     Auto,
-    Override(f32),
+    Override(ElectricCurrent),
 }
 
 impl From<&ValidatedDriveSetup> for SetupRecord {
@@ -84,8 +84,8 @@ impl SetupRecord {
     /// Recompute derived values against this board's protection at every boot.
     pub fn validate(
         self,
-        board_trip_a: f32,
-        configured_trip_a: f32,
+        board_trip: ElectricCurrent,
+        configured_trip: ElectricCurrent,
     ) -> Result<ValidatedDriveSetup, SetupError> {
         let Self::V1(v) = self;
         DriveSetup {
@@ -125,7 +125,7 @@ impl SetupRecord {
                 CurrentV1::Override(a) => DriveCurrent::Override(a),
             },
         }
-        .validate(board_trip_a, configured_trip_a)
+        .validate(board_trip, configured_trip)
     }
 }
 
@@ -169,7 +169,7 @@ mod tests {
                 regen: amps(0.0),
             },
         }
-        .validate(70.0, 30.0)
+        .validate(amps(70.0), amps(30.0))
         .unwrap();
         let mut next = old.setup().clone();
         next.feedback = Feedback::Sensorless;
@@ -178,7 +178,7 @@ mod tests {
             input: amps(12.0),
             regen: amps(2.0),
         };
-        let next = next.validate(70.0, 30.0).unwrap();
+        let next = next.validate(amps(70.0), amps(30.0)).unwrap();
         let mut store = MapStorage::<ConfigKey, _, _>::new(
             Flash::new(WriteCountCheck::TwiceWithZero, None, true),
             MapConfig::new(Flash::FULL_FLASH_RANGE),
@@ -236,7 +236,7 @@ mod tests {
             Feedback::Sensorless,
             Feedback::Hall(HallCalibrationConfig::default()),
         ] {
-            for current in [DriveCurrent::Auto, DriveCurrent::Override(20.0)] {
+            for current in [DriveCurrent::Auto, DriveCurrent::Override(amps(20.0))] {
                 let setup = DriveSetup {
                     motor: MotorParamsConfig {
                         resistance: ohms(0.063),
@@ -254,17 +254,21 @@ mod tests {
                         regen: amps(0.0),
                     },
                 }
-                .validate(70.0, 30.0)
+                .validate(amps(70.0), amps(30.0))
                 .unwrap();
                 let mut buf = [0; 256];
                 let bytes = postcard::to_slice(&SetupRecord::from(&setup), &mut buf).unwrap();
                 assert_eq!(bytes[0], 0); // V1 is permanently variant zero.
                 let loaded: SetupRecord = postcard::from_bytes(bytes).unwrap();
                 assert_eq!(
-                    loaded.clone().validate(70.0, 30.0).unwrap().setup(),
+                    loaded
+                        .clone()
+                        .validate(amps(70.0), amps(30.0))
+                        .unwrap()
+                        .setup(),
                     setup.setup()
                 );
-                let lowered = loaded.validate(70.0, 13.0);
+                let lowered = loaded.validate(amps(70.0), amps(13.0));
                 match current {
                     DriveCurrent::Auto => assert_eq!(lowered.unwrap().limits().max_iq.value, 10.0),
                     DriveCurrent::Override(_) => {

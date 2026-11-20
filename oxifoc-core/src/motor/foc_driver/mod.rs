@@ -57,6 +57,10 @@ use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::LibmSinCos;
 use crate::foc::trig::SinCos;
 use crate::foc::velocity::VelocityLoop;
+use crate::units::{
+    ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity, Time, amps,
+    erad_per_s, seconds,
+};
 use actuation::ActuationModel;
 use protection::ProtectionMonitor;
 use velocity_schedule::VelocitySchedule;
@@ -103,20 +107,20 @@ pub const STARTUP_STALENESS_TIMEOUT_US: u64 = 700_000;
 /// is re-caught and seeded, a stalled one falls through to the soft ramp.
 /// Above the observer's revoke debounce (0.2 s) plus transient dips, so a
 /// brief validity wobble at speed re-locks instead of restarting.
-pub const SENSORLESS_RESTART_AFTER_S: f32 = 0.5;
+pub const SENSORLESS_RESTART_AFTER: Time = seconds(0.5);
 
 /// Read-only snapshot of the active velocity controller. Acquiring it performs
 /// no control update; platforms decide when and how to record it.
 #[derive(Clone, Copy, Debug)]
 pub struct VelocityControlSnapshot {
-    pub target_rad_s: f32,
-    pub reference_rad_s: f32,
-    pub feedback_rad_s: Option<f32>,
-    pub requested_iq_a: f32,
-    pub granted_iq_a: f32,
+    pub target: ElectricalAngularVelocity,
+    pub reference: ElectricalAngularVelocity,
+    pub feedback: Option<ElectricalAngularVelocity>,
+    pub requested_iq: ElectricCurrent,
+    pub granted_iq: ElectricCurrent,
     /// Final d-axis request, including winding-loss braking.
-    pub granted_id_a: f32,
-    pub measured_iq_a: f32,
+    pub granted_id: ElectricCurrent,
+    pub measured_iq: ElectricCurrent,
 }
 
 /// Inputs and limits of an actual outer-loop update, in its own clock domain.
@@ -124,17 +128,17 @@ pub struct VelocityControlSnapshot {
 #[derive(Clone, Copy)]
 pub struct VelocityUpdate {
     pub tick_us: u64,
-    pub target_rad_s: f32,
-    pub feedback_rad_s: f32,
-    pub iq_min_a: f32,
-    pub iq_max_a: f32,
+    pub target: ElectricalAngularVelocity,
+    pub feedback: ElectricalAngularVelocity,
+    pub iq_min: ElectricCurrent,
+    pub iq_max: ElectricCurrent,
     pub flags: u16,
 }
 
 /// Maximum measured electrical speed accepted by the all-phases-at-50%
 /// diagnostic. The operator acknowledgement remains mandatory because a
 /// sensorless estimator cannot prove that an unenergised rotor is stationary.
-pub const CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S: f32 = 5.0;
+pub const CURRENT_OFFSET_STANDSTILL_MAX_SPEED: ElectricalAngularVelocity = erad_per_s(5.0);
 
 /// Minimum |iq| (A) driven while the sensorless startup sequencer owns
 /// commutation (ramp/hold). A mid-cruise restart inherits the cruise
@@ -146,7 +150,7 @@ pub const CURRENT_OFFSET_STANDSTILL_MAX_E_RAD_S: f32 = 5.0;
 /// magnitude, keeps its sign, and still passes through the align
 /// soft-start scale; commands at or above it are untouched. Restores the
 /// commanded torque the moment the sequencer hands off.
-pub const STARTUP_MIN_DRIVE_A: f32 = 1.5;
+pub const STARTUP_MIN_DRIVE: ElectricCurrent = amps(1.5);
 
 /// Why a [`FocDriver::step`] cycle could not run. Typed so `run_foc_cycle`
 /// can route each cause differently: an overcurrent trip must latch a
@@ -157,7 +161,7 @@ pub enum StepError {
     /// Current sensor offsets not calibrated yet.
     NotCalibrated,
     /// Measured dq current magnitude exceeded
-    /// [`CurrentLimits::overcurrent_threshold_a`]; PWM was disabled and the
+    /// [`CurrentLimits::overcurrent_threshold`]; PWM was disabled and the
     /// mode forced to Stopped before returning.
     Overcurrent,
     /// Commissioning exceeded the signed inverter-input current envelope.
@@ -179,7 +183,7 @@ pub const MAX_ACTUATION_DELAY_CYCLES: f32 = 2.0;
 /// this much (A) beyond the q current actually flowing — enough to follow
 /// the deliverable current up as the voltage frees, not enough to bank the
 /// current limit.
-const VOLTAGE_LIMITED_IQ_MARGIN_A: f32 = 1.0;
+const VOLTAGE_LIMITED_IQ_MARGIN: ElectricCurrent = amps(1.0);
 
 /// Reusable FOC driver
 ///
@@ -203,7 +207,7 @@ const VOLTAGE_LIMITED_IQ_MARGIN_A: f32 = 1.0;
 ///     motor_pwm,
 ///     current_sensor,
 ///     phase,
-///     config::PWM_CONFIG.dt_s(),
+///     config::PWM_CONFIG.dt(),
 /// );
 ///
 /// #[interrupt]
@@ -239,16 +243,16 @@ where
     /// Detection packets retain the PI reference used for inverter correction.
     /// This never replaces the measured current used for telemetry/protection.
     #[cfg(feature = "detection")]
-    detection_compensation_current: Option<(f32, f32)>,
+    detection_compensation_current: Option<(ElectricCurrent, ElectricCurrent)>,
     /// Bus voltage (V)
-    vbus: f32,
+    vbus: ElectricPotential,
     /// Control loop period in seconds (1/pwm_freq)
-    dt: f32,
+    dt: Time,
     /// Current limiting configuration
     current_limits: CurrentLimits,
     commissioning: Option<commissioning::CommissioningContext>,
     /// Accumulated angle for open-loop velocity mode
-    open_loop_angle: f32,
+    open_loop_angle: ElectricalAngle,
     /// Applied-voltage history and output-vector timing compensation.
     actuation: ActuationModel,
     /// Command freshness and startup/engage grace windows.
@@ -261,8 +265,8 @@ where
     pwm_off: bool,
     /// How long (s) the angle has been continuously untrustworthy under an
     /// active nonzero drive command — drives the
-    /// [`SENSORLESS_RESTART_AFTER_S`] restart.
-    untrusted_time: f32,
+    /// [`SENSORLESS_RESTART_AFTER`] restart.
+    untrusted_time: Time,
     /// Stopped-arm housekeeping counter: paces the periodic PWM-off
     /// re-assert and the estimator-update decimation.
     stopped_housekeeping: u8,
@@ -300,8 +304,8 @@ where
     current_debug_due: bool,
     #[cfg(feature = "fast-telemetry")]
     last_current_debug: Option<crate::velocity_telemetry::VelocityDebugFrame>,
-    last_granted_iq: f32,
-    last_granted_id: f32,
+    last_granted_iq: ElectricCurrent,
+    last_granted_id: ElectricCurrent,
     /// The rotor's unwrapped electrical position, followed every cycle in
     /// every mode (the frame of `PositionControl` targets: 0 at boot).
     position: PositionTracker,
@@ -313,11 +317,11 @@ where
     /// Measured q current of the last current-loop step — the current the
     /// loop could actually deliver while it was out of voltage (see
     /// `step_velocity_control`).
-    last_iq_meas: f32,
+    last_iq_meas: ElectricCurrent,
     /// Parking brake (`ControlMode::Brake`) regulating instead of shorting:
     /// the brake q current being commanded (see `step_park_brake`). `None`
     /// = the plain windings short.
-    park_iq: Option<f32>,
+    park_iq: Option<ElectricCurrent>,
     /// Low-passed q-axis modulation (vq·1.5/vbus) of the previous cycles —
     /// the duty factor relating phase current to bus current
     /// (`i_bus ≈ iq·mod_q`, VESC mcpwm_foc.c:3632). Filtered (τ ≈ 2 ms) so

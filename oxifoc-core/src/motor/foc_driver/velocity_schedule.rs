@@ -6,6 +6,11 @@
 use crate::foc::fast_math::u64_to_f32;
 use crate::foc::phase::MotionReferenceEpoch;
 use crate::foc::velocity::VelocityBlockage;
+#[cfg(feature = "service-slots")]
+use crate::units::Fraction;
+use crate::units::{ConstZero, ElectricCurrent, Time, seconds};
+#[cfg(feature = "pi-bounds-ahead")]
+use crate::units::{ElectricalAngularVelocity, Sign};
 
 const PERIOD_US: u64 = 1_000;
 // One endpoint is not a useful PI observation after four outer periods.
@@ -22,8 +27,8 @@ pub(super) struct ServiceSlots {
 
 #[cfg(feature = "service-slots")]
 impl ServiceSlots {
-    pub fn new(dt: f32) -> Self {
-        let length = ((0.001 / dt + 0.5) as u8).max(2);
+    pub fn new(dt: Time) -> Self {
+        let length = (((seconds(0.001) / dt).fraction() + 0.5) as u8).max(2);
         Self {
             slot: length - 1,
             frame: u8::MAX,
@@ -73,8 +78,8 @@ const MAX_AUTHORITY_AGE_US: u64 = 250;
 #[cfg(feature = "pi-bounds-ahead")]
 #[derive(Clone, Copy)]
 struct PreparedAuthority {
-    iq_min: f32,
-    iq_max: f32,
+    iq_min: ElectricCurrent,
+    iq_max: ElectricCurrent,
     /// Speed direction and bus-modulation class: both select which probe
     /// is the braking or regenerating one, so the bounds jump when they change.
     direction: i8,
@@ -83,8 +88,8 @@ struct PreparedAuthority {
 }
 
 #[cfg(feature = "pi-bounds-ahead")]
-fn direction(omega: f32) -> i8 {
-    i8::from(omega > 0.0) - i8::from(omega < 0.0)
+fn direction(omega: ElectricalAngularVelocity) -> i8 {
+    i8::from(omega.is_positive()) - i8::from(omega.is_negative())
 }
 
 pub(super) enum VelocityTick {
@@ -93,9 +98,14 @@ pub(super) enum VelocityTick {
     #[cfg(feature = "pi-bounds-ahead")]
     Prepare,
     Update {
-        dt: f32,
+        dt: Time,
     },
     Reanchor,
+}
+
+/// Microseconds between two monotonic timestamps, as a time.
+fn interval(now_us: u64, last_us: u64) -> Time {
+    seconds(u64_to_f32(now_us.wrapping_sub(last_us)) * 1e-6)
 }
 
 #[derive(Default)]
@@ -136,7 +146,7 @@ impl OuterClock {
             }
             self.updated = Some(now_us);
             self.deadline = now_us.wrapping_add(PERIOD_US);
-            return (0, VelocityTick::Update { dt: 0.0 });
+            return (0, VelocityTick::Update { dt: Time::ZERO });
         };
         let elapsed = now_us.wrapping_sub(previous);
         if elapsed == 0 {
@@ -180,15 +190,15 @@ impl OuterClock {
         let dt = self
             .updated
             .replace(now_us)
-            .map_or(0.0, |last| u64_to_f32(now_us.wrapping_sub(last)) * 1e-6);
+            .map_or(Time::ZERO, |last| interval(now_us, last));
         (elapsed as u32, VelocityTick::Update { dt })
     }
 }
 
 #[derive(Default)]
 struct ActuatorFeedback {
-    held_residual: f32,
-    weighted_residual: f32,
+    held_residual: ElectricCurrent,
+    weighted_residual: ElectricCurrent,
     elapsed_us: u32,
     blockage: VelocityBlockage,
     voltage_clip: VelocityBlockage,
@@ -200,21 +210,25 @@ impl ActuatorFeedback {
         self.elapsed_us += elapsed_us;
     }
 
-    fn record(&mut self, requested: f32, granted: f32, clip: f32) {
+    fn record(&mut self, requested: ElectricCurrent, granted: ElectricCurrent, clip: f32) {
         let residual = granted - requested;
-        self.held_residual = if residual.is_finite() { residual } else { 0.0 };
+        self.held_residual = if residual.is_finite() {
+            residual
+        } else {
+            ElectricCurrent::ZERO
+        };
         self.blockage.note_clip(clip);
         self.blockage.note_clip(requested - granted);
         self.voltage_clip.note_clip(clip);
     }
 
-    fn take(&mut self) -> (f32, VelocityBlockage, VelocityBlockage) {
+    fn take(&mut self) -> (ElectricCurrent, VelocityBlockage, VelocityBlockage) {
         let correction = if self.elapsed_us != 0 && self.weighted_residual.is_finite() {
             self.weighted_residual / self.elapsed_us as f32
         } else {
-            0.0
+            ElectricCurrent::ZERO
         };
-        self.weighted_residual = 0.0;
+        self.weighted_residual = ElectricCurrent::ZERO;
         self.elapsed_us = 0;
         (
             correction,
@@ -229,7 +243,7 @@ pub(super) struct VelocitySchedule {
     clock: OuterClock,
     feedback: ActuatorFeedback,
     epoch: Option<MotionReferenceEpoch>,
-    requested_iq: f32,
+    requested_iq: ElectricCurrent,
     defer_requested: bool,
     #[cfg(feature = "pi-bounds-ahead")]
     authority: Option<PreparedAuthority>,
@@ -266,7 +280,7 @@ impl VelocitySchedule {
             .clock
             .updated
             .replace(now_us)
-            .map_or(0.0, |last| u64_to_f32(now_us.wrapping_sub(last)) * 1e-6);
+            .map_or(Time::ZERO, |last| interval(now_us, last));
         VelocityTick::Update { dt }
     }
 
@@ -317,16 +331,16 @@ impl VelocitySchedule {
             .clock
             .updated
             .replace(now_us)
-            .map_or(0.0, |last| u64_to_f32(now_us.wrapping_sub(last)) * 1e-6);
+            .map_or(Time::ZERO, |last| interval(now_us, last));
         VelocityTick::Update { dt }
     }
 
     #[cfg(feature = "pi-bounds-ahead")]
     pub fn store_authority(
         &mut self,
-        iq_min: f32,
-        iq_max: f32,
-        omega: f32,
+        iq_min: ElectricCurrent,
+        iq_max: ElectricCurrent,
+        omega: ElectricalAngularVelocity,
         bus_class: i8,
         now_us: u64,
     ) {
@@ -342,7 +356,12 @@ impl VelocitySchedule {
     /// Bounds are single-use. A changed speed direction or bus-modulation
     /// class moves them discontinuously, so those bounds are recomputed.
     #[cfg(feature = "pi-bounds-ahead")]
-    pub fn take_authority(&mut self, omega: f32, bus_class: i8, now_us: u64) -> Option<(f32, f32)> {
+    pub fn take_authority(
+        &mut self,
+        omega: ElectricalAngularVelocity,
+        bus_class: i8,
+        now_us: u64,
+    ) -> Option<(ElectricCurrent, ElectricCurrent)> {
         let prepared = self.authority.take()?;
         (now_us.wrapping_sub(prepared.prepared_us) <= MAX_AUTHORITY_AGE_US
             && prepared.direction == direction(omega)
@@ -357,7 +376,7 @@ impl VelocitySchedule {
 
     pub fn invalidate(&mut self) {
         self.epoch = None;
-        self.requested_iq = 0.0;
+        self.requested_iq = ElectricCurrent::ZERO;
         #[cfg(feature = "pi-bounds-ahead")]
         {
             self.authority = None;
@@ -389,7 +408,7 @@ impl VelocitySchedule {
     }
 
     pub fn clear_request(&mut self) {
-        self.requested_iq = 0.0;
+        self.requested_iq = ElectricCurrent::ZERO;
         #[cfg(feature = "pi-bounds-ahead")]
         {
             self.authority = None;
@@ -400,7 +419,7 @@ impl VelocitySchedule {
         self.defer_requested = requested;
     }
 
-    pub fn set_request(&mut self, iq: f32) -> bool {
+    pub fn set_request(&mut self, iq: ElectricCurrent) -> bool {
         if !iq.is_finite() {
             self.clear_request();
             return false;
@@ -409,15 +428,20 @@ impl VelocitySchedule {
         true
     }
 
-    pub fn requested_iq(&self) -> f32 {
+    pub fn requested_iq(&self) -> ElectricCurrent {
         self.requested_iq
     }
 
-    pub fn record_delivery(&mut self, requested: f32, granted: f32, clip: f32) {
+    pub fn record_delivery(
+        &mut self,
+        requested: ElectricCurrent,
+        granted: ElectricCurrent,
+        clip: f32,
+    ) {
         self.feedback.record(requested, granted, clip);
     }
 
-    pub fn take_feedback(&mut self) -> (f32, VelocityBlockage, VelocityBlockage) {
+    pub fn take_feedback(&mut self) -> (ElectricCurrent, VelocityBlockage, VelocityBlockage) {
         self.feedback.take()
     }
 }
@@ -434,7 +458,7 @@ mod slot_tests {
     fn maintenance_and_flood_deferred_pi_have_distinct_slots_across_wraps() {
         let mut now = 0;
         for hz in [15_000_u32, 20_000, 15_000] {
-            let mut slots = ServiceSlots::new(1.0 / hz as f32);
+            let mut slots = ServiceSlots::new(seconds(1.0 / hz as f32));
             let mut schedule = VelocitySchedule::default();
             let mut pi_count = 0;
             for cycle in 0..1_000_000_u64 {
@@ -461,6 +485,7 @@ mod slot_tests {
 #[cfg(all(test, feature = "pi-bounds-ahead"))]
 mod pipeline_tests {
     use super::*;
+    use crate::units::{amps, erad_per_s};
 
     /// Command patterns: none, every cycle, only the prepare slot, only slot 0,
     /// both of them, and a pseudo-random 0.1 % stream.
@@ -468,7 +493,7 @@ mod pipeline_tests {
     fn stages_never_share_a_cycle_with_commands_or_maintenance_and_updates_stay_bounded() {
         for hz in [15_000_u32, 20_000] {
             for pattern in 0..6 {
-                let mut slots = ServiceSlots::new(1.0 / hz as f32);
+                let mut slots = ServiceSlots::new(seconds(1.0 / hz as f32));
                 let mut schedule = VelocitySchedule::default();
                 let length = slots.length();
                 let (mut updates, mut fallbacks, mut prepares) = (0_u32, 0_u32, 0_u32);
@@ -497,14 +522,20 @@ mod pipeline_tests {
                         VelocityTick::Prepare => {
                             assert!(!command && !maintenance, "pattern {pattern} cycle {cycle}");
                             assert!(slot + 1 == length || slot == 0);
-                            schedule.store_authority(-1.0, 1.0, 1.0, 1, now);
+                            schedule.store_authority(
+                                amps(-1.0),
+                                amps(1.0),
+                                erad_per_s(1.0),
+                                1,
+                                now,
+                            );
                             prepares += 1;
                         }
                         VelocityTick::Update { .. } => {
                             assert!(slot <= 1 && !maintenance, "pattern {pattern} slot {slot}");
                             // Only a second consecutive command may accompany the bounded update.
                             assert!(!command || slot == 1);
-                            if schedule.take_authority(1.0, 1, now).is_none() {
+                            if schedule.take_authority(erad_per_s(1.0), 1, now).is_none() {
                                 fallbacks += 1;
                             }
                             if let Some(previous) = last_update {
@@ -570,32 +601,38 @@ mod pipeline_tests {
     #[test]
     fn prepared_bounds_are_single_use_and_expire_by_age_direction_or_invalidation() {
         let mut schedule = VelocitySchedule::default();
-        schedule.store_authority(-2.0, 3.0, 10.0, 1, 1_000);
-        assert_eq!(schedule.take_authority(11.0, 1, 1_100), Some((-2.0, 3.0)));
-        assert_eq!(schedule.take_authority(11.0, 1, 1_100), None);
-        schedule.store_authority(-2.0, 3.0, 10.0, 1, 1_000);
+        schedule.store_authority(amps(-2.0), amps(3.0), erad_per_s(10.0), 1, 1_000);
         assert_eq!(
-            schedule.take_authority(10.0, 1, 1_000 + MAX_AUTHORITY_AGE_US + 1),
+            schedule.take_authority(erad_per_s(11.0), 1, 1_100),
+            Some((amps(-2.0), amps(3.0)))
+        );
+        assert_eq!(schedule.take_authority(erad_per_s(11.0), 1, 1_100), None);
+        schedule.store_authority(amps(-2.0), amps(3.0), erad_per_s(10.0), 1, 1_000);
+        assert_eq!(
+            schedule.take_authority(erad_per_s(10.0), 1, 1_000 + MAX_AUTHORITY_AGE_US + 1),
             None
         );
         for (prepared, used) in [(10.0, -10.0), (10.0, 0.0), (0.0, 1.0), (-1.0, 1.0)] {
-            schedule.store_authority(-2.0, 3.0, prepared, 1, 1_000);
-            assert_eq!(schedule.take_authority(used, 1, 1_050), None);
+            schedule.store_authority(amps(-2.0), amps(3.0), erad_per_s(prepared), 1, 1_000);
+            assert_eq!(schedule.take_authority(erad_per_s(used), 1, 1_050), None);
         }
         for (prepared, used) in [(1, -1), (1, 0), (0, 1), (-1, 1)] {
-            schedule.store_authority(-2.0, 3.0, 10.0, prepared, 1_000);
-            assert_eq!(schedule.take_authority(10.0, used, 1_050), None);
+            schedule.store_authority(amps(-2.0), amps(3.0), erad_per_s(10.0), prepared, 1_000);
+            assert_eq!(schedule.take_authority(erad_per_s(10.0), used, 1_050), None);
         }
-        schedule.store_authority(-2.0, 3.0, 0.0, 0, 1_000);
-        assert_eq!(schedule.take_authority(-0.0, 0, 1_050), Some((-2.0, 3.0)));
+        schedule.store_authority(amps(-2.0), amps(3.0), erad_per_s(0.0), 0, 1_000);
+        assert_eq!(
+            schedule.take_authority(erad_per_s(-0.0), 0, 1_050),
+            Some((amps(-2.0), amps(3.0)))
+        );
         for clear in 0..3 {
-            schedule.store_authority(-2.0, 3.0, 10.0, 1, 1_000);
+            schedule.store_authority(amps(-2.0), amps(3.0), erad_per_s(10.0), 1, 1_000);
             match clear {
                 0 => schedule.invalidate(),
                 1 => schedule.clear_request(),
                 _ => schedule.drop_authority(),
             }
-            assert_eq!(schedule.take_authority(10.0, 1, 1_050), None);
+            assert_eq!(schedule.take_authority(erad_per_s(10.0), 1, 1_050), None);
         }
     }
 }

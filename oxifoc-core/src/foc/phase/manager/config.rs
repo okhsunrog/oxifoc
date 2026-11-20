@@ -54,9 +54,9 @@ impl PreparedPhaseModel {
                 };
                 use crate::units::{Scalar, amps, volts};
                 let target = mp
-                    .rating_current_a()
+                    .rating_current()
                     .map_or(HFI_CARRIER_RIPPLE_TARGET, |rating| {
-                        (HFI_RIPPLE_RATING_FRACTION * amps(rating))
+                        (HFI_RIPPLE_RATING_FRACTION * rating)
                             .clamp_to(amps(0.05), HFI_CARRIER_RIPPLE_TARGET)
                     });
                 let amplitude = (target * HFI_DEFAULT_FREQ * core::f32::consts::TAU * l_avg)

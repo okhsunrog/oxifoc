@@ -6,7 +6,8 @@ use crate::foc::clamp_f32;
 use crate::foc::fast_math::sqrtf;
 use crate::foc::phase::{PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::motor::dissipation::{RegenBudget, WindingModel, dissipate_with_id};
-use crate::units::{amps, erad, erad_per_s, henries, ohms, volts, watts, webers};
+use crate::units::ToBits;
+use crate::units::{amps, erad, erad_per_s, henries, ohms, seconds, volts, watts, webers};
 
 type GrantDriver = FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSensor>>;
 
@@ -45,9 +46,9 @@ fn direct_and_reused_grants_keep_the_same_independent_current_trip() {
                 currents: (7.0, -3.5, -3.5),
             },
             StationaryRotor,
-            1.0 / 20_000.0,
+            seconds(1.0 / 20_000.0),
         );
-        driver.set_current_limits(CurrentLimits::from_max_current(3.0));
+        driver.set_current_limits(CurrentLimits::from_max_current(amps(3.0)));
         driver.set_mode(mode);
         assert_eq!(driver.step(50), Err(StepError::Overcurrent));
         assert_eq!(driver.mode(), ControlMode::Stopped);
@@ -55,8 +56,8 @@ fn direct_and_reused_grants_keep_the_same_independent_current_trip() {
 }
 
 fn legacy_bus_clamp(driver: &GrantDriver, iq: f32) -> f32 {
-    let in_max = driver.current_limits.bus_in_max_a;
-    let regen_max = driver.current_limits.bus_regen_max_a;
+    let in_max = driver.current_limits.bus_in_max.value;
+    let regen_max = driver.current_limits.bus_regen_max.value;
     if in_max < 0.0 && regen_max < 0.0 {
         return iq;
     }
@@ -86,7 +87,7 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
     if iq_target * omega >= 0.0 {
         // The oracle fixtures use the default drive configuration (no speed
         // or duty taper). Those tapers are covered by the rotor velocity tests.
-        let lim = limits.max_current_a * driver.derating().drive;
+        let lim = limits.max_current.value * driver.derating().drive;
         return (
             id_target,
             legacy_bus_clamp(driver, clamp_f32(iq_target, -lim, lim)),
@@ -96,7 +97,7 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
     let model = driver
         .controller
         .decoupling()
-        .filter(|_| limits.max_dissipation_w > 0.0)
+        .filter(|_| limits.max_dissipation.value > 0.0)
         .and_then(|d| {
             (d.resistance.value > 0.0 && d.flux_linkage.value > 0.0).then_some(WindingModel {
                 resistance: ohms(d.resistance.value),
@@ -105,23 +106,25 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
             })
         });
     let Some(model) = model else {
-        let lim = limits.max_brake_a * brake.min(driver.derating().regen);
+        let lim = limits.max_brake.value * brake.min(driver.derating().regen);
         return (
             id_target,
             legacy_bus_clamp(driver, clamp_f32(iq_target, -lim, lim)),
         );
     };
-    let lim = limits.max_brake_a * brake;
-    let (id_target, iq) = limits.clamp_targets(id_target, clamp_f32(iq_target, -lim, lim));
+    let lim = limits.max_brake.value * brake;
+    let (id_target, iq) =
+        limits.clamp_targets(amps(id_target), amps(clamp_f32(iq_target, -lim, lim)));
+    let (id_target, iq) = (id_target.value, iq.value);
     let budget = RegenBudget {
         frac: driver.derating().regen,
-        max_power: watts(if limits.bus_regen_max_a >= 0.0 {
-            driver.vbus * limits.bus_regen_max_a
+        max_power: watts(if limits.bus_regen_max.value >= 0.0 {
+            driver.vbus.value * limits.bus_regen_max.value
         } else {
             f32::INFINITY
         }),
     };
-    let id_max = sqrtf(limits.max_dissipation_w * brake / (1.5 * model.resistance.value));
+    let id_max = sqrtf(limits.max_dissipation.value * brake / (1.5 * model.resistance.value));
     match dissipate_with_id(
         amps(id_target),
         amps(iq),
@@ -129,7 +132,7 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
         &model,
         &budget,
         amps(id_max),
-        amps(limits.max_current_a),
+        amps(limits.max_current.value),
     )
     .map(|(id, iq)| (id.value, iq.value))
     {
@@ -140,12 +143,15 @@ fn legacy_grant(driver: &GrantDriver, id_target: f32, iq_target: f32, omega: f32
 }
 
 fn check(driver: &GrantDriver, id: f32, iq: f32, omega: f32) -> (f32, f32) {
-    let actual = driver.grant_torque(id, iq, omega);
-    let constraints = driver.torque_constraints(omega);
-    let constrained = driver.grant_torque_constrained(id, iq, &constraints);
+    let (id_q, iq_q, omega_q) = (amps(id), amps(iq), erad_per_s(omega));
+    let actual = driver.grant_torque(id_q, iq_q, omega_q);
+    let actual = (actual.0.value, actual.1.value);
+    let constraints = driver.torque_constraints(omega_q);
+    let constrained = driver.grant_torque_constrained(id_q, iq_q, &constraints);
+    let constrained = (constrained.0.value, constrained.1.value);
     #[cfg(feature = "iq-authority")]
     if id == 0.0 {
-        let projected = driver.grant_iq_authority(iq, &constraints);
+        let projected = driver.grant_iq_authority(iq_q, &constraints).value;
         assert!(
             projected.to_bits() == constrained.1.to_bits()
                 || (projected.is_nan() && constrained.1.is_nan()),
@@ -175,7 +181,7 @@ fn check(driver: &GrantDriver, id: f32, iq: f32, omega: f32) -> (f32, f32) {
 fn local_constraints_keep_ieee_identity_and_refresh_each_cycle() {
     assert_eq!(size_of::<protection::TorqueConstraints>(), 20);
     let mut driver = grant_driver(
-        CurrentLimits::from_max_current(0.0),
+        CurrentLimits::from_max_current(amps(0.0)),
         DeratingScales::IDENTITY,
     );
     driver.bus_mod_q_filt = 0.5;
@@ -186,25 +192,25 @@ fn local_constraints_keep_ieee_identity_and_refresh_each_cycle() {
         f32::INFINITY,
         f32::from_bits(0x7fc0_1234),
     ] {
-        let constraints = driver.torque_constraints(0.0);
+        let constraints = driver.torque_constraints(erad_per_s(0.0));
         assert_eq!(
             driver
-                .grant_torque_constrained(0.0, iq, &constraints)
+                .grant_torque_constrained(amps(0.0), amps(iq), &constraints)
                 .1
                 .to_bits(),
             iq.to_bits()
         );
     }
     driver.set_current_limits(CurrentLimits {
-        bus_in_max_a: 1.0,
-        bus_regen_max_a: 0.0,
-        ..CurrentLimits::from_max_current(10.0)
+        bus_in_max: amps(1.0),
+        bus_regen_max: amps(0.0),
+        ..CurrentLimits::from_max_current(amps(10.0))
     });
     for (modulation, speed) in [(0.25, 100.0), (-0.5, -100.0), (0.0, 0.0)] {
         driver.bus_mod_q_filt = modulation;
-        let constraints = driver.torque_constraints(speed);
+        let constraints = driver.torque_constraints(erad_per_s(speed));
         for iq in [-10.0, 10.0, 3.0] {
-            let actual = driver.grant_torque_constrained(0.0, iq, &constraints);
+            let actual = driver.grant_torque_constrained(amps(0.0), amps(iq), &constraints);
             let expected = check(&driver, 0.0, iq, speed);
             assert_eq!(
                 (actual.0.to_bits(), actual.1.to_bits()),
@@ -219,9 +225,9 @@ fn reciprocal_bus_bounds_hold_in_physical_units_in_both_directions() {
     for bus_limit in [0.0, 0.1, 1.0, 5.0, 100.0] {
         let mut driver = grant_driver(
             CurrentLimits {
-                bus_in_max_a: bus_limit,
-                bus_regen_max_a: bus_limit,
-                ..CurrentLimits::from_max_current(0.0)
+                bus_in_max: amps(bus_limit),
+                bus_regen_max: amps(bus_limit),
+                ..CurrentLimits::from_max_current(amps(0.0))
             },
             DeratingScales::IDENTITY,
         );
@@ -265,10 +271,10 @@ fn outlining_brake_solve_preserves_all_torque_grant_branches() {
                 for saliency in [0.0, 8.0e-6, -8.0e-6] {
                     let mut driver = grant_driver(
                         CurrentLimits {
-                            bus_in_max_a: 1.0,
-                            bus_regen_max_a: regen,
-                            max_dissipation_w: heat,
-                            ..CurrentLimits::from_max_current(max_a)
+                            bus_in_max: amps(1.0),
+                            bus_regen_max: amps(regen),
+                            max_dissipation: watts(heat),
+                            ..CurrentLimits::from_max_current(amps(max_a))
                         },
                         DeratingScales {
                             drive: 0.7,
@@ -322,13 +328,13 @@ fn outlined_grant_matches_legacy_for_wide_input_bits_and_missing_models() {
         seed
     };
     let mut driver = grant_driver(
-        CurrentLimits::from_max_current(30.0),
+        CurrentLimits::from_max_current(amps(30.0)),
         DeratingScales::IDENTITY,
     );
     for case in 0..4096 {
-        driver.current_limits.max_dissipation_w = [0.0, 20.0, 100.0][case % 3];
-        driver.current_limits.bus_regen_max_a = [-1.0, 0.0, 0.2][case % 3];
-        driver.current_limits.bus_in_max_a = if case % 2 == 0 { -1.0 } else { 1.0 };
+        driver.current_limits.max_dissipation = watts([0.0, 20.0, 100.0][case % 3]);
+        driver.current_limits.bus_regen_max = amps([-1.0, 0.0, 0.2][case % 3]);
+        driver.current_limits.bus_in_max = if case % 2 == 0 { amps(-1.0) } else { amps(1.0) };
         driver.bus_mod_q_filt = f32::from_bits(next());
         driver.controller.set_decoupling(match case % 5 {
             0 => None,

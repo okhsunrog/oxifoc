@@ -3,7 +3,7 @@
 //! A braking q current turns the rotor's kinetic energy into electrical
 //! power; what the copper does not burn flows back into the supply. The
 //! supply can refuse it — the regen-overvoltage derate on a full pack, the
-//! battery's charge-current limit, a lab PSU (`bus_regen_max_a = 0`).
+//! battery's charge-current limit, a lab PSU (`bus_regen_max = 0`).
 //! Cutting the brake torque there (the plain derate) fails exactly on a
 //! long descent. A d current makes no torque on a surface-magnet motor but
 //! heats the windings like any other, so it can take the surplus instead:
@@ -14,7 +14,7 @@
 //!
 //! The torque stays what the rider asked for as long as the current circle
 //! (`i_max`) and the dissipation budget (`id_max` — the driver's heat
-//! budget `max_dissipation_w` buys `√(W / 1.5·R)` of it) can carry the
+//! budget `max_dissipation` buys `√(W / 1.5·R)` of it) can carry the
 //! surplus; beyond that |iq| shrinks to the largest value they can still
 //! balance — never below what the plain derate would grant. The burn
 //! capacity is small on low-resistance motors: `1.5·R·I²` ≈ 50 W at 30 A,

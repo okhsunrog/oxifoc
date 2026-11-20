@@ -21,6 +21,7 @@
 
 use super::config::BoardConfig;
 use super::constants::FRAC_1_SQRT_3;
+use crate::units::{ElectricPotential, volts};
 
 /// Converts raw phase-terminal ADC counts → phase voltages (V) and αβ.
 ///
@@ -32,7 +33,7 @@ use super::constants::FRAC_1_SQRT_3;
 #[derive(Clone, Copy, Debug)]
 pub struct PhaseVoltageSense {
     /// Immutable ADC/divider gain, folded at construction like current sensing.
-    volts_per_count: f32,
+    volts_per_count: ElectricPotential,
     has_filters: bool,
     /// Undriven zero-voltage ADC offsets per phase (counts).
     offsets: [f32; 3],
@@ -58,8 +59,10 @@ impl PhaseVoltageSense {
         has_filters: bool,
     ) -> Self {
         Self {
-            volts_per_count: (calib.adc_vref_mv as f32 / 1000.0) / f32::from(calib.adc_max_counts)
-                * divider_ratio,
+            volts_per_count: volts(
+                (calib.adc_vref_mv as f32 / 1000.0) / f32::from(calib.adc_max_counts)
+                    * divider_ratio,
+            ),
             has_filters,
             // Resting terminal ≈ GND; the real per-channel bias comes from
             // undriven calibration. A uniform offset cancels in alpha_beta
@@ -76,7 +79,7 @@ impl PhaseVoltageSense {
     }
 
     /// Phase-terminal voltage represented by one ADC count.
-    pub fn volts_per_count(&self) -> f32 {
+    pub fn volts_per_count(&self) -> ElectricPotential {
         self.volts_per_count
     }
 
@@ -88,7 +91,7 @@ impl PhaseVoltageSense {
 
     /// Per-phase terminal voltages (V), offset-corrected and divider-scaled.
     #[inline]
-    pub fn phase_voltages(&self, raw: [u16; 3]) -> [f32; 3] {
+    pub fn phase_voltages(&self, raw: [u16; 3]) -> [ElectricPotential; 3] {
         [
             self.counts_to_volts(raw[0], self.offsets[0]),
             self.counts_to_volts(raw[1], self.offsets[1]),
@@ -101,7 +104,7 @@ impl PhaseVoltageSense {
     /// Full 3-input Clarke so the common-mode (floating-neutral) term cancels:
     /// `v_alpha = (2Va − Vb − Vc)/3`, `v_beta = (Vb − Vc)/√3`.
     #[inline]
-    pub fn alpha_beta(&self, raw: [u16; 3]) -> (f32, f32) {
+    pub fn alpha_beta(&self, raw: [u16; 3]) -> (ElectricPotential, ElectricPotential) {
         let [va, vb, vc] = self.phase_voltages(raw);
         let v_alpha = (2.0 * va - vb - vc) * (1.0 / 3.0);
         let v_beta = FRAC_1_SQRT_3 * (vb - vc);
@@ -140,7 +143,7 @@ impl PhaseVoltageSense {
     }
 
     #[inline]
-    fn counts_to_volts(&self, raw: u16, offset: f32) -> f32 {
+    fn counts_to_volts(&self, raw: u16, offset: f32) -> ElectricPotential {
         let delta = f32::from(raw) - offset;
         delta * self.volts_per_count
     }
@@ -181,6 +184,7 @@ mod tests {
     use super::*;
     use crate::foc::config::{BoardConfig, PhaseSense};
     use crate::units::ohms;
+    use crate::units::volts;
 
     const fn board(phase_sense: Option<PhaseSense>) -> BoardConfig {
         BoardConfig {
@@ -226,7 +230,10 @@ mod tests {
         // Full-scale counts (4095) → 3.3 V at the ADC × 18.727 divider ≈ 61.8 V.
         let [va, ..] = s.phase_voltages([4095, 0, 0]);
         let expected = 3.3 * (39.0 + 2.2) / 2.2;
-        assert!((va - expected).abs() < 0.05, "va={va} expected={expected}");
+        assert!(
+            (va - volts(expected)).abs() < volts(0.05),
+            "va={va:?} expected={expected:?}"
+        );
     }
 
     #[test]
@@ -242,8 +249,8 @@ mod tests {
                         / f32::from(config.calib.adc_max_counts)
                         * CF2_SENSE.divider_ratio;
                     assert!(
-                        (sense.counts_to_volts(raw, offset) - before).abs()
-                            <= 4.0 * f32::EPSILON * full_scale
+                        (sense.counts_to_volts(raw, offset) - volts(before)).abs()
+                            <= volts(4.0 * f32::EPSILON * full_scale)
                     );
                 }
             }
@@ -255,7 +262,10 @@ mod tests {
         let s = PhaseVoltageSense::from_board(&board(Some(CF2_SENSE))).unwrap();
         // Equal terminal voltages = pure common mode → αβ must be ~0.
         let (a, b) = s.alpha_beta([1500, 1500, 1500]);
-        assert!(a.abs() < 1e-3 && b.abs() < 1e-3, "a={a} b={b}");
+        assert!(
+            a.abs() < volts(1e-3) && b.abs() < volts(1e-3),
+            "a={a:?} b={b:?}"
+        );
     }
 
     #[test]
@@ -275,8 +285,8 @@ mod tests {
         ];
         let (a, beta) = s.alpha_beta(raw);
         // v_alpha = (2Va − Vb − Vc)/3 = amp counts → volts; v_beta = 0.
-        assert!((a - amp * scale).abs() < 0.05, "a={a}");
-        assert!(beta.abs() < 1e-3, "beta={beta}");
+        assert!((a - volts(amp * scale)).abs() < volts(0.05), "a={a:?}");
+        assert!(beta.abs() < volts(1e-3), "beta={beta:?}");
     }
 
     #[test]
@@ -291,7 +301,7 @@ mod tests {
         assert!((o[2] - 2100.0).abs() < 0.1);
         // Reading exactly at the offset → zero phase voltage.
         let v = s.phase_voltages([2000, 2050, 2100]);
-        assert!(v.iter().all(|x| x.abs() < 1e-3), "v={v:?}");
+        assert!(v.iter().all(|x| x.abs() < volts(1e-3)), "v={v:?}");
     }
 
     #[test]

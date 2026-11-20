@@ -81,7 +81,7 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
             currents: (0.0, 0.0, 0.0),
         },
         phase,
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     let gains = driver.controller().id_pi.gains();
     let model_coefficients = |driver: &FocController<SvpwmModulator, LibmSinCos>| {
@@ -95,7 +95,7 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
         })
     };
     let decoupling = model_coefficients(driver.controller());
-    let limit = driver.current_limits.max_current_a;
+    let limit = driver.current_limits.max_current;
     let mut calibration = HallCalibrationConfig::default();
     for angle in &mut calibration.angles[1..=6] {
         *angle += erad(0.4);
@@ -132,7 +132,7 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     );
     assert_eq!(driver.controller().id_pi.gains(), gains);
     assert_eq!(model_coefficients(driver.controller()), decoupling);
-    assert_eq!(driver.current_limits.max_current_a, limit);
+    assert_eq!(driver.current_limits.max_current, limit);
     assert_eq!(driver.phase().source(), PhaseSource::Hall);
     critical_section::with(|cs| {
         assert_eq!(
@@ -222,7 +222,7 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
         [Some(0); ConfigGroupId::COUNT],
     ))));
     let reset = ModelApplyGuard::prepare_reset(
-        PreparedMotorModel::from_config(&RuntimeConfig::default(), 24.0, 3.0),
+        PreparedMotorModel::from_config(&RuntimeConfig::default(), volts(24.0), amps(3.0)),
         config,
         revisions,
         persisted,
@@ -295,7 +295,7 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
             currents: (0.0, 0.0, 0.0),
         },
         phase,
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     for mode in [
         ControlMode::CurrentControl {
@@ -423,7 +423,7 @@ fn detector_cannot_install_hall_before_explicit_apply() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::with_hall(hall),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
 
     let id = ReqId(201);

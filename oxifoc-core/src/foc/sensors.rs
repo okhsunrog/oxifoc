@@ -21,7 +21,10 @@ use super::current_sense::ShuntCurrentSense;
 use super::hall_calibration::HallCalibrationResult;
 use super::hall_sensor::Direction;
 use crate::foc::hall_sensor::HallFaultKind;
-use crate::units::{ConstZero, ElectricalAngle, ElectricalAngularVelocity, Time};
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
+    ElectricalResistance, Time, volts,
+};
 
 /// Snapshot from an angle sensor.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,6 +68,9 @@ pub struct HallReferenceUpdate {
     pub sample: Option<AngleSample>,
 }
 
+/// The three phase currents (i_a, i_b, i_c).
+pub type PhaseCurrents = (ElectricCurrent, ElectricCurrent, ElectricCurrent);
+
 /// Platform-agnostic current sensor trait
 ///
 /// Implementers provide 3-phase current measurements in Amperes.
@@ -77,11 +83,9 @@ pub trait CurrentSensor {
         crate::types::CurrentSenseTopology::TwoShunt
     }
 
-    /// Read 3-phase currents in Amperes
-    ///
-    /// Returns (i_a, i_b, i_c) in Amps.
-    /// For 2-phase sampling, set the third phase to 0.0.
-    fn read_currents(&self) -> (f32, f32, f32);
+    /// Read the three phase currents (i_a, i_b, i_c).
+    /// For 2-phase sampling, set the third phase to zero.
+    fn read_currents(&self) -> PhaseCurrents;
 
     /// Read raw ADC values (for calibration and debugging)
     ///
@@ -424,13 +428,13 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
     /// Create a new generic current sensor
     ///
     /// # Arguments
-    /// * `shunt_ohms` - Shunt resistance in Ohms
+    /// * `shunt` - Shunt resistance
     /// * `amp_gain` - OPAMP/amplifier gain
     /// * `adc_vref_mv` - ADC reference voltage in millivolts
     /// * `adc_max_counts` - Maximum ADC count value
     /// * `reader` - Platform-specific raw ADC reader
     pub fn new(
-        shunt_ohms: f32,
+        shunt: ElectricalResistance,
         amp_gain: f32,
         adc_vref_mv: u32,
         adc_max_counts: u16,
@@ -438,7 +442,7 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
     ) -> Self {
         Self {
             topology: crate::types::CurrentSenseTopology::TwoShunt,
-            converter: ShuntCurrentSense::new(shunt_ohms, amp_gain, adc_vref_mv, adc_max_counts),
+            converter: ShuntCurrentSense::new(shunt, amp_gain, adc_vref_mv, adc_max_counts),
             reader,
         }
     }
@@ -446,7 +450,7 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
     /// Create from board config
     pub fn from_config(config: &super::config::BoardConfig, reader: R) -> Self {
         let mut sensor = Self::new(
-            config.calib.shunt_ohms.value,
+            config.calib.shunt_ohms,
             config.calib.amp_gain,
             config.calib.adc_vref_mv,
             config.calib.adc_max_counts,
@@ -490,7 +494,7 @@ impl<R: RawCurrentReader> CurrentSensor for GenericCurrentSensor<R> {
         self.topology
     }
 
-    fn read_currents(&self) -> (f32, f32, f32) {
+    fn read_currents(&self) -> PhaseCurrents {
         let (adc_a, adc_b, adc_c) = self.reader.read_raw();
         self.converter.convert_raw(adc_a, adc_b, adc_c)
     }
@@ -710,6 +714,10 @@ impl Default for AdcSnapshot {
 }
 
 impl AdcSnapshot {
+    /// The DC bus voltage.
+    pub fn vbus(&self) -> ElectricPotential {
+        volts(self.vbus_mv as f32 / 1000.0)
+    }
     /// Create an empty ADC snapshot (const for static initialization)
     pub const fn empty() -> Self {
         Self {

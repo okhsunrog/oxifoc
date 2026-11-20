@@ -31,7 +31,7 @@ use crate::foc::hall_sensor::HallSensor;
 use crate::foc::phase::{BackEmfObserver, Observer};
 use crate::foc::phase::{PhaseManager, PhaseSource};
 use crate::foc::pwm::PhaseState;
-use crate::foc::sensors::NoSensor;
+use crate::foc::sensors::{NoSensor, PhaseCurrents};
 #[cfg(feature = "virtual-motor")]
 use crate::foc::transforms::{clarke, park};
 #[cfg(feature = "virtual-motor")]
@@ -47,9 +47,11 @@ use crate::motor::failsafe::{FailsafePolicy, FailsafeTerminal};
 use crate::state::CMD_CHANNEL;
 #[cfg(feature = "storage")]
 use crate::storage::CurrentLimitsConfig;
+#[cfg(feature = "hfi")]
+use crate::units::hertz;
 use crate::units::{
-    Sign, amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, volts,
-    watts, webers,
+    Sign, amps, amps_per_s, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity,
+    seconds, volts, watts, webers,
 };
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
@@ -85,7 +87,7 @@ fn grant_driver(
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     driver.set_current_limits(limits);
     driver.set_derating_scales(scales);
@@ -96,7 +98,7 @@ fn grant_driver(
 #[test]
 fn detection_freezes_only_inverter_correction_and_still_trips_on_real_current() {
     let mut driver = grant_driver(
-        CurrentLimits::from_max_current(3.0),
+        CurrentLimits::from_max_current(amps(3.0)),
         DeratingScales::IDENTITY,
     );
     driver.controller.set_dead_time_comp_factor(0.0072);
@@ -104,9 +106,9 @@ fn detection_freezes_only_inverter_correction_and_still_trips_on_real_current() 
         .controller
         .set_dead_time_comp_linear_region(amps(1.0))
         .unwrap();
-    driver.current_limits.overcurrent_threshold_a = 6.0;
+    driver.current_limits.overcurrent_threshold = amps(6.0);
     driver.current_sensor.currents = (1.0, -0.5, -0.5);
-    driver.set_detection_voltage(-0.1, 0.003, 0.0, (1.0, 0.0));
+    driver.set_detection_voltage(volts(-0.1), volts(0.003), erad(0.0), (amps(1.0), amps(0.0)));
     let first = driver.step(50).unwrap();
     driver.current_sensor.currents = (0.2, -0.1, -0.1);
     let second = driver.step(100).unwrap();
@@ -125,20 +127,24 @@ fn detection_freezes_only_inverter_correction_and_still_trips_on_real_current() 
     });
     assert!(driver.detection_compensation_current.is_none());
     assert_ne!(driver.step(150).unwrap().duties, first.duties);
-    driver.set_detection_voltage(-0.1, 0.003, 0.0, (1.0, 0.0));
+    driver.set_detection_voltage(volts(-0.1), volts(0.003), erad(0.0), (amps(1.0), amps(0.0)));
     driver.current_sensor.currents = (7.0, -3.5, -3.5);
     assert_eq!(driver.step(200), Err(StepError::Overcurrent));
 }
 
 #[test]
 fn grant_derates_drive_and_brake_by_direction() {
-    let iq = |d: &FocDriver<_, _, _>, iq, omega| d.grant_torque(0.0, iq, omega).1;
+    let iq = |d: &FocDriver<_, _, _>, iq: f32, omega: f32| {
+        d.grant_torque(amps(0.0), amps(iq), erad_per_s(omega))
+            .1
+            .value
+    };
     // Cruising forward at the ceiling: motoring budget cut to 10%,
     // braking untouched — the velocity PI's positive bound must shrink,
     // the negative must not (this asymmetry is what kills the ceiling
     // windup: the integral can no longer bank the un-grantable 90%).
     let d = grant_driver(
-        CurrentLimits::from_max_current(10.0),
+        CurrentLimits::from_max_current(amps(10.0)),
         DeratingScales {
             drive: 0.1,
             ..DeratingScales::IDENTITY
@@ -152,8 +158,8 @@ fn grant_derates_drive_and_brake_by_direction() {
     // The braking side has its own limit and its own derate.
     let d = grant_driver(
         CurrentLimits {
-            max_brake_a: 4.0,
-            ..CurrentLimits::from_max_current(10.0)
+            max_brake: amps(4.0),
+            ..CurrentLimits::from_max_current(amps(10.0))
         },
         DeratingScales {
             brake: 0.5,
@@ -164,7 +170,7 @@ fn grant_derates_drive_and_brake_by_direction() {
     assert_eq!((iq(&d, -10.0, -500.0), iq(&d, 10.0, -500.0)), (-10.0, 2.0));
     // Unlimited when the limit is unset — mirrors CurrentLimits.
     let d = grant_driver(
-        CurrentLimits::from_max_current(0.0),
+        CurrentLimits::from_max_current(amps(0.0)),
         DeratingScales::IDENTITY,
     );
     assert!(iq(&d, f32::INFINITY, 100.0).is_infinite());
@@ -179,56 +185,68 @@ fn a_full_pack_brake_burns_what_it_cannot_charge() {
         regen: 0.0,
         ..DeratingScales::IDENTITY
     };
-    let off = grant_driver(CurrentLimits::from_max_current(30.0), full_pack);
-    assert_eq!(off.grant_torque(0.0, -10.0, 400.0), (0.0, 0.0));
+    let off = grant_driver(CurrentLimits::from_max_current(amps(30.0)), full_pack);
+    assert_eq!(
+        off.grant_torque(amps(0.0), amps(-10.0), erad_per_s(400.0)),
+        (amps(0.0), amps(0.0))
+    );
     let on = grant_driver(
         CurrentLimits {
-            max_dissipation_w: 100.0,
-            ..CurrentLimits::from_max_current(30.0)
+            max_dissipation: watts(100.0),
+            ..CurrentLimits::from_max_current(amps(30.0))
         },
         full_pack,
     );
-    let (id, iq) = on.grant_torque(0.0, -10.0, 400.0);
-    assert_eq!(iq, -10.0);
+    let (id, iq) = on.grant_torque(amps(0.0), amps(-10.0), erad_per_s(400.0));
+    assert_eq!(iq, amps(-10.0));
     // 1.5·R·(id² + iq²) = 1.5·ω·λ·|iq|: id² = (1.168·10 − 3.6)/0.036
     // — 12.1 W of the 100 W budget.
-    assert!((id - 14.98).abs() < 0.05, "id {id}");
+    assert!((id - amps(14.98)).abs() < amps(0.05), "id {id:?}");
     // Motoring and plugging are left alone.
-    assert_eq!(on.grant_torque(0.0, 10.0, 400.0), (0.0, 10.0));
-    assert_eq!(on.grant_torque(0.0, -10.0, 50.0), (0.0, -10.0));
+    assert_eq!(
+        on.grant_torque(amps(0.0), amps(10.0), erad_per_s(400.0)),
+        (amps(0.0), amps(10.0))
+    );
+    assert_eq!(
+        on.grant_torque(amps(0.0), amps(-10.0), erad_per_s(50.0)),
+        (amps(0.0), amps(-10.0))
+    );
     // A hot motor burns less: the budget follows the brake derate —
     // 30% of 20 W buys 10.5 A of id, which balances ~3.9 A of brake.
     let hot = grant_driver(
         CurrentLimits {
-            max_dissipation_w: 20.0,
-            ..CurrentLimits::from_max_current(30.0)
+            max_dissipation: watts(20.0),
+            ..CurrentLimits::from_max_current(amps(30.0))
         },
         DeratingScales {
             brake: 0.3,
             ..full_pack
         },
     );
-    let (id, iq) = hot.grant_torque(0.0, -10.0, 400.0);
+    let (id, iq) = hot.grant_torque(amps(0.0), amps(-10.0), erad_per_s(400.0));
     let heat_w = 1.5 * 0.036 * id * id;
-    assert!((heat_w - 6.0).abs() < 0.01, "{heat_w} W");
-    assert!(iq > -4.5 && iq < -3.5, "iq {iq}");
+    assert!(
+        (heat_w - quantity(6.0)).abs() < quantity(0.01),
+        "{heat_w:?} W"
+    );
+    assert!(iq > amps(-4.5) && iq < amps(-3.5), "iq {iq:?}");
 }
 
-/// A lab PSU (`bus_regen_max_a = 0`) takes no regen: dissipation turns
+/// A lab PSU (`bus_regen_max = 0`) takes no regen: dissipation turns
 /// the brake's regen into heat instead of cutting the torque.
 #[test]
 fn a_no_regen_supply_brakes_by_dissipation() {
     let d = grant_driver(
         CurrentLimits {
-            bus_regen_max_a: 0.0,
-            max_dissipation_w: 100.0,
-            ..CurrentLimits::from_max_current(30.0)
+            bus_regen_max: amps(0.0),
+            max_dissipation: watts(100.0),
+            ..CurrentLimits::from_max_current(amps(30.0))
         },
         DeratingScales::IDENTITY,
     );
-    let (id, iq) = d.grant_torque(0.0, -10.0, 400.0);
-    assert_eq!(iq, -10.0);
-    assert!((id - 14.98).abs() < 0.05, "id {id}");
+    let (id, iq) = d.grant_torque(amps(0.0), amps(-10.0), erad_per_s(400.0));
+    assert_eq!(iq, amps(-10.0));
+    assert!((id - amps(14.98)).abs() < amps(0.05), "id {id:?}");
 }
 
 struct MockPwm {
@@ -299,7 +317,7 @@ fn bridge_rearm_discards_old_current_pi_but_running_retargets_preserve_it() {
                     currents: (0.0, 0.0, 0.0),
                 },
                 PhaseManager::sensorless(),
-                1.0 / 20_000.0,
+                seconds(1.0 / 20_000.0),
             );
             driver.phase_mut().set_manual_angle(erad(0.0));
             driver.phase_mut().set_source(PhaseSource::Manual).unwrap();
@@ -355,7 +373,7 @@ fn driving_modes_reenable_the_bridge_after_coast_and_stop() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     driver.phase_mut().set_manual_angle(erad(0.0));
     driver.phase_mut().set_source(PhaseSource::Manual).unwrap();
@@ -401,7 +419,7 @@ impl CurrentSensor for TopologySensor {
     fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
         self.topology
     }
-    fn read_currents(&self) -> (f32, f32, f32) {
+    fn read_currents(&self) -> PhaseCurrents {
         self.sensor.read_currents()
     }
     fn read_raw(&self) -> (u16, u16, u16) {
@@ -447,11 +465,11 @@ fn topology_driver(
             topology,
         },
         FeedbackProbe::default(),
-        0.00005,
+        seconds(0.00005),
     );
     driver.set_current_limits(CurrentLimits {
-        overcurrent_threshold_a: 6.0,
-        ..CurrentLimits::from_max_current(3.0)
+        overcurrent_threshold: amps(6.0),
+        ..CurrentLimits::from_max_current(amps(3.0))
     });
     driver
 }
@@ -526,7 +544,7 @@ fn three_shunt_feedback_still_trips_real_and_invalid_current() {
             assert!(!driver.pwm().enabled);
         }
     }
-    assert!(CurrentLimits::from_max_current(0.0).is_overcurrent(f32::NAN, 0.0));
+    assert!(CurrentLimits::from_max_current(amps(0.0)).is_overcurrent(amps(f32::NAN), amps(0.0)));
 }
 
 #[test]
@@ -572,10 +590,10 @@ fn raw_phase_protection_survives_zero_sequence_rejection() {
         vq: volts(0.0),
         angle: erad(0.0),
     });
-    let out = run_foc_cycle(&state, &registry, &mut driver, 24.0, 0, &board).unwrap();
+    let out = run_foc_cycle(&state, &registry, &mut driver, volts(24.0), 0, &board).unwrap();
     assert_eq!((out.id.value, out.iq.value), (0.0, 0.0));
     assert!(registry.has_category(FaultCategory::OverCurrent));
-    run_foc_cycle(&state, &registry, &mut driver, 24.0, 50, &board);
+    run_foc_cycle(&state, &registry, &mut driver, volts(24.0), 50, &board);
     assert!(
         !driver.pwm().enabled,
         "the independent raw-phase fault must kill PWM"
@@ -583,8 +601,9 @@ fn raw_phase_protection_survives_zero_sequence_rejection() {
 }
 
 impl CurrentSensor for MockCurrentSensor {
-    fn read_currents(&self) -> (f32, f32, f32) {
-        self.currents
+    fn read_currents(&self) -> PhaseCurrents {
+        let (a, b, c) = self.currents;
+        (amps(a), amps(b), amps(c))
     }
     fn read_raw(&self) -> (u16, u16, u16) {
         (0, 0, 0)
@@ -661,7 +680,7 @@ fn coast_observer_tracks_measured_bemf() {
                 currents: (0.0, 0.0, 0.0),
             },
             pm,
-            dt,
+            seconds(dt),
         );
         d.set_phase_voltage_sense(PhaseVoltageSense::from_board(board));
         d.set_mode(ControlMode::Coast);
@@ -766,8 +785,8 @@ fn process_commands_switches_phase_source() {
     let registry: FaultRegistry<TestFault> = FaultRegistry::new();
 
     let mut mgr = PhaseManager::sensorless();
-    mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
-    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(24.0);
+    mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
+    let foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
     let mut driver = FocDriver::new(
         foc,
         MockPwm { duties: [0; 3] },
@@ -775,7 +794,7 @@ fn process_commands_switches_phase_source() {
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     // The driver must stay linked so process_commands doesn't force Stopped.
     critical_section::with(|cs| {
@@ -906,7 +925,7 @@ fn process_commands_rejects_non_finite_payloads() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
 
@@ -1018,7 +1037,7 @@ fn process_commands_blocks_start_during_flash_op() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
 
@@ -1077,7 +1096,7 @@ fn internal_stops_preserve_the_failsafe_latch() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
 
     driver.enter_failsafe();
@@ -1136,7 +1155,7 @@ fn link_loss_arms_failsafe_policy() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     driver.set_failsafe(FailsafeConfig {
         policy: FailsafePolicy::ControlledStop,
@@ -1207,7 +1226,7 @@ fn deadman_exempts_bench_modes() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     driver.set_failsafe(FailsafeConfig {
         policy: FailsafePolicy::Coast,
@@ -1283,7 +1302,7 @@ fn safe_off_floats_bridge_immediately() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
 
     driver.set_mode(ControlMode::CurrentControl {
@@ -1350,8 +1369,8 @@ fn current_offset_calibration_applies_then_floats() {
         offsets: (f32, f32, f32),
     }
     impl CurrentSensor for CalibrationSensor {
-        fn read_currents(&self) -> (f32, f32, f32) {
-            (0.0, 0.0, 0.0)
+        fn read_currents(&self) -> PhaseCurrents {
+            (amps(0.0), amps(0.0), amps(0.0))
         }
         fn read_raw(&self) -> (u16, u16, u16) {
             (111, 222, 333)
@@ -1374,7 +1393,7 @@ fn current_offset_calibration_applies_then_floats() {
             offsets: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     driver
         .start_current_offset_calibration(CurrentOffsetRequest {
@@ -1405,7 +1424,7 @@ fn all_phase_offset_requires_explicit_stationary_confirmation() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     let error = driver
         .start_current_offset_calibration(CurrentOffsetRequest {
@@ -1474,7 +1493,7 @@ fn brake_speed_gated_and_survives_link_loss() {
             currents: (0.0, 0.0, 0.0),
         },
         MockPhase { vel: 300.0 },
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
 
     critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
@@ -1530,33 +1549,38 @@ fn config_limits_clamp_to_hardware_ceiling() {
     };
 
     // Normal config below the ceiling: passes through.
-    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, -1.0, -1.0), hw_max, 0.0);
-    assert_eq!(l.max_current_a, 5.0);
-    assert_eq!(l.overcurrent_threshold_a, 8.0);
-    assert_eq!(l.bus_in_max_a, -1.0);
-    assert_eq!(l.bus_regen_max_a, -1.0);
+    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, -1.0, -1.0), amps(hw_max), amps(0.0));
+    assert_eq!(l.max_current, amps(5.0));
+    assert_eq!(l.overcurrent_threshold, amps(8.0));
+    assert_eq!(l.bus_in_max, amps(-1.0));
+    assert_eq!(l.bus_regen_max, amps(-1.0));
 
     // Config above the ceiling: clamped to the board limits. The board
     // value is the ABS trip line; the iq ceiling keeps the headroom
     // below it (NOT hw_max itself — that put full throttle exactly on
     // the per-phase Kill line).
-    let l = CurrentLimits::from_config_clamped(&cfg(50.0, 100.0, -1.0, -1.0), hw_max, 0.0);
-    assert_eq!(l.max_current_a, hw_max / OVERCURRENT_HEADROOM);
-    assert_eq!(l.overcurrent_threshold_a, hw_max);
+    let l =
+        CurrentLimits::from_config_clamped(&cfg(50.0, 100.0, -1.0, -1.0), amps(hw_max), amps(0.0));
+    assert_eq!(l.max_current, amps(hw_max / OVERCURRENT_HEADROOM));
+    assert_eq!(l.overcurrent_threshold, amps(hw_max));
 
     // Zeroed config: board defaults, NOT disabled protection.
-    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0, -1.0, -1.0), hw_max, 0.0);
-    assert_eq!(l.max_current_a, hw_max / OVERCURRENT_HEADROOM);
-    assert_eq!(l.overcurrent_threshold_a, hw_max);
+    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0, -1.0, -1.0), amps(hw_max), amps(0.0));
+    assert_eq!(l.max_current, amps(hw_max / OVERCURRENT_HEADROOM));
+    assert_eq!(l.overcurrent_threshold, amps(hw_max));
 
     // Bus limits pass through (no board ceiling — they protect the
     // supply); zero is meaningful (no regen), NaN → unlimited.
-    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, 20.0, 0.0), hw_max, 0.0);
-    assert_eq!(l.bus_in_max_a, 20.0);
-    assert_eq!(l.bus_regen_max_a, 0.0);
-    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, f32::NAN, f32::NAN), hw_max, 0.0);
-    assert_eq!(l.bus_in_max_a, -1.0);
-    assert_eq!(l.bus_regen_max_a, -1.0);
+    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0, 20.0, 0.0), amps(hw_max), amps(0.0));
+    assert_eq!(l.bus_in_max, amps(20.0));
+    assert_eq!(l.bus_regen_max, amps(0.0));
+    let l = CurrentLimits::from_config_clamped(
+        &cfg(5.0, 8.0, f32::NAN, f32::NAN),
+        amps(hw_max),
+        amps(0.0),
+    );
+    assert_eq!(l.bus_in_max, amps(-1.0));
+    assert_eq!(l.bus_regen_max, amps(-1.0));
 
     // The dissipation budget passes through (the current circle bounds
     // what it buys); unset, negative or NaN is off.
@@ -1565,12 +1589,12 @@ fn config_limits_clamp_to_hardware_ceiling() {
             max_dissipation: watts(v),
             ..cfg(5.0, 8.0, -1.0, -1.0)
         };
-        CurrentLimits::from_config_clamped(&c, hw_max, 0.0).max_dissipation_w
+        CurrentLimits::from_config_clamped(&c, amps(hw_max), amps(0.0)).max_dissipation
     };
-    assert_eq!(dissipation(80.0), 80.0);
-    assert_eq!(dissipation(0.0), 0.0);
-    assert_eq!(dissipation(-5.0), 0.0);
-    assert_eq!(dissipation(f32::NAN), 0.0);
+    assert_eq!(dissipation(80.0), watts(80.0));
+    assert_eq!(dissipation(0.0), watts(0.0));
+    assert_eq!(dissipation(-5.0), watts(0.0));
+    assert_eq!(dissipation(f32::NAN), watts(0.0));
 }
 
 /// The 2026-06-12 foot-gun (notes/fault-overhaul.md §4): a config that
@@ -1594,17 +1618,17 @@ fn cross_field_headroom_enforced() {
             bus_regen_max: amps(-1.0),
             max_dissipation: watts(0.0),
         },
-        hw_max,
-        0.0,
+        amps(hw_max),
+        amps(0.0),
     );
-    assert_eq!(l.overcurrent_threshold_a, 40.0, "trip is never raised");
+    assert_eq!(l.overcurrent_threshold, amps(40.0), "trip is never raised");
     assert_eq!(
-        l.max_current_a,
-        40.0 / OVERCURRENT_HEADROOM,
+        l.max_current,
+        amps(40.0 / OVERCURRENT_HEADROOM),
         "iq must drop one headroom factor below the trip"
     );
     // The invariant holds whatever the inputs.
-    assert!(l.overcurrent_threshold_a >= OVERCURRENT_HEADROOM * l.max_current_a);
+    assert!(l.overcurrent_threshold >= OVERCURRENT_HEADROOM * l.max_current);
 }
 
 /// Motor RATING is a ceiling above the operational config (layered
@@ -1626,51 +1650,51 @@ fn rating_caps_operational_limits() {
     let rating = 10.0;
 
     // Operational asks for more than the motor tolerates: rating wins.
-    let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), hw_max, rating);
-    assert_eq!(l.max_current_a, rating);
-    assert_eq!(l.overcurrent_threshold_a, 28.0);
+    let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), amps(hw_max), amps(rating));
+    assert_eq!(l.max_current, amps(rating));
+    assert_eq!(l.overcurrent_threshold, amps(28.0));
 
     // Operational below the rating: passes through untouched.
-    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0), hw_max, rating);
-    assert_eq!(l.max_current_a, 5.0);
-    assert_eq!(l.overcurrent_threshold_a, 8.0);
+    let l = CurrentLimits::from_config_clamped(&cfg(5.0, 8.0), amps(hw_max), amps(rating));
+    assert_eq!(l.max_current, amps(5.0));
+    assert_eq!(l.overcurrent_threshold, amps(8.0));
 
     // Unset operational: the rating IS the default (VESC applies
     // l_current_max = i_max the same way).
-    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), hw_max, rating);
-    assert_eq!(l.max_current_a, rating);
-    assert_eq!(l.overcurrent_threshold_a, 1.5 * rating);
+    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), amps(hw_max), amps(rating));
+    assert_eq!(l.max_current, amps(rating));
+    assert_eq!(l.overcurrent_threshold, amps(1.5 * rating));
 
     // Board hardware still caps a huge rating: trip at the board ABS
     // line, iq one headroom factor below it.
-    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), hw_max, 500.0);
-    assert_eq!(l.max_current_a, hw_max / OVERCURRENT_HEADROOM);
-    assert_eq!(l.overcurrent_threshold_a, hw_max);
+    let l = CurrentLimits::from_config_clamped(&cfg(0.0, 0.0), amps(hw_max), amps(500.0));
+    assert_eq!(l.max_current, amps(hw_max / OVERCURRENT_HEADROOM));
+    assert_eq!(l.overcurrent_threshold, amps(hw_max));
 
     // NaN / zero rating: no rating clamp (pre-rating config blobs).
     // 25/28 is an incoherent pair (28 < 1.3·25): the cross-field clamp
     // lowers iq to trip/headroom on top of the board iq ceiling.
-    let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), hw_max, f32::NAN);
+    let l = CurrentLimits::from_config_clamped(&cfg(25.0, 28.0), amps(hw_max), amps(f32::NAN));
     assert_eq!(
-        l.max_current_a,
-        (28.0 / OVERCURRENT_HEADROOM).min(hw_max / OVERCURRENT_HEADROOM)
+        l.max_current,
+        amps((28.0 / OVERCURRENT_HEADROOM).min(hw_max / OVERCURRENT_HEADROOM))
     );
-    assert_eq!(l.overcurrent_threshold_a, 28.0);
+    assert_eq!(l.overcurrent_threshold, amps(28.0));
 
     // No limits group stored at all: rating still holds at boot.
-    let l = CurrentLimits::from_stored(None, hw_max, rating);
-    assert_eq!(l.max_current_a, rating);
-    assert_eq!(l.overcurrent_threshold_a, 1.5 * rating);
+    let l = CurrentLimits::from_stored(None, amps(hw_max), amps(rating));
+    assert_eq!(l.max_current, amps(rating));
+    assert_eq!(l.overcurrent_threshold, amps(1.5 * rating));
     // …and bus limits stay off (boot default).
-    assert_eq!(l.bus_in_max_a, -1.0);
-    assert_eq!(l.bus_regen_max_a, -1.0);
+    assert_eq!(l.bus_in_max, amps(-1.0));
+    assert_eq!(l.bus_regen_max, amps(-1.0));
 
     // A fresh board: no limits group AND no motor rating. The iq budget
     // must still sit one headroom factor below the board's kill line —
     // it used to BE the kill line, with the dq trip 1.3× above it.
-    let l = CurrentLimits::from_stored(None, hw_max, 0.0);
-    assert_eq!(l.max_current_a, hw_max / OVERCURRENT_HEADROOM);
-    assert_eq!(l.overcurrent_threshold_a, hw_max);
+    let l = CurrentLimits::from_stored(None, amps(hw_max), amps(0.0));
+    assert_eq!(l.max_current, amps(hw_max / OVERCURRENT_HEADROOM));
+    assert_eq!(l.overcurrent_threshold, amps(hw_max));
 }
 
 /// Bus (supply) current limits: `i_bus ≈ iq·mod_q`, so the allowed iq
@@ -1689,35 +1713,43 @@ fn bus_limit_clamps_iq() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
 
     // Default: unlimited, pass-through whatever the modulation.
     driver.bus_mod_q_filt = 0.5;
-    assert_eq!(driver.clamp_iq_for_bus(-30.0), -30.0);
-    assert_eq!(driver.clamp_iq_for_bus(30.0), 30.0);
+    assert_eq!(driver.clamp_iq_for_bus(amps(-30.0)), amps(-30.0));
+    assert_eq!(driver.clamp_iq_for_bus(amps(30.0)), amps(30.0));
 
     // bus_in 10 A, regen 0, mod_q = 0.5 (driving forward at half duty):
     // draw bound = 10/0.5 = 20 A, regen bound = 0 → no negative iq.
-    driver.current_limits.bus_in_max_a = 10.0;
-    driver.current_limits.bus_regen_max_a = 0.0;
-    assert_eq!(driver.clamp_iq_for_bus(30.0), 20.0);
-    assert_eq!(driver.clamp_iq_for_bus(-5.0), 0.0, "regen must be denied");
-    assert_eq!(driver.clamp_iq_for_bus(15.0), 15.0);
+    driver.current_limits.bus_in_max = amps(10.0);
+    driver.current_limits.bus_regen_max = amps(0.0);
+    assert_eq!(driver.clamp_iq_for_bus(amps(30.0)), amps(20.0));
+    assert_eq!(
+        driver.clamp_iq_for_bus(amps(-5.0)),
+        amps(0.0),
+        "regen must be denied"
+    );
+    assert_eq!(driver.clamp_iq_for_bus(amps(15.0)), amps(15.0));
 
     // Reverse rotation (mod_q < 0): bounds mirror.
     driver.bus_mod_q_filt = -0.5;
-    assert_eq!(driver.clamp_iq_for_bus(-30.0), -20.0);
-    assert_eq!(driver.clamp_iq_for_bus(5.0), 0.0, "regen must be denied");
+    assert_eq!(driver.clamp_iq_for_bus(amps(-30.0)), amps(-20.0));
+    assert_eq!(
+        driver.clamp_iq_for_bus(amps(5.0)),
+        amps(0.0),
+        "regen must be denied"
+    );
 
     // Near-zero modulation: dead-band, no clamp (bus current ≈ 0).
     driver.bus_mod_q_filt = 0.0;
-    assert_eq!(driver.clamp_iq_for_bus(-30.0), -30.0);
+    assert_eq!(driver.clamp_iq_for_bus(amps(-30.0)), amps(-30.0));
 
     // Finite regen allowance: -2 A bus at mod_q 0.4 → iq ≥ -5 A.
     driver.bus_mod_q_filt = 0.4;
-    driver.current_limits.bus_regen_max_a = 2.0;
-    assert_eq!(driver.clamp_iq_for_bus(-30.0), -5.0);
+    driver.current_limits.bus_regen_max = amps(2.0);
+    assert_eq!(driver.clamp_iq_for_bus(amps(-30.0)), amps(-5.0));
 }
 
 #[test]
@@ -1732,10 +1764,10 @@ fn bus_limit_uses_final_pwm_when_deadtime_compensation_reverses_pi_voltage_sign(
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
-    driver.current_limits.bus_in_max_a = 1.0;
-    driver.current_limits.bus_regen_max_a = 0.0;
+    driver.current_limits.bus_in_max = amps(1.0);
+    driver.current_limits.bus_regen_max = amps(0.0);
     driver.controller.set_dead_time_comp_factor(0.02);
     driver
         .controller
@@ -1770,15 +1802,15 @@ fn bus_limit_uses_final_pwm_when_deadtime_compensation_reverses_pi_voltage_sign(
             let mod_q = driver.controller.bus_mod_q();
             assert!((mod_q.coefficient() * amps(iq) - duty_current).abs() < amps(1e-6));
             assert!(duty_current.is_positive());
-            driver.update_bus_mod_q(mod_q, 0.002);
+            driver.update_bus_mod_q(mod_q, seconds(0.002));
             assert_eq!(
-                driver.clamp_iq_for_bus(iq),
-                iq,
+                driver.clamp_iq_for_bus(amps(iq)),
+                amps(iq),
                 "motoring must remain available"
             );
             assert_eq!(
-                driver.clamp_iq_for_bus(-iq),
-                0.0,
+                driver.clamp_iq_for_bus(amps(-iq)),
+                amps(0.0),
                 "regeneration must remain blocked"
             );
         }
@@ -1803,9 +1835,9 @@ fn direct_voltage_trips_overcurrent() {
             currents: (20.0, -10.0, -10.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(10.0)));
     driver.set_mode(ControlMode::DirectVoltage {
         vd: volts(1.0),
         vq: volts(0.0),
@@ -1862,12 +1894,12 @@ fn current_control_drives_hfi_estimator() {
     // 1000 rad/s current loop — well below the 1 kHz carrier, so the
     // PI regulates the fundamental without eating the carrier response.
     let foc = FocController::<SvpwmModulator, LibmSinCos>::from_motor_params(
-        params.r,
-        (params.ld + params.lq) / 2.0,
-        24.0,
+        ohms(params.r),
+        henries((params.ld + params.lq) / 2.0),
+        volts(24.0),
     );
     let mut mgr = PhaseManager::sensorless();
-    mgr.set_hfi_observer(HfiObserver::new(1000.0, 3.0));
+    mgr.set_hfi_observer(HfiObserver::new(hertz(1000.0), volts(3.0)));
     mgr.set_source(PhaseSource::Hfi).unwrap();
 
     let mut driver = FocDriver::new(
@@ -1877,11 +1909,11 @@ fn current_control_drives_hfi_estimator() {
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
     // Carrier + polarity-probe currents exceed the bench-safe default
     // limits — give the test the board-scale ceiling explicitly.
-    driver.set_current_limits(CurrentLimits::from_max_current(40.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(40.0)));
     driver.set_mode(ControlMode::CurrentControl {
         iq_target: amps(0.0),
         id_target: amps(0.0),
@@ -1897,10 +1929,10 @@ fn current_control_drives_hfi_estimator() {
     // Full-circle match: the polarity probe must have corrected the
     // π-flipped initial lock through the driver path.
     let true_angle = wrap_angle(out.angle_rad);
-    let err = angle_difference(driver.phase().get().angle, true_angle).abs();
+    let err = angle_difference(driver.phase().get().angle, erad(true_angle)).abs();
     assert!(
-        err < 0.15,
-        "HFI did not converge through FocDriver: est {} vs rotor {} (err {} full-circle)",
+        err < erad(0.15),
+        "HFI did not converge through FocDriver: est {:?} vs rotor {:?} (err {:?} full-circle)",
         driver.phase().get().angle,
         true_angle,
         err
@@ -1976,9 +2008,9 @@ fn sensorless_cold_start_ramps_then_hands_off() {
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(20.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(20.0)));
 
     // Torque from standstill → the cold-start sequence engages.
     driver.set_mode(ControlMode::CurrentControl {
@@ -2078,9 +2110,9 @@ fn deadshort_catches_a_spinning_rotor_on_start() {
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(30.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(30.0)));
 
     // Torque from rest (driver is Stopped) while the rotor spins → probe.
     driver.set_mode(ControlMode::CurrentControl {
@@ -2204,9 +2236,9 @@ fn run_bench_spin_with_decoupling(
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(10.0)));
     driver.set_actuation_delay(actuation_delay);
     driver.set_mode(ControlMode::CurrentControl {
         iq_target: amps(1.5),
@@ -2400,9 +2432,9 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(10.0)));
     driver.set_actuation_delay(1.0); // = the plant's
     driver.set_mode(ControlMode::CurrentControl {
         iq_target: amps(cfg.iq_target),
@@ -2603,7 +2635,7 @@ fn cold_start_recovers_through_dead_time_distortion() {
     assert!(rep.untrusted_frac < 0.05);
 }
 
-/// Startup capture floor (see [`STARTUP_MIN_DRIVE_A`]): a cold start
+/// Startup capture floor (see [`STARTUP_MIN_DRIVE`]): a cold start
 /// under a weak drive command — the mid-cruise restart case, bench
 /// 2026-07-07 spin-punch-15 at 0.3 A — must ramp with the floor
 /// current and reach a confirmed handoff onto a genuinely spinning
@@ -2878,7 +2910,7 @@ fn explore_phantom_handoff() {
 /// loss must NOT deadlock. Before: estimator collapse → untrusted-angle
 /// iq gate zeros torque → no motion → no back-EMF → no trust, forever
 /// (bench staircase: 15 s of iq = 0.00 on a standing rotor). Now: after
-/// [`SENSORLESS_RESTART_AFTER_S`] of continuous distrust under a
+/// [`SENSORLESS_RESTART_AFTER`] of continuous distrust under a
 /// nonzero command, the driver re-enters the sensorless cold start.
 ///
 /// Scenario: healthy sensorless spin, then a brake torque far above the
@@ -2936,9 +2968,9 @@ fn trust_loss_mid_drive_restarts_cold_start() {
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(10.0)));
     driver.set_actuation_delay(1.0); // = the plant's
     driver.set_mode(ControlMode::CurrentControl {
         iq_target: amps(1.5),
@@ -3212,7 +3244,7 @@ fn deadman_arms_failsafe_on_stale_command() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     driver.set_failsafe(FailsafeConfig {
         policy: FailsafePolicy::Coast,
@@ -3266,7 +3298,7 @@ fn deadman_long_bound_covers_bench_modes() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::sensorless(),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     driver.set_failsafe(FailsafeConfig {
         policy: FailsafePolicy::Coast,
@@ -3318,9 +3350,9 @@ fn stop_from_open_loop_seeds_no_q_torque() {
             currents: (0.0, 0.0, 0.0),
         },
         PhaseManager::with_hall(hall),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(20.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(20.0)));
     driver.set_mode(ControlMode::OpenLoop {
         angle: erad(0.0),
         current: amps(5.0),
@@ -3393,7 +3425,7 @@ fn controlled_stop_brakes_spinning_motor_to_standstill() {
 #[cfg(feature = "virtual-motor")]
 fn controlled_stop_run(
     policy: FailsafePolicy,
-    decel_rad_s2: f32,
+    decel: f32,
 ) -> (
     f32,
     Vec<f32>,
@@ -3432,16 +3464,16 @@ fn controlled_stop_run(
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(40.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(40.0)));
     driver.set_failsafe(FailsafeConfig {
         policy,
         staleness_timeout_us: 5_000,
-        brake_current_a: 20.0,
-        slew_a_per_s: 1_000.0,
-        standstill_rad_s: 20.0,
-        decel_rad_s2,
+        brake_current: amps(20.0),
+        slew: amps_per_s(1_000.0),
+        standstill: erad_per_s(20.0),
+        decel: erad_per_s2(decel),
         terminal: FailsafeTerminal::HighZ,
     });
     driver.set_mode(ControlMode::CurrentControl {
@@ -3522,9 +3554,9 @@ fn brake_at_speed_ramps_to_standstill_then_parks() {
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(40.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(40.0)));
     driver.set_mode(ControlMode::CurrentControl {
         iq_target: amps(3.0),
         id_target: amps(0.0),
@@ -3606,9 +3638,9 @@ fn velocity_control_tracks_target_on_virtual_motor() {
             currents: (0.0, 0.0, 0.0),
         },
         mgr,
-        DT,
+        seconds(DT),
     );
-    driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+    driver.set_current_limits(CurrentLimits::from_max_current(amps(10.0)));
     // Soft gains + a moderate ramp: hall only updates the velocity
     // estimate at edges (~7 ms apart at these speeds), so the loop must
     // not change the speed much within one edge interval — aggressive
@@ -3756,7 +3788,7 @@ mod severity_gate {
                 currents: (0.0, 0.0, 0.0),
             },
             PhaseManager::sensorless(),
-            1.0 / hz as f32,
+            seconds(1.0 / hz as f32),
         );
         critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
         let mut h = Harness {
@@ -3783,7 +3815,7 @@ mod severity_gate {
                 &self.state,
                 &self.registry,
                 &mut self.driver,
-                24.0,
+                volts(24.0),
                 now_ticks,
                 &BOARD,
             )
@@ -3866,7 +3898,7 @@ mod severity_gate {
         }
 
         impl<F: Fn()> CurrentSensor for OnReadSensor<F> {
-            fn read_currents(&self) -> (f32, f32, f32) {
+            fn read_currents(&self) -> PhaseCurrents {
                 (self.on_read)();
                 self.sensor.read_currents()
             }
@@ -3917,13 +3949,13 @@ mod severity_gate {
                     },
                 },
                 PhaseManager::sensorless(),
-                1.0 / 20_000.0,
+                seconds(1.0 / 20_000.0),
             );
             driver.set_mode(program.hold_mode());
 
             // Simulate a packet reservation arriving after the entry snapshot.
             // This step applied the PI hold, so its current is not sample zero.
-            run_foc_cycle(&h.state, &h.registry, &mut driver, 24.0, 50, &BOARD);
+            run_foc_cycle(&h.state, &h.registry, &mut driver, volts(24.0), 50, &BOARD);
             assert!(!pending.get(), "the packet must have arrived during step");
             assert_eq!(driver.mode(), program.hold_mode());
             critical_section::with(|cs| {
@@ -3933,7 +3965,7 @@ mod severity_gate {
                 state.last_adc.seq = state.last_adc.seq.wrapping_add(1);
             });
 
-            run_foc_cycle(&h.state, &h.registry, &mut driver, 24.0, 100, &BOARD);
+            run_foc_cycle(&h.state, &h.registry, &mut driver, volts(24.0), 100, &BOARD);
             assert_eq!(driver.mode(), program.command::<LibmSinCos>(0));
             critical_section::with(|cs| {
                 let state = h.state.borrow(cs).borrow();
@@ -4254,9 +4286,9 @@ mod severity_gate {
             let detection = crate::state::DetectionActiveGuard::arm();
             let token = crate::state::DetectionCommandToken::capture().unwrap();
             let prepared = PreparedCommissioning::new(
-                40.0,
-                30.0,
-                PowerSourceLimits::new(5.0, 0.0).unwrap(),
+                amps(40.0),
+                amps(30.0),
+                PowerSourceLimits::new(amps(5.0), amps(0.0)).unwrap(),
                 None,
             )
             .unwrap();
@@ -4266,8 +4298,8 @@ mod severity_gate {
             tick(&mut h, 100);
             assert!(h.driver.commissioning_generation().is_some());
             assert_eq!(
-                h.driver.current_limits().max_current_a,
-                prepared.current_ceiling_a()
+                h.driver.current_limits().max_current,
+                prepared.current_ceiling()
             );
             CMD_CHANNEL
                 .try_send(DriverCommand::DetectionMode {
@@ -4281,10 +4313,7 @@ mod severity_gate {
             tick(&mut h, 200);
             assert_eq!(h.driver.mode(), ControlMode::Stopped);
             assert_eq!(h.driver.commissioning_generation(), None);
-            assert_eq!(
-                h.driver.current_limits().max_current_a,
-                original.max_current_a
-            );
+            assert_eq!(h.driver.current_limits().max_current, original.max_current);
             let _next = crate::state::DetectionActiveGuard::arm();
             let next = crate::state::DetectionCommandToken::capture().unwrap();
             CMD_CHANNEL
@@ -4334,7 +4363,7 @@ mod severity_gate {
                 currents: (0.0, 0.0, 0.0),
             },
             PhaseManager::sensorless(),
-            0.00005,
+            seconds(0.00005),
         );
         for mode in [
             ControlMode::CurrentControl {
@@ -4356,7 +4385,7 @@ mod severity_gate {
                 process_commands(&state, &mut driver, &registry),
                 ControlMode::Stopped
             );
-            let _ = run_foc_cycle(&state, &registry, &mut driver, 24.0, 50, &BOARD);
+            let _ = run_foc_cycle(&state, &registry, &mut driver, volts(24.0), 50, &BOARD);
             assert!(!driver.pwm().enabled);
             assert!(registry.any());
         }
@@ -4374,7 +4403,7 @@ mod severity_gate {
             process_commands(&state, &mut driver, &registry),
             ControlMode::Brake
         );
-        let _ = run_foc_cycle(&state, &registry, &mut driver, 24.0, 100, &BOARD);
+        let _ = run_foc_cycle(&state, &registry, &mut driver, volts(24.0), 100, &BOARD);
         assert!(
             driver.pwm().enabled,
             "a repaired calibration must permit starts"
@@ -4414,7 +4443,7 @@ mod severity_gate {
                 currents: (0.0, 0.0, 0.0),
             },
             SpinningPhase,
-            0.00005,
+            seconds(0.00005),
         );
         // Boot has completed; it must not mask the state bug in busy().
         let boot_pending = BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel);
@@ -4426,7 +4455,10 @@ mod severity_gate {
             .try_send(DriverCommand::SetMode(ControlMode::Brake))
             .unwrap();
         for n in 1..=100 {
-            assert!(run_foc_cycle(&state, &registry, &mut driver, 24.0, n * 50, &BOARD).is_some());
+            assert!(
+                run_foc_cycle(&state, &registry, &mut driver, volts(24.0), n * 50, &BOARD)
+                    .is_some()
+            );
         }
         BOOT_CURRENT_OFFSET_PENDING.store(boot_pending, Ordering::Release);
         assert!(driver.failsafe_active() && driver.pwm().enabled);
@@ -4446,7 +4478,7 @@ mod severity_gate {
         h.driver.run_protection(
             &h.registry,
             &BOARD,
-            24.0,
+            volts(24.0),
             Some(NtcConfig::INVALID_TEMP_C_X10),
             None,
         );
@@ -4468,7 +4500,7 @@ mod severity_gate {
                 currents: (0.0, 0.0, 0.0),
             },
             PhaseManager::sensorless(),
-            1.0 / 20_000.0,
+            seconds(1.0 / 20_000.0),
         );
         critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
 
@@ -4548,13 +4580,16 @@ mod severity_gate {
             MockCurrentSensor {
                 currents: (0.0, 0.0, 0.0),
             },
-            PhaseManager::with_hall(hall), // default source = Hall
-            1.0 / 20_000.0,
+            PhaseManager::with_hall(hall),
+            seconds(
+                // default source = Hall
+                1.0 / 20_000.0,
+            ),
         );
         critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
 
         let cycle = |driver: &mut FocDriver<_, _, _, _>, now: u64| {
-            run_foc_cycle(&state, &registry, driver, 24.0, now, &BOARD)
+            run_foc_cycle(&state, &registry, driver, volts(24.0), now, &BOARD)
         };
 
         let _ = CMD_CHANNEL.try_send(DriverCommand::SetMode(ControlMode::CurrentControl {
@@ -4711,7 +4746,14 @@ mod severity_gate {
     }
 
     fn run_cycle_at_vbus(h: &mut Harness, vbus: f32, now: u64) {
-        run_foc_cycle(&h.state, &h.registry, &mut h.driver, vbus, now, &BOARD);
+        run_foc_cycle(
+            &h.state,
+            &h.registry,
+            &mut h.driver,
+            volts(vbus),
+            now,
+            &BOARD,
+        );
     }
 
     /// The derating warning follows the live scales with hysteresis
@@ -4782,9 +4824,9 @@ fn derating_clamps_drive_and_brake_separately() {
                 currents: (0.0, 0.0, 0.0),
             },
             mgr,
-            1.0 / 20_000.0,
+            seconds(1.0 / 20_000.0),
         );
-        driver.set_current_limits(CurrentLimits::from_max_current(10.0));
+        driver.set_current_limits(CurrentLimits::from_max_current(amps(10.0)));
         driver.set_derating_scales(scales);
         // Warmup at zero target: latches the phase velocity into the
         // managed output without accumulating PI state.
@@ -4926,9 +4968,9 @@ impl HallRig {
                 currents: (0.0, 0.0, 0.0),
             },
             mgr,
-            Self::DT,
+            seconds(Self::DT),
         );
-        driver.set_current_limits(CurrentLimits::from_max_current(30.0));
+        driver.set_current_limits(CurrentLimits::from_max_current(amps(30.0)));
         driver.set_actuation_delay(delay);
         Self {
             motor,
@@ -5048,8 +5090,8 @@ fn measured_hall_centroids_keep_forced_rotation_control_bounded() {
     hall.update(rig.last_hall, 0).unwrap();
     *rig.driver.phase_mut().hall_mut() = hall;
     rig.driver.set_current_limits(CurrentLimits {
-        overcurrent_threshold_a: 6.0,
-        ..CurrentLimits::from_max_current(3.0)
+        overcurrent_threshold: amps(6.0),
+        ..CurrentLimits::from_max_current(amps(3.0))
     });
     let mut peak_current = 0.0_f32;
     let mut max_control_step = 0.0_f32;
@@ -5179,8 +5221,8 @@ fn position_control_moves_and_parks() {
     ] {
         let mut rig = HallRig::new(0.5, 2e-5);
         rig.driver.set_position_config(PositionLoopConfig {
-            kp: pkp,
-            max_speed: 1000.0,
+            kp: per_second(pkp),
+            max_speed: erad_per_s(1000.0),
         });
         rig.driver.set_velocity_config(VelocityLoopConfig {
             kp: vkp,
@@ -5202,10 +5244,10 @@ fn position_control_moves_and_parks() {
             rig.step();
             true_pos += angle_difference(rig.out.angle_rad, prev);
             prev = rig.out.angle_rad;
-            let pos = rig.driver.position().as_rad();
-            peak = peak.max(pos);
+            let pos = rig.driver.position().as_angle();
+            peak = peak.max(pos.value);
             if i as f32 * HallRig::DT > 3.0 {
-                worst_late = worst_late.max((pos - target).abs());
+                worst_late = worst_late.max(((pos - erad(target)).abs()).value);
                 true_lo = true_lo.min(true_pos - target);
                 true_hi = true_hi.max(true_pos - target);
             }
@@ -5227,11 +5269,11 @@ fn position_control_moves_and_parks() {
 #[cfg(feature = "virtual-motor")]
 fn full_pack_descent_holds_its_cruise_by_dissipation() {
     // (final ω, mean power into the supply over the last second)
-    let descent = |max_dissipation_w| {
+    let descent = |max_dissipation| {
         let mut rig = HallRig::new(0.5, 2e-5);
         rig.driver.set_current_limits(CurrentLimits {
-            max_dissipation_w,
-            ..CurrentLimits::from_max_current(30.0)
+            max_dissipation,
+            ..CurrentLimits::from_max_current(amps(30.0))
         });
         rig.driver.set_mode(ControlMode::VelocityControl {
             target_vel: erad_per_s(800.0),
@@ -5252,9 +5294,9 @@ fn full_pack_descent_holds_its_cruise_by_dissipation() {
         }
         (rig.out.omega_e, charged_j)
     };
-    let (omega, _) = descent(0.0);
+    let (omega, _) = descent(watts(0.0));
     assert!(omega > 2_000.0, "the plain cut must run away: ω {omega}");
-    let (omega, charge_w) = descent(50.0);
+    let (omega, charge_w) = descent(watts(50.0));
     assert!((omega - 800.0).abs() < 30.0, "ω {omega}");
     assert!(charge_w.abs() < 2.0, "mean charge {charge_w} W");
 }
@@ -5267,13 +5309,13 @@ fn full_pack_descent_holds_its_cruise_by_dissipation() {
 fn dissipative_heat_aligns_a_displaced_rotor_with_coarse_hall_feedback() {
     let grant = grant_driver(
         CurrentLimits {
-            bus_regen_max_a: 0.0,
-            max_dissipation_w: 3.0,
-            ..CurrentLimits::from_max_current(10.0)
+            bus_regen_max: amps(0.0),
+            max_dissipation: watts(3.0),
+            ..CurrentLimits::from_max_current(amps(10.0))
         },
         DeratingScales::IDENTITY,
     );
-    let (heat_id, _) = grant.grant_torque(0.0, -1.0, 40.0);
+    let (heat_id, _) = grant.grant_torque(amps(0.0), amps(-1.0), erad_per_s(40.0));
     let displacement = |id_target| {
         let mut rig = HallRig::new(0.5, 2e-5);
         rig.motor.set_angle(0.15);
@@ -5290,9 +5332,9 @@ fn dissipative_heat_aligns_a_displaced_rotor_with_coarse_hall_feedback() {
         }
         (peak, angle_difference(rig.out.angle_rad, 0.0).abs())
     };
-    let (peak, final_error) = displacement(heat_id);
+    let (peak, final_error) = displacement(heat_id.value);
     assert!(peak < 0.2 && final_error < 0.1, "({peak}, {final_error})");
-    let (opposite_peak, _) = displacement(-heat_id);
+    let (opposite_peak, _) = displacement((-heat_id).value);
     assert!(
         opposite_peak > 0.5,
         "counterexample must cross a Hall boundary"
@@ -5302,15 +5344,15 @@ fn dissipative_heat_aligns_a_displaced_rotor_with_coarse_hall_feedback() {
 /// The parking brake entered at 1500 el rad/s on a 5065: the plain
 /// short would drive toward ~90 A (λω/|Z|) and trip the 39 A
 /// overcurrent, leaving the rotor to coast. It turns current-controlled
-/// at `max_brake_a` instead, brakes the rotor down, and returns to the
+/// at `max_brake` instead, brakes the rotor down, and returns to the
 /// short once slow.
 #[test]
 #[cfg(feature = "virtual-motor")]
 fn park_brake_regulates_when_pushed_past_its_limit() {
     let mut rig = HallRig::new(0.5, 2e-5);
     rig.driver.set_current_limits(CurrentLimits {
-        max_brake_a: 10.0,
-        ..CurrentLimits::from_max_current(30.0)
+        max_brake: amps(10.0),
+        ..CurrentLimits::from_max_current(amps(30.0))
     });
     rig.driver.set_mode(ControlMode::CurrentControl {
         iq_target: amps(20.0),
@@ -5333,7 +5375,7 @@ fn park_brake_regulates_when_pushed_past_its_limit() {
     assert!(rig.driver.park_iq.is_none(), "back on the short");
 }
 
-/// Parked on a slope the short cannot hold within `max_brake_a` (the
+/// Parked on a slope the short cannot hold within `max_brake` (the
 /// slope needs ~13 A of short current, the limit is 10 A): the brake
 /// regulates at the limit and never lets go, where the plain short
 /// kept growing with the speed it let the board reach.
@@ -5342,8 +5384,8 @@ fn park_brake_regulates_when_pushed_past_its_limit() {
 fn park_brake_keeps_braking_a_slope_it_cannot_short() {
     let mut rig = HallRig::new(0.5, 2e-5);
     rig.driver.set_current_limits(CurrentLimits {
-        max_brake_a: 10.0,
-        ..CurrentLimits::from_max_current(30.0)
+        max_brake: amps(10.0),
+        ..CurrentLimits::from_max_current(amps(30.0))
     });
     rig.driver.set_mode(ControlMode::Brake);
     rig.slope = -0.4;
@@ -5408,11 +5450,11 @@ fn park_brake_without_an_angle_guards_itself_by_its_current() {
                 currents: (0.0, 0.0, 0.0),
             },
             mgr,
-            DT,
+            seconds(DT),
         );
         driver.set_current_limits(CurrentLimits {
-            max_brake_a: 15.0,
-            ..CurrentLimits::from_max_current(30.0)
+            max_brake: amps(15.0),
+            ..CurrentLimits::from_max_current(amps(30.0))
         });
         driver.set_mode(ControlMode::Brake);
         let mut out = motor.step_coast(0.0, DT);
@@ -5474,15 +5516,15 @@ fn failsafe_keeps_braking_a_descent_it_cannot_beat() {
     assert!(t.iq.value < -14.0, "braking at {} A", t.iq.value);
 }
 
-/// Braking has its own limit: a remote brake command past `max_brake_a`
+/// Braking has its own limit: a remote brake command past `max_brake`
 /// is held there while the same magnitude of drive is granted in full.
 #[test]
 #[cfg(feature = "virtual-motor")]
 fn braking_is_held_to_its_own_limit() {
     let mut rig = HallRig::new(0.5, 2e-5);
     rig.driver.set_current_limits(CurrentLimits {
-        max_brake_a: 8.0,
-        ..CurrentLimits::from_max_current(30.0)
+        max_brake: amps(8.0),
+        ..CurrentLimits::from_max_current(amps(30.0))
     });
     let torque = |iq_target| ControlMode::CurrentControl {
         iq_target: amps(iq_target),
@@ -5573,8 +5615,8 @@ fn cruise_past_top_speed_answers_a_lower_target_at_once() {
 #[cfg(feature = "virtual-motor")]
 fn cruise_loop_sees_the_bus_current_clamp() {
     let mut rig = HallRig::new(0.5, 2e-5);
-    let mut limits = CurrentLimits::from_max_current(30.0);
-    limits.bus_in_max_a = 0.5;
+    let mut limits = CurrentLimits::from_max_current(amps(30.0));
+    limits.bus_in_max = amps(0.5);
     rig.driver.set_current_limits(limits);
     rig.driver.set_mode(ControlMode::VelocityControl {
         target_vel: erad_per_s(3000.0),
@@ -5712,9 +5754,9 @@ fn flying_restart_catches_low_tau_motors() {
                 currents: (0.0, 0.0, 0.0),
             },
             mgr,
-            DT_FLY,
+            seconds(DT_FLY),
         );
-        driver.set_current_limits(CurrentLimits::from_max_current(max_a));
+        driver.set_current_limits(CurrentLimits::from_max_current(amps(max_a)));
         driver.set_actuation_delay(params.actuation_delay);
         driver.set_mode(ControlMode::CurrentControl {
             iq_target: amps(3.0),
@@ -5958,7 +6000,7 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
     let mut boot = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
     let mut live = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
     for driver in [&mut boot, &mut live] {
-        let mut prepared = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+        let mut prepared = PreparedMotorModel::from_config(&config, volts(24.0), amps(3.0));
         assert_eq!(prepared.pole_pairs, 7);
         assert_eq!(
             driver.apply_motor_model(&mut prepared),
@@ -5970,7 +6012,7 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
             driver.controller().voltage_feedforward_mode(),
             crate::types::VoltageFeedforwardMode::Disabled
         );
-        assert_eq!(driver.current_limits().max_current_a, 2.0);
+        assert_eq!(driver.current_limits().max_current, amps(2.0));
         assert_eq!(
             driver.apply_motor_model(&mut prepared),
             Err(MotorModelError::Consumed)
@@ -5991,13 +6033,13 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
     live.phase_mut().set_source(PhaseSource::Observer).unwrap();
     config.motor_params.as_mut().unwrap().resistance.value = 0.06;
     config.motor_params.as_mut().unwrap().flux_linkage.value = 0.004;
-    let mut changed = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+    let mut changed = PreparedMotorModel::from_config(&config, volts(24.0), amps(3.0));
     live.apply_motor_model(&mut changed).unwrap();
     assert_eq!(live.phase().source(), PhaseSource::Observer);
     assert_eq!(live.phase().observer().resistance(), Some(ohms(0.06)));
     assert_eq!(live.phase().observer().lambda(), Some(webers(0.004)));
     config.motor_params.as_mut().unwrap().flux_linkage.value = 0.0;
-    let mut partial = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+    let mut partial = PreparedMotorModel::from_config(&config, volts(24.0), amps(3.0));
     assert_eq!(
         live.apply_motor_model(&mut partial),
         Ok(PhaseSource::Manual)
@@ -6010,8 +6052,11 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
         live.controller().decoupling().unwrap().flux_linkage.value,
         0.0
     );
-    let mut empty =
-        PreparedMotorModel::from_config(&crate::storage::RuntimeConfig::default(), 24.0, 3.0);
+    let mut empty = PreparedMotorModel::from_config(
+        &crate::storage::RuntimeConfig::default(),
+        volts(24.0),
+        amps(3.0),
+    );
     live.apply_motor_model(&mut empty).unwrap();
     assert_eq!(empty.pole_pairs, 0);
     assert_eq!(pi_gains(&live.controller().id_pi), (0.4, 40.0));
@@ -6034,25 +6079,37 @@ fn voltage_feedforward_policy_has_boot_live_parity_and_survives_model_replacemen
         config.voltage_feedforward = Some(VoltageFeedforwardConfig { mode });
         let boot = FocController::<SvpwmModulator>::from_runtime_config(&config, volts(24.0));
         let mut live = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
-        live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
-            .unwrap();
+        live.apply_motor_model(&mut PreparedMotorModel::from_config(
+            &config,
+            volts(24.0),
+            amps(3.0),
+        ))
+        .unwrap();
         assert_eq!(boot.voltage_feedforward_mode(), mode);
         assert_eq!(live.controller().voltage_feedforward_mode(), mode);
         assert_eq!(live.controller().id_pi.gains(), boot.id_pi.gains());
-        assert_eq!(live.current_limits().max_current_a, 2.0);
+        assert_eq!(live.current_limits().max_current, amps(2.0));
         assert_eq!(live.phase().observer().lambda(), Some(webers(0.0032)));
         assert_eq!(
             live.controller().decoupling().unwrap().flux_linkage.value,
             0.0032
         );
         config.motor_params.as_mut().unwrap().flux_linkage.value = 0.004;
-        live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
-            .unwrap();
+        live.apply_motor_model(&mut PreparedMotorModel::from_config(
+            &config,
+            volts(24.0),
+            amps(3.0),
+        ))
+        .unwrap();
         assert_eq!(live.controller().voltage_feedforward_mode(), mode);
         assert_eq!(live.phase().observer().lambda(), Some(webers(0.004)));
         config.motor_params = None;
-        live.apply_motor_model(&mut PreparedMotorModel::from_config(&config, 24.0, 3.0))
-            .unwrap();
+        live.apply_motor_model(&mut PreparedMotorModel::from_config(
+            &config,
+            volts(24.0),
+            amps(3.0),
+        ))
+        .unwrap();
         assert_eq!(live.controller().voltage_feedforward_mode(), mode);
         assert!(live.controller().decoupling().is_none());
     }
@@ -6107,7 +6164,7 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     );
     let prepare = |id, expected| {
         ModelApplyGuard::prepare(
-            PreparedMotorModel::from_config(&next, 24.0, 3.0),
+            PreparedMotorModel::from_config(&next, volts(24.0), amps(3.0)),
             next.motor_params.clone().unwrap(),
             config,
             revisions,
@@ -6274,7 +6331,7 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         let mut next = critical_section::with(|cs| config.borrow(cs).borrow().clone());
         next.voltage_feedforward = Some(value);
         ModelApplyGuard::prepare(
-            PreparedMotorModel::from_config(&next, 24.0, 3.0),
+            PreparedMotorModel::from_config(&next, volts(24.0), amps(3.0)),
             ModelConfigUpdate::VoltageFeedforward(value),
             config,
             revisions,
@@ -6312,13 +6369,13 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         ));
         assert_eq!(config.borrow(cs).borrow().motor_params, next.motor_params);
     });
-    assert_eq!(driver.current_limits().max_current_a, 2.0);
+    assert_eq!(driver.current_limits().max_current, amps(2.0));
     assert_eq!(driver.phase().observer().resistance(), Some(ohms(0.03)));
     // A subsequent electrical-model write retains the explicit policy.
     let mut changed = critical_section::with(|cs| config.borrow(cs).borrow().clone());
     changed.motor_params.as_mut().unwrap().resistance.value = 0.04;
     let update = ModelApplyGuard::prepare(
-        PreparedMotorModel::from_config(&changed, 24.0, 3.0),
+        PreparedMotorModel::from_config(&changed, volts(24.0), amps(3.0)),
         changed.motor_params.clone().unwrap(),
         config,
         revisions,
@@ -6408,13 +6465,13 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     );
     assert_eq!(driver.phase().observer().lambda(), Some(webers(0.0032)));
     assert_eq!(driver.phase().observer().resistance(), Some(ohms(0.04)));
-    assert_eq!(driver.current_limits().max_current_a, 2.0);
+    assert_eq!(driver.current_limits().max_current, amps(2.0));
 
     let persisted = Box::leak(Box::new(Mutex::new(RefCell::new(
         [Some(2); ConfigGroupId::COUNT],
     ))));
     let reset = ModelApplyGuard::prepare_reset(
-        PreparedMotorModel::from_config(&RuntimeConfig::default(), 24.0, 3.0),
+        PreparedMotorModel::from_config(&RuntimeConfig::default(), volts(24.0), amps(3.0)),
         config,
         revisions,
         persisted,
@@ -6454,14 +6511,14 @@ fn model_replacement_rejects_unsupported_provider_and_preserves_board_settings()
         (0.0, 0.0, 0.0),
     );
     let before_gains = unsupported.controller().id_pi.gains();
-    let before_limits = unsupported.current_limits().max_current_a;
-    let mut model = PreparedMotorModel::from_config(&config, 24.0, 3.0);
+    let before_limits = unsupported.current_limits().max_current;
+    let mut model = PreparedMotorModel::from_config(&config, volts(24.0), amps(3.0));
     assert_eq!(
         unsupported.apply_motor_model(&mut model),
         Err(MotorModelError::Unsupported)
     );
     assert_eq!(unsupported.controller().id_pi.gains(), before_gains);
-    assert_eq!(unsupported.current_limits().max_current_a, before_limits);
+    assert_eq!(unsupported.current_limits().max_current, before_limits);
     let mut driver = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
     driver.controller_mut().set_dead_time_comp_factor(0.002);
     driver.set_actuation_delay(1.0);

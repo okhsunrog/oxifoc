@@ -1,7 +1,7 @@
 use super::*;
 use crate::foc::fault::{FaultCategory, FaultRegistry, StandardFault};
 use crate::storage::VoltageLimitsConfig;
-use crate::units::amps;
+use crate::units::{amps, volts};
 
 fn board() -> BoardConfig {
     BoardConfig {
@@ -37,27 +37,27 @@ fn boot_and_live_voltage_limits_share_fault_thresholds_and_failsafe() {
                 .apply_voltage_limits(PreparedVoltageLimits::from_config(&config).unwrap())
                 .unwrap();
         }
-        assert_eq!(driver.protection.overvoltage_threshold(), 26.0);
+        assert_eq!(driver.protection.overvoltage_threshold(), volts(26.0));
         let registry = FaultRegistry::<StandardFault>::new();
         let prepared = PreparedBoardConfig::new(board());
         for _ in 0..100 {
-            driver.run_protection(&registry, &prepared, 19.0, None, None);
+            driver.run_protection(&registry, &prepared, volts(19.0), None, None);
         }
         assert!(registry.has_category(FaultCategory::UnderVoltage));
-        driver.run_protection(&registry, &prepared, 20.1, None, None);
+        driver.run_protection(&registry, &prepared, volts(20.1), None, None);
         assert!(
             registry.has_category(FaultCategory::UnderVoltage),
             "clear hysteresis uses configured UV"
         );
-        driver.run_protection(&registry, &prepared, 21.0, None, None);
+        driver.run_protection(&registry, &prepared, volts(21.0), None, None);
         assert!(!registry.has_category(FaultCategory::UnderVoltage));
         for _ in 0..100 {
-            driver.run_protection(&registry, &prepared, 27.0, None, None);
+            driver.run_protection(&registry, &prepared, volts(27.0), None, None);
         }
         assert!(registry.has_category(FaultCategory::OverVoltage));
         driver.reset_voltage_limits();
-        assert_eq!(driver.protection.overvoltage_threshold(), 57.0);
-        driver.run_protection(&registry, &prepared, 24.0, None, None);
+        assert_eq!(driver.protection.overvoltage_threshold(), volts(57.0));
+        driver.run_protection(&registry, &prepared, volts(24.0), None, None);
         assert!(
             registry.has_category(FaultCategory::OverVoltage),
             "changing limits must not acknowledge a latched fault"
@@ -89,7 +89,7 @@ fn invalid_or_running_voltage_updates_leave_previous_protection_intact() {
                 Err(MotorModelError::Invalid)
             );
         }
-        assert_eq!(driver.protection.overvoltage_threshold(), 26.0);
+        assert_eq!(driver.protection.overvoltage_threshold(), volts(26.0));
     }
     driver.set_mode(ControlMode::CurrentControl {
         id_target: amps(0.0),
@@ -101,7 +101,7 @@ fn invalid_or_running_voltage_updates_leave_previous_protection_intact() {
         ),
         Err(MotorModelError::Busy)
     );
-    assert_eq!(driver.protection.overvoltage_threshold(), 26.0);
+    assert_eq!(driver.protection.overvoltage_threshold(), volts(26.0));
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn voltage_apply_acknowledges_only_an_installed_and_validated_revision() {
     .unwrap();
     let mut future = Box::pin(guard.apply::<PendingTimer>());
     assert!(future.as_mut().poll(&mut cx).is_pending());
-    assert_eq!(driver.protection.overvoltage_threshold(), 57.0);
+    assert_eq!(driver.protection.overvoltage_threshold(), volts(57.0));
     assert!(critical_section::with(|cs| config
         .borrow(cs)
         .borrow()
@@ -169,7 +169,7 @@ fn voltage_apply_acknowledges_only_an_installed_and_validated_revision() {
         })
     );
     drop(future);
-    assert_eq!(driver.protection.overvoltage_threshold(), 26.0);
+    assert_eq!(driver.protection.overvoltage_threshold(), volts(26.0));
     let guard = ModelApplyGuard::prepare_voltage_limits(
         limits(8_000, 58_000),
         config,
@@ -186,7 +186,7 @@ fn voltage_apply_acknowledges_only_an_installed_and_validated_revision() {
         Poll::Ready(ConfigResponse::Invalid)
     );
     drop(future);
-    assert_eq!(driver.protection.overvoltage_threshold(), 26.0);
+    assert_eq!(driver.protection.overvoltage_threshold(), volts(26.0));
     critical_section::with(|cs| {
         assert_eq!(
             config.borrow(cs).borrow().voltage_limits,

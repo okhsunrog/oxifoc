@@ -1680,6 +1680,8 @@ impl<S: SinCos> HfiObserver<S> {
 mod tests {
     use super::*;
     use crate::foc::angle_difference;
+    #[cfg(feature = "hfi")]
+    use crate::units::hertz;
     use crate::units::{
         amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, si,
         volts, webers,
@@ -2302,22 +2304,22 @@ mod tests {
         let mut motor = VirtualMotor::new(params);
         motor.set_angle(rotor_angle);
 
-        let foc = FocController::<SvpwmModulator>::new(24.0);
-        let mut obs = HfiObserver::new(1000.0, 3.0);
+        let foc = FocController::<SvpwmModulator>::new(volts(24.0));
+        let mut obs = HfiObserver::new(hertz(1000.0), volts(3.0));
 
         let mut out = crate::virtual_motor::VirtualMotorOutput::default();
         for _ in 0..steps {
             let (vd_inj, vq_inj) = obs.get_injection();
             let (i_a_m, i_b_m) = transforms::clarke(out.ia, out.ib);
-            let telem = foc.apply_dq(vd_inj, vq_inj, obs.phase(), i_a_m, i_b_m, 1000);
+            let telem = foc.apply_dq(vd_inj, vq_inj, obs.phase(), amps(i_a_m), amps(i_b_m), 1000);
             out = motor.step(telem.v_alpha.value, telem.v_beta.value, load_torque, DT);
             let (i_a, i_b) = transforms::clarke(out.ia, out.ib);
             obs.update(&ObserverInput {
-                v_alpha: telem.v_alpha.value,
-                v_beta: telem.v_beta.value,
-                i_alpha: i_a,
-                i_beta: i_b,
-                dt: DT,
+                v_alpha: telem.v_alpha,
+                v_beta: telem.v_beta,
+                i_alpha: amps(i_a),
+                i_beta: amps(i_b),
+                dt: seconds(DT),
             });
         }
         (obs, out)
@@ -2330,10 +2332,10 @@ mod tests {
         // must find it from saliency alone, without moving the rotor.
         let (obs, out) = run_hfi_sim(1.2, 0.0, 0.0, 20_000);
 
-        let err = angle_err_mod_pi(obs.phase(), wrap_angle(out.angle_rad));
+        let err = angle_err_mod_pi(obs.phase().value, wrap_angle(out.angle_rad));
         assert!(
             err < 0.1,
-            "HFI did not converge: est {} vs rotor {} (err {} rad mod π)",
+            "HFI did not converge: est {:?} vs rotor {:?} (err {:?} rad mod π)",
             obs.phase(),
             wrap_angle(out.angle_rad),
             err
@@ -2362,10 +2364,10 @@ mod tests {
             "rotor should be turning under load: ωe = {}",
             out.omega_e
         );
-        let err = angle_err_mod_pi(obs.phase(), wrap_angle(out.angle_rad));
+        let err = angle_err_mod_pi(obs.phase().value, wrap_angle(out.angle_rad));
         assert!(
             err < 0.15,
-            "HFI lost a slowly turning rotor: est {} vs {} (err {})",
+            "HFI lost a slowly turning rotor: est {:?} vs {:?} (err {:?})",
             obs.phase(),
             wrap_angle(out.angle_rad),
             err
@@ -2386,10 +2388,10 @@ mod tests {
             obs.polarity_resolved(),
             "probe must have run and resolved polarity"
         );
-        let err = angle_difference(obs.phase(), wrap_angle(out.angle_rad)).abs();
+        let err = angle_difference(obs.phase(), wrap_angle(erad(out.angle_rad))).abs();
         assert!(
-            err < 0.15,
-            "polarity not corrected: est {} vs rotor {} (err {} rad full-circle)",
+            err < erad(0.15),
+            "polarity not corrected: est {:?} vs rotor {:?} (err {:?} rad full-circle)",
             obs.phase(),
             wrap_angle(out.angle_rad),
             err
@@ -2410,7 +2412,7 @@ mod tests {
             "a modulo-pi lock cannot certify torque direction"
         );
         assert_eq!(obs.polarity, HfiPolarity::Unresolved);
-        obs.set_phase(3.5);
+        obs.set_phase(erad(3.5));
         assert!(obs.is_ready(), "a trusted seed may resolve the ambiguity");
         obs.reset();
         assert!(!obs.polarity_resolved());
@@ -2424,10 +2426,10 @@ mod tests {
         let (obs, out) = run_hfi_sim(1.2, 0.0, 0.05, 20_000);
 
         assert!(obs.polarity_resolved());
-        let err = angle_difference(obs.phase(), wrap_angle(out.angle_rad)).abs();
+        let err = angle_difference(obs.phase(), wrap_angle(erad(out.angle_rad))).abs();
         assert!(
-            err < 0.15,
-            "correct lock was flipped: est {} vs rotor {} (err {} rad full-circle)",
+            err < erad(0.15),
+            "correct lock was flipped: est {:?} vs rotor {:?} (err {:?} rad full-circle)",
             obs.phase(),
             wrap_angle(out.angle_rad),
             err
@@ -2470,10 +2472,10 @@ mod tests {
             "HFI must reach readiness through sensor noise: confidence {}",
             obs.confidence()
         );
-        let err = angle_difference(obs.phase(), wrap_angle(out.angle_rad)).abs();
+        let err = angle_difference(obs.phase(), wrap_angle(erad(out.angle_rad))).abs();
         assert!(
-            err < 0.15,
-            "HFI did not converge through sensor noise: est {} vs rotor {} (err {})",
+            err < erad(0.15),
+            "HFI did not converge through sensor noise: est {:?} vs rotor {:?} (err {:?})",
             obs.phase(),
             wrap_angle(out.angle_rad),
             err
@@ -2694,9 +2696,9 @@ mod tests {
     #[test]
     #[cfg(feature = "hfi")]
     fn test_hfi_observer_creation() {
-        let obs = HfiObserver::new(1000.0, 3.0);
-        assert_eq!(obs.phase(), 0.0);
-        assert_eq!(obs.velocity(), 0.0);
+        let obs = HfiObserver::new(hertz(1000.0), volts(3.0));
+        assert_eq!(obs.phase(), erad(0.0));
+        assert_eq!(obs.velocity(), erad_per_s(0.0));
     }
 
     #[test]

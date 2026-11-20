@@ -1,11 +1,19 @@
 //! Hot path: `FocDriver::step` and the mode dispatch around it.
 
-use super::{ControlMode, FocDriver, SENSORLESS_RESTART_AFTER_S, StepError};
+use super::driver::drive_direction;
+use super::{ControlMode, FocDriver, SENSORLESS_RESTART_AFTER, StepError};
+use crate::foc::constants::SQRT_3_DIV_2;
 use crate::foc::controller::FocOutput;
 use crate::foc::phase::PhaseProvider;
 use crate::foc::pwm::PhasePwm;
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
+use crate::units::{ConstZero, ElectricCurrent, ElectricPotential, Time};
+#[cfg(feature = "obs-debug-telem")]
+use crate::{
+    foc::angle_difference,
+    units::{AngleRepr, volts},
+};
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -36,14 +44,14 @@ where
         }
         self.watchdog
             .note_cycle(now_ticks, self.mode, self.phase.is_starting());
-        self.position.update(self.phase.get().angle.value);
+        self.position.update(self.phase.get().angle);
         let result = self.step_inner(now_ticks);
         if result.is_err() {
             self.end_commissioning();
             self.restore_current_pi_gains();
             self.invalidate_velocity();
-            self.last_granted_iq = 0.0;
-            self.last_granted_id = 0.0;
+            self.last_granted_iq = ElectricCurrent::ZERO;
+            self.last_granted_id = ElectricCurrent::ZERO;
         }
         let mut out = result?;
         if let Some(context) = self.commissioning.as_mut() {
@@ -51,7 +59,7 @@ where
                 self.mode,
                 ControlMode::OpenLoop { .. } | ControlMode::DirectVoltage { .. }
             ) {
-                if !context.source_allows(out.i_alpha.value, out.i_beta.value) {
+                if !context.source_allows(out.i_alpha, out.i_beta) {
                     self.safe_off();
                     return Err(StepError::SourceLimit);
                 }
@@ -60,7 +68,7 @@ where
                 // 1.5 * Clarke(duty): Ibus = m_alpha*Ialpha + m_beta*Ibeta.
                 context.modulation.record_command(
                     0.5 * (2 * a - b - c) as f32 / period,
-                    crate::foc::constants::SQRT_3_DIV_2 * (b - c) as f32 / period,
+                    SQRT_3_DIV_2 * (b - c) as f32 / period,
                 );
             } else {
                 context.modulation.record_command(0.0, 0.0);
@@ -100,15 +108,16 @@ where
         // the mapping.
         #[cfg(feature = "obs-debug-telem")]
         if let Some((pll, _raw, vel, err_filt)) = self.phase.debug_observer() {
-            let drive_angle = out.angle.value;
-            out.velocity.value = vel;
-            out.angle.value = pll;
-            out.vd.value = crate::foc::angle_difference(drive_angle, pll);
-            out.vq.value = if self.phase.angle_trustworthy() {
-                err_filt
+            // The voltage columns carry angles here, in radians.
+            let drive_angle = out.angle;
+            out.velocity = vel;
+            out.angle = pll;
+            out.vd = volts(angle_difference(drive_angle, pll).radians());
+            out.vq = volts(if self.phase.angle_trustworthy() {
+                err_filt.radians()
             } else {
-                -err_filt
-            };
+                -err_filt.radians()
+            });
         }
     }
 
@@ -138,13 +147,14 @@ where
     /// the brief short so regulation resumes with its pre-probe voltage bias.
     #[inline(always)]
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    fn step_deadshort(&mut self, dt: f32, now_ticks: u64) -> Option<Result<FocOutput, StepError>> {
+    fn step_deadshort(&mut self, dt: Time, now_ticks: u64) -> Option<Result<FocOutput, StepError>> {
         self.phase.startup_status().wants_short().then(|| {
-            self.step_direct_voltage(0.0, 0.0, self.phase.get().angle.value, dt, now_ticks)
+            let zero = ElectricPotential::ZERO;
+            self.step_direct_voltage(zero, zero, self.phase.get().angle, dt, now_ticks)
         })
     }
 
-    /// Sensorless restart on trust loss (see [`SENSORLESS_RESTART_AFTER_S`]):
+    /// Sensorless restart on trust loss (see [`SENSORLESS_RESTART_AFTER`]):
     /// a nonzero drive command with the angle continuously untrustworthy
     /// means the iq gate is coasting the motor and nothing will bring the
     /// estimator back by itself — re-enter the cold start. No-op for
@@ -152,26 +162,21 @@ where
     /// (`begin_cold_start` guards on both).
     #[inline(always)]
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
-    fn maybe_restart_sensorless(&mut self, dt: f32) {
-        let drive_cmd = match self.mode {
-            ControlMode::CurrentControl { iq_target, .. } => iq_target.value,
-            ControlMode::Throttle { fraction } => fraction,
-            ControlMode::VelocityControl { target_vel } => target_vel.value,
-            _ => 0.0,
-        };
-        if drive_cmd != 0.0 && !self.phase.is_starting() {
+    fn maybe_restart_sensorless(&mut self, dt: Time) {
+        if let Some(direction) = drive_direction(self.mode)
+            && !self.phase.is_starting()
+        {
             if self.phase.angle_trustworthy() {
-                self.untrusted_time = 0.0;
+                self.untrusted_time = Time::ZERO;
             } else {
                 self.untrusted_time += dt;
-                if self.untrusted_time >= SENSORLESS_RESTART_AFTER_S {
-                    self.untrusted_time = 0.0;
-                    self.phase
-                        .begin_cold_start(if drive_cmd < 0.0 { -1.0 } else { 1.0 });
+                if self.untrusted_time >= SENSORLESS_RESTART_AFTER {
+                    self.untrusted_time = Time::ZERO;
+                    self.phase.begin_cold_start(direction);
                 }
             }
         } else {
-            self.untrusted_time = 0.0;
+            self.untrusted_time = Time::ZERO;
         }
     }
 }

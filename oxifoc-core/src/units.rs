@@ -289,6 +289,9 @@ pub trait Scalar: Copy + PartialOrd + ConstZero {
     fn abs(self) -> Self;
     #[must_use]
     fn clamp_to(self, min: Self, max: Self) -> Self;
+    /// The magnitude of `self` with the sign of `sign` (`f32::copysign`).
+    #[must_use]
+    fn copysign(self, sign: f32) -> Self;
 }
 
 #[allow(
@@ -313,6 +316,10 @@ impl Scalar for f32 {
     #[inline(always)]
     fn clamp_to(self, min: Self, max: Self) -> Self {
         crate::foc::clamp_f32(self, min, max)
+    }
+    #[inline(always)]
+    fn copysign(self, sign: f32) -> Self {
+        f32::copysign(self, sign)
     }
 }
 
@@ -346,6 +353,10 @@ where
     #[inline(always)]
     fn clamp_to(self, min: Self, max: Self) -> Self {
         Self::from_si(crate::foc::clamp_f32(self.value, min.value, max.value))
+    }
+    #[inline(always)]
+    fn copysign(self, sign: f32) -> Self {
+        Self::from_si(self.value.copysign(sign))
     }
 }
 

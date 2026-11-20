@@ -1,7 +1,6 @@
 //! Command-staleness deadman and `FailsafeController` integration.
 
 use super::{ControlMode, FocDriver, StepError};
-use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
 use crate::foc::phase::PhaseProvider;
 use crate::foc::pwm::PhasePwm;
@@ -12,6 +11,7 @@ use crate::motor::failsafe::FailsafeAction;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::failsafe::FailsafePolicy;
 use crate::motor::failsafe::FailsafeTerminal;
+use crate::units::{ConstZero, ElectricCurrent, Scalar, Sign, Time, amps};
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -173,14 +173,14 @@ where
         // turn a load-angle-dependent current into full q torque in the
         // estimate's frame, sign included. Zero is the honest seed there.
         let current_iq = match self.mode {
-            ControlMode::CurrentControl { iq_target, .. } => iq_target.value,
+            ControlMode::CurrentControl { iq_target, .. } => iq_target,
             ControlMode::Throttle { .. } => self.last_granted_iq,
             ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
                 if self.velocity_feedback_available =>
             {
                 self.last_granted_iq
             }
-            _ => 0.0,
+            _ => ElectricCurrent::ZERO,
         };
         self.invalidate_velocity();
         // Bound the seed: mode payloads are finite-checked at the command
@@ -190,16 +190,16 @@ where
         // the limit anyway, so clamping keeps it bumpless. NaN (nothing
         // upstream should produce one, but the failsafe must not hinge on
         // that) seeds from zero.
-        let seed_bound = if self.current_limits.max_current_a > 0.0 {
-            self.current_limits.max_current_a
+        let seed_bound = if self.current_limits.max_current.is_positive() {
+            self.current_limits.max_current
         } else {
             // Unlimited limits are a sim/test setup; still keep it finite.
-            1_000.0
+            amps(1_000.0)
         };
         let current_iq = if current_iq.is_finite() {
-            clamp_f32(current_iq, -seed_bound, seed_bound)
+            current_iq.clamp_to(-seed_bound, seed_bound)
         } else {
-            0.0
+            ElectricCurrent::ZERO
         };
         // One-shot (the is_active guard above): the WHY is logged at the
         // detector sites in state.rs; this is the WHAT actually armed
@@ -282,7 +282,7 @@ where
     /// protection. The terminal `Stop` cuts PWM and clears the controller.
     pub(super) fn step_failsafe(
         &mut self,
-        dt: f32,
+        dt: Time,
         now_ticks: u64,
     ) -> Result<FocOutput, StepError> {
         let omega_e = self.torque_speed();
@@ -291,7 +291,7 @@ where
             omega_e,
             dt,
             &self.failsafe_cfg,
-            self.current_limits.max_brake_a,
+            self.current_limits.max_brake,
             self.vbus,
             self.protection.overvoltage_threshold(),
             angle_trustworthy,
@@ -306,7 +306,7 @@ where
                 self.controller.reset();
                 self.mode = ControlMode::Stopped;
                 self.failsafe_ctrl.reset();
-                self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                self.update_phase_without_drive(dt, now_ticks);
                 Ok(FocOutput::default())
             }
             // Stop with the parking-brake terminal: hand over to
@@ -319,7 +319,7 @@ where
                 self.park_iq = None;
                 self.mode = ControlMode::Brake;
                 self.failsafe_ctrl.reset();
-                self.update_phase_with_applied_voltage(0.0, 0.0, 0.0, 0.0, dt, now_ticks);
+                self.update_phase_without_drive(dt, now_ticks);
                 Ok(FocOutput::default())
             }
         }

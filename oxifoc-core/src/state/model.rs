@@ -8,7 +8,7 @@
 
 use super::{CMD_CHANNEL, DriverCommand};
 use crate::motor::drive::DriveConfig;
-use crate::units::si;
+use crate::units::{ConstZero, ElectricCurrent, si};
 use crate::{
     motor::foc_driver::PreparedMotorModel,
     storage::{HallCalibrationConfig, MotorParamsConfig, RuntimeConfig, VoltageFeedforwardConfig},
@@ -259,7 +259,10 @@ impl ModelConfigUpdate {
     reason = "one static zero-copy slot owns prepared ISR state; no embedded allocator or extra payload move"
 )]
 enum PreparedUpdate {
-    Tuning { board_trip_a: f32, rating_a: f32 },
+    Tuning {
+        board_trip: ElectricCurrent,
+        rating: ElectricCurrent,
+    },
     Drive(DriveConfig),
     PhaseSource(crate::foc::phase::PhaseSource),
     VoltageLimits(crate::motor::foc_driver::PreparedVoltageLimits),
@@ -425,26 +428,23 @@ pub(crate) struct ModelApplyGuard {
 impl ModelApplyGuard {
     pub fn prepare_tuning(
         value: TuningUpdate,
-        board_trip_a: f32,
+        board_trip: ElectricCurrent,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
         coordinator: &'static ConfigCoordinator,
         request: ReqId,
         expected_revision: u32,
     ) -> Option<Self> {
-        let rating_a = critical_section::with(|cs| {
+        let rating = critical_section::with(|cs| {
             config
                 .borrow(cs)
                 .borrow()
                 .motor_params
                 .as_ref()
-                .and_then(MotorParamsConfig::rating_current_a)
-                .unwrap_or(0.0)
+                .and_then(MotorParamsConfig::rating_current)
+                .unwrap_or(ElectricCurrent::ZERO)
         });
         Self::prepare_inner(
-            PreparedUpdate::Tuning {
-                board_trip_a,
-                rating_a,
-            },
+            PreparedUpdate::Tuning { board_trip, rating },
             ModelConfigUpdate::Tuning(value),
             None,
             config,
@@ -681,10 +681,7 @@ pub(super) fn apply<P, C, Ph, S>(
         ConfigResponse::Busy
     } else {
         let applied = match &mut pending.prepared {
-            PreparedUpdate::Tuning {
-                board_trip_a,
-                rating_a,
-            } => {
+            PreparedUpdate::Tuning { board_trip, rating } => {
                 let ModelConfigUpdate::Tuning(value) = &pending.update else {
                     unreachable!("prepared tuning requires its config value");
                 };
@@ -693,8 +690,8 @@ pub(super) fn apply<P, C, Ph, S>(
                         foc.set_current_limits(
                             crate::motor::foc_driver::CurrentLimits::from_config_clamped(
                                 v,
-                                *board_trip_a,
-                                *rating_a,
+                                *board_trip,
+                                *rating,
                             ),
                         );
                     }
@@ -844,6 +841,7 @@ pub(super) fn apply<P, C, Ph, S>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{amps, volts};
     use std::{
         boxed::Box,
         sync::{Arc, atomic::AtomicBool},
@@ -861,8 +859,8 @@ mod tests {
         move || Pending {
             prepared: PreparedUpdate::Motor(PreparedMotorModel::from_config(
                 &RuntimeConfig::default(),
-                24.0,
-                3.0,
+                volts(24.0),
+                amps(3.0),
             )),
             update: ModelConfigUpdate::MotorParams(MotorParamsConfig::default()),
             persisted: None,

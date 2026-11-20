@@ -24,7 +24,10 @@ use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::failsafe::FailsafeConfig;
 use crate::motor::failsafe::FailsafeController;
 
-use crate::units::{ConstZero, amps, erad_per_s, seconds, si, volts};
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
+    Fraction, Sign, Time, seconds, si,
+};
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -40,16 +43,16 @@ where
     /// * `pwm` - PWM output
     /// * `current_sensor` - Current sensor (should be calibrated)
     /// * `phase` - Phase provider (manages angle sources)
-    /// * `dt` - Control loop period in seconds (from `MotorPwmConfig::dt_s()`)
+    /// * `dt` - Control loop period in seconds (from `MotorPwmConfig::dt()`)
     pub fn new(
         mut controller: FocController<SvpwmModulator, S>,
         pwm: P,
         current_sensor: C,
         phase: Phase,
-        dt: f32,
+        dt: Time,
     ) -> Self {
         controller.set_current_sense_topology(current_sensor.current_sense_topology());
-        let vbus = controller.vbus().value;
+        let vbus = controller.vbus();
         // The board's duty cap, so the controller never commands a vector
         // the bridge would clip (see FocController::set_duty_cap).
         if pwm.max_duty() > 0 {
@@ -68,11 +71,11 @@ where
             dt,
             current_limits: CurrentLimits::default(),
             commissioning: None,
-            open_loop_angle: 0.0,
+            open_loop_angle: ElectricalAngle::ZERO,
             actuation: ActuationModel::default(),
             watchdog: CommandWatchdog::default(),
             pwm_off: false,
-            untrusted_time: 0.0,
+            untrusted_time: Time::ZERO,
             stopped_housekeeping: 0,
             failsafe_cfg: FailsafeConfig::default(),
             failsafe_ctrl: FailsafeController::new(),
@@ -88,12 +91,12 @@ where
             current_debug_due: false,
             #[cfg(feature = "fast-telemetry")]
             last_current_debug: None,
-            last_granted_iq: 0.0,
-            last_granted_id: 0.0,
+            last_granted_iq: ElectricCurrent::ZERO,
+            last_granted_id: ElectricCurrent::ZERO,
             position: PositionTracker::default(),
             position_cfg: PositionLoopConfig::default(),
             position_target: Position::default(),
-            last_iq_meas: 0.0,
+            last_iq_meas: ElectricCurrent::ZERO,
             park_iq: None,
             bus_mod_q_filt: 0.0,
             protection: ProtectionMonitor::new(dt),
@@ -148,12 +151,16 @@ where
     }
 
     /// Output-vector advance for the configured actuation delay.
-    pub(super) fn actuation_advance(&self, velocity: f32, dt: f32) -> f32 {
+    pub(super) fn actuation_advance(
+        &self,
+        velocity: ElectricalAngularVelocity,
+        dt: Time,
+    ) -> ElectricalAngle {
         self.actuation.angle_advance(velocity, dt)
     }
 
     /// Voltage that acted over the interval ending at the current sample.
-    fn applied_voltage(&self) -> (f32, f32) {
+    fn applied_voltage(&self) -> (ElectricPotential, ElectricPotential) {
         self.actuation.applied_voltage()
     }
 
@@ -189,11 +196,11 @@ where
     )]
     pub(super) fn update_phase_with_applied_voltage(
         &mut self,
-        v_alpha_new: f32,
-        v_beta_new: f32,
-        i_alpha: f32,
-        i_beta: f32,
-        dt: f32,
+        v_alpha_new: ElectricPotential,
+        v_beta_new: ElectricPotential,
+        i_alpha: ElectricCurrent,
+        i_beta: ElectricCurrent,
+        dt: Time,
         now_ticks: u64,
     ) {
         let voltage_start = crate::isr_prof::phase_now();
@@ -215,19 +222,25 @@ where
         );
         self.phase.update(
             &PhaseInput {
-                v_alpha: volts(v_alpha),
-                v_beta: volts(v_beta),
-                i_alpha: amps(i_alpha),
-                i_beta: amps(i_beta),
-                dt: seconds(dt),
+                v_alpha,
+                v_beta,
+                i_alpha,
+                i_beta,
+                dt,
             },
             now_ticks,
         );
         self.actuation.record_command(v_alpha_new, v_beta_new);
     }
 
-    /// Get the control loop period (dt) in seconds
-    pub fn dt(&self) -> f32 {
+    /// Phase update with the bridge off or shorted: zero volts, zero current.
+    pub(super) fn update_phase_without_drive(&mut self, dt: Time, now_ticks: u64) {
+        let (v, i) = (ElectricPotential::ZERO, ElectricCurrent::ZERO);
+        self.update_phase_with_applied_voltage(v, v, i, i, dt, now_ticks);
+    }
+
+    /// Get the control loop period (dt)
+    pub fn dt(&self) -> Time {
         self.dt
     }
 
@@ -250,10 +263,11 @@ where
         self.pwm.disable();
         self.pwm_off = true;
         configure_pwm(&mut self.pwm);
-        self.dt = timing.dt_s();
+        self.dt = timing.dt();
         self.protection.set_control_period(self.dt);
-        self.controller
-            .set_dead_time_comp_factor(dead_time_comp_ns as f32 * 1e-9 / self.dt);
+        self.controller.set_dead_time_comp_factor(
+            (seconds(dead_time_comp_ns as f32 * 1e-9) / self.dt).fraction(),
+        );
         self.controller
             .set_duty_cap(f32::from(self.pwm.duty_limit()) / f32::from(self.pwm.max_duty()));
         self.controller.reset();
@@ -295,16 +309,16 @@ where
             return None;
         };
         Some(super::VelocityControlSnapshot {
-            target_rad_s: target_vel.value,
-            reference_rad_s: self.velocity_loop.reference().value,
-            feedback_rad_s: self
+            target: target_vel,
+            reference: self.velocity_loop.reference(),
+            feedback: self
                 .phase
                 .rotor_velocity()
-                .map(|velocity| velocity.velocity().value),
-            requested_iq_a: self.velocity_schedule.requested_iq(),
-            granted_iq_a: self.last_granted_iq,
-            granted_id_a: self.last_granted_id,
-            measured_iq_a: self.last_iq_meas,
+                .map(RotorVelocityEstimate::velocity),
+            requested_iq: self.velocity_schedule.requested_iq(),
+            granted_iq: self.last_granted_iq,
+            granted_id: self.last_granted_id,
+            measured_iq: self.last_iq_meas,
         })
     }
 
@@ -337,8 +351,8 @@ where
     }
 
     #[cfg(feature = "fast-telemetry")]
-    pub fn velocity_integral_a(&self) -> f32 {
-        self.velocity_loop.integral().value
+    pub fn velocity_integral(&self) -> ElectricCurrent {
+        self.velocity_loop.integral()
     }
 
     /// Apply position-loop tuning (sane values only; see
@@ -433,14 +447,14 @@ where
             ControlMode::VelocityControl { .. } | ControlMode::PositionControl { .. }
         ) {
             self.invalidate_velocity();
-            self.last_granted_iq = 0.0;
-            self.last_granted_id = 0.0;
+            self.last_granted_iq = ElectricCurrent::ZERO;
+            self.last_granted_id = ElectricCurrent::ZERO;
         } else {
             match (self.mode, mode) {
                 (
                     ControlMode::VelocityControl { target_vel: old },
                     ControlMode::VelocityControl { target_vel: new },
-                ) if new.value == 0.0 || old.value * new.value < 0.0 => {
+                ) if new == ElectricalAngularVelocity::ZERO || (old * new).is_negative() => {
                     self.velocity_schedule.clear_request();
                 }
                 (
@@ -487,7 +501,7 @@ where
                 .rearm(self.phase.motion_reference_epoch());
         }
         if let ControlMode::PositionControl { target_pos } = mode {
-            self.position_target = Position::from_rad(target_pos.value);
+            self.position_target = Position::from_angle(target_pos);
         }
 
         // A sequence owns one saved baseline: subsequent steps may change the
@@ -518,15 +532,8 @@ where
             self.mode,
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
         );
-        let start_dir = match mode {
-            ControlMode::CurrentControl { iq_target, .. } => iq_target.value,
-            ControlMode::Throttle { fraction } => fraction,
-            ControlMode::VelocityControl { target_vel } => target_vel.value,
-            _ => 0.0,
-        };
-        if was_idle && start_dir != 0.0 {
-            self.phase
-                .begin_cold_start(if start_dir < 0.0 { -1.0 } else { 1.0 });
+        if was_idle && let Some(direction) = drive_direction(mode) {
+            self.phase.begin_cold_start(direction);
         }
 
         // The parking brake always starts as the plain short.
@@ -543,10 +550,10 @@ where
     /// A native estimate takes precedence over commutation-frame corrections.
     /// During open-loop/startup or sensor loss, preserve the existing frame-speed
     /// fallback; this does not make it measured feedback for the outer PI.
-    pub(crate) fn torque_speed(&self) -> f32 {
+    pub(crate) fn torque_speed(&self) -> ElectricalAngularVelocity {
         match self.phase.rotor_velocity() {
-            Some(velocity) => velocity.velocity().value,
-            None => self.phase.get().velocity.value,
+            Some(velocity) => velocity.velocity(),
+            None => self.phase.get().velocity,
         }
     }
 
@@ -555,28 +562,23 @@ where
     #[cfg(all(feature = "detection", any(feature = "runtime", test)))]
     pub(crate) fn set_detection_voltage(
         &mut self,
-        vd: f32,
-        vq: f32,
-        angle: f32,
-        current: (f32, f32),
+        vd: ElectricPotential,
+        vq: ElectricPotential,
+        angle: ElectricalAngle,
+        current: (ElectricCurrent, ElectricCurrent),
     ) {
-        use crate::units::erad;
-        self.set_mode(ControlMode::DirectVoltage {
-            vd: volts(vd),
-            vq: volts(vq),
-            angle: erad(angle),
-        });
+        self.set_mode(ControlMode::DirectVoltage { vd, vq, angle });
         self.detection_compensation_current = Some(current);
     }
 
     /// Update bus voltage
-    pub fn set_vbus(&mut self, vbus: f32) {
-        self.controller.set_vbus(volts(vbus));
+    pub fn set_vbus(&mut self, vbus: ElectricPotential) {
+        self.controller.set_vbus(vbus);
         self.vbus = vbus;
     }
 
     /// Get bus voltage
-    pub fn vbus(&self) -> f32 {
+    pub fn vbus(&self) -> ElectricPotential {
         self.vbus
     }
 
@@ -628,7 +630,7 @@ where
 
     /// Drop cruise state without moving its rate-limiting deadline.
     pub(super) fn invalidate_velocity(&mut self) {
-        self.velocity_loop.reset(erad_per_s(0.0));
+        self.velocity_loop.reset(ElectricalAngularVelocity::ZERO);
         self.velocity_feedback_available = false;
         self.velocity_schedule.invalidate();
     }
@@ -660,5 +662,19 @@ where
     /// Get reference to the PWM output (tests / diagnostics).
     pub fn pwm(&self) -> &P {
         &self.pwm
+    }
+}
+
+/// Direction (±1) of a drive command that starts the motor, `None` for zero
+/// or a mode without one: the sensorless cold start runs in this direction.
+pub(super) fn drive_direction(mode: ControlMode) -> Option<f32> {
+    fn sign_of<T: Sign + PartialEq + ConstZero>(command: T) -> Option<f32> {
+        (command != T::ZERO).then(|| if command.is_negative() { -1.0 } else { 1.0 })
+    }
+    match mode {
+        ControlMode::CurrentControl { iq_target, .. } => sign_of(iq_target),
+        ControlMode::Throttle { fraction } => sign_of(fraction),
+        ControlMode::VelocityControl { target_vel } => sign_of(target_vel),
+        _ => None,
     }
 }

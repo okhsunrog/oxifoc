@@ -36,13 +36,15 @@
 //! }
 //! ```
 
+use crate::units::{ConstZero, ElectricCurrent, ElectricalResistance, volts};
+
 /// Shunt-based current sense converter
 ///
 /// Converts raw ADC counts to calibrated current measurements.
 /// Platform-agnostic - works with any shunt + OPAMP + ADC configuration.
 pub struct ShuntCurrentSense {
-    /// Shunt resistance in Ohms (e.g., 0.003 for 3mΩ)
-    shunt_ohms: f32,
+    /// Shunt resistance (e.g. 3 mΩ)
+    shunt: ElectricalResistance,
     /// OPAMP gain (e.g., 16.0 for 16x)
     opamp_gain: f32,
     /// ADC reference voltage in millivolts (e.g., 3300 for 3.3V)
@@ -59,7 +61,7 @@ pub struct ShuntCurrentSense {
     /// per phase (9 `vdiv` per FOC cycle, ~180 cycles of the ISR budget);
     /// the scale only changes with the electrical constants, so it is
     /// folded once here.
-    amps_per_count: f32,
+    amps_per_count: ElectricCurrent,
     /// Zero-current ADC offset for phase A (in ADC counts)
     offset_a: f32,
     /// Zero-current ADC offset for phase B (in ADC counts)
@@ -72,14 +74,19 @@ pub struct ShuntCurrentSense {
 
 impl ShuntCurrentSense {
     /// Create a new shunt current sense converter
-    pub fn new(shunt_ohms: f32, opamp_gain: f32, adc_vref_mv: u32, adc_max_counts: u16) -> Self {
+    pub fn new(
+        shunt: ElectricalResistance,
+        opamp_gain: f32,
+        adc_vref_mv: u32,
+        adc_max_counts: u16,
+    ) -> Self {
         let mut s = Self {
-            shunt_ohms,
+            shunt,
             opamp_gain,
             adc_vref_mv,
             adc_max_counts,
             invert_sign: false,
-            amps_per_count: 0.0,
+            amps_per_count: ElectricCurrent::ZERO,
             offset_a: f32::from(adc_max_counts) / 2.0, // Default to mid-scale
             offset_b: f32::from(adc_max_counts) / 2.0,
             offset_c: f32::from(adc_max_counts) / 2.0,
@@ -92,9 +99,10 @@ impl ShuntCurrentSense {
     /// Refresh the cached [`Self::amps_per_count`] from the electrical
     /// constants and the sign convention. Call after changing any of them.
     fn recompute_scale(&mut self) {
-        // counts → mV → V → A, folded into one factor.
-        let scale = (self.adc_vref_mv as f32)
-            / (f32::from(self.adc_max_counts) * 1000.0 * self.shunt_ohms * self.opamp_gain);
+        // counts → mV → V → A, folded into one factor (the 1000 turns the
+        // reference's millivolts into volts).
+        let scale = volts(self.adc_vref_mv as f32)
+            / (f32::from(self.adc_max_counts) * 1000.0 * self.shunt * self.opamp_gain);
         self.amps_per_count = if self.invert_sign { -scale } else { scale };
     }
 
@@ -105,7 +113,7 @@ impl ShuntCurrentSense {
     /// enrichment path, so they cannot diverge.
     pub fn from_calib(calib: &crate::types::BoardCalib) -> Self {
         let mut s = Self::new(
-            calib.shunt_ohms.value,
+            calib.shunt_ohms,
             calib.amp_gain,
             calib.adc_vref_mv,
             calib.adc_max_counts,
@@ -125,7 +133,12 @@ impl ShuntCurrentSense {
     }
 
     /// Convert raw ADC counts to current in Amperes
-    pub fn convert_raw(&self, adc_a: u16, adc_b: u16, adc_c: u16) -> (f32, f32, f32) {
+    pub fn convert_raw(
+        &self,
+        adc_a: u16,
+        adc_b: u16,
+        adc_c: u16,
+    ) -> (ElectricCurrent, ElectricCurrent, ElectricCurrent) {
         let ia = self.adc_to_current(adc_a, self.offset_a);
         let ib = self.adc_to_current(adc_b, self.offset_b);
         let ic = self.adc_to_current(adc_c, self.offset_c);
@@ -224,7 +237,7 @@ impl ShuntCurrentSense {
     /// cached scale (see [`Self::recompute_scale`]):
     /// - Normal: I = (ADC − offset) × scale
     /// - Inverted (low-side shunts, MCSDK): scale is negative
-    fn adc_to_current(&self, adc_counts: u16, offset: f32) -> f32 {
+    fn adc_to_current(&self, adc_counts: u16, offset: f32) -> ElectricCurrent {
         (f32::from(adc_counts) - offset) * self.amps_per_count
     }
 }
@@ -232,6 +245,7 @@ impl ShuntCurrentSense {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::{amps, ohms};
 
     // Generic test values (not board-specific; B-G431B-ESC1 uses amp_gain=64/7≈9.14)
     const SHUNT_OHMS: f32 = 0.003;
@@ -241,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_converter_creation() {
-        let converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let converter = ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
         assert!(!converter.is_calibrated());
 
         // Default offsets should be mid-scale
@@ -253,41 +267,45 @@ mod tests {
 
     #[test]
     fn test_zero_current() {
-        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let mut converter =
+            ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
         converter.set_offsets(2048.0, 2048.0, 2048.0);
 
         // ADC at offset should read zero current
         let (ia, ib, ic) = converter.convert_raw(2048, 2048, 2048);
-        assert!(ia.abs() < 0.001);
-        assert!(ib.abs() < 0.001);
-        assert!(ic.abs() < 0.001);
+        assert!(ia.abs() < amps(0.001));
+        assert!(ib.abs() < amps(0.001));
+        assert!(ic.abs() < amps(0.001));
     }
 
     #[test]
     fn test_positive_current() {
-        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let mut converter =
+            ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
         converter.set_offsets(2000.0, 2000.0, 2000.0);
 
         let (ia, ib, ic) = converter.convert_raw(2100, 2050, 2000);
-        assert!(ia > 0.0);
-        assert!(ib > 0.0);
-        assert!(ic.abs() < 1e-6);
+        assert!(ia > amps(0.0));
+        assert!(ib > amps(0.0));
+        assert!(ic.abs() < amps(1e-6));
     }
 
     #[test]
     fn test_negative_current() {
-        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let mut converter =
+            ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
         converter.set_offsets(2100.0, 2100.0, 2100.0);
 
         let (ia, ib, ic) = converter.convert_raw(2000, 2050, 2100);
-        assert!(ia < 0.0);
-        assert!(ib < 0.0);
-        assert!(ic.abs() < 1e-6);
+        assert!(ia < amps(0.0));
+        assert!(ib < amps(0.0));
+        assert!(ic.abs() < amps(1e-6));
     }
 
     #[test]
     fn test_calibration() {
-        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let mut converter =
+            ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
 
         let samples = [
             (2040, 2050, 2060),
@@ -307,7 +325,8 @@ mod tests {
     #[test]
     fn test_realistic_motor_current() {
         // Using B-G431B-ESC1 parameters: 3mΩ, 16x, 3.3V, 12-bit
-        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let mut converter =
+            ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
         converter.set_offsets(2048.0, 2048.0, 2048.0);
 
         // Simulate +10A on phase A, -5A on phase B, 0A on phase C
@@ -321,21 +340,23 @@ mod tests {
         let adc_c = 2048;
 
         let (ia, ib, ic) = converter.convert_raw(adc_a, adc_b, adc_c);
-        assert!((ia - 10.0).abs() < 0.5);
-        assert!((ib + 5.0).abs() < 0.3);
-        assert!(ic.abs() < 0.1);
+        assert!((ia - amps(10.0)).abs() < amps(0.5));
+        assert!((ib + amps(5.0)).abs() < amps(0.3));
+        assert!(ic.abs() < amps(0.1));
     }
 
     #[test]
     fn test_empty_calibration() {
-        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let mut converter =
+            ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
         converter.calibrate_offsets(&[]);
         assert!(!converter.is_calibrated());
     }
 
     #[test]
     fn test_per_phase_calibration() {
-        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let mut converter =
+            ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
 
         // Calibrate phase A
         let samples_a: Vec<u16> = (0..100).map(|_| 2040).collect();
@@ -358,7 +379,8 @@ mod tests {
 
     #[test]
     fn test_reset_calibration() {
-        let mut converter = ShuntCurrentSense::new(SHUNT_OHMS, OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
+        let mut converter =
+            ShuntCurrentSense::new(ohms(SHUNT_OHMS), OPAMP_GAIN, ADC_VREF_MV, ADC_MAX);
         converter.set_offsets(2000.0, 2100.0, 2200.0);
         assert!(converter.is_calibrated());
 

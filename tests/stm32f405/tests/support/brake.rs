@@ -6,13 +6,13 @@ use oxifoc_core::foc::{
     controller::{Decoupling, FocController},
     phase::{PhaseInput, PhaseOutput, PhaseProvider, RotorVelocityEstimate},
     pwm::{PhasePwm, PhaseState, SvpwmModulator},
-    sensors::CurrentSensor,
+    sensors::{CurrentSensor, PhaseCurrents},
     trig::FastSinCos,
 };
 use oxifoc_core::motor::dissipation::{self, RegenBudget, WindingModel};
 use oxifoc_core::motor::foc_driver::CurrentLimits;
 use oxifoc_core::motor::{ControlMode, FocDriver};
-use oxifoc_core::units::{amps, erad, erad_per_s, henries, ohms, volts, watts, webers};
+use oxifoc_core::units::{amps, erad, erad_per_s, henries, ohms, seconds, volts, watts, webers};
 
 struct InertPwm;
 
@@ -31,8 +31,8 @@ impl PhasePwm for InertPwm {
 struct ZeroCurrent;
 
 impl CurrentSensor for ZeroCurrent {
-    fn read_currents(&self) -> (f32, f32, f32) {
-        (0.0, 0.0, 0.0)
+    fn read_currents(&self) -> PhaseCurrents {
+        (amps(0.0), amps(0.0), amps(0.0))
     }
     fn read_raw(&self) -> (u16, u16, u16) {
         (2048, 2048, 2048)
@@ -84,13 +84,13 @@ fn driver_batch(seed: u32) -> u64 {
         InertPwm,
         ZeroCurrent,
         FixedRotor(black_box(450.0)),
-        1.0 / 20_000.0,
+        seconds(1.0 / 20_000.0),
     );
     driver.set_current_limits(CurrentLimits {
-        bus_in_max_a: 5.0,
-        bus_regen_max_a: 0.0,
-        max_dissipation_w: heat,
-        ..CurrentLimits::from_max_current(30.0 / 1.3)
+        bus_in_max: amps(5.0),
+        bus_regen_max: amps(0.0),
+        max_dissipation: watts(heat),
+        ..CurrentLimits::from_max_current(amps(30.0 / 1.3))
     });
     driver.set_mode(ControlMode::VelocityControl {
         target_vel: erad_per_s(black_box(450.0)),

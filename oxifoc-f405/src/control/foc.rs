@@ -44,7 +44,7 @@ use crate::{FAULT_REGISTRY, STATE};
 
 #[path = "profiling_window.rs"]
 pub(crate) mod profiling_window;
-use oxifoc_core::units::volts;
+use oxifoc_core::units::{Fraction, amps, seconds, volts};
 use profiling_window::{DwtSample, DwtWindow};
 
 // ========== ADC Sample Storage (Global Atomics) ==========
@@ -200,16 +200,16 @@ fn publish_velocity_debug(
     }
     if let (Some(update), Some(snapshot)) = (update, driver.velocity_control_snapshot()) {
         frame.flags |= trace::ACTIVE | update.flags;
-        frame.target = frame.quantize(update.target_rad_s, 8.0);
-        frame.reference = frame.quantize(snapshot.reference_rad_s, 8.0);
-        frame.feedback = frame.quantize(update.feedback_rad_s, 8.0);
-        frame.requested_iq = frame.quantize(snapshot.requested_iq_a, 100.0);
-        frame.granted_iq = frame.quantize(snapshot.granted_iq_a, 100.0);
-        frame.granted_id = frame.quantize(snapshot.granted_id_a, 100.0);
-        frame.integral = frame.quantize(driver.velocity_integral_a(), 100.0);
-        frame.iq_min = frame.quantize(update.iq_min_a, 100.0);
-        frame.iq_max = frame.quantize(update.iq_max_a, 100.0);
-        if (snapshot.requested_iq_a - snapshot.granted_iq_a).abs() > 1e-4 {
+        frame.target = frame.quantize(update.target.value, 8.0);
+        frame.reference = frame.quantize(snapshot.reference.value, 8.0);
+        frame.feedback = frame.quantize(update.feedback.value, 8.0);
+        frame.requested_iq = frame.quantize(snapshot.requested_iq.value, 100.0);
+        frame.granted_iq = frame.quantize(snapshot.granted_iq.value, 100.0);
+        frame.granted_id = frame.quantize(snapshot.granted_id.value, 100.0);
+        frame.integral = frame.quantize(driver.velocity_integral().value, 100.0);
+        frame.iq_min = frame.quantize(update.iq_min.value, 100.0);
+        frame.iq_max = frame.quantize(update.iq_max.value, 100.0);
+        if (snapshot.requested_iq - snapshot.granted_iq).abs() > amps(1e-4) {
             frame.flags |= trace::GRANT_CLIPPED;
         }
     } else if current.is_none() && !velocity_debug::start_pending() {
@@ -426,8 +426,9 @@ pub async fn init(
     let mut foc_controller = FocController::<_, FastSinCos>::new(volts(initial_vbus_v));
 
     // Configure dead time compensation
-    foc_controller
-        .set_dead_time_comp_factor(crate::config::DEAD_TIME_COMP_NS as f32 * 1e-9 / timing.dt_s());
+    foc_controller.set_dead_time_comp_factor(
+        (seconds(crate::config::DEAD_TIME_COMP_NS as f32 * 1e-9) / timing.dt()).fraction(),
+    );
     defmt::unwrap!(
         foc_controller
             .set_dead_time_comp_linear_region(crate::config::DEAD_TIME_COMP_LINEAR_CURRENT)
@@ -440,14 +441,14 @@ pub async fn init(
         motor_pwm,
         current_sensor,
         phase_manager,
-        timing.dt_s(),
+        timing.dt(),
     );
     foc_driver.set_actuation_delay(actuation_delay_cycles);
 
     let mut model = oxifoc_core::motor::foc_driver::PreparedMotorModel::from_config(
         config,
-        initial_vbus_v,
-        BOARD.max_phase_current_a,
+        volts(initial_vbus_v),
+        amps(BOARD.max_phase_current_a),
     );
     let _ = defmt::unwrap!(foc_driver.apply_motor_model(&mut model));
     let boot_source = config.boot_feedback_source();
@@ -757,7 +758,7 @@ fn ADC() {
             &STATE,
             &FAULT_REGISTRY,
             driver,
-            vbus_mv as f32 * 0.001,
+            volts(vbus_mv as f32 * 0.001),
             now_ticks,
             protection_board,
         );
