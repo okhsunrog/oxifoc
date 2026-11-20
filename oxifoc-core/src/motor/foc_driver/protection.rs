@@ -213,8 +213,6 @@ pub(super) struct ProtectionMonitor {
     duty_utilization: f32,
     scales: DeratingScales,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
-    protection_tick: u16,
-    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     ov_integral: VoltSeconds,
     #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     uv_integral: VoltSeconds,
@@ -256,7 +254,6 @@ impl ProtectionMonitor {
             bus_voltage_drive: 1.0,
             duty_utilization: 0.0,
             scales: DeratingScales::default(),
-            protection_tick: 0,
             ov_integral: VoltSeconds::ZERO,
             uv_integral: VoltSeconds::ZERO,
             voltage_decay: voltage_decay(dt),
@@ -390,7 +387,6 @@ impl ProtectionMonitor {
         }
 
         // --- Graduated derating (decimated) ---
-        self.protection_tick = self.protection_tick.wrapping_add(1);
         let refresh_derating = self.service_slots.derating_due();
         if refresh_derating {
             #[cfg(feature = "isr-work-events")]
