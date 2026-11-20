@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::HallAngle;
 use std::vec::Vec;
 
 fn random(seed: &mut u32) -> u16 {
@@ -74,8 +75,7 @@ fn packed28_preserves_every_hall_code_and_other_fields_across_sequence_wrap() {
         let expected: Vec<_> = (0..64_u16)
             .map(|i| {
                 let mut f = valid(&mut seed, 65530_u16.wrapping_add(i.wrapping_mul(3)));
-                f.hall_angle =
-                    crate::types::HallAngle::from_encoded((block * 64 + u32::from(i)) as u16);
+                f.hall_angle = HallAngle::from_encoded((block * 64 + u32::from(i)) as u16);
                 if i % 7 == 0 {
                     f.vphase_adc = [u16::MAX; 3];
                 }
@@ -97,7 +97,7 @@ fn packed28_preserves_every_hall_code_and_other_fields_across_sequence_wrap() {
 #[test]
 fn fixed_codec_never_changes_format_or_silently_discards_hall() {
     let sample = FastTelemetry {
-        hall_angle: crate::types::HallAngle::from_encoded(65535),
+        hall_angle: HallAngle::from_encoded(65535),
         ..Default::default()
     };
     let mut encoder = RawBlockEncoder::new();

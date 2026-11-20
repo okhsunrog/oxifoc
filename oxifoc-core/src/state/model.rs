@@ -7,7 +7,24 @@
 //! the one-shot stopped install must be included in that platform timing bound.
 
 use super::{CMD_CHANNEL, DriverCommand};
+#[cfg(all(feature = "delivery", feature = "detection"))]
+use crate::drive_setup::ValidatedDriveSetup;
+use crate::foc::hall_sensor::PreparedHallCalibration;
+use crate::foc::phase::{PhaseProvider, PhaseSource};
+use crate::foc::pwm::PhasePwm;
+use crate::foc::sensors::CurrentSensor;
+use crate::foc::trig::SinCos;
+use crate::foc::velocity::VelocityLoopConfig;
+use crate::motor::FocDriver;
+use crate::motor::derating::DeratingConfig;
 use crate::motor::drive::DriveConfig;
+use crate::motor::failsafe::FailsafeConfig;
+use crate::motor::foc_driver::{CurrentLimits, MotorModelError, PreparedVoltageLimits};
+use crate::storage::{
+    BoardCalibrationConfig, CurrentLimitsConfig, DcOffsetsConfig, FailsafeConfigStored,
+    HallTuningConfig, MotorFeedbackConfig, PiGainsConfig, VoltageLimitsConfig,
+};
+use crate::timer::Timer;
 use crate::units::{ConstZero, ElectricCurrent, si};
 use crate::{
     motor::foc_driver::PreparedMotorModel,
@@ -107,7 +124,7 @@ pub(crate) struct ConfigCoordinator {
     pub revisions: Mutex<RefCell<[u32; ConfigGroupId::COUNT]>>,
     pub persisted: Mutex<RefCell<[Option<u32>; ConfigGroupId::COUNT]>>,
     pub actions: Mutex<RefCell<ConfigActionCache>>,
-    boot_current_offsets: Mutex<RefCell<Option<crate::storage::DcOffsetsConfig>>>,
+    boot_current_offsets: Mutex<RefCell<Option<DcOffsetsConfig>>>,
 }
 
 impl ConfigCoordinator {
@@ -127,7 +144,7 @@ pub(crate) static CONFIG_COORDINATOR: ConfigCoordinator = ConfigCoordinator::new
 pub fn publish_boot_current_offsets(config: &Mutex<RefCell<RuntimeConfig>>, offsets: [f32; 3]) {
     let [phase_a, phase_b, phase_c] = offsets;
     critical_section::with(|cs| {
-        let measured = crate::storage::DcOffsetsConfig {
+        let measured = DcOffsetsConfig {
             phase_a,
             phase_b,
             phase_c,
@@ -154,25 +171,25 @@ const APPLYING_CANCELLED: u32 = 6;
 
 pub(crate) enum ModelConfigUpdate {
     Drive(DriveConfig),
-    VoltageLimits(crate::storage::VoltageLimitsConfig),
+    VoltageLimits(VoltageLimitsConfig),
     MotorParams(MotorParamsConfig),
-    MotorFeedback(crate::storage::MotorFeedbackConfig),
+    MotorFeedback(MotorFeedbackConfig),
     VoltageFeedforward(VoltageFeedforwardConfig),
     HallCalibration(HallCalibrationConfig),
     #[cfg(all(feature = "detection", feature = "delivery"))]
-    DriveSetup(crate::drive_setup::ValidatedDriveSetup),
+    DriveSetup(ValidatedDriveSetup),
     Tuning(TuningUpdate),
     Reset,
 }
 
 pub(crate) enum TuningUpdate {
-    CurrentLimits(crate::storage::CurrentLimitsConfig),
-    PiGains(crate::storage::PiGainsConfig),
-    DcOffsets(crate::storage::DcOffsetsConfig),
-    HallTuning(crate::storage::HallTuningConfig),
-    Failsafe(crate::storage::FailsafeConfigStored),
-    Velocity(crate::foc::velocity::VelocityLoopConfig),
-    Derating(crate::motor::derating::DeratingConfig),
+    CurrentLimits(CurrentLimitsConfig),
+    PiGains(PiGainsConfig),
+    DcOffsets(DcOffsetsConfig),
+    HallTuning(HallTuningConfig),
+    Failsafe(FailsafeConfigStored),
+    Velocity(VelocityLoopConfig),
+    Derating(DeratingConfig),
 }
 
 impl TuningUpdate {
@@ -264,10 +281,10 @@ enum PreparedUpdate {
         rating: ElectricCurrent,
     },
     Drive(DriveConfig),
-    PhaseSource(crate::foc::phase::PhaseSource),
-    VoltageLimits(crate::motor::foc_driver::PreparedVoltageLimits),
+    PhaseSource(PhaseSource),
+    VoltageLimits(PreparedVoltageLimits),
     Motor(PreparedMotorModel),
-    Hall(crate::foc::hall_sensor::PreparedHallCalibration),
+    Hall(PreparedHallCalibration),
 }
 
 impl PreparedUpdate {
@@ -475,8 +492,8 @@ impl ModelApplyGuard {
     }
 
     pub fn prepare_motor_feedback(
-        value: crate::storage::MotorFeedbackConfig,
-        source: crate::foc::phase::PhaseSource,
+        value: MotorFeedbackConfig,
+        source: PhaseSource,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
         coordinator: &'static ConfigCoordinator,
         request: ReqId,
@@ -495,13 +512,13 @@ impl ModelApplyGuard {
     }
 
     pub fn prepare_voltage_limits(
-        value: crate::storage::VoltageLimitsConfig,
+        value: VoltageLimitsConfig,
         config: &'static Mutex<RefCell<RuntimeConfig>>,
         coordinator: &'static ConfigCoordinator,
         request: ReqId,
         expected_revision: u32,
     ) -> Option<Self> {
-        let prepared = crate::motor::foc_driver::PreparedVoltageLimits::from_config(&value)?;
+        let prepared = PreparedVoltageLimits::from_config(&value)?;
         Self::prepare_inner(
             PreparedUpdate::VoltageLimits(prepared),
             ModelConfigUpdate::VoltageLimits(value),
@@ -545,7 +562,7 @@ impl ModelApplyGuard {
         request: ReqId,
         expected_revision: u32,
     ) -> Option<Self> {
-        let prepared = crate::foc::hall_sensor::PreparedHallCalibration::from_config(&value)?;
+        let prepared = PreparedHallCalibration::from_config(&value)?;
         Self::prepare_inner(
             PreparedUpdate::Hall(prepared),
             ModelConfigUpdate::HallCalibration(value),
@@ -614,7 +631,7 @@ impl ModelApplyGuard {
         })
     }
 
-    pub async fn apply<T: crate::timer::Timer>(mut self) -> ConfigResponse {
+    pub async fn apply<T: Timer>(mut self) -> ConfigResponse {
         let confirm = async {
             CMD_CHANNEL
                 .send(DriverCommand::ApplyMotorModel(self.generation))
@@ -653,15 +670,15 @@ impl Drop for ModelApplyGuard {
 /// small electrical parameter record and revision/cache metadata.
 pub(super) fn apply<P, C, Ph, S>(
     generation: u32,
-    foc: &mut crate::motor::FocDriver<P, C, Ph, S>,
+    foc: &mut FocDriver<P, C, Ph, S>,
     state: &Mutex<RefCell<super::MotorControlState>>,
     allowed: bool,
     running_allowed: bool,
 ) where
-    P: crate::foc::pwm::PhasePwm,
-    C: crate::foc::sensors::CurrentSensor,
-    Ph: crate::foc::phase::PhaseProvider,
-    S: crate::foc::trig::SinCos,
+    P: PhasePwm,
+    C: CurrentSensor,
+    Ph: PhaseProvider,
+    S: SinCos,
 {
     if !SLOT.claim_ready(generation) {
         return;
@@ -687,13 +704,11 @@ pub(super) fn apply<P, C, Ph, S>(
                 };
                 match value {
                     TuningUpdate::CurrentLimits(v) => {
-                        foc.set_current_limits(
-                            crate::motor::foc_driver::CurrentLimits::from_config_clamped(
-                                v,
-                                *board_trip,
-                                *rating,
-                            ),
-                        );
+                        foc.set_current_limits(CurrentLimits::from_config_clamped(
+                            v,
+                            *board_trip,
+                            *rating,
+                        ));
                     }
                     TuningUpdate::PiGains(v) => foc.set_current_pi_gains(si(v.kp), si(v.ki)),
                     TuningUpdate::HallTuning(_) => {}
@@ -701,7 +716,7 @@ pub(super) fn apply<P, C, Ph, S>(
                         foc.set_current_offsets((v.phase_a, v.phase_b, v.phase_c));
                     }
                     TuningUpdate::Failsafe(v) => {
-                        foc.set_failsafe(crate::motor::failsafe::FailsafeConfig::from(v));
+                        foc.set_failsafe(FailsafeConfig::from(v));
                     }
                     TuningUpdate::Velocity(v) => foc.set_velocity_config(*v),
                     TuningUpdate::Derating(v) => foc.set_derating(*v),
@@ -709,7 +724,7 @@ pub(super) fn apply<P, C, Ph, S>(
                 if let TuningUpdate::HallTuning(v) = value
                     && !foc.phase_mut().apply_hall_tuning(v)
                 {
-                    Err(crate::motor::foc_driver::MotorModelError::Unsupported)
+                    Err(MotorModelError::Unsupported)
                 } else {
                     Ok(None)
                 }
@@ -761,7 +776,7 @@ pub(super) fn apply<P, C, Ph, S>(
                     }
                     *pending.cache.borrow(cs).borrow_mut() = ConfigActionCache::new();
                     let mut state = state.borrow(cs).borrow_mut();
-                    state.board_calibration = crate::storage::BoardCalibrationConfig::IDENTITY;
+                    state.board_calibration = BoardCalibrationConfig::IDENTITY;
                     state.board_calibration_valid = true;
                     super::set_motor_temperature_input(Default::default());
                     state.hall_calibration_valid = true;
@@ -824,14 +839,9 @@ pub(super) fn apply<P, C, Ph, S>(
                     revision,
                 }
             }),
-            Err(
-                crate::motor::foc_driver::MotorModelError::Consumed
-                | crate::motor::foc_driver::MotorModelError::Invalid,
-            ) => ConfigResponse::Invalid,
-            Err(crate::motor::foc_driver::MotorModelError::Busy) => ConfigResponse::Busy,
-            Err(crate::motor::foc_driver::MotorModelError::Unsupported) => {
-                ConfigResponse::Unsupported
-            }
+            Err(MotorModelError::Consumed | MotorModelError::Invalid) => ConfigResponse::Invalid,
+            Err(MotorModelError::Busy) => ConfigResponse::Busy,
+            Err(MotorModelError::Unsupported) => ConfigResponse::Unsupported,
         }
     };
     pending.response = Some(response);

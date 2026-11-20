@@ -18,8 +18,7 @@ use core::f32::consts::TAU;
 
 use crate::foc::current_sense::ShuntCurrentSense;
 use crate::foc::transforms::park;
-use crate::types::CurrentSenseTopology;
-use crate::types::{BoardCalib, FastTelemetry, HallAngle};
+use crate::types::{BoardCalib, CurrentSenseTopology, FastTelemetry, HallAngle, PhaseVoltageInfo};
 
 impl HallAngle {
     pub fn from_radians(angle: Option<f32>) -> Self {
@@ -236,7 +235,7 @@ impl EnrichCtx {
     pub fn with_phase_voltage(
         mut self,
         calib: &BoardCalib,
-        info: Option<crate::types::PhaseVoltageInfo>,
+        info: Option<PhaseVoltageInfo>,
     ) -> Self {
         self.phase_voltage = info.map(|info| {
             super::phase_voltage::PhaseVoltageSense::from_calib(
@@ -291,6 +290,12 @@ pub struct RichSample {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "runtime")]
+    use crate::foc::controller::FocOutput;
+    use crate::foc::fast_math;
+    #[cfg(feature = "runtime")]
+    use crate::runtime::streaming;
+    use crate::types::PhaseVoltageInfo;
     use crate::units::{amps, erad, ohms, seconds, volts};
     #[test]
     fn hall_angle_has_explicit_absence_and_bounded_modular_error() {
@@ -425,7 +430,7 @@ mod tests {
         )
         .with_phase_voltage(
             &c,
-            Some(crate::types::PhaseVoltageInfo {
+            Some(PhaseVoltageInfo {
                 divider_ratio: 20.0, // Deliberately different from the Vbus divider.
                 current_to_voltage_ns: 2571,
                 filtered: true,
@@ -472,23 +477,17 @@ mod tests {
                 arr: 4200,
                 enables: 0x7f,
             });
-        let foc = crate::foc::controller::FocOutput {
+        let foc = FocOutput {
             duties: [2000, 2050, 2200], // The NEXT command, distinct from the ADC cycle.
             ..Default::default()
         };
-        let frame = crate::runtime::streaming::build_fast_telemetry(&adc, &foc, None, 7, 55);
+        let frame = streaming::build_fast_telemetry(&adc, &foc, None, 7, 55);
         assert_eq!(frame.vphase_adc, [800, 900, 1000]);
         assert_eq!(frame.pwm_ccr, [1900, 2000, 2100]);
         assert_ne!(frame.pwm_ccr, foc.duties);
         assert_eq!(frame.pwm_arr, 4200);
         assert_eq!(frame.pwm_enables, 0x7f);
-        let unavailable = crate::runtime::streaming::build_fast_telemetry(
-            &AdcSnapshot::empty(),
-            &foc,
-            None,
-            7,
-            56,
-        );
+        let unavailable = streaming::build_fast_telemetry(&AdcSnapshot::empty(), &foc, None, 7, 56);
         assert_eq!(unavailable.vphase_adc, [u16::MAX; 3]);
         assert_eq!(unavailable.pwm_arr, 0);
     }
@@ -512,7 +511,7 @@ mod tests {
             ..Default::default()
         };
         let offsets = (2040.35, 2041.443, 2038.473);
-        let magnitude = |r: RichSample| crate::foc::fast_math::sqrtf(r.id * r.id + r.iq * r.iq);
+        let magnitude = |r: RichSample| fast_math::sqrtf(r.id * r.id + r.iq * r.iq);
         let two = frame.enrich(&EnrichCtx::new(
             &calib,
             offsets,

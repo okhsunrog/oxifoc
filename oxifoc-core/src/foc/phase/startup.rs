@@ -19,9 +19,9 @@
 //! [`Observer`]: super::observer::Observer
 //! [`READY_MIN_VELOCITY`]: super::observer::READY_MIN_VELOCITY
 
-use crate::foc::clamp_f32;
+use crate::foc;
 use crate::foc::fast_math::sqrtf;
-use crate::foc::wrap_angle;
+use crate::foc::{clamp_f32, wrap_angle};
 use crate::units::{
     ConstZero, ELECTRICAL_RADIAN, ElectricCurrent, ElectricPotential, ElectricalAngle,
     ElectricalAngularVelocity, ElectricalResistance, Inductance, Linear, MagneticFlux, Sign, Time,
@@ -898,8 +898,7 @@ impl SensorlessStartup {
         let claim_vel = claim.velocity.abs();
         let vel_ok = omega >= CONFIRM_MIN_VEL_FRACTION * claim_vel
             && omega <= CONFIRM_MAX_VEL_MULTIPLE * claim_vel;
-        let angle_ok =
-            crate::foc::angle_difference(angle, claim.angle).abs() <= CONFIRM_MAX_ANGLE_ERR;
+        let angle_ok = foc::angle_difference(angle, claim.angle).abs() <= CONFIRM_MAX_ANGLE_ERR;
         if vel_ok && angle_ok {
             self.deactivate();
             return ConfirmResult::Confirmed { velocity: omega };

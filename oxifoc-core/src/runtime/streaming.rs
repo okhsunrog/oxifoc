@@ -9,6 +9,8 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use crate::state;
+use crate::types::{FastTelemetryBatchEncoder, HallAngle};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use ergot::net_stack::NetStackHandle;
 
@@ -18,8 +20,7 @@ use fast_queue::FastTelemetryQueue;
 use crate::foc::controller::FocOutput;
 use crate::foc::fault::{FaultRegistry, PlatformFault};
 use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
-use crate::icd::FastTelemetryTopic;
-use crate::icd::FaultTopic;
+use crate::icd::{FastTelemetryTopic, FaultTopic};
 use crate::state::{MotorControlState, update_telemetry};
 use crate::timer::Timer;
 use crate::types::FastTelemetry;
@@ -67,7 +68,7 @@ pub async fn set_fast_telemetry_period(period: u32) -> u32 {
     }
     let _gate = FAST_TELEM_GATE.lock().await;
     let actual = critical_section::with(|_| {
-        if crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst) && period != 0 {
+        if state::FLASH_OP_PENDING.load(Ordering::SeqCst) && period != 0 {
             FAST_TELEM_PERIOD.load(Ordering::Acquire)
         } else {
             FAST_TELEM_PERIOD.store(period, Ordering::Release);
@@ -317,7 +318,7 @@ pub fn build_fast_telemetry(
         ic: adc.ic,
         vbus: FastTelemetry::pack_vbus(adc.vbus_mv as f32 * 0.001),
         angle: FastTelemetry::pack_angle(foc.angle.value),
-        hall_angle: crate::types::HallAngle::from_radians(hall.map(|h| h.angle.radians())),
+        hall_angle: HallAngle::from_radians(hall.map(|h| h.angle.radians())),
         vd: FastTelemetry::pack_volt(foc.vd.value),
         vq: FastTelemetry::pack_volt(foc.vq.value),
         rpm: FastTelemetry::pack_rpm(mech_rpm),
@@ -553,7 +554,7 @@ where
 
 fn drain_fast_batch<const N: usize>(
     queue: &FastTelemetryQueue<N>,
-    batch: &mut crate::types::FastTelemetryBatchEncoder,
+    batch: &mut FastTelemetryBatchEncoder,
 ) {
     let read_ok = queue.drain_into(batch);
 
@@ -581,14 +582,14 @@ fn record_fast_slice_timing(start: u32, encoded_at: u32, broadcast_end: Option<u
 
 struct PendingFastBatch {
     session: u32,
-    batch: crate::types::FastTelemetryBatchEncoder,
+    batch: FastTelemetryBatchEncoder,
 }
 
 impl PendingFastBatch {
     fn new() -> Self {
         Self {
             session: 0,
-            batch: crate::types::FastTelemetryBatchEncoder::new(),
+            batch: FastTelemetryBatchEncoder::new(),
         }
     }
 
@@ -672,6 +673,7 @@ mod pending_tests {
 #[cfg(test)]
 mod drain_tests {
     use super::*;
+    use crate::types::FastTelemetryBatchEncoder;
     use bbqueue::nicknames::Churrasco;
     use ergot::{
         exports::mutex::raw_impls::cs::CriticalSectionRawMutex as StackMutex,
@@ -693,7 +695,7 @@ mod drain_tests {
         #[cfg(feature = "fast-telemetry")]
         let _guard = FAST_TELEM_TEST_LOCK.lock().unwrap();
         let queue = FastTelemetryQueue::<4096>::new();
-        let mut batch = crate::types::FastTelemetryBatchEncoder::new();
+        let mut batch = FastTelemetryBatchEncoder::new();
         READ_OK.store(0, Ordering::Relaxed);
         READ_BADLEN.store(0, Ordering::Relaxed);
 
@@ -792,6 +794,7 @@ mod drain_tests {
 #[cfg(all(test, not(feature = "fast-telemetry")))]
 mod stream_control_tests {
     use super::*;
+    use crate::types::FastTelemetryBatchEncoder;
     use core::{
         future::Future,
         task::{Context, Poll, Waker},
@@ -811,7 +814,7 @@ mod stream_control_tests {
         assert_eq!(stop.as_mut().poll(&mut cx), Poll::Ready(0));
         assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Acquire), 0);
         assert_eq!(
-            FAST_TELEM_Q.drain_into(&mut crate::types::FastTelemetryBatchEncoder::new()),
+            FAST_TELEM_Q.drain_into(&mut FastTelemetryBatchEncoder::new()),
             0
         );
     }

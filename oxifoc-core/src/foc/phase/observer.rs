@@ -25,8 +25,12 @@
 // backend are HFI-only; BackEmf's `force_phase` imports SinCos locally.
 use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "hfi")]
+use crate::foc::transforms;
+#[cfg(feature = "hfi")]
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
+#[cfg(feature = "isr-work-events")]
+use crate::isr_work;
 #[cfg(feature = "hfi")]
 use crate::units::hertz;
 use crate::units::{
@@ -35,6 +39,7 @@ use crate::units::{
     Frequency, Inductance, Linear, MagneticFlux, PllIntegralGain, Scalar, Sign, Time, ToBits, amps,
     erad, erad_per_s, per_second, quantity, seconds, vector_angle, webers,
 };
+use crate::{foc, isr_prof};
 use core::f32::consts::TAU;
 #[cfg(feature = "hfi")]
 use core::marker::PhantomData;
@@ -759,8 +764,7 @@ impl BackEmfObserver {
             let err_norm = 1.0 - mag_norm * mag_norm;
             // Clamp: never drain more than half the radius in one cycle,
             // whatever gain·dt·overshoot multiplies out to.
-            let pull =
-                crate::foc::clamp_f32((err_norm * self.centering_gain * dt).fraction(), -0.5, 0.0);
+            let pull = foc::clamp_f32((err_norm * self.centering_gain * dt).fraction(), -0.5, 0.0);
             self.x1 += self.x1 * pull;
             self.x2 += self.x2 * pull;
         }
@@ -781,16 +785,11 @@ impl BackEmfObserver {
         // (like VESC's foc_pll_run): wrapping to [0, 2π) would make the error
         // always non-negative and the velocity integrator could only grow.
         #[cfg(feature = "isr-work-events")]
-        crate::isr_work::angle_difference(
-            crate::isr_work::OBSERVER_ERROR_WRAP,
-            phase_raw,
-            self.phase_pll,
-        );
+        isr_work::angle_difference(isr_work::OBSERVER_ERROR_WRAP, phase_raw, self.phase_pll);
         #[cfg(feature = "observer-turn")]
-        let phase_error =
-            crate::foc::angle_difference_signed_minus_wrapped(phase_raw, self.phase_pll);
+        let phase_error = foc::angle_difference_signed_minus_wrapped(phase_raw, self.phase_pll);
         #[cfg(not(feature = "observer-turn"))]
-        let phase_error = crate::foc::angle_difference(phase_raw, self.phase_pll);
+        let phase_error = foc::angle_difference(phase_raw, self.phase_pll);
         self.velocity_pll += self.pll_ki * phase_error * dt;
         // Physics acceleration prior (see set_accel_prior): |ω̂| is clamped
         // to an envelope that slews at the physically-allowed rate. The
@@ -940,18 +939,18 @@ impl BackEmfObserver {
         // to λ. A weak heuristic — measurement offsets can also saturate the
         // integrator — but cheap and monotonic during real spin-up. With λ
         // tracking enabled the normalization adapts along with the clamp.
-        self.confidence = crate::foc::clamp_f32((flux_mag * inv_lambda).fraction(), 0.0, 1.0);
+        self.confidence = foc::clamp_f32((flux_mag * inv_lambda).fraction(), 0.0, 1.0);
 
         // Advance the readiness Schmitt latch: evaluated against the
         // PREVIOUS latch state (that is what makes it hysteresis), stored
         // for the next cycle and for `is_ready` callers in between.
-        let prof_t2 = crate::isr_prof::now();
+        let prof_t2 = isr_prof::now();
         self.refresh_readiness_err();
         // The refresh evaluated readiness against the previous latch. With
         // the hold bound no tighter than the acquire bound, the same value
         // is also the answer under the new latch, so the cache stays valid.
         self.ready_latched = self.ready;
-        crate::isr_prof::add(&crate::isr_prof::OBS_TAIL, prof_t2, crate::isr_prof::now());
+        isr_prof::add(&isr_prof::OBS_TAIL, prof_t2, isr_prof::now());
     }
 
     /// Get estimated electrical phase
@@ -1456,7 +1455,7 @@ impl<S: SinCos> HfiObserver<S> {
 
         // Measured currents into the estimated rotor frame.
         let (s_est, c_est) = S::sin_cos(self.phase_est.radians());
-        let (id, iq) = crate::foc::transforms::park(input.i_alpha, input.i_beta, s_est, c_est);
+        let (id, iq) = transforms::park(input.i_alpha, input.i_beta, s_est, c_est);
 
         // Split carrier content from the fundamental.
         let a_f = dt.ratio_to(HFI_FUND_TAU).min(1.0);
@@ -1502,7 +1501,7 @@ impl<S: SinCos> HfiObserver<S> {
         let a_q = dt.ratio_to(HFI_QUALITY_TAU).min(1.0);
         self.err_quality += a_q * (err.abs() - self.err_quality);
         self.confidence = if self.amp_d_filt.abs() > self.min_hf_current * 0.5 {
-            crate::foc::clamp_f32(1.0 - 2.0 * self.err_quality, 0.0, 1.0)
+            foc::clamp_f32(1.0 - 2.0 * self.err_quality, 0.0, 1.0)
         } else {
             0.0
         };
@@ -1682,10 +1681,14 @@ mod tests {
     use crate::foc::angle_difference;
     #[cfg(feature = "hfi")]
     use crate::units::hertz;
+    #[cfg(feature = "virtual-motor")]
+    use crate::units::si;
     use crate::units::{
-        amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, si,
-        volts, webers,
+        amps, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity, seconds, volts,
+        webers,
     };
+    #[cfg(all(feature = "hfi", feature = "virtual-motor"))]
+    use crate::virtual_motor::{MotorParams, VirtualMotorOutput};
 
     // Reference coefficients are the former per-update expressions. Loading
     // them before update bypasses the cache while sharing unchanged dynamics.
@@ -2267,7 +2270,7 @@ mod tests {
         load_torque: f32,
         sat_k: f32,
         steps: usize,
-    ) -> (HfiObserver, crate::virtual_motor::VirtualMotorOutput) {
+    ) -> (HfiObserver, VirtualMotorOutput) {
         use crate::virtual_motor::MotorParams;
         // IPM with 3:1 saliency; heavy rotor + friction so the injection
         // itself doesn't move it.
@@ -2290,11 +2293,11 @@ mod tests {
     /// (lets tests opt into sensor noise / quantization / saturation).
     #[cfg(all(feature = "virtual-motor", feature = "hfi"))]
     fn run_hfi_sim_params(
-        params: crate::virtual_motor::MotorParams,
+        params: MotorParams,
         rotor_angle: f32,
         load_torque: f32,
         steps: usize,
-    ) -> (HfiObserver, crate::virtual_motor::VirtualMotorOutput) {
+    ) -> (HfiObserver, VirtualMotorOutput) {
         use crate::foc::controller::FocController;
         use crate::foc::pwm::SvpwmModulator;
         use crate::foc::transforms;
@@ -2307,7 +2310,7 @@ mod tests {
         let foc = FocController::<SvpwmModulator>::new(volts(24.0));
         let mut obs = HfiObserver::new(hertz(1000.0), volts(3.0));
 
-        let mut out = crate::virtual_motor::VirtualMotorOutput::default();
+        let mut out = VirtualMotorOutput::default();
         for _ in 0..steps {
             let (vd_inj, vq_inj) = obs.get_injection();
             let (i_a_m, i_b_m) = transforms::clarke(out.ia, out.ib);

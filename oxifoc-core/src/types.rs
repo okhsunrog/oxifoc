@@ -16,8 +16,7 @@ use crate::units::{
     ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
     ElectricalResistance, Inductance, MagneticFlux, Power, Time, amps, seconds,
 };
-use heapless::String;
-use heapless::Vec;
+use heapless::{String, Vec};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 
@@ -1043,6 +1042,7 @@ pub use config_types::*;
 
 #[cfg(feature = "storage")]
 mod config_types {
+    use crate::drive_setup::DriveSetup;
     use crate::storage::{
         BoardCalibrationConfig, CurrentLimitsConfig, DcOffsetsConfig, DeratingConfig,
         FailsafeConfigStored, HallCalibrationConfig, HallTuningConfig, MotorFeedbackConfig,
@@ -1072,7 +1072,7 @@ mod config_types {
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub struct SaveDriveSetup {
         pub session: measurement::SessionId,
-        pub setup: crate::drive_setup::DriveSetup,
+        pub setup: DriveSetup,
     }
 
     /// Config group identifier for read requests

@@ -17,9 +17,11 @@ use super::{
 };
 use crate::foc::clamp_f32;
 use crate::foc::fast_math::sqrtf;
+use crate::foc::pi_controller::PiUnits;
+use crate::isr_prof;
 #[cfg(feature = "storage")]
-use crate::storage::MotorParamsConfig;
-use crate::types::VoltageFeedforwardMode;
+use crate::storage::{MotorParamsConfig, RuntimeConfig};
+use crate::types::{CurrentSenseTopology, VoltageFeedforwardMode};
 use crate::units::{
     AngularVelocity, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
     ElectricalAngularVelocity, ElectricalResistance, Fraction, Inductance, Linear, MagneticFlux,
@@ -37,7 +39,7 @@ type PerAmp = <f32 as core::ops::Div<ElectricCurrent>>::Output;
 #[derive(Clone, Copy, Debug)]
 pub enum CurrentPi {}
 
-impl crate::foc::pi_controller::PiUnits for CurrentPi {
+impl PiUnits for CurrentPi {
     type Error = ElectricCurrent;
     type Output = ElectricPotential;
     type Time = Time;
@@ -267,7 +269,7 @@ impl ModulationLimits {
 /// electrical angle, then returns duty cycles that can be written through a
 /// platform `PhasePwm` implementation.
 pub struct FocController<M: Modulator = SvpwmModulator, S: SinCos = LibmSinCos> {
-    current_sense_topology: crate::types::CurrentSenseTopology,
+    current_sense_topology: CurrentSenseTopology,
     /// d-axis PI controller (flux)
     pub id_pi: PIController<CurrentPi>,
     /// q-axis PI controller (torque)
@@ -336,7 +338,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// which tracks `vbus × modulation_limit` every cycle.
     pub fn new(vbus: ElectricPotential) -> Self {
         Self {
-            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
+            current_sense_topology: CurrentSenseTopology::TwoShunt,
             id_pi: PIController::with_gains(ohms(0.4), si(40.0)),
             iq_pi: PIController::with_gains(ohms(0.4), si(40.0)),
             vbus: vbus.max(Self::MIN_VBUS),
@@ -354,11 +356,11 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
 
     /// Select the current channels that are valid on this board. The driver
     /// sets this from its sensor at construction; standalone users opt in.
-    pub fn set_current_sense_topology(&mut self, topology: crate::types::CurrentSenseTopology) {
+    pub fn set_current_sense_topology(&mut self, topology: CurrentSenseTopology) {
         self.current_sense_topology = topology;
     }
 
-    pub fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+    pub fn current_sense_topology(&self) -> CurrentSenseTopology {
         self.current_sense_topology
     }
 
@@ -409,7 +411,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         let vbus = vbus.max(Self::MIN_VBUS);
 
         Self {
-            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
+            current_sense_topology: CurrentSenseTopology::TwoShunt,
             id_pi: PIController::with_gains(kp, ki),
             iq_pi: PIController::with_gains(kp, ki),
             vbus,
@@ -454,10 +456,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
     /// motor, so one L cannot serve both consumers (ZD2808: 86/129 µH
     /// fundamental vs ~24 µH AC plateau).
     #[cfg(feature = "storage")]
-    pub fn from_runtime_config(
-        config: &crate::storage::RuntimeConfig,
-        vbus: ElectricPotential,
-    ) -> Self {
+    pub fn from_runtime_config(config: &RuntimeConfig, vbus: ElectricPotential) -> Self {
         let mut foc = if let Some(ref mp) = config.motor_params
             && mp.is_valid()
         {
@@ -864,9 +863,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         dt: Time,
     ) -> FocOutput {
         let (ia, ib, ic) = currents;
-        let prof_t0 = crate::isr_prof::now();
+        let prof_t0 = isr_prof::now();
         let (sin_theta, cos_theta) = S::sin_cos(angle.get::<radian>());
-        crate::isr_prof::add(&crate::isr_prof::CTRL_TRIG, prof_t0, crate::isr_prof::now());
+        isr_prof::add(&isr_prof::CTRL_TRIG, prof_t0, isr_prof::now());
 
         // Phase currents -> stationary frame
         let (i_alpha, i_beta) = self.current_sense_topology.clarke(currents);

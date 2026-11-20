@@ -31,10 +31,11 @@ use crate::foc::detection::types::DetectionError;
 use crate::foc::hall_calibration::HallReader;
 use crate::foc::pi_controller::PIController;
 use crate::foc::pwm::SvpwmModulator;
-use crate::foc::trig::LibmSinCos;
+use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
 use crate::motor::ControlMode;
 use crate::timer::Timer;
+use crate::types::CurrentSenseTopology;
 use crate::units::{amps, erad, ohms, seconds, si, volts};
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 
@@ -194,7 +195,7 @@ pub struct VirtualHardware;
 impl VirtualHardware {
     /// Select the same feedback projection for the simulated controller and
     /// the detection routines reading its raw phase currents.
-    pub fn set_current_sense_topology(&mut self, topology: crate::types::CurrentSenseTopology) {
+    pub fn set_current_sense_topology(&mut self, topology: CurrentSenseTopology) {
         SIM.with(|s| {
             s.borrow_mut()
                 .as_mut()
@@ -206,14 +207,14 @@ impl VirtualHardware {
 }
 
 impl DetectionHardware for VirtualHardware {
-    fn capture_voltage_burst<S: crate::foc::trig::SinCos>(
+    fn capture_voltage_burst<S: SinCos>(
         &mut self,
         program: super::excitation::VoltageBurst,
     ) -> impl Future<Output = Result<super::excitation::BurstCapture, DetectionError>> {
         super::sweep::capture_model_voltage_burst::<_, S>(self, program)
     }
 
-    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+    fn current_sense_topology(&self) -> CurrentSenseTopology {
         SIM.with(|s| s.borrow().as_ref().unwrap().foc.current_sense_topology())
     }
 
@@ -372,7 +373,7 @@ pub fn run_detection(
 
 /// As [`run_detection`], with the detection code's sin/cos backend chosen
 /// by the caller (the firmware passes `FastSinCos` or `CordicSinCos`).
-pub fn run_detection_with<S: crate::foc::trig::SinCos>(
+pub fn run_detection_with<S: SinCos>(
     motor_params: MotorParams,
     vbus: f32,
     det_params: DetectionParams,

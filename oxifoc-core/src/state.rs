@@ -18,17 +18,38 @@ use crate::foc::controller::{Decoupling, FocOutput};
 #[cfg(feature = "offset-diagnostics")]
 use crate::foc::current_offset::CurrentOffsetRequest;
 use crate::foc::current_offset::{CurrentOffsetError, CurrentOffsetReport};
+#[cfg(feature = "detection")]
+use crate::foc::detection::excitation::{BurstSample, Excitation};
+#[cfg(feature = "detection")]
+use crate::foc::detection::{DetectionError, excitation};
 use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
 use crate::foc::phase::{PhaseProvider, PhaseSource};
 use crate::foc::pwm::PhasePwm;
-use crate::foc::sensors::CurrentSensor;
-use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
+use crate::foc::sensors::{AdcSnapshot, CurrentSensor, HallSnapshot};
 use crate::foc::trig::SinCos;
 use crate::foc::velocity::VelocityLoopConfig;
+use crate::isr_prof;
+#[cfg(feature = "isr-work-events")]
+use crate::isr_work;
 use crate::motor::derating::{DeratingConfig, DeratingScales};
 use crate::motor::failsafe::{BRAKE_ENTRY_MAX_SPEED, FailsafeConfig};
+use crate::motor::foc_driver::MotorModelError;
+#[cfg(any(
+    test,
+    all(feature = "delivery", feature = "detection", feature = "storage")
+))]
+use crate::motor::foc_driver::PreparedCommissioning;
 use crate::motor::foc_driver::{CurrentLimits, PreparedBoardConfig, StepError};
 use crate::motor::{ControlMode, FocDriver};
+#[cfg(feature = "storage")]
+use crate::runtime::streaming;
+use crate::runtime::streaming::cmd_stats;
+#[cfg(feature = "storage")]
+use crate::storage::{
+    BoardCalibrationConfig, MotorTemperatureConfig, MotorTemperatureSensor, RuntimeConfig,
+};
+#[cfg(all(feature = "delivery", feature = "detection", feature = "storage"))]
+use crate::timer::Timer;
 use crate::types::{
     DriveOwnership, DriveSessionId, MotorCommand, MotorCommandOutcome, MotorRequest, MotorState,
 };
@@ -48,9 +69,9 @@ pub fn motor_temperature_input_enabled() -> bool {
 }
 
 #[cfg(feature = "storage")]
-pub fn set_motor_temperature_input(config: crate::storage::MotorTemperatureConfig) {
+pub fn set_motor_temperature_input(config: MotorTemperatureConfig) {
     MOTOR_TEMPERATURE_INPUT_ENABLED.store(
-        config.sensor == crate::storage::MotorTemperatureSensor::BoardDefault,
+        config.sensor == MotorTemperatureSensor::BoardDefault,
         Ordering::Relaxed,
     );
 }
@@ -70,7 +91,7 @@ pub enum DriverCommand {
     ))]
     BeginCommissioning {
         token: DetectionCommandToken,
-        prepared: crate::motor::foc_driver::PreparedCommissioning,
+        prepared: PreparedCommissioning,
     },
     #[cfg(any(
         test,
@@ -370,21 +391,15 @@ impl DetectionActiveGuard {
         DetectionCommandToken(self.generation)
     }
 
-    pub(crate) async fn begin<T: crate::timer::Timer>(
-        &self,
-        prepared: crate::motor::foc_driver::PreparedCommissioning,
-    ) -> bool {
+    pub(crate) async fn begin<T: Timer>(&self, prepared: PreparedCommissioning) -> bool {
         self.change_context::<T>(Some(prepared)).await
     }
 
-    pub(crate) async fn end<T: crate::timer::Timer>(&self) -> bool {
+    pub(crate) async fn end<T: Timer>(&self) -> bool {
         self.change_context::<T>(None).await
     }
 
-    async fn change_context<T: crate::timer::Timer>(
-        &self,
-        prepared: Option<crate::motor::foc_driver::PreparedCommissioning>,
-    ) -> bool {
+    async fn change_context<T: Timer>(&self, prepared: Option<PreparedCommissioning>) -> bool {
         use embassy_futures::select::{Either, select};
         let transition = if prepared.is_some() {
             CommissioningTransition::Begin
@@ -505,7 +520,7 @@ pub enum DriverOperation {
 #[derive(Clone, Debug)]
 pub struct MotorControlState {
     #[cfg(feature = "storage")]
-    pub board_calibration: crate::storage::BoardCalibrationConfig,
+    pub board_calibration: BoardCalibrationConfig,
     #[cfg(feature = "storage")]
     pub board_calibration_valid: bool,
     /// Stored Hall reference validity; gates only Hall-dependent actuation.
@@ -542,7 +557,7 @@ pub struct MotorControlState {
     /// emergency commands are never owner-gated.
     drive_ownership: DriveOwnership,
     #[cfg(feature = "detection")]
-    pub(crate) excitation: crate::foc::detection::excitation::Excitation,
+    pub(crate) excitation: Excitation,
 }
 
 impl MotorControlState {
@@ -550,7 +565,7 @@ impl MotorControlState {
     pub const fn new() -> Self {
         Self {
             #[cfg(feature = "storage")]
-            board_calibration: crate::storage::BoardCalibrationConfig::IDENTITY,
+            board_calibration: BoardCalibrationConfig::IDENTITY,
             #[cfg(feature = "storage")]
             board_calibration_valid: true,
             #[cfg(feature = "storage")]
@@ -570,20 +585,20 @@ impl MotorControlState {
             driver_operation: DriverOperation::Idle,
             drive_ownership: DriveOwnership::new(),
             #[cfg(feature = "detection")]
-            excitation: crate::foc::detection::excitation::Excitation::new(),
+            excitation: Excitation::new(),
         }
     }
 
     /// Restore calibration before starting the ADC/control loop. Missing is
     /// identity; unreadable/invalid is a persistent start interlock until repaired.
     #[cfg(feature = "storage")]
-    pub fn load_board_calibration(&mut self, config: &crate::storage::RuntimeConfig) {
+    pub fn load_board_calibration(&mut self, config: &RuntimeConfig) {
         let value = config.board_calibration.unwrap_or_default();
         self.board_calibration_valid = config.board_calibration_is_valid();
         self.board_calibration = if self.board_calibration_valid {
             value
         } else {
-            crate::storage::BoardCalibrationConfig::IDENTITY
+            BoardCalibrationConfig::IDENTITY
         };
     }
 
@@ -591,12 +606,12 @@ impl MotorControlState {
     /// Missing legacy configuration permits the nominal reference; corrupt or
     /// invalid stored data requires a successful detection/config repair.
     #[cfg(feature = "storage")]
-    pub fn load_hall_calibration(&mut self, config: &crate::storage::RuntimeConfig) {
+    pub fn load_hall_calibration(&mut self, config: &RuntimeConfig) {
         self.hall_calibration_valid = config.hall_calibration_is_valid();
     }
 
     #[cfg(feature = "storage")]
-    pub fn load_motor_feedback(&mut self, config: &crate::storage::RuntimeConfig) {
+    pub fn load_motor_feedback(&mut self, config: &RuntimeConfig) {
         self.motor_feedback_valid = config.motor_feedback_is_valid();
     }
 
@@ -611,7 +626,7 @@ impl MotorControlState {
             && !current_offset_request_pending()
             && !model_apply_pending()
             && !DETECTION_ACTIVE.load(Ordering::Acquire)
-            && crate::runtime::streaming::FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0
+            && streaming::FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0
     }
 
     /// Set motor to stopped state.
@@ -766,7 +781,7 @@ fn apply_phase_source<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCo
     state: &CriticalSectionMutex<RefCell<MotorControlState>>,
     source: PhaseSource,
     allowed: bool,
-) -> Result<bool, crate::motor::foc_driver::MotorModelError> {
+) -> Result<bool, MotorModelError> {
     use crate::motor::foc_driver::MotorModelError;
     if !source.is_sane() {
         return Err(MotorModelError::Invalid);
@@ -828,7 +843,7 @@ where
     }
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
         #[cfg(feature = "isr-work-events")]
-        crate::isr_work::mark(crate::isr_work::COMMAND);
+        isr_work::mark(isr_work::COMMAND);
         #[cfg(feature = "pi-bounds-ahead")]
         foc.drop_velocity_authority();
         let detection_authority = match cmd {
@@ -916,16 +931,14 @@ where
                     continue;
                 }
                 *saw_set_mode = true;
-                crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
-                    .fetch_add(1, Ordering::Relaxed);
+                cmd_stats::SETMODE_DRAINED.fetch_add(1, Ordering::Relaxed);
                 mode
             }
             DriverCommand::SetMode(mode) => {
                 // Fresh setpoint from the host — feed the deadman. Set even if
                 // the gates below reject the mode: liveness ≠ acceptance.
                 *saw_set_mode = true;
-                crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
-                    .fetch_add(1, Ordering::Relaxed);
+                cmd_stats::SETMODE_DRAINED.fetch_add(1, Ordering::Relaxed);
                 mode
             }
             DriverCommand::Motor(request) => match request.command {
@@ -950,8 +963,7 @@ where
                         }
                     });
                     if outcome == MotorCommandOutcome::Applied {
-                        crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
-                            .fetch_add(1, Ordering::Relaxed);
+                        cmd_stats::SETMODE_DRAINED.fetch_add(1, Ordering::Relaxed);
                     }
                     signal_motor_completion(request, outcome);
                     continue;
@@ -996,8 +1008,7 @@ where
                     // including PI holds between finite excitation packets.
                     cancel_detection();
                     foc.end_commissioning();
-                    crate::runtime::streaming::cmd_stats::SETMODE_DRAINED
-                        .fetch_add(1, Ordering::Relaxed);
+                    cmd_stats::SETMODE_DRAINED.fetch_add(1, Ordering::Relaxed);
                     mode
                 }
             },
@@ -1335,10 +1346,10 @@ where
     let check_deadman = driver.deadman_check_due();
     #[cfg(feature = "isr-work-events")]
     if check_deadman {
-        crate::isr_work::mark(crate::isr_work::DEADMAN);
+        isr_work::mark(isr_work::DEADMAN);
     }
 
-    let prof_t0 = crate::isr_prof::now();
+    let prof_t0 = isr_prof::now();
 
     struct CycleInputs {
         link_active: bool,
@@ -1449,8 +1460,8 @@ where
     // per-platform ISR copies are gone). Temperatures come from the
     // previous cycle's ADC snapshot in the shared state — one cycle of
     // staleness is nothing on a thermal time scale.
-    let prof_t1 = crate::isr_prof::now();
-    crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t0, prof_t1);
+    let prof_t1 = isr_prof::now();
+    isr_prof::add(&isr_prof::CYCLE_CMD, prof_t0, prof_t1);
 
     driver.run_protection(fault_registry, prepared_board, vbus, fet_t, motor_t);
     if fault_registry.any_stopping() {
@@ -1458,8 +1469,8 @@ where
         driver.end_commissioning();
     }
 
-    let prof_t2 = crate::isr_prof::now();
-    crate::isr_prof::add(&crate::isr_prof::CYCLE_PROT, prof_t1, prof_t2);
+    let prof_t2 = isr_prof::now();
+    isr_prof::add(&isr_prof::CYCLE_PROT, prof_t1, prof_t2);
 
     // Spurious break-input trips during PWM channel enable can latch an
     // OverCurrent fault right at start (seen on G431: COMP→BKIN glitch when
@@ -1482,11 +1493,11 @@ where
                 .borrow(cs)
                 .borrow_mut()
                 .excitation
-                .abort(crate::foc::detection::DetectionError::HardwareFault)
+                .abort(DetectionError::HardwareFault)
         });
         #[cfg(feature = "detection")]
         if packet_aborted {
-            crate::foc::detection::excitation::DONE_WAKER.wake();
+            excitation::DONE_WAKER.wake();
         }
         // Edge log: safe_off() latches Stopped, so this fires once per trip.
         // ISR log disabled 2026-11-14: it also ran before the gate cut below.
@@ -1533,8 +1544,8 @@ where
         driver.enter_failsafe();
     }
 
-    let prof_t3 = crate::isr_prof::now();
-    crate::isr_prof::add(&crate::isr_prof::CYCLE_CMD, prof_t2, prof_t3);
+    let prof_t3 = isr_prof::now();
+    isr_prof::add(&isr_prof::CYCLE_CMD, prof_t2, prof_t3);
 
     #[cfg(feature = "detection")]
     if excitation_present {
@@ -1589,7 +1600,7 @@ where
         });
         if let Some(action) = next {
             if matches!(&action, BurstAction::Stop) {
-                crate::foc::detection::excitation::DONE_WAKER.wake();
+                excitation::DONE_WAKER.wake();
             }
             let voltage_packet = matches!(&action, BurstAction::Voltage { .. });
             let next = match action {
@@ -1631,8 +1642,8 @@ where
         DETECTION_SOURCE_CONSTRAINED.store(true, Ordering::Release);
     }
     publish_current_offset_outcome(state_mutex, driver);
-    let prof_t4 = crate::isr_prof::now();
-    crate::isr_prof::add(&crate::isr_prof::CYCLE_STEP, prof_t3, prof_t4);
+    let prof_t4 = isr_prof::now();
+    isr_prof::add(&isr_prof::CYCLE_STEP, prof_t3, prof_t4);
     let result = match step_result {
         Ok(telem) => {
             // Instantaneous per-phase overcurrent check against the board
@@ -1703,7 +1714,7 @@ where
                 return (false, false);
             }
             let Some(telem) = result.filter(|_| !fault_registry.any_stopping()) else {
-                ex.abort(crate::foc::detection::DetectionError::HardwareFault);
+                ex.abort(DetectionError::HardwareFault);
                 cancel_detection();
                 return (true, true);
             };
@@ -1716,7 +1727,7 @@ where
                 telem.ic.value,
             ));
             if !program.current_in_budget(alpha, beta) {
-                ex.abort(crate::foc::detection::DetectionError::HardwareFault);
+                ex.abort(DetectionError::HardwareFault);
                 cancel_detection();
                 return (true, true);
             }
@@ -1725,7 +1736,7 @@ where
                 ex.outcome = Some(Ok(()));
                 return (true, false);
             } else {
-                ex.samples[ex.index] = crate::foc::detection::excitation::BurstSample {
+                ex.samples[ex.index] = BurstSample {
                     alpha,
                     beta,
                     cycle,
@@ -1740,7 +1751,7 @@ where
     };
     #[cfg(feature = "detection")]
     if excitation_done {
-        crate::foc::detection::excitation::DONE_WAKER.wake();
+        excitation::DONE_WAKER.wake();
     }
     #[cfg(feature = "detection")]
     if excitation_failed {
@@ -1780,11 +1791,7 @@ where
         });
     }
 
-    crate::isr_prof::add(
-        &crate::isr_prof::CYCLE_TAIL,
-        prof_t4,
-        crate::isr_prof::now(),
-    );
+    isr_prof::add(&isr_prof::CYCLE_TAIL, prof_t4, isr_prof::now());
 
     result
 }
@@ -1865,6 +1872,8 @@ pub fn update_telemetry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "storage")]
+    use crate::storage::{BoardCalibrationConfig, RuntimeConfig};
     use std::sync::{Arc, atomic::AtomicUsize};
 
     struct Counter(AtomicUsize);
@@ -2020,20 +2029,17 @@ mod tests {
     #[test]
     fn board_calibration_boot_validation_and_measurement_scale() {
         let mut state = MotorControlState::new();
-        let mut config = crate::storage::RuntimeConfig::default();
+        let mut config = RuntimeConfig::default();
         state.load_board_calibration(&config);
         assert!(state.board_calibration_valid);
-        config.board_calibration = Some(crate::storage::BoardCalibrationConfig { vbus_gain: 1.01 });
+        config.board_calibration = Some(BoardCalibrationConfig { vbus_gain: 1.01 });
         state.load_board_calibration(&config);
         let mutex = CriticalSectionMutex::new(RefCell::new(state.clone()));
         assert_eq!(calibrated_vbus_mv(&mutex, 24_000), 24_240);
         config.board_calibration_invalid = true;
         state.load_board_calibration(&config);
         assert!(!state.board_calibration_valid);
-        assert_eq!(
-            state.board_calibration,
-            crate::storage::BoardCalibrationConfig::IDENTITY
-        );
+        assert_eq!(state.board_calibration, BoardCalibrationConfig::IDENTITY);
         config.board_calibration_invalid = false;
         config.board_calibration.as_mut().unwrap().vbus_gain = f32::NAN;
         state.load_board_calibration(&config);

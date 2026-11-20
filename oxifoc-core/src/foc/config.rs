@@ -56,6 +56,7 @@
 ///   while driving too.
 ///
 /// See `foc::phase_voltage` for the converter and the per-cycle source decision.
+use crate::types::{BoardCalib, CurrentSenseTopology};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhaseSense {
     /// Divider ratio Vphase / Vadc, e.g. `(39_000.0 + 2_200.0) / 2_200.0` for
@@ -72,9 +73,9 @@ pub struct BoardConfig {
     /// resolution, sign, vbus divider). This is also the wire projection sent
     /// to the host for telemetry enrichment — one field list, no duplication.
     /// See [`crate::types::BoardCalib`].
-    pub calib: crate::types::BoardCalib,
+    pub calib: BoardCalib,
     /// Valid current channels at the board's configured ADC sampling instant.
-    pub current_sense_topology: crate::types::CurrentSenseTopology,
+    pub current_sense_topology: CurrentSenseTopology,
     /// Maximum q-axis current target in Amperes
     pub max_iq_target_a: f32,
 
@@ -276,11 +277,12 @@ impl NtcConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{BoardCalib, CurrentSenseTopology};
     use crate::units::ohms;
 
     const TEST_BOARD: BoardConfig = BoardConfig {
-        current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
-        calib: crate::types::BoardCalib {
+        current_sense_topology: CurrentSenseTopology::TwoShunt,
+        calib: BoardCalib {
             shunt_ohms: ohms(0.003),
             amp_gain: 16.0,
             adc_vref_mv: 3300,
@@ -343,8 +345,8 @@ mod tests {
         // sign-flipped currents to everything sign-sensitive in detection
         // (HFI dq separation, flux-linkage sign, observer input).
         let inverted = BoardConfig {
-            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
-            calib: crate::types::BoardCalib {
+            current_sense_topology: CurrentSenseTopology::TwoShunt,
+            calib: BoardCalib {
                 invert_current_sign: true,
                 ..TEST_BOARD.calib
             },

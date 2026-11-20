@@ -34,6 +34,7 @@ use ergot::endpoint;
 // Re-export all types for convenience
 pub use crate::types::*;
 
+use crate::raw_telemetry;
 use crate::raw_telemetry::{RawTelemetryAck, RawTelemetryRequest, VelocityDebugArm};
 
 // ============================================================================
@@ -76,7 +77,7 @@ impl ergot::traits::Topic for FastTelemetryTopic {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, postcard_schema::Schema)]
 pub struct RawTelemetryBlock {
     #[serde(serialize_with = "serialize_raw_block_bytes")]
-    pub data: heapless::Vec<u8, { crate::raw_telemetry::RAW_MAX_BLOCK_BYTES }>,
+    pub data: heapless::Vec<u8, { raw_telemetry::RAW_MAX_BLOCK_BYTES }>,
 }
 
 fn serialize_raw_block_bytes<S: serde::Serializer>(

@@ -4,23 +4,22 @@
 use super::{CROSSOVER_HYSTERESIS, HFI_VOLTS_HYSTERESIS};
 use super::{HallHealth, PhaseManager};
 use crate::foc::fast_math::sqrtf;
-use crate::foc::hall_sensor::HallFaultKind;
+use crate::foc::hall_sensor::{HallFaultKind, PreparedHallCalibration};
 #[cfg(feature = "hfi")]
 use crate::foc::phase::observer::HfiObserver;
 use crate::foc::phase::observer::ObserverInput;
-use crate::foc::phase::provider::PhaseInput;
-use crate::foc::phase::provider::PhaseOutput;
-use crate::foc::phase::provider::PhaseProvider;
-use crate::foc::phase::provider::StartupStatus;
+use crate::foc::phase::provider::{PhaseInput, PhaseOutput, PhaseProvider, StartupStatus};
 use crate::foc::phase::source::PhaseSource;
-use crate::foc::phase::startup::ConfirmResult;
-use crate::foc::phase::startup::DeadshortResult;
-use crate::foc::phase::startup::StartupPhase;
-use crate::foc::sensors::AngleSample;
-use crate::foc::sensors::AngleSensor;
+use crate::foc::phase::startup::{ConfirmResult, DeadshortResult, StartupPhase};
+use crate::foc::sensors::{AngleSample, AngleSensor};
 use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
+use crate::isr_prof;
+#[cfg(feature = "isr-work-events")]
+use crate::isr_work;
+#[cfg(feature = "storage")]
+use crate::storage::HallTuningConfig;
 use crate::units::{
     AngleRepr, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
     ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux, Sign, Time,
@@ -173,10 +172,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.source_usage.hall
     }
 
-    fn apply_hall_calibration(
-        &mut self,
-        prepared: &crate::foc::hall_sensor::PreparedHallCalibration,
-    ) -> bool {
+    fn apply_hall_calibration(&mut self, prepared: &PreparedHallCalibration) -> bool {
         // Only replace a cached frame to which Hall actually contributed.
         // Pure observer/manual/HFI outputs and active fallbacks stay intact.
         let observer_weight = match self.source {
@@ -239,7 +235,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     #[cfg(feature = "storage")]
-    fn apply_hall_tuning(&mut self, tuning: &crate::storage::HallTuningConfig) -> bool {
+    fn apply_hall_tuning(&mut self, tuning: &HallTuningConfig) -> bool {
         if !self.hall.apply_hall_tuning(tuning) {
             return false;
         }
@@ -277,7 +273,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
 
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
-        let sensor_start = crate::isr_prof::phase_now();
+        let sensor_start = isr_prof::phase_now();
         let previous_hall_health = self.hall_health;
         let previous_crossover = self.crossover_latched;
         let observer_was_ready = matches!(
@@ -413,14 +409,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             i_beta: input.i_beta,
             dt: input.dt,
         };
-        crate::isr_prof::phase_add(
-            &crate::isr_prof::EST_SENSE,
-            sensor_start,
-            crate::isr_prof::phase_now(),
-        );
-        let prof_t0 = crate::isr_prof::now();
+        isr_prof::phase_add(&isr_prof::EST_SENSE, sensor_start, isr_prof::phase_now());
+        let prof_t0 = isr_prof::now();
         self.observer.update(&obs_input);
-        crate::isr_prof::add(&crate::isr_prof::EST_OBS, prof_t0, crate::isr_prof::now());
+        isr_prof::add(&isr_prof::EST_OBS, prof_t0, isr_prof::now());
 
         // Optional ~2.4 Hz observer text diagnostic. Logging from the ADC
         // handler can exceed its deadline even at this low average rate;
@@ -475,7 +467,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         // — deactivates — the moment the observer has actually converged at
         // handoff speed (it keeps running on commanded-v + measured-i the
         // whole time, so by handoff its angle is the true rotor angle).
-        let prof_t0 = crate::isr_prof::now();
+        let prof_t0 = isr_prof::now();
         // Startup-log rate limit (see startup.rs LOG_TOKENS_PER_WINDOW):
         // tick the window every cycle; when frames were dropped, one
         // summary frame per window keeps the churn visible.
@@ -491,7 +483,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         }
         if self.startup.is_active() {
             #[cfg(feature = "isr-work-events")]
-            crate::isr_work::mark(crate::isr_work::STARTUP);
+            isr_work::mark(isr_work::STARTUP);
             let phase_before = self.startup.phase();
             if phase_before == StartupPhase::Deadshort {
                 // Flying-restart probe: the driver holds the bridge at zero
@@ -540,7 +532,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     velocity: obs_vel,
                 };
                 #[cfg(feature = "isr-profiling")]
-                let confirm_start = crate::isr_prof::now();
+                let confirm_start = isr_prof::now();
                 let confirm = self.startup.feed_confirm(
                     input.i_alpha,
                     input.i_beta,
@@ -551,11 +543,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                     claim,
                 );
                 #[cfg(feature = "isr-profiling")]
-                crate::isr_prof::add(
-                    &crate::isr_prof::STARTUP_CONFIRM,
-                    confirm_start,
-                    crate::isr_prof::now(),
-                );
+                isr_prof::add(&isr_prof::STARTUP_CONFIRM, confirm_start, isr_prof::now());
                 match confirm {
                     ConfirmResult::Confirmed { velocity } => {
                         if self.startup.log_allow() {
@@ -582,38 +570,33 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
                         // it — same as the deadshort catch.
                         if self.startup.log_allow() {
                             #[cfg(feature = "isr-profiling")]
-                            let log_start = crate::isr_prof::now();
+                            let log_start = isr_prof::now();
                             warn!(
                                 "startup: observer diverged from probed rotor \
                                  (probe_vel={:?} observer_vel={:?}), seeding observer from probe",
                                 velocity, obs_vel
                             );
                             #[cfg(feature = "isr-profiling")]
-                            let log_end = crate::isr_prof::now();
+                            let log_end = isr_prof::now();
                             #[cfg(feature = "isr-profiling")]
-                            crate::isr_prof::add(&crate::isr_prof::STARTUP_LOG, log_start, log_end);
+                            isr_prof::add(&isr_prof::STARTUP_LOG, log_start, log_end);
                             #[cfg(feature = "isr-profiling")]
                             {
                                 use core::sync::atomic::Ordering;
                                 let elapsed = log_end.wrapping_sub(log_start);
-                                crate::isr_prof::BENCH_STARTUP_LOG_EVENTS
-                                    .fetch_add(1, Ordering::Relaxed);
-                                crate::isr_prof::BENCH_STARTUP_LOG_CYCLES
+                                isr_prof::BENCH_STARTUP_LOG_EVENTS.fetch_add(1, Ordering::Relaxed);
+                                isr_prof::BENCH_STARTUP_LOG_CYCLES
                                     .fetch_add(elapsed, Ordering::Relaxed);
-                                crate::isr_prof::BENCH_STARTUP_LOG_MAX
+                                isr_prof::BENCH_STARTUP_LOG_MAX
                                     .fetch_max(elapsed, Ordering::Relaxed);
                             }
                         }
                         #[cfg(feature = "isr-profiling")]
-                        let seed_start = crate::isr_prof::now();
+                        let seed_start = isr_prof::now();
                         self.observer
                             .seed(wrap_angle(angle + velocity * input.dt), velocity);
                         #[cfg(feature = "isr-profiling")]
-                        crate::isr_prof::add(
-                            &crate::isr_prof::STARTUP_SEED,
-                            seed_start,
-                            crate::isr_prof::now(),
-                        );
+                        isr_prof::add(&isr_prof::STARTUP_SEED, seed_start, isr_prof::now());
                     }
                     ConfirmResult::Probing => {}
                 }
@@ -680,8 +663,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             }
         }
 
-        let prof_t1 = crate::isr_prof::now();
-        crate::isr_prof::add(&crate::isr_prof::EST_STARTUP, prof_t0, prof_t1);
+        let prof_t1 = isr_prof::now();
+        isr_prof::add(&isr_prof::EST_STARTUP, prof_t0, prof_t1);
 
         // Update open-loop override state (for Hall failure recovery)
         self.update_open_loop_override(input.dt);
@@ -704,7 +687,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         {
             self.motion_reference_epoch.advance();
         }
-        crate::isr_prof::add(&crate::isr_prof::EST_OUT, prof_t1, crate::isr_prof::now());
+        isr_prof::add(&isr_prof::EST_OUT, prof_t1, isr_prof::now());
     }
 
     fn request_source(&mut self, source: PhaseSource) -> bool {

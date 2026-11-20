@@ -9,9 +9,18 @@
 //! All value types implement [`PostcardValue`](sequential_storage::map::PostcardValue) via the marker trait,
 //! giving them automatic postcard serialization for sequential-storage.
 
+#[cfg(any(feature = "runtime", test))]
+use crate::drive_setup::ValidatedDriveSetup;
+#[cfg(any(feature = "runtime", test))]
+use crate::drive_setup::record::SetupRecord;
+use crate::foc::hall_calibration::{HallCalibrationResult, HallTransitionGeometry};
+use crate::foc::phase::PhaseSource;
 pub use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::dissipation::heat_current_limit;
+use crate::motor::failsafe::FailsafeConfig;
 pub use crate::motor::{derating::DeratingConfig, drive::DriveConfig};
+#[cfg(all(feature = "runtime", feature = "storage"))]
+use crate::state;
 use crate::types::ConfigValue;
 pub use crate::types::VoltageFeedforwardMode;
 use crate::units::{
@@ -289,20 +298,13 @@ impl MotorParamsConfig {
 pub use crate::types::measurement::HallTransitionGeometryConfig;
 
 impl HallTransitionGeometryConfig {
-    pub fn validated(
-        &self,
-        centroids: [ElectricalAngle; 8],
-    ) -> Option<crate::foc::hall_calibration::HallTransitionGeometry> {
-        crate::foc::hall_calibration::HallTransitionGeometry::try_from_raw_parts(
-            self.entry_angles,
-            self.next_states,
-            centroids,
-        )
+    pub fn validated(&self, centroids: [ElectricalAngle; 8]) -> Option<HallTransitionGeometry> {
+        HallTransitionGeometry::try_from_raw_parts(self.entry_angles, self.next_states, centroids)
     }
 }
 
-impl From<&crate::foc::hall_calibration::HallTransitionGeometry> for HallTransitionGeometryConfig {
-    fn from(value: &crate::foc::hall_calibration::HallTransitionGeometry) -> Self {
+impl From<&HallTransitionGeometry> for HallTransitionGeometryConfig {
+    fn from(value: &HallTransitionGeometry) -> Self {
         Self {
             entry_angles: value.entry_angles(),
             next_states: value.next_states(),
@@ -391,8 +393,8 @@ impl LegacyHallCalibrationConfig {
     }
 }
 
-impl From<&crate::foc::hall_calibration::HallCalibrationResult> for HallCalibrationConfig {
-    fn from(result: &crate::foc::hall_calibration::HallCalibrationResult) -> Self {
+impl From<&HallCalibrationResult> for HallCalibrationConfig {
+    fn from(result: &HallCalibrationResult) -> Self {
         Self {
             angles: result.angles,
             valid: result.valid,
@@ -714,7 +716,7 @@ impl FailsafeConfigStored {
 
 impl Default for FailsafeConfigStored {
     fn default() -> Self {
-        let config = crate::motor::failsafe::FailsafeConfig::default();
+        let config = FailsafeConfig::default();
         Self {
             staleness_timeout_ms: (config.staleness_timeout_us / 1_000) as u32,
             policy: config.policy as u8,
@@ -812,7 +814,7 @@ impl MotorFeedbackConfig {
             && self.blend_high > self.blend_low
     }
 
-    pub(crate) fn source(self, config: &RuntimeConfig) -> Option<crate::foc::phase::PhaseSource> {
+    pub(crate) fn source(self, config: &RuntimeConfig) -> Option<PhaseSource> {
         let hall = config.hall_calibration_is_valid()
             && config
                 .hall_calibration
@@ -821,11 +823,7 @@ impl MotorFeedbackConfig {
         self.source_for(hall, config.motor_params.as_ref())
     }
 
-    fn source_for(
-        self,
-        hall: bool,
-        motor: Option<&MotorParamsConfig>,
-    ) -> Option<crate::foc::phase::PhaseSource> {
+    fn source_for(self, hall: bool, motor: Option<&MotorParamsConfig>) -> Option<PhaseSource> {
         use crate::foc::phase::PhaseSource;
         if !self.is_sane() {
             return None;
@@ -883,7 +881,7 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     /// Resolve the installed policy after loading the motor and Hall records.
-    pub fn boot_feedback_source(&self) -> crate::foc::phase::PhaseSource {
+    pub fn boot_feedback_source(&self) -> PhaseSource {
         self.configured_feedback_source().unwrap_or_else(|| {
             MotorFeedbackConfig::default()
                 .source(self)
@@ -891,7 +889,7 @@ impl RuntimeConfig {
         })
     }
 
-    pub(crate) fn configured_feedback_source(&self) -> Option<crate::foc::phase::PhaseSource> {
+    pub(crate) fn configured_feedback_source(&self) -> Option<PhaseSource> {
         use crate::foc::phase::PhaseSource;
         if self.motor_feedback_invalid {
             return Some(PhaseSource::Manual);
@@ -949,7 +947,7 @@ pub enum InstalledDrive {
 #[cfg(any(feature = "runtime", test))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstalledDriveV1 {
-    setup: crate::drive_setup::record::SetupRecord,
+    setup: SetupRecord,
     configured_trip_a: f32,
     // The legacy records below already have fixed on-flash layouts.
     motor_override: Option<MotorParamsConfig>,
@@ -1030,7 +1028,7 @@ impl PostcardValue<'_> for InstalledDrive {}
 
 #[cfg(any(feature = "runtime", test))]
 impl InstalledDrive {
-    pub fn new(setup: &crate::drive_setup::ValidatedDriveSetup) -> Self {
+    pub fn new(setup: &ValidatedDriveSetup) -> Self {
         Self::V3(InstalledDriveV3 {
             values: InstalledDriveV2::new(
                 setup.motor_policy(),
@@ -1196,7 +1194,7 @@ where
         .fetch_item::<InstalledDrive>(buf, &ConfigKey::InstalledDrive)
         .await;
     if !load_installed_drive(&mut cfg, &installed, board_trip_a) {
-        crate::state::set_drive_setup_recovery(true);
+        state::set_drive_setup_recovery(true);
     }
     CONFIG_LOADED.signal(cfg);
 
@@ -1437,6 +1435,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foc::hall_calibration::HallCalibrationResult;
+    #[cfg(feature = "runtime")]
+    use crate::motor::derating::TemperatureDerating;
     use crate::units::{
         amps, erad, erad_per_s, erpm, henries, ohms, rad_per_s, seconds, volts, watts, webers,
     };
@@ -1714,7 +1715,7 @@ mod tests {
     fn hall_geometry_validation_includes_the_centroid_reference() {
         let good = measured_hall_config();
         assert!(good.is_calibrated());
-        let result = crate::foc::hall_calibration::HallCalibrationResult {
+        let result = HallCalibrationResult {
             angles: good.angles,
             valid: good.valid,
             valid_count: 6,
@@ -1968,7 +1969,7 @@ mod tests {
             invert_direction: true,
         };
         let derating = DeratingConfig {
-            temperature: crate::motor::derating::TemperatureDerating {
+            temperature: TemperatureDerating {
                 temp_fet_start_c: 80.0,
                 ..Default::default()
             },

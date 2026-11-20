@@ -21,6 +21,7 @@
 
 use super::config::BoardConfig;
 use super::constants::FRAC_1_SQRT_3;
+use crate::types::BoardCalib;
 use crate::units::{ElectricPotential, volts};
 
 /// Converts raw phase-terminal ADC counts → phase voltages (V) and αβ.
@@ -53,11 +54,7 @@ impl PhaseVoltageSense {
     }
 
     /// Same converter for host enrichment, using device-advertised scaling.
-    pub fn from_calib(
-        calib: &crate::types::BoardCalib,
-        divider_ratio: f32,
-        has_filters: bool,
-    ) -> Self {
+    pub fn from_calib(calib: &BoardCalib, divider_ratio: f32, has_filters: bool) -> Self {
         Self {
             volts_per_count: volts(
                 (calib.adc_vref_mv as f32 / 1000.0) / f32::from(calib.adc_max_counts)
@@ -183,13 +180,13 @@ pub fn observer_voltage_source(
 mod tests {
     use super::*;
     use crate::foc::config::{BoardConfig, PhaseSense};
-    use crate::units::ohms;
-    use crate::units::volts;
+    use crate::types::{BoardCalib, CurrentSenseTopology};
+    use crate::units::{ohms, volts};
 
     const fn board(phase_sense: Option<PhaseSense>) -> BoardConfig {
         BoardConfig {
-            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
-            calib: crate::types::BoardCalib {
+            current_sense_topology: CurrentSenseTopology::TwoShunt,
+            calib: BoardCalib {
                 shunt_ohms: ohms(0.0005),
                 amp_gain: 10.0,
                 adc_vref_mv: 3300,

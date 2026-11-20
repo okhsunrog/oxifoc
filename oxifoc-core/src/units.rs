@@ -29,6 +29,8 @@
 use core::marker::PhantomData;
 use core::ops::{Div, Mul};
 
+use crate::foc;
+use crate::foc::fast_math;
 pub use uom::ConstZero;
 pub use uom::si::f32::{
     AngularVelocity, ElectricCurrent, ElectricPotential, ElectricalAngle,
@@ -97,7 +99,7 @@ where
     D: uom::si::Dimension + ?Sized,
     U: uom::si::Units<f32> + ?Sized,
 {
-    erad(crate::foc::fast_math::atan2f(y.value, x.value))
+    erad(fast_math::atan2f(y.value, x.value))
 }
 
 macro_rules! si_constructor {
@@ -315,7 +317,7 @@ impl Scalar for f32 {
     }
     #[inline(always)]
     fn clamp_to(self, min: Self, max: Self) -> Self {
-        crate::foc::clamp_f32(self, min, max)
+        foc::clamp_f32(self, min, max)
     }
     #[inline(always)]
     fn copysign(self, sign: f32) -> Self {
@@ -352,7 +354,7 @@ where
     }
     #[inline(always)]
     fn clamp_to(self, min: Self, max: Self) -> Self {
-        Self::from_si(crate::foc::clamp_f32(self.value, min.value, max.value))
+        Self::from_si(foc::clamp_f32(self.value, min.value, max.value))
     }
     #[inline(always)]
     fn copysign(self, sign: f32) -> Self {
@@ -488,8 +490,7 @@ impl Mechanical for AngularVelocity {
 #[inline(always)]
 #[must_use]
 pub fn sqrt_current(x: CurrentSquared) -> ElectricCurrent {
-    x.max(CurrentSquared::ZERO)
-        .sqrt_with(crate::foc::fast_math::sqrtf)
+    x.max(CurrentSquared::ZERO).sqrt_with(fast_math::sqrtf)
 }
 
 #[cfg(test)]

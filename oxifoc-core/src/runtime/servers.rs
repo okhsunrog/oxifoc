@@ -32,14 +32,22 @@ use embassy_futures::select::{Either, select};
 
 use crate::state::DriverCommand;
 #[cfg(feature = "storage")]
-use crate::state::DriverOperation;
-#[cfg(feature = "storage")]
-use crate::state::FlashPendingGuard;
-#[cfg(feature = "storage")]
 use crate::state::model::{CONFIG_COORDINATOR, CachedConfigAck, ModelApplyGuard};
+#[cfg(feature = "storage")]
+use crate::state::{DriverOperation, FlashPendingGuard};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
+#[cfg(feature = "storage")]
+use crate::foc::config::BoardConfig;
+#[cfg(feature = "storage")]
+use crate::foc::controller::FocController;
+#[cfg(feature = "storage")]
+use crate::foc::detection::pi_tuning;
 use crate::foc::fault::{FaultRegistry, PlatformFault};
+#[cfg(feature = "storage")]
+use crate::foc::pwm::SvpwmModulator;
+#[cfg(feature = "storage")]
+use crate::foc::trig::LibmSinCos;
 #[cfg(feature = "storage")]
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::icd::{
@@ -47,8 +55,24 @@ use crate::icd::{
     MotorRequest, MotorStatus, SlowTelemetry, SlowTelemetryEndpoint, TelemetryConfig,
     TelemetryConfigAck, TelemetryConfigEndpoint,
 };
+#[cfg(feature = "storage")]
+use crate::motor::foc_driver::{CurrentLimits, PreparedMotorModel};
+use crate::runtime::streaming::cmd_stats;
+#[cfg(feature = "storage")]
+use crate::state;
+#[cfg(feature = "storage")]
+use crate::state::model::ModelConfigUpdate;
 use crate::state::{CMD_CHANNEL, MOTOR_COMMAND_DONE, MotorControlState};
-use crate::types::MotorCommandOutcome;
+#[cfg(all(feature = "delivery", feature = "detection", feature = "storage"))]
+use crate::storage::InstalledDrive;
+#[cfg(feature = "storage")]
+use crate::storage::{CurrentLimitsConfig, MotorParamsConfig, PwmConfigLimits, PwmConfigStored};
+use crate::timer::Timer;
+#[cfg(feature = "storage")]
+use crate::types::{ConfigGroupId, ConfigValue, ControlMode};
+use crate::types::{ControlTiming, MotorCommandOutcome};
+#[cfg(all(feature = "delivery", feature = "detection", feature = "storage"))]
+use crate::types::{Keyed, SaveDriveSetup};
 
 /// Bound on the ISR-confirmation wait in [`motor_command_server`]. Normal
 /// confirmation is sub-millisecond (the 20 kHz ISR drains the channel every
@@ -115,7 +139,7 @@ pub async fn motor_command_server<NS, F, T, const N: usize>(
 ) where
     NS: NetStackHandle,
     F: PlatformFault,
-    T: crate::timer::Timer,
+    T: Timer,
 {
     let server = endpoints.bounded_server::<MotorEndpoint, N>(Some("motor"));
     let server = pin!(server);
@@ -125,8 +149,7 @@ pub async fn motor_command_server<NS, F, T, const N: usize>(
         let result = h
             .serve(|request: &MotorRequest| {
                 let request = *request;
-                crate::runtime::streaming::cmd_stats::MOTOR_REQS
-                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                cmd_stats::MOTOR_REQS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 async move {
                     let confirm = async {
                         MOTOR_COMMAND_DONE.reset();
@@ -166,8 +189,7 @@ pub async fn motor_command_server<NS, F, T, const N: usize>(
             })
             .await;
         if result.is_err() {
-            crate::runtime::streaming::cmd_stats::MOTOR_ACK_SEND_ERRORS
-                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            cmd_stats::MOTOR_ACK_SEND_ERRORS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -273,10 +295,7 @@ pub async fn fault_server<NS, F, const N: usize>(
 /// - VoltageLimits: ordered, positive; the ISR also verifies board bounds.
 /// - PwmConfig: boards that consume this group at boot supply their limits.
 #[cfg(feature = "storage")]
-fn write_is_acceptable(
-    w: &crate::types::ConfigValue,
-    pwm_limits: Option<crate::storage::PwmConfigLimits>,
-) -> bool {
+fn write_is_acceptable(w: &ConfigValue, pwm_limits: Option<PwmConfigLimits>) -> bool {
     use crate::types::ConfigValue;
     let counts_ok = |v: f32| (0.0..=f32::from(u16::MAX)).contains(&v);
     match w {
@@ -301,7 +320,7 @@ fn write_is_acceptable(
 }
 
 #[cfg(feature = "storage")]
-fn write_is_live_safe_while_running(w: &crate::types::ConfigValue) -> bool {
+fn write_is_live_safe_while_running(w: &ConfigValue) -> bool {
     use crate::types::ConfigValue;
     matches!(
         w,
@@ -310,10 +329,7 @@ fn write_is_live_safe_while_running(w: &crate::types::ConfigValue) -> bool {
 }
 
 #[cfg(feature = "storage")]
-fn config_value(
-    cfg: &RuntimeConfig,
-    group: crate::types::ConfigGroupId,
-) -> Option<crate::types::ConfigValue> {
+fn config_value(cfg: &RuntimeConfig, group: ConfigGroupId) -> Option<ConfigValue> {
     use crate::types::{ConfigGroupId as G, ConfigValue as V};
     match group {
         G::BoardCalibration => cfg.board_calibration.map(V::BoardCalibration),
@@ -338,9 +354,9 @@ fn config_value(
 #[cfg(feature = "storage")]
 fn resolved_config(
     cfg: &RuntimeConfig,
-    group: crate::types::ConfigGroupId,
-    board: &crate::foc::config::BoardConfig,
-) -> Option<crate::types::ConfigValue> {
+    group: ConfigGroupId,
+    board: &BoardConfig,
+) -> Option<ConfigValue> {
     use crate::storage::{CurrentLimitsConfig, PiGainsConfig, VoltageLimitsConfig};
     use crate::types::{ConfigGroupId, ConfigValue};
     match group {
@@ -358,9 +374,9 @@ fn resolved_config(
             let rating = cfg
                 .motor_params
                 .as_ref()
-                .and_then(crate::storage::MotorParamsConfig::rating_current)
+                .and_then(MotorParamsConfig::rating_current)
                 .unwrap_or(ElectricCurrent::ZERO);
-            let limits = crate::motor::foc_driver::CurrentLimits::from_stored(
+            let limits = CurrentLimits::from_stored(
                 cfg.current_limits.as_ref(),
                 amps(board.max_phase_current_a),
                 rating,
@@ -375,19 +391,19 @@ fn resolved_config(
             }))
         }
         ConfigGroupId::PiGains => {
-            let controller = crate::foc::controller::FocController::<
-                crate::foc::pwm::SvpwmModulator,
-                crate::foc::trig::LibmSinCos,
-            >::from_runtime_config(cfg, volts(24.0));
+            let controller =
+                FocController::<SvpwmModulator, LibmSinCos>::from_runtime_config(cfg, volts(24.0));
             let (kp, ki) = controller.id_pi.gains();
             let (kp, ki) = (kp.value, ki.value);
             Some(ConfigValue::PiGains(PiGainsConfig {
                 kp,
                 ki,
-                bandwidth: rad_per_s(cfg.pi_gains.as_ref().filter(|v| v.is_sane()).map_or(
-                    crate::foc::detection::pi_tuning::DEFAULT_BANDWIDTH_RAD_S,
-                    |v| v.bandwidth.value,
-                )),
+                bandwidth: rad_per_s(
+                    cfg.pi_gains
+                        .as_ref()
+                        .filter(|v| v.is_sane())
+                        .map_or(pi_tuning::DEFAULT_BANDWIDTH_RAD_S, |v| v.bandwidth.value),
+                ),
             }))
         }
         _ => None,
@@ -415,15 +431,15 @@ fn resolved_config(
 /// The board profile supplies the physical limits used to resolve effective values.
 #[cfg(feature = "storage")]
 #[allow(clippy::too_many_arguments)]
-pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
+pub async fn config_server<NS, T: Timer, const N: usize>(
     endpoints: Endpoints<NS>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
-    board: &crate::foc::config::BoardConfig,
+    board: &BoardConfig,
     boot_epoch: u64,
     drive_pwm_hz: u32,
     persist: bool,
-    pwm_limits: Option<crate::storage::PwmConfigLimits>,
+    pwm_limits: Option<PwmConfigLimits>,
 ) where
     NS: NetStackHandle,
 {
@@ -455,10 +471,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
 
     #[cfg(all(feature = "detection", feature = "delivery"))]
     let setup_ack = CriticalSectionMutex::new(RefCell::new(
-        None::<(
-            crate::types::Keyed<crate::types::SaveDriveSetup>,
-            ConfigResponse,
-        )>,
+        None::<(Keyed<SaveDriveSetup>, ConfigResponse)>,
     ));
     #[cfg(all(feature = "detection", feature = "delivery"))]
     let setup_ack = &setup_ack;
@@ -473,9 +486,9 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                         (
                             state.motor_state == MotorState::Running,
                             state.driver_operation != DriverOperation::Idle
-                                || crate::state::boot_current_offset_pending()
-                                || crate::state::current_offset_request_pending()
-                                || crate::state::model_apply_pending(),
+                                || state::boot_current_offset_pending()
+                                || state::current_offset_request_pending()
+                                || state::model_apply_pending(),
                         )
                     });
                     let versioned = match &req {
@@ -537,9 +550,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 let value = config_value(&cfg, group);
                                 let default =
                                     if value.is_none() && group == ConfigGroupId::CurrentLimits {
-                                        Some(ConfigValue::CurrentLimits(
-                                            crate::storage::CurrentLimitsConfig::AUTO,
-                                        ))
+                                        Some(ConfigValue::CurrentLimits(CurrentLimitsConfig::AUTO))
                                     } else {
                                         None
                                     };
@@ -571,7 +582,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             });
                             snapshot.effective = if group == ConfigGroupId::PwmConfig {
                                 pwm_limits.map(|limits| {
-                                    ConfigValue::PwmConfig(crate::storage::PwmConfigStored {
+                                    ConfigValue::PwmConfig(PwmConfigStored {
                                         freq_hz: drive_pwm_hz,
                                         max_duty_percent: limits.max_duty_percent,
                                     })
@@ -631,14 +642,13 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                             // Permit repair after a missing expected sensor
                                             // has already raised a stop fault.
                                             if state.actuator_busy()
-                                                || state.control_mode
-                                                    != crate::types::ControlMode::Stopped
-                                                || crate::state::DETECTION_ACTIVE
+                                                || state.control_mode != ControlMode::Stopped
+                                                || state::DETECTION_ACTIVE
                                                     .load(core::sync::atomic::Ordering::Acquire)
                                             {
                                                 return ConfigResponse::Busy;
                                             }
-                                            crate::state::set_motor_temperature_input(*value);
+                                            state::set_motor_temperature_input(*value);
                                             cfg.motor_temperature = Some(*value);
                                         }
                                         _ => unreachable!(),
@@ -713,15 +723,11 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             }
                             let model_update = match &write {
                                 ConfigValue::MotorParams(value) => {
-                                    Some(crate::state::model::ModelConfigUpdate::MotorParams(
-                                        value.clone(),
-                                    ))
+                                    Some(ModelConfigUpdate::MotorParams(value.clone()))
                                 }
-                                ConfigValue::VoltageFeedforward(value) => Some(
-                                    crate::state::model::ModelConfigUpdate::VoltageFeedforward(
-                                        *value,
-                                    ),
-                                ),
+                                ConfigValue::VoltageFeedforward(value) => {
+                                    Some(ModelConfigUpdate::VoltageFeedforward(*value))
+                                }
                                 _ => None,
                             };
                             if let Some(update) = model_update {
@@ -739,11 +745,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                     state_mutex.borrow(cs).borrow().last_adc.vbus()
                                 });
                                 let model =
-                                    crate::motor::foc_driver::PreparedMotorModel::from_config(
-                                        &config,
-                                        vbus,
-                                        hw_max_current,
-                                    );
+                                    PreparedMotorModel::from_config(&config, vbus, hw_max_current);
                                 let Some(guard) = ModelApplyGuard::prepare(
                                     model,
                                     update,
@@ -809,8 +811,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 return ConfigResponse::Unsupported;
                             }
                             let group = keyed.inner.group;
-                            if crate::state::drive_setup_recovery_required()
-                                && group.is_setup_component()
+                            if state::drive_setup_recovery_required() && group.is_setup_component()
                             {
                                 return ConfigResponse::Busy;
                             }
@@ -835,7 +836,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 state_mutex.borrow(cs).borrow().actuator_busy()
                             });
                             if actuator_busy
-                                || crate::state::DETECTION_ACTIVE
+                                || state::DETECTION_ACTIVE
                                     .load(core::sync::atomic::Ordering::Acquire)
                             {
                                 return ConfigResponse::Busy;
@@ -956,11 +957,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                             let vbus = critical_section::with(|cs| {
                                 state_mutex.borrow(cs).borrow().last_adc.vbus()
                             });
-                            let model = crate::motor::foc_driver::PreparedMotorModel::from_config(
-                                &config,
-                                vbus,
-                                hw_max_current,
-                            );
+                            let model =
+                                PreparedMotorModel::from_config(&config, vbus, hw_max_current);
                             let Some(guard) = ModelApplyGuard::prepare_reset(
                                 model,
                                 runtime_config,
@@ -976,7 +974,7 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
                                 if FLASH_CHANNEL.try_send(FlashOperation::EraseAll).is_err() {
                                     return ConfigResponse::Error;
                                 }
-                                crate::state::set_drive_setup_recovery(true);
+                                state::set_drive_setup_recovery(true);
                                 if !FLASH_DONE.wait().await {
                                     critical_section::with(|cs| {
                                         reset_ack.borrow(cs).set(Some((request.id, false)));
@@ -1015,8 +1013,8 @@ pub async fn config_server<NS, T: crate::timer::Timer, const N: usize>(
 }
 
 #[cfg(all(feature = "storage", feature = "detection", feature = "delivery"))]
-async fn save_drive_setup<T: crate::timer::Timer>(
-    request: &crate::types::Keyed<crate::types::SaveDriveSetup>,
+async fn save_drive_setup<T: Timer>(
+    request: &Keyed<SaveDriveSetup>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     board_trip: ElectricCurrent,
@@ -1057,16 +1055,15 @@ async fn save_drive_setup<T: crate::timer::Timer>(
     let Ok(setup) = request.inner.setup.clone().validate(board_trip, trip) else {
         return ConfigResponse::Invalid;
     };
-    let record = crate::storage::InstalledDrive::new(&setup);
+    let record = InstalledDrive::new(&setup);
     setup.project(&mut config);
-    let mut model =
-        crate::motor::foc_driver::PreparedMotorModel::from_config(&config, vbus, board_trip);
+    let mut model = PreparedMotorModel::from_config(&config, vbus, board_trip);
     if model.prepare_setup_feedback(setup.hall()).is_none() {
         return ConfigResponse::Invalid;
     }
     let Some(guard) = ModelApplyGuard::prepare(
         model,
-        crate::state::model::ModelConfigUpdate::DriveSetup(setup),
+        ModelConfigUpdate::DriveSetup(setup),
         runtime_config,
         &CONFIG_COORDINATOR.revisions,
         &CONFIG_COORDINATOR.actions,
@@ -1084,7 +1081,7 @@ async fn save_drive_setup<T: crate::timer::Timer>(
     }
     // Once a write is queued, an error may leave a complete new record.
     // Inhibit starts until the prepared model is installed or reboot loads it.
-    crate::state::set_drive_setup_recovery(true);
+    state::set_drive_setup_recovery(true);
     if !FLASH_DONE.wait().await {
         return ConfigResponse::Error;
     }
@@ -1107,7 +1104,7 @@ async fn save_drive_setup<T: crate::timer::Timer>(
 pub async fn telemetry_config_server<NS, const N: usize>(
     endpoints: Endpoints<NS>,
     foc_freq_hz: u32,
-    control_timing: crate::types::ControlTiming,
+    control_timing: ControlTiming,
 ) where
     NS: NetStackHandle,
 {
@@ -1262,11 +1259,11 @@ pub async fn run_all_servers<NS, F, T>(
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     fault_registry: &'static FaultRegistry<F>,
     foc_freq_hz: u32,
-    control_timing: crate::types::ControlTiming,
+    control_timing: ControlTiming,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
-    T: crate::timer::Timer,
+    T: Timer,
 {
     join(
         join3(
@@ -1292,15 +1289,15 @@ pub async fn run_all_servers_with_config<NS, F, T>(
     fault_registry: &'static FaultRegistry<F>,
     runtime_config: &'static CriticalSectionMutex<RefCell<RuntimeConfig>>,
     foc_freq_hz: u32,
-    control_timing: crate::types::ControlTiming,
-    board: &crate::foc::config::BoardConfig,
+    control_timing: ControlTiming,
+    board: &BoardConfig,
     boot_epoch: u64,
     persist: bool,
-    pwm_limits: Option<crate::storage::PwmConfigLimits>,
+    pwm_limits: Option<PwmConfigLimits>,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
-    T: crate::timer::Timer,
+    T: Timer,
 {
     let drive_pwm_hz = device_info.foc_freq_hz;
     join(

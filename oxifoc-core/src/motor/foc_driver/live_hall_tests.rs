@@ -1,17 +1,21 @@
 use super::*;
-use crate::foc::hall_sensor::HallSensor;
+use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
+use crate::foc::hall_sensor::{HallSensor, PreparedHallCalibration};
+use crate::foc::phase::PhaseInput;
 use crate::foc::sensors::AngleSensor;
+use crate::state;
 use crate::state::model::{CachedConfigAck, ConfigActionCache, ModelApplyGuard};
 use crate::state::{DriverCommand, MotorControlState, process_commands};
-use crate::storage::{HallCalibrationConfig, RuntimeConfig};
-use crate::types::{ConfigGroupId, ConfigResponse, ReqId};
+use crate::storage::{HallCalibrationConfig, HallTransitionGeometryConfig, RuntimeConfig};
+use crate::timer::Timer;
+use crate::types::{ConfigGroupId, ConfigResponse, MotorCommand, MotorRequest, ReqId};
 use crate::units::{ToBits, amps, erad, erad_per_s, seconds, volts};
 use core::cell::RefCell;
 use core::task::{Context, Poll, Waker};
 use critical_section::Mutex;
 
 struct PendingTimer;
-impl crate::timer::Timer for PendingTimer {
+impl Timer for PendingTimer {
     async fn after_millis(_: u64) {
         core::future::pending::<()>().await;
     }
@@ -22,9 +26,9 @@ impl crate::timer::Timer for PendingTimer {
 
 #[derive(Clone, Copy, PartialEq)]
 struct TestFault;
-impl crate::foc::fault::PlatformFault for TestFault {
-    fn category(&self) -> crate::foc::fault::FaultCategory {
-        crate::foc::fault::FaultCategory::OverCurrent
+impl PlatformFault for TestFault {
+    fn category(&self) -> FaultCategory {
+        FaultCategory::OverCurrent
     }
     fn details(&self) -> heapless::String<128> {
         heapless::String::new()
@@ -34,16 +38,12 @@ impl crate::foc::fault::PlatformFault for TestFault {
 struct BootFlag(bool);
 impl BootFlag {
     fn clear() -> Self {
-        Self(
-            crate::state::BOOT_CURRENT_OFFSET_PENDING
-                .swap(false, core::sync::atomic::Ordering::AcqRel),
-        )
+        Self(state::BOOT_CURRENT_OFFSET_PENDING.swap(false, core::sync::atomic::Ordering::AcqRel))
     }
 }
 impl Drop for BootFlag {
     fn drop(&mut self) {
-        crate::state::BOOT_CURRENT_OFFSET_PENDING
-            .store(self.0, core::sync::atomic::Ordering::Release);
+        state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, core::sync::atomic::Ordering::Release);
     }
 }
 
@@ -65,7 +65,7 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
         state.load_hall_calibration(&config.borrow(cs).borrow());
         assert!(!state.hall_calibration_valid);
     });
-    let registry = crate::foc::fault::FaultRegistry::<TestFault>::new();
+    let registry = FaultRegistry::<TestFault>::new();
     let mut hall = HallSensor::new(1_000_000);
     hall.update(1, 0);
     let mut phase = PhaseManager::with_hall(hall);
@@ -100,7 +100,7 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     for angle in &mut calibration.angles[1..=6] {
         *angle += erad(0.4);
     }
-    calibration.geometry = Some(crate::storage::HallTransitionGeometryConfig {
+    calibration.geometry = Some(HallTransitionGeometryConfig {
         entry_angles: calibration
             .angles
             .map(|angle| angle - erad(core::f32::consts::TAU / 12.0)),
@@ -210,8 +210,7 @@ fn live_hall_transaction_commits_only_after_supported_stopped_apply() {
     assert!(
         NoSensor
             .apply_prepared_hall_calibration(
-                &crate::foc::hall_sensor::PreparedHallCalibration::from_config(&calibration)
-                    .unwrap()
+                &PreparedHallCalibration::from_config(&calibration).unwrap()
             )
             .is_none()
     );
@@ -272,7 +271,7 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
         });
         assert!(!state.hall_calibration_valid);
     });
-    let registry = crate::foc::fault::FaultRegistry::<TestFault>::new();
+    let registry = FaultRegistry::<TestFault>::new();
     let mut hall = HallSensor::new(1_000_000);
     hall.update(1, 0);
     let mut phase = PhaseManager::with_hall(hall);
@@ -281,7 +280,7 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
     phase.set_source(PhaseSource::OpenLoop).unwrap();
     phase.set_open_loop_velocity(erad_per_s(100.0));
     phase.update(
-        &crate::foc::phase::PhaseInput {
+        &PhaseInput {
             dt: seconds(0.00005),
             ..Default::default()
         },
@@ -336,19 +335,19 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
     }
     for source in [PhaseSource::Manual, PhaseSource::Observer] {
         CMD_CHANNEL
-            .try_send(DriverCommand::Motor(crate::types::MotorRequest {
+            .try_send(DriverCommand::Motor(MotorRequest {
                 source_session: 11,
                 seq: 1,
-                command: crate::types::MotorCommand::SetPhaseSource(source),
+                command: MotorCommand::SetPhaseSource(source),
             }))
             .unwrap();
         process_commands(&state, &mut driver, &registry);
         assert_eq!(driver.phase().source(), source);
         CMD_CHANNEL
-            .try_send(DriverCommand::Motor(crate::types::MotorRequest {
+            .try_send(DriverCommand::Motor(MotorRequest {
                 source_session: 11,
                 seq: 1,
-                command: crate::types::MotorCommand::SetPhaseSource(PhaseSource::Hall),
+                command: MotorCommand::SetPhaseSource(PhaseSource::Hall),
             }))
             .unwrap();
         process_commands(&state, &mut driver, &registry);
@@ -376,7 +375,7 @@ fn invalid_hall_reference_blocks_only_dependent_closed_loop_and_source_requests(
         .unwrap();
     driver.phase_mut().set_open_loop_velocity(erad_per_s(0.0));
     driver.phase_mut().update(
-        &crate::foc::phase::PhaseInput {
+        &PhaseInput {
             dt: seconds(0.00005),
             ..Default::default()
         },
@@ -413,7 +412,7 @@ fn detector_cannot_install_hall_before_explicit_apply() {
         coordinator.persisted.borrow(cs).borrow_mut()[ConfigGroupId::HallCalibration.index()] =
             Some(0);
     });
-    let registry = crate::foc::fault::FaultRegistry::<TestFault>::new();
+    let registry = FaultRegistry::<TestFault>::new();
     let mut hall = HallSensor::new(1_000_000);
     hall.update(1, 0);
     let mut driver = FocDriver::new(

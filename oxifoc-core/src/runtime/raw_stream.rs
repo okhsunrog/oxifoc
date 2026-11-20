@@ -15,6 +15,7 @@ use crate::{
     types::{ControlTiming, TelemetryConfigAck},
     velocity_telemetry::VELOCITY_RECORD_BYTES,
 };
+use crate::{raw_telemetry, state};
 use core::{
     pin::pin,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
@@ -244,7 +245,7 @@ async fn control_request_with_options(
             request,
             foc_hz,
             READY.load(Ordering::Acquire),
-            crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst),
+            state::FLASH_OP_PENDING.load(Ordering::SeqCst),
             debug,
         );
         if !matches!(outcome.1, Action::None) {
@@ -262,7 +263,7 @@ async fn control_request_with_options(
         PRODUCER_DROPS.store(0, Ordering::Relaxed);
         FAST_DECIM_CTR.store(0, Ordering::Relaxed);
         critical_section::with(|_| {
-            if crate::state::FLASH_OP_PENDING.load(Ordering::SeqCst) {
+            if state::FLASH_OP_PENDING.load(Ordering::SeqCst) {
                 control.phase = Phase::Failed;
                 status = RawTelemetryStatus::Busy;
             } else {
@@ -367,7 +368,7 @@ fn append_velocity_block(
     final_total: Option<u64>,
 ) -> (usize, usize) {
     let space = buffer.len().saturating_sub(RAW_HEADER_BYTES);
-    let capacity = (space / VELOCITY_RECORD_BYTES).min(crate::raw_telemetry::RAW_MAX_RECORDS);
+    let capacity = (space / VELOCITY_RECORD_BYTES).min(raw_telemetry::RAW_MAX_RECORDS);
     if capacity == 0 {
         return (0, 0);
     }

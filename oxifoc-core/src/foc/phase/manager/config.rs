@@ -1,12 +1,15 @@
 //! Prepare estimator state outside the control interrupt, then install it once.
 
 use super::{PhaseManager, PhaseTracker};
-use crate::foc::phase::PhaseSource;
+use crate::foc::hall_sensor::PreparedHallCalibration;
 #[cfg(feature = "hfi")]
 use crate::foc::phase::observer::HfiObserver;
 use crate::foc::phase::observer::{BackEmfObserver, Observer};
+use crate::foc::phase::{PhaseSource, observer};
 use crate::foc::sensors::AngleSensor;
 use crate::foc::trig::SinCos;
+#[cfg(all(feature = "delivery", feature = "detection", feature = "runtime"))]
+use crate::storage::HallCalibrationConfig;
 use crate::storage::RuntimeConfig;
 use crate::units::{ElectricPotential, Sign, per_second};
 
@@ -14,7 +17,7 @@ use crate::units::{ElectricPotential, Sign, per_second};
 /// belongs to boot or the configuration task, never to the periodic FOC path.
 pub struct PreparedPhaseModel {
     pub(super) selected_source: Option<PhaseSource>,
-    reset_hall: Option<crate::foc::hall_sensor::PreparedHallCalibration>,
+    reset_hall: Option<PreparedHallCalibration>,
     observer: Observer,
     #[cfg(feature = "hfi")]
     hfi: Option<HfiObserver>,
@@ -37,7 +40,7 @@ impl PreparedPhaseModel {
         {
             let l_avg = (mp.inductance_d + mp.inductance_q) / 2.0;
             let mut obs = BackEmfObserver::new(mp.resistance, l_avg, mp.flux_linkage)
-                .with_lambda_tracking(crate::foc::phase::observer::DEFAULT_LAMBDA_GAIN);
+                .with_lambda_tracking(observer::DEFAULT_LAMBDA_GAIN);
             if (mp.inductance_q - mp.inductance_d).abs() > 0.05 * l_avg {
                 obs = obs.with_saliency(mp.inductance_d, mp.inductance_q);
             }
@@ -72,13 +75,13 @@ impl PreparedPhaseModel {
 
     #[cfg(any(feature = "runtime", test))]
     pub(crate) fn reset_hall_reference(&mut self) {
-        self.reset_hall = Some(crate::foc::hall_sensor::PreparedHallCalibration::nominal());
+        self.reset_hall = Some(PreparedHallCalibration::nominal());
     }
 
     #[cfg(all(feature = "runtime", feature = "detection", feature = "delivery"))]
     pub(crate) fn prepare_setup_feedback(
         &mut self,
-        hall: Option<crate::storage::HallCalibrationConfig>,
+        hall: Option<HallCalibrationConfig>,
     ) -> Option<()> {
         use crate::foc::hall_sensor::PreparedHallCalibration;
         self.reset_hall = Some(match hall {
@@ -88,7 +91,7 @@ impl PreparedPhaseModel {
         self.selected_source.map(|_| ())
     }
 
-    pub(crate) fn hall_reset(&self) -> Option<&crate::foc::hall_sensor::PreparedHallCalibration> {
+    pub(crate) fn hall_reset(&self) -> Option<&PreparedHallCalibration> {
         self.reset_hall.as_ref()
     }
 }

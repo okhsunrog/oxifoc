@@ -36,6 +36,7 @@
 use core::f32::consts::TAU;
 
 use super::hall_sensor::HALL_STATE_TABLE;
+use crate::foc::trig::FastSinCos;
 use crate::units::{AngleRepr, ConstZero, ElectricCurrent, ElectricalAngle, amps, erad};
 
 mod geometry;
@@ -125,7 +126,7 @@ impl HallCalibrator {
         let idx = (raw_hall_state & 0x07) as usize;
         let (s, c) = {
             use crate::foc::trig::SinCos;
-            crate::foc::trig::FastSinCos::sin_cos(angle.radians())
+            FastSinCos::sin_cos(angle.radians())
         };
         self.sin_acc[idx] += s;
         self.cos_acc[idx] += c;

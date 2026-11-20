@@ -4,12 +4,14 @@ use super::{ControlMode, FocDriver, STARTUP_MIN_DRIVE, StepError, VOLTAGE_LIMITE
 use crate::foc::controller::FocOutput;
 use crate::foc::fast_math::sqrtf;
 use crate::foc::phase::PhaseProvider;
-use crate::foc::pwm::PhasePwm;
-use crate::foc::pwm::PhaseState;
+use crate::foc::pwm::{PhasePwm, PhaseState};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
+use crate::isr_prof;
+#[cfg(feature = "isr-work-events")]
+use crate::isr_work;
 use crate::units::{
     AngleRepr, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
     ElectricalAngularVelocity, Scalar, Sign, Time,
@@ -352,7 +354,7 @@ where
     #[inline(never)]
     fn prepare_velocity_authority(&mut self, now_ticks: u64) {
         #[cfg(feature = "isr-work-events")]
-        crate::isr_work::mark(crate::isr_work::AUTHORITY_AHEAD);
+        isr_work::mark(isr_work::AUTHORITY_AHEAD);
         let (iq_min, iq_max, omega) = self.velocity_authority();
         self.velocity_schedule.store_authority(
             iq_min,
@@ -374,8 +376,8 @@ where
         _now_ticks: u64,
     ) {
         #[cfg(feature = "isr-work-events")]
-        crate::isr_work::mark(crate::isr_work::VELOCITY_PI);
-        let profile_start = crate::isr_prof::phase_now();
+        isr_work::mark(isr_work::VELOCITY_PI);
+        let profile_start = isr_prof::phase_now();
         let target_vel = self.velocity_target(target);
         let (tracking, mut blockage, mut voltage_clip) = self.velocity_schedule.take_feedback();
         self.velocity_loop.track_grant(tracking);
@@ -412,7 +414,7 @@ where
             // The bounds and final current grant use the same speed policy.
             let constraints = self.torque_constraints(self.torque_speed());
             #[cfg(feature = "isr-profiling")]
-            let negative_start = crate::isr_prof::now();
+            let negative_start = isr_prof::now();
             #[cfg(not(feature = "iq-authority"))]
             let iq_min = self
                 .grant_torque_constrained(ElectricCurrent::ZERO, -full, &constraints)
@@ -420,13 +422,13 @@ where
             #[cfg(feature = "iq-authority")]
             let iq_min = self.grant_iq_authority(-full, &constraints);
             #[cfg(feature = "isr-profiling")]
-            crate::isr_prof::add(
-                &crate::isr_prof::AUTHORITY_NEGATIVE,
+            isr_prof::add(
+                &isr_prof::AUTHORITY_NEGATIVE,
                 negative_start,
-                crate::isr_prof::now(),
+                isr_prof::now(),
             );
             #[cfg(feature = "isr-profiling")]
-            let positive_start = crate::isr_prof::now();
+            let positive_start = isr_prof::now();
             #[cfg(not(feature = "iq-authority"))]
             let iq_max = self
                 .grant_torque_constrained(ElectricCurrent::ZERO, full, &constraints)
@@ -434,10 +436,10 @@ where
             #[cfg(feature = "iq-authority")]
             let iq_max = self.grant_iq_authority(full, &constraints);
             #[cfg(feature = "isr-profiling")]
-            crate::isr_prof::add(
-                &crate::isr_prof::AUTHORITY_POSITIVE,
+            isr_prof::add(
+                &isr_prof::AUTHORITY_POSITIVE,
                 positive_start,
-                crate::isr_prof::now(),
+                isr_prof::now(),
             );
             (iq_min, iq_max)
         };
@@ -456,7 +458,7 @@ where
             }
             None => {
                 #[cfg(feature = "isr-work-events")]
-                crate::isr_work::mark(crate::isr_work::AUTHORITY_FALLBACK);
+                isr_work::mark(isr_work::AUTHORITY_FALLBACK);
                 #[cfg(test)]
                 authority_audit::fallback();
                 let (iq_min, iq_max, _) = self.velocity_authority();
@@ -541,10 +543,10 @@ where
         if !self.velocity_schedule.set_request(iq_target) {
             self.invalidate_velocity();
         }
-        crate::isr_prof::phase_add(
-            &crate::isr_prof::VELOCITY_REQUEST,
+        isr_prof::phase_add(
+            &isr_prof::VELOCITY_REQUEST,
             profile_start,
-            crate::isr_prof::phase_now(),
+            isr_prof::phase_now(),
         );
     }
 
@@ -600,7 +602,7 @@ where
         now_ticks: u64,
         feedback: CurrentFeedback,
     ) -> Result<FocOutput, StepError> {
-        let prof_t0 = crate::isr_prof::now();
+        let prof_t0 = isr_prof::now();
         // Check sensor calibration
         if !self.current_sensor.is_calibrated() {
             return Err(StepError::NotCalibrated);
@@ -696,12 +698,12 @@ where
         // Read currents and run FOC controller. The estimated electrical
         // velocity drives the dq-decoupling feedforward (no-op when no
         // motor params are configured).
-        let prof_tc = crate::isr_prof::now();
+        let prof_tc = isr_prof::now();
         let currents = self.current_sensor.read_currents();
-        crate::isr_prof::add(&crate::isr_prof::GATE_CURR, prof_tc, crate::isr_prof::now());
+        isr_prof::add(&isr_prof::GATE_CURR, prof_tc, isr_prof::now());
         let max_duty = self.pwm.max_duty();
-        let prof_t1 = crate::isr_prof::now();
-        crate::isr_prof::add(&crate::isr_prof::STEP_GATE, prof_t0, prof_t1);
+        let prof_t1 = isr_prof::now();
+        isr_prof::add(&isr_prof::STEP_GATE, prof_t0, prof_t1);
         let out = self.controller.step_with_injection(
             currents,
             angle,
@@ -713,8 +715,8 @@ where
             max_duty,
             dt,
         );
-        let prof_t2 = crate::isr_prof::now();
-        crate::isr_prof::add(&crate::isr_prof::STEP_CTRL, prof_t1, prof_t2);
+        let prof_t2 = isr_prof::now();
+        isr_prof::add(&isr_prof::STEP_CTRL, prof_t1, prof_t2);
 
         // Layer 2: Check measured current against hard overcurrent limit
         if self.current_limits.is_overcurrent(out.id, out.iq) {
@@ -730,8 +732,8 @@ where
         self.last_iq_meas = out.iq;
 
         self.pwm.set_duties(out.duties);
-        let prof_t3 = crate::isr_prof::now();
-        crate::isr_prof::add(&crate::isr_prof::STEP_POST, prof_t2, prof_t3);
+        let prof_t3 = isr_prof::now();
+        isr_prof::add(&isr_prof::STEP_POST, prof_t2, prof_t3);
 
         // Feed the physics acceleration prior with the measured torque
         // current (see BackEmfObserver::set_accel_prior).
@@ -748,7 +750,7 @@ where
             dt,
             now_ticks,
         );
-        crate::isr_prof::add(&crate::isr_prof::STEP_EST, prof_t3, crate::isr_prof::now());
+        isr_prof::add(&isr_prof::STEP_EST, prof_t3, isr_prof::now());
 
         // Only the scheduled cruise caller owns this interval. Independent
         // current/failsafe steps must not charge an old cruise request. The
@@ -943,7 +945,7 @@ where
     ) -> Result<FocOutput, StepError> {
         match self.mode {
             ControlMode::Stopped => {
-                let prof_t0 = crate::isr_prof::now();
+                let prof_t0 = isr_prof::now();
                 self.stopped_housekeeping = self.stopped_housekeeping.wrapping_add(1);
                 // Safe-off: `disable()` is the platform's emergency-stop
                 // (all channels off / high-Z on the current boards). Asserted
@@ -954,8 +956,8 @@ where
                     self.pwm.disable();
                     self.pwm_off = true;
                 }
-                let prof_t1 = crate::isr_prof::now();
-                crate::isr_prof::add(&crate::isr_prof::STEP_PWMOFF, prof_t0, prof_t1);
+                let prof_t1 = isr_prof::now();
+                isr_prof::add(&isr_prof::STEP_PWMOFF, prof_t0, prof_t1);
                 // The previous cycle's command WAS applied before this stop
                 // took effect — let the estimators integrate it, then decay
                 // to zero volts. Decimated ×4: with the bridge floated the
@@ -967,11 +969,7 @@ where
                 if self.stopped_housekeeping & 0x3 == 0 {
                     self.update_phase_without_drive(dt * 4.0, now_ticks);
                 }
-                crate::isr_prof::add(
-                    &crate::isr_prof::STEP_PHASE,
-                    prof_t1,
-                    crate::isr_prof::now(),
-                );
+                isr_prof::add(&isr_prof::STEP_PHASE, prof_t1, isr_prof::now());
                 Ok(FocOutput::default())
             }
             ControlMode::CurrentControl {

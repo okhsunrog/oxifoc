@@ -1,12 +1,14 @@
 use super::*;
 use crate::foc::fault::{FaultCategory, FaultRegistry, StandardFault};
 use crate::storage::VoltageLimitsConfig;
+use crate::timer::Timer;
+use crate::types::CurrentSenseTopology;
 use crate::units::{amps, volts};
 
 fn board() -> BoardConfig {
     BoardConfig {
         calib: Default::default(),
-        current_sense_topology: crate::types::CurrentSenseTopology::ThreeShunt,
+        current_sense_topology: CurrentSenseTopology::ThreeShunt,
         max_iq_target_a: 10.0,
         max_phase_current_a: 70.0,
         min_vbus_mv: 6_000,
@@ -117,7 +119,7 @@ fn voltage_apply_acknowledges_only_an_installed_and_validated_revision() {
     };
     use critical_section::Mutex;
     struct PendingTimer;
-    impl crate::timer::Timer for PendingTimer {
+    impl Timer for PendingTimer {
         async fn after_millis(_: u64) {
             core::future::pending::<()>().await;
         }

@@ -222,6 +222,8 @@ pub mod runtime;
 
 /// Field-Oriented Control algorithms
 pub mod foc {
+    #[cfg(feature = "isr-work-events")]
+    use crate::isr_work;
     use crate::units::AngleRepr;
     use core::f32::consts::TAU;
 
@@ -284,7 +286,7 @@ pub mod foc {
         };
         if one_turn {
             #[cfg(feature = "isr-work-events")]
-            crate::isr_work::mark(crate::isr_work::ANGLE_WRAP);
+            isr_work::mark(isr_work::ANGLE_WRAP);
             return angle - f32::from_bits(TAU.to_bits() | (bits & 0x8000_0000));
         }
         wrap_angle_complete(angle)
@@ -307,7 +309,7 @@ pub mod foc {
     #[inline(always)]
     fn wrap_angle_complete_body(angle: f32) -> f32 {
         #[cfg(feature = "isr-work-events")]
-        crate::isr_work::mark(crate::isr_work::ANGLE_WRAP);
+        isr_work::mark(isr_work::ANGLE_WRAP);
         let mut a = angle;
         // Keep exact 2*TAU cold: one subtraction would still leave TAU.
         if !(-TAU..2.0 * TAU).contains(&a) {
@@ -411,7 +413,7 @@ pub mod foc {
         let single_turn = (-TAU..2.0 * TAU).contains(&angle);
         if single_turn {
             #[cfg(feature = "isr-work-events")]
-            crate::isr_work::mark(crate::isr_work::ANGLE_WRAP);
+            isr_work::mark(isr_work::ANGLE_WRAP);
             if angle < 0.0 {
                 return angle + TAU;
             }

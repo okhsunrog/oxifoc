@@ -36,6 +36,7 @@
 //! }
 //! ```
 
+use crate::types::BoardCalib;
 use crate::units::{ConstZero, ElectricCurrent, ElectricalResistance, volts};
 
 /// Shunt-based current sense converter
@@ -111,7 +112,7 @@ impl ShuntCurrentSense {
     /// [`set_offsets`](Self::set_offsets) is called with the calibrated
     /// `dc_offsets` — used identically by the firmware sense path and the host
     /// enrichment path, so they cannot diverge.
-    pub fn from_calib(calib: &crate::types::BoardCalib) -> Self {
+    pub fn from_calib(calib: &BoardCalib) -> Self {
         let mut s = Self::new(
             calib.shunt_ohms,
             calib.amp_gain,

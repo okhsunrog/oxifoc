@@ -20,6 +20,11 @@ use super::sensors::{
     AngleSample, AngleSensor, HallInterpolationInfo, HallSensorTrait, HallSnapshot,
 };
 use super::{angle_difference, wrap_angle};
+use crate::foc::fast_math;
+#[cfg(feature = "isr-work-events")]
+use crate::isr_work;
+#[cfg(feature = "storage")]
+use crate::storage::{HallCalibrationConfig, HallTuningConfig};
 #[cfg(feature = "storage")]
 use crate::units::unit::electrical;
 use crate::units::{
@@ -133,7 +138,7 @@ impl PreparedHallCalibration {
     }
 
     #[cfg(feature = "storage")]
-    pub fn from_config(config: &crate::storage::HallCalibrationConfig) -> Option<Self> {
+    pub fn from_config(config: &HallCalibrationConfig) -> Option<Self> {
         if !config.is_calibrated() {
             return None;
         }
@@ -192,7 +197,7 @@ impl HallTimebase {
 
     #[inline]
     fn seconds(&self, ticks: u64) -> Time {
-        crate::foc::fast_math::u64_to_f32(ticks) * self.seconds_per_tick
+        fast_math::u64_to_f32(ticks) * self.seconds_per_tick
     }
 }
 
@@ -1210,8 +1215,8 @@ impl HallSensor {
 
         // Calculate desired step from current rate-limited angle
         #[cfg(feature = "isr-work-events")]
-        crate::isr_work::angle_difference(
-            crate::isr_work::HALL_SLEW_WRAP,
+        isr_work::angle_difference(
+            isr_work::HALL_SLEW_WRAP,
             target_angle,
             self.rate_limited_angle,
         );
@@ -1227,7 +1232,7 @@ impl HallSensor {
         } else {
             // Clamp to max step, preserving sign
             #[cfg(feature = "isr-work-events")]
-            crate::isr_work::mark(crate::isr_work::HALL_SLEW_CLIPPED);
+            isr_work::mark(isr_work::HALL_SLEW_CLIPPED);
             if desired_step.is_positive() {
                 max_step
             } else {
@@ -1398,7 +1403,7 @@ impl AngleSensor for HallSensor {
     }
 
     #[cfg(feature = "storage")]
-    fn apply_hall_tuning(&mut self, tuning: &crate::storage::HallTuningConfig) -> bool {
+    fn apply_hall_tuning(&mut self, tuning: &HallTuningConfig) -> bool {
         self.set_interp_min_erpm(tuning.interp_min_speed.get::<electrical::erpm>());
         self.set_rate_limit_factor(tuning.rate_limit_factor);
         true
@@ -1544,6 +1549,8 @@ mod rotor_motion_tests;
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "storage")]
+    use crate::foc::hall_calibration::HallCalibrator;
     use crate::units::{ToBits, erad, erad_per_s, seconds};
     #[cfg(feature = "storage")]
     #[test]
@@ -1562,7 +1569,7 @@ mod tests {
             hall.last_edge_ticks,
             hall.error_count,
         );
-        let mut config = crate::storage::HallCalibrationConfig::default();
+        let mut config = HallCalibrationConfig::default();
         for angle in &mut config.angles[1..=6] {
             *angle += erad(0.7);
         }
@@ -1604,7 +1611,7 @@ mod tests {
             hall.sample_at(5_150).is_none(),
             "reference apply cannot hide a wire glitch"
         );
-        let mut accumulator = crate::foc::hall_calibration::HallCalibrator::new();
+        let mut accumulator = HallCalibrator::new();
         for (index, &angle) in config.angles[1..=6].iter().enumerate() {
             let state = (index + 1) as u8;
             for _ in 0..30 {

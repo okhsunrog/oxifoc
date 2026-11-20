@@ -14,7 +14,7 @@
 //! afresh; incompressible frames use full encoding and invalid packed input
 //! uses the existing explicit Raw34 block fallback.
 
-use crate::types::{FastTelemetry, TelemetryConfigAck};
+use crate::types::{FastTelemetry, HallAngle, TelemetryConfigAck};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 
@@ -274,7 +274,7 @@ fn frame(w: [u16; 17]) -> FastTelemetry {
         ic: w[2],
         vbus: w[3],
         angle: w[4],
-        hall_angle: crate::types::HallAngle::default(),
+        hall_angle: HallAngle::default(),
         vd: w[5] as i16,
         vq: w[6] as i16,
         rpm: w[7] as i16,
@@ -620,7 +620,7 @@ pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError>
             unpack26(b, header, index)
         };
         if header.encoding == RawEncoding::Packed28 {
-            sample.hall_angle = crate::types::HallAngle::from_encoded(read16(b, 26));
+            sample.hall_angle = HallAngle::from_encoded(read16(b, 26));
         }
         samples.push(sample).map_err(|_| RawDecodeError::Length)?;
     }

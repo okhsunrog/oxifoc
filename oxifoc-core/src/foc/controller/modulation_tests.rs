@@ -1,6 +1,8 @@
 //! Differential oracle retaining the controller math before modulation preparation.
 use super::*;
 use crate::foc::trig::FastSinCos;
+use crate::isr_prof;
+use crate::types::CurrentSenseTopology;
 use crate::units::{amps, erad, erad_per_s, henries, ohms, rad_per_s, seconds, volts, webers};
 
 impl<M: Modulator, S: SinCos> FocController<M, S> {
@@ -37,9 +39,9 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         dt: f32,
     ) -> FocOutput {
         let (ia, ib, ic) = currents;
-        let prof_t0 = crate::isr_prof::now();
+        let prof_t0 = isr_prof::now();
         let (sin_theta, cos_theta) = S::sin_cos(angle_rad);
-        crate::isr_prof::add(&crate::isr_prof::CTRL_TRIG, prof_t0, crate::isr_prof::now());
+        isr_prof::add(&isr_prof::CTRL_TRIG, prof_t0, isr_prof::now());
 
         // Phase currents -> stationary frame
         let (i_alpha, i_beta) = self.current_sense_topology.clarke(currents);
@@ -389,9 +391,9 @@ fn configure_cycle(foc: Controller, cycle: usize) -> Controller {
         })
     });
     foc.set_current_sense_topology(if cycle.is_multiple_of(5) {
-        crate::types::CurrentSenseTopology::ThreeShunt
+        CurrentSenseTopology::ThreeShunt
     } else {
-        crate::types::CurrentSenseTopology::TwoShunt
+        CurrentSenseTopology::TwoShunt
     });
     foc
 }

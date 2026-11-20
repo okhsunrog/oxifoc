@@ -3,6 +3,7 @@ use crate::foc::phase::{PhaseInput, PhaseOutput, RotorVelocityEstimate};
 use crate::foc::velocity::VelocityLoopConfig;
 use crate::motor::derating::{DeratingConfig, ModulationDerating, SpeedDerating};
 use crate::motor::drive::DriveConfig;
+use crate::types::VoltageFeedforwardMode;
 use crate::units::{amps, erad, erad_per_s, erad_per_s2, henries, ohms, seconds, volts, webers};
 
 struct SplitPhase {
@@ -166,7 +167,7 @@ fn velocity_feedback_ignores_frame_corrections_and_reenters_bumplessly() {
     }));
     driver
         .controller
-        .set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::BackEmf);
+        .set_voltage_feedforward_mode(VoltageFeedforwardMode::BackEmf);
     let out = driver.step(250).unwrap();
     assert!(
         (out.vq.value + 3.0).abs() < 1e-6,

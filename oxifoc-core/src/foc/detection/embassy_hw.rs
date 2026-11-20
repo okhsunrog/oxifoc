@@ -23,10 +23,12 @@ use crate::foc::detection::sweep::{
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::foc::phase_voltage::PhaseVoltageSense;
 use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
+use crate::foc::transforms;
 use crate::foc::trig::{FastSinCos, SinCos};
 use crate::motor::ControlMode;
 use crate::state::{self, MotorControlState};
 use crate::timer::EmbassyTimer;
+use crate::types::{CurrentSenseTopology, MotorState};
 
 // Re-export types from core for convenience
 pub use crate::foc::detection::sweep::{DetectionParams, DetectionResult};
@@ -93,8 +95,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
         }
         critical_section::with(|cs| {
             let state = self.state_mutex.borrow(cs).borrow();
-            if state.motor_state == crate::types::MotorState::Error || state::detection_cancelled()
-            {
+            if state.motor_state == MotorState::Error || state::detection_cancelled() {
                 Err(DetectionError::HardwareFault)
             } else {
                 Ok(())
@@ -198,7 +199,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
         Ok(capture)
     }
 
-    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+    fn current_sense_topology(&self) -> CurrentSenseTopology {
         self.board.current_sense_topology
     }
 
@@ -322,7 +323,7 @@ fn resistance_sample(
     // FastSinCos: its 6e-7 error at the lock angle is far below one phase-ADC
     // LSB; libm sinf/cosf would link ~12 KB of f64 soft-float.
     let (sin, cos) = FastSinCos::sin_cos(foc.angle.value);
-    let (voltage_v, _) = crate::foc::transforms::park(alpha, beta, sin, cos);
+    let (voltage_v, _) = transforms::park(alpha, beta, sin, cos);
     Ok(ResistanceSample {
         voltage_v: voltage_v.value,
         current_a: foc.id.value,
@@ -521,13 +522,15 @@ pub async fn calibrate_hall_default(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foc::config::PhaseSense;
     use crate::foc::sensors::AdcSnapshot;
+    use crate::types::{BoardCalib, CurrentSenseTopology};
     use crate::units::{amps, erad, erad_per_s, ohms, volts};
     use core::{future::Future, pin::pin, task::Context};
 
     fn board(filtered: bool) -> BoardConfig {
         BoardConfig {
-            calib: crate::types::BoardCalib {
+            calib: BoardCalib {
                 shunt_ohms: ohms(0.0005),
                 amp_gain: 20.0,
                 adc_vref_mv: 3300,
@@ -535,14 +538,14 @@ mod tests {
                 invert_current_sign: false,
                 vbus_divider_ratio: 1.0,
             },
-            current_sense_topology: crate::types::CurrentSenseTopology::ThreeShunt,
+            current_sense_topology: CurrentSenseTopology::ThreeShunt,
             max_iq_target_a: 3.0,
             max_phase_current_a: 6.0,
             max_vbus_mv: 57_000,
             min_vbus_mv: 6_000,
             max_fet_temp_c: 100.0,
             max_motor_temp_c: 120.0,
-            phase_sense: Some(crate::foc::config::PhaseSense {
+            phase_sense: Some(PhaseSense {
                 divider_ratio: 1.0,
                 has_filters: filtered,
             }),

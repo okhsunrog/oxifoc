@@ -1,5 +1,7 @@
 //! Physical travel accounting, independent of the commutation-angle limiter.
 
+use crate::foc;
+use crate::foc::fast_math;
 use crate::units::{ConstZero, ElectricalAngle, ElectricalAngularVelocity, Time, seconds};
 
 /// Filter a bounded position prediction, rather than filtering edge-period
@@ -34,7 +36,7 @@ impl RotorMotion {
     /// arrive between control samples; no wrapped-angle differentiation.
     pub(super) fn cross_boundary(&mut self, boundary: ElectricalAngle) {
         if let Some(previous) = self.boundary {
-            self.pending_travel += crate::foc::angle_difference(boundary, previous);
+            self.pending_travel += foc::angle_difference(boundary, previous);
         } else {
             // A boot centroid has no known displacement to this first edge.
             // Preserve an already sampled zero-speed baseline: reseeding it
@@ -63,7 +65,7 @@ impl RotorMotion {
             // A duplicate/stale caller must not consume pending physical travel.
             return self.velocity;
         }
-        let dt = crate::foc::fast_math::u64_to_f32(ticks - last) * seconds_per_tick;
+        let dt = fast_math::u64_to_f32(ticks - last) * seconds_per_tick;
         if dt > MAX_SAMPLE_GAP {
             // No claim about instantaneous speed across a long sampling outage.
             self.velocity = ElectricalAngularVelocity::ZERO;

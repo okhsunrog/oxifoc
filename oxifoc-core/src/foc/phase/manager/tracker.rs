@@ -4,11 +4,11 @@ use super::{
     PhaseManager, TRACKER_CATCHUP_TAU, TRACKER_FF_TAU, TRACKER_HUNT_DAMP, TRACKER_HUNT_TAU,
     TRACKER_KD_TAU, TRACKER_MAX_LAG,
 };
-use crate::foc::angle_difference;
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::AngleSensor;
 use crate::foc::trig::SinCos;
-use crate::foc::wrap_angle;
+use crate::foc::{angle_difference, wrap_angle};
+use crate::isr_prof;
 use crate::units::{ConstZero, ElectricalAngle, ElectricalAngularAcceleration, Linear, Sign, Time};
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
@@ -19,9 +19,9 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     /// One step of the commutation phase tracker (see [`PhaseTracker`](super::PhaseTracker)).
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     pub(super) fn tracker_output(&mut self, raw: PhaseOutput, dt: Time) -> PhaseOutput {
-        let prof_t0 = crate::isr_prof::now();
+        let prof_t0 = isr_prof::now();
         let out = self.tracker_output_inner(raw, dt);
-        crate::isr_prof::add(&crate::isr_prof::OUT_TRK, prof_t0, crate::isr_prof::now());
+        isr_prof::add(&isr_prof::OUT_TRK, prof_t0, isr_prof::now());
         out
     }
 

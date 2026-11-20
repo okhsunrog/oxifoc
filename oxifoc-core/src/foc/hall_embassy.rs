@@ -21,6 +21,8 @@ use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use super::hall_sensor::{Direction, HallSensor, PreparedHallCalibration};
 use super::sensors::{AngleSample, AngleSensor, ControlAngleSample, HallSnapshot};
 #[cfg(feature = "storage")]
+use crate::storage::HallTuningConfig;
+#[cfg(feature = "storage")]
 use crate::units::unit::electrical;
 use crate::units::{ConstZero, ElectricalAngle, ElectricalAngularVelocity};
 
@@ -204,7 +206,7 @@ impl AngleSensor for HallAngleProxy {
     }
 
     #[cfg(feature = "storage")]
-    fn apply_hall_tuning(&mut self, tuning: &crate::storage::HallTuningConfig) -> bool {
+    fn apply_hall_tuning(&mut self, tuning: &HallTuningConfig) -> bool {
         HALL_ESTIMATOR.lock(|est| {
             let mut state = est.borrow_mut();
             let Some(sensor) = state.sensor.as_mut() else {
@@ -336,6 +338,8 @@ mod tests {
     use crate::foc::hall_calibration::HallCalibrationResult;
     use crate::foc::hall_sensor::HALL_STATE_TABLE;
     use crate::foc::phase::{PhaseInput, PhaseManager, PhaseProvider};
+    #[cfg(feature = "storage")]
+    use crate::storage::HallCalibrationConfig;
     use crate::units::{ToBits, erad, erad_per_s, seconds};
 
     // This is the only host test that owns the shared estimator. Exercise the
@@ -426,7 +430,7 @@ mod tests {
         assert_eq!(HALL_ESTIMATOR.lock(|est| est.borrow().reference_epoch), 1);
         #[cfg(feature = "storage")]
         {
-            let stored = crate::storage::HallCalibrationConfig {
+            let stored = HallCalibrationConfig {
                 angles: calibration.angles,
                 valid: calibration.valid,
                 geometry: None,

@@ -1,4 +1,18 @@
 use super::*;
+use crate::foc::controller::CurrentPi;
+#[cfg(all(feature = "runtime", feature = "storage"))]
+use crate::foc::fault::{FaultRegistry, StandardFault};
+#[cfg(feature = "runtime")]
+use crate::foc::phase::RotorVelocityEstimate;
+use crate::foc::phase::{PhaseInput, PhaseOutput};
+use crate::foc::pi_controller::PIController;
+#[cfg(feature = "virtual-motor")]
+use crate::foc::{constants, phase};
+#[cfg(feature = "storage")]
+use crate::storage::RuntimeConfig;
+#[cfg(all(feature = "runtime", feature = "storage"))]
+use crate::timer::Timer;
+use crate::types::{BoardCalib, CurrentSenseTopology, VoltageFeedforwardMode};
 #[path = "commissioning_tests.rs"]
 mod commissioning_tests;
 #[cfg(all(feature = "storage", feature = "runtime"))]
@@ -15,10 +29,6 @@ mod torque_grant_tests;
 #[cfg(all(feature = "storage", feature = "runtime"))]
 #[path = "voltage_limits_tests.rs"]
 mod voltage_limits_tests;
-#[cfg(feature = "virtual-motor")]
-use crate::foc::angle_difference;
-#[cfg(feature = "virtual-motor")]
-use crate::foc::clamp_f32;
 #[cfg(feature = "runtime")]
 use crate::foc::config::BoardConfig;
 use crate::foc::controller::Decoupling;
@@ -37,7 +47,7 @@ use crate::foc::transforms::{clarke, park};
 #[cfg(feature = "virtual-motor")]
 use crate::foc::velocity::VelocityLoopConfig;
 #[cfg(feature = "virtual-motor")]
-use crate::foc::wrap_angle;
+use crate::foc::{angle_difference, clamp_f32, wrap_angle};
 #[cfg(feature = "runtime")]
 use crate::motor::derating::DeratingConfig;
 use crate::motor::derating::DeratingScales;
@@ -50,9 +60,10 @@ use crate::storage::CurrentLimitsConfig;
 #[cfg(feature = "hfi")]
 use crate::units::hertz;
 use crate::units::{
-    Sign, amps, amps_per_s, erad, erad_per_s, erad_per_s2, henries, ohms, per_second, quantity,
-    seconds, volts, watts, webers,
+    Sign, amps, erad, erad_per_s, henries, ohms, quantity, seconds, volts, watts, webers,
 };
+#[cfg(feature = "virtual-motor")]
+use crate::units::{amps_per_s, erad_per_s2, per_second};
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::{MotorParams, VirtualMotor, VirtualMotorOutput};
 #[cfg(feature = "virtual-motor")]
@@ -61,9 +72,7 @@ use core::f32::consts::{FRAC_PI_3, FRAC_PI_6};
 /// A driver for exercising the torque grant, which reads no plant
 /// state — only the limits, the derating, the motor model and vbus.
 /// PI tuning as the protocol carries it (plain kp, ki).
-fn pi_gains(
-    pi: &crate::foc::pi_controller::PIController<crate::foc::controller::CurrentPi>,
-) -> (f32, f32) {
+fn pi_gains(pi: &PIController<CurrentPi>) -> (f32, f32) {
     let (kp, ki) = pi.gains();
     (kp.value, ki.value)
 }
@@ -73,7 +82,7 @@ fn grant_driver(
     scales: DeratingScales,
 ) -> FocDriver<MockPwm, MockCurrentSensor, PhaseManager<NoSensor, NoSensor>> {
     let mut foc = FocController::<SvpwmModulator, LibmSinCos>::new(volts(24.0));
-    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
+    foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
         ld: henries(22e-6),
         lq: henries(22e-6),
@@ -412,11 +421,11 @@ struct MockCurrentSensor {
 
 struct TopologySensor {
     sensor: MockCurrentSensor,
-    topology: crate::types::CurrentSenseTopology,
+    topology: CurrentSenseTopology,
 }
 
 impl CurrentSensor for TopologySensor {
-    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+    fn current_sense_topology(&self) -> CurrentSenseTopology {
         self.topology
     }
     fn read_currents(&self) -> PhaseCurrents {
@@ -438,20 +447,20 @@ impl CurrentSensor for TopologySensor {
 
 #[derive(Default)]
 struct FeedbackProbe {
-    input: crate::foc::phase::PhaseInput,
+    input: PhaseInput,
 }
 
 impl PhaseProvider for FeedbackProbe {
-    fn get(&self) -> crate::foc::phase::PhaseOutput {
+    fn get(&self) -> PhaseOutput {
         Default::default()
     }
-    fn update(&mut self, input: &crate::foc::phase::PhaseInput, _now_ticks: u64) {
+    fn update(&mut self, input: &PhaseInput, _now_ticks: u64) {
         self.input = *input;
     }
 }
 
 fn topology_driver(
-    topology: crate::types::CurrentSenseTopology,
+    topology: CurrentSenseTopology,
     currents: (f32, f32, f32),
 ) -> FocDriver<GatedPwm, TopologySensor, FeedbackProbe> {
     let mut driver = FocDriver::new(
@@ -554,7 +563,7 @@ fn legacy_two_channel_sensor_remains_compatible() {
     };
     assert_eq!(
         sensor.current_sense_topology(),
-        crate::types::CurrentSenseTopology::TwoShunt
+        CurrentSenseTopology::TwoShunt
     );
 }
 
@@ -631,8 +640,8 @@ fn coast_observer_tracks_measured_bemf() {
     use crate::foc::wrap_angle;
 
     const BASE_BOARD: BoardConfig = BoardConfig {
-        current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
-        calib: crate::types::BoardCalib {
+        current_sense_topology: CurrentSenseTopology::TwoShunt,
+        calib: BoardCalib {
             shunt_ohms: ohms(0.0005),
             amp_gain: 10.0,
             adc_vref_mv: 3300,
@@ -1469,8 +1478,8 @@ fn brake_speed_gated_and_survives_link_loss() {
         vel: f32,
     }
     impl PhaseProvider for MockPhase {
-        fn rotor_velocity(&self) -> Option<crate::foc::phase::RotorVelocityEstimate> {
-            crate::foc::phase::RotorVelocityEstimate::new(erad_per_s(self.vel))
+        fn rotor_velocity(&self) -> Option<RotorVelocityEstimate> {
+            RotorVelocityEstimate::new(erad_per_s(self.vel))
         }
 
         fn get(&self) -> PhaseOutput {
@@ -2214,7 +2223,7 @@ fn run_bench_spin_with_decoupling(
         henries((LD + LQ) / 2.0),
         volts(12.0),
     );
-    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
+    foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(decoupling));
 
     let mut mgr = PhaseManager::sensorless();
@@ -2400,7 +2409,7 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
         henries(cfg.controller_l),
         volts(VBUS),
     );
-    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
+    foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
         ld: henries(86e-6),
         lq: henries(129e-6),
@@ -2413,7 +2422,7 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
 
     let mut mgr = PhaseManager::sensorless();
     let mut obs = BackEmfObserver::new(ohms(0.127), henries(cfg.observer_l), webers(LAMBDA))
-        .with_lambda_tracking(crate::foc::phase::DEFAULT_LAMBDA_GAIN);
+        .with_lambda_tracking(phase::DEFAULT_LAMBDA_GAIN);
     obs.set_pll_gains(per_second(cfg.pll_ki / 20.0), quantity(cfg.pll_ki));
     if cfg.observer_salient {
         obs = obs.with_saliency(henries(86e-6), henries(129e-6));
@@ -2509,7 +2518,7 @@ fn run_zd2808_cold_start(cfg: ColdStartCfg) -> ColdStartReport {
         let vb = f32::from(telem.duties[1]) * scale;
         let vc = f32::from(telem.duties[2]) * scale;
         let v_alpha = (2.0 * va - vb - vc) / 3.0;
-        let v_beta = (vb - vc) * crate::foc::constants::FRAC_1_SQRT_3;
+        let v_beta = (vb - vc) * constants::FRAC_1_SQRT_3;
         let load = if cfg.disturb_steps > 0
             && step >= cfg.disturb_at_step
             && step < cfg.disturb_at_step + cfg.disturb_steps
@@ -2947,7 +2956,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
         henries(L_AVG),
         volts(VBUS),
     );
-    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
+    foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(Decoupling {
         ld: henries(86e-6),
         lq: henries(129e-6),
@@ -2958,7 +2967,7 @@ fn trust_loss_mid_drive_restarts_cold_start() {
     mgr.set_observer(Observer::BackEmf(
         BackEmfObserver::new(ohms(0.127), henries(L_AVG), webers(LAMBDA))
             .with_saliency(henries(86e-6), henries(129e-6))
-            .with_lambda_tracking(crate::foc::phase::DEFAULT_LAMBDA_GAIN),
+            .with_lambda_tracking(phase::DEFAULT_LAMBDA_GAIN),
     ));
     mgr.set_source(PhaseSource::Observer).unwrap();
     let mut driver = FocDriver::new(
@@ -3085,7 +3094,7 @@ fn run_perfect_angle_spin(
         henries((86e-6 + 129e-6) / 2.0),
         volts(12.0),
     );
-    foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
+    foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
     foc.set_decoupling(Some(decoupling));
 
     let mut out = VirtualMotorOutput::default();
@@ -3698,12 +3707,15 @@ mod severity_gate {
     use super::*;
     use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
     use crate::foc::hall_sensor::HallFaultKind;
-    use crate::foc::phase::PhaseManager;
+    use crate::foc::phase::{PhaseManager, RotorVelocityEstimate};
     use crate::foc::trig::LibmSinCos;
+    use crate::motor::derating::BusVoltageDerating;
     use crate::state::{
         CMD_CHANNEL, DriverCommand, MotorControlState, process_commands, run_foc_cycle,
     };
-    use crate::types::MotorState;
+    #[cfg(feature = "storage")]
+    use crate::storage::RuntimeConfig;
+    use crate::types::{BoardCalib, CurrentSenseTopology, MotorState};
     use core::cell::RefCell;
     use critical_section::Mutex as CriticalSectionMutex;
 
@@ -3746,8 +3758,8 @@ mod severity_gate {
     }
 
     const BOARD: PreparedBoardConfig = PreparedBoardConfig::new(BoardConfig {
-        current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
-        calib: crate::types::BoardCalib {
+        current_sense_topology: CurrentSenseTopology::TwoShunt,
+        calib: BoardCalib {
             shunt_ohms: ohms(0.003),
             amp_gain: 16.0,
             adc_vref_mv: 3300,
@@ -3848,6 +3860,9 @@ mod severity_gate {
         use super::*;
         use crate::foc::detection::DetectionError;
         use crate::foc::detection::excitation::{VoltageBurst, Waveform};
+        use crate::state;
+        use crate::state::{DetectionActiveGuard, DetectionCommandToken};
+        use crate::types::{MotorCommand, MotorRequest};
         use core::cell::Cell;
 
         fn program() -> VoltageBurst {
@@ -3931,7 +3946,7 @@ mod severity_gate {
         #[test]
         fn packet_installed_during_step_starts_at_the_next_cycle_boundary() {
             let _serial = cmd_channel_lock();
-            let _detect = crate::state::DetectionActiveGuard::arm();
+            let _detect = DetectionActiveGuard::arm();
             let h = running_harness();
             let program = program();
             let pending = Cell::new(true);
@@ -3978,7 +3993,7 @@ mod severity_gate {
         #[test]
         fn preparing_packet_waits_and_cleans_up_after_detection_guard_drops() {
             let _serial = cmd_channel_lock();
-            let detect = crate::state::DetectionActiveGuard::arm();
+            let detect = DetectionActiveGuard::arm();
             let mut h = running_harness();
             let program = arm(&mut h);
             critical_section::with(|cs| {
@@ -4010,7 +4025,7 @@ mod severity_gate {
         #[test]
         fn packet_current_budget_stops_in_the_isr_without_async_service() {
             let _serial = cmd_channel_lock();
-            let _detect = crate::state::DetectionActiveGuard::arm();
+            let _detect = DetectionActiveGuard::arm();
             let mut h = running_harness();
             arm(&mut h);
             critical_section::with(|cs| {
@@ -4026,7 +4041,7 @@ mod severity_gate {
             h.driver.current_sensor_mut().currents = (2.5, -1.25, -1.25);
             tick(&mut h, 50);
             assert_eq!(h.driver.mode(), ControlMode::Stopped);
-            assert!(crate::state::detection_cancelled());
+            assert!(state::detection_cancelled());
             critical_section::with(|cs| {
                 assert_eq!(h.state.borrow(cs).borrow().excitation.index, 0);
                 assert_eq!(
@@ -4047,7 +4062,7 @@ mod severity_gate {
         #[test]
         fn packet_accepts_the_exact_current_budget_before_aborting_the_next_sample() {
             let _serial = cmd_channel_lock();
-            let _detect = crate::state::DetectionActiveGuard::arm();
+            let _detect = DetectionActiveGuard::arm();
             let mut h = running_harness();
             let program = arm(&mut h);
             critical_section::with(|cs| {
@@ -4092,7 +4107,7 @@ mod severity_gate {
         #[test]
         fn pulse_ends_and_pi_hold_resumes_without_async_service() {
             let _serial = cmd_channel_lock();
-            let detect = crate::state::DetectionActiveGuard::arm();
+            let detect = DetectionActiveGuard::arm();
             let mut h = running_harness();
             let program = arm(&mut h);
             for i in 0..=usize::from(program.samples) {
@@ -4148,7 +4163,7 @@ mod severity_gate {
         fn fault_or_missed_period_never_resumes_excitation() {
             let _serial = cmd_channel_lock();
             for fault in [false, true] {
-                let _detect = crate::state::DetectionActiveGuard::arm();
+                let _detect = DetectionActiveGuard::arm();
                 let mut h = running_harness();
                 arm(&mut h);
                 tick(&mut h, 50);
@@ -4178,7 +4193,7 @@ mod severity_gate {
         fn cancelled_future_and_host_stop_both_cancel_the_packet() {
             let _serial = cmd_channel_lock();
             for host_stop in [false, true] {
-                let _detect = crate::state::DetectionActiveGuard::arm();
+                let _detect = DetectionActiveGuard::arm();
                 let mut h = running_harness();
                 arm(&mut h);
                 tick(&mut h, 50);
@@ -4201,7 +4216,7 @@ mod severity_gate {
         #[test]
         fn host_stop_between_packets_latches_until_detection_ends() {
             let _serial = cmd_channel_lock();
-            let detect = crate::state::DetectionActiveGuard::arm();
+            let detect = DetectionActiveGuard::arm();
             let mut h = running_harness();
             let program = arm(&mut h);
             for i in 1..=13 {
@@ -4209,14 +4224,14 @@ mod severity_gate {
             }
             assert_eq!(h.driver.mode(), program.hold_mode());
             CMD_CHANNEL
-                .try_send(DriverCommand::Motor(crate::types::MotorRequest {
+                .try_send(DriverCommand::Motor(MotorRequest {
                     source_session: 42,
                     seq: 1,
-                    command: crate::types::MotorCommand::SetMode(ControlMode::Stopped),
+                    command: MotorCommand::SetMode(ControlMode::Stopped),
                 }))
                 .unwrap();
             tick(&mut h, 700);
-            assert!(crate::state::detection_cancelled());
+            assert!(state::detection_cancelled());
             // An already queued detector command cannot re-energise the motor.
             CMD_CHANNEL
                 .try_send(DriverCommand::SetMode(program.hold_mode()))
@@ -4224,15 +4239,15 @@ mod severity_gate {
             tick(&mut h, 750);
             assert_eq!(h.driver.mode(), ControlMode::Stopped);
             drop(detect);
-            let _next = crate::state::DetectionActiveGuard::arm();
-            assert!(!crate::state::detection_cancelled());
+            let _next = DetectionActiveGuard::arm();
+            assert!(!state::detection_cancelled());
         }
 
         #[test]
         fn queued_detection_authority_cannot_cross_stop_or_session_replacement() {
             let _serial = cmd_channel_lock();
-            let detection = crate::state::DetectionActiveGuard::arm();
-            let token = crate::state::DetectionCommandToken::capture().unwrap();
+            let detection = DetectionActiveGuard::arm();
+            let token = DetectionCommandToken::capture().unwrap();
             let mut h = running_harness();
             let mode = program().hold_mode();
             CMD_CHANNEL
@@ -4241,10 +4256,10 @@ mod severity_gate {
             tick(&mut h, 50);
             assert_eq!(h.driver.mode(), mode);
             CMD_CHANNEL
-                .try_send(DriverCommand::Motor(crate::types::MotorRequest {
+                .try_send(DriverCommand::Motor(MotorRequest {
                     source_session: 42,
                     seq: 1,
-                    command: crate::types::MotorCommand::EmergencyStop,
+                    command: MotorCommand::EmergencyStop,
                 }))
                 .unwrap();
             CMD_CHANNEL
@@ -4254,14 +4269,14 @@ mod severity_gate {
             assert_eq!(h.driver.mode(), ControlMode::Stopped);
             assert!(!token.is_current());
             drop(detection);
-            let _next = crate::state::DetectionActiveGuard::arm();
+            let _next = DetectionActiveGuard::arm();
             assert!(!token.is_current());
             CMD_CHANNEL
                 .try_send(DriverCommand::DetectionMode { token, mode })
                 .unwrap();
             tick(&mut h, 150);
             assert_eq!(h.driver.mode(), ControlMode::Stopped);
-            let next_token = crate::state::DetectionCommandToken::capture().unwrap();
+            let next_token = DetectionCommandToken::capture().unwrap();
             assert!(next_token.is_current());
         }
 
@@ -4272,19 +4287,18 @@ mod severity_gate {
             struct BootFlag(bool);
             impl Drop for BootFlag {
                 fn drop(&mut self) {
-                    crate::state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, Ordering::Release);
+                    state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, Ordering::Release);
                 }
             }
-            let _boot =
-                BootFlag(crate::state::BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel));
+            let _boot = BootFlag(state::BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel));
             let mut h = running_harness();
             CMD_CHANNEL
                 .try_send(DriverCommand::SetMode(ControlMode::Stopped))
                 .unwrap();
             tick(&mut h, 50);
             let original = *h.driver.current_limits();
-            let detection = crate::state::DetectionActiveGuard::arm();
-            let token = crate::state::DetectionCommandToken::capture().unwrap();
+            let detection = DetectionActiveGuard::arm();
+            let token = DetectionCommandToken::capture().unwrap();
             let prepared = PreparedCommissioning::new(
                 amps(40.0),
                 amps(30.0),
@@ -4314,8 +4328,8 @@ mod severity_gate {
             assert_eq!(h.driver.mode(), ControlMode::Stopped);
             assert_eq!(h.driver.commissioning_generation(), None);
             assert_eq!(h.driver.current_limits().max_current, original.max_current);
-            let _next = crate::state::DetectionActiveGuard::arm();
-            let next = crate::state::DetectionCommandToken::capture().unwrap();
+            let _next = DetectionActiveGuard::arm();
+            let next = DetectionCommandToken::capture().unwrap();
             CMD_CHANNEL
                 .try_send(DriverCommand::BeginCommissioning {
                     token: next,
@@ -4347,7 +4361,7 @@ mod severity_gate {
         critical_section::with(|cs| {
             let mut state = state.borrow(cs).borrow_mut();
             state.set_link_active();
-            state.load_board_calibration(&crate::storage::RuntimeConfig {
+            state.load_board_calibration(&RuntimeConfig {
                 board_calibration_invalid: true,
                 ..Default::default()
             });
@@ -4393,7 +4407,7 @@ mod severity_gate {
             state
                 .borrow(cs)
                 .borrow_mut()
-                .load_board_calibration(&crate::storage::RuntimeConfig::default());
+                .load_board_calibration(&RuntimeConfig::default());
         });
         registry.clear_all();
         CMD_CHANNEL
@@ -4417,8 +4431,8 @@ mod severity_gate {
         use core::sync::atomic::Ordering;
         struct SpinningPhase;
         impl PhaseProvider for SpinningPhase {
-            fn rotor_velocity(&self) -> Option<crate::foc::phase::RotorVelocityEstimate> {
-                crate::foc::phase::RotorVelocityEstimate::new(erad_per_s(100.0))
+            fn rotor_velocity(&self) -> Option<RotorVelocityEstimate> {
+                RotorVelocityEstimate::new(erad_per_s(100.0))
             }
 
             fn get(&self) -> PhaseOutput {
@@ -4763,7 +4777,7 @@ mod severity_gate {
         let _serial = cmd_channel_lock();
         let mut h = running_harness();
         h.driver.set_derating(DeratingConfig {
-            bus_voltage: crate::motor::derating::BusVoltageDerating {
+            bus_voltage: BusVoltageDerating {
                 cut_start: volts(22.0),
                 cut_end: volts(18.0),
                 ..Default::default()
@@ -4951,7 +4965,7 @@ impl HallRig {
             henries(params.ld),
             volts(24.0),
         );
-        foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
+        foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
         foc.set_decoupling(Some(Decoupling {
             ld: henries(params.ld),
             lq: henries(params.lq),
@@ -5732,7 +5746,7 @@ fn flying_restart_catches_low_tau_motors() {
             henries(l_avg),
             volts(vbus),
         );
-        foc.set_voltage_feedforward_mode(crate::types::VoltageFeedforwardMode::Both);
+        foc.set_voltage_feedforward_mode(VoltageFeedforwardMode::Both);
         foc.set_decoupling(Some(Decoupling {
             ld: henries(params.ld),
             lq: henries(params.lq),
@@ -5969,7 +5983,7 @@ fn commutation_frame_tracks_rotor_at_sample_instant() {
 }
 
 #[cfg(feature = "storage")]
-fn model_config() -> crate::storage::RuntimeConfig {
+fn model_config() -> RuntimeConfig {
     use crate::storage::{MotorParamsConfig, RuntimeConfig};
     RuntimeConfig {
         motor_params: Some(MotorParamsConfig {
@@ -6010,7 +6024,7 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
         assert_eq!(driver.controller().decoupling().unwrap().ld.value, 35e-6);
         assert_eq!(
             driver.controller().voltage_feedforward_mode(),
-            crate::types::VoltageFeedforwardMode::Disabled
+            VoltageFeedforwardMode::Disabled
         );
         assert_eq!(driver.current_limits().max_current, amps(2.0));
         assert_eq!(
@@ -6052,11 +6066,8 @@ fn prepared_motor_model_matches_boot_and_replaces_all_derived_state() {
         live.controller().decoupling().unwrap().flux_linkage.value,
         0.0
     );
-    let mut empty = PreparedMotorModel::from_config(
-        &crate::storage::RuntimeConfig::default(),
-        volts(24.0),
-        amps(3.0),
-    );
+    let mut empty =
+        PreparedMotorModel::from_config(&RuntimeConfig::default(), volts(24.0), amps(3.0));
     live.apply_motor_model(&mut empty).unwrap();
     assert_eq!(empty.pole_pairs, 0);
     assert_eq!(pi_gains(&live.controller().id_pi), (0.4, 40.0));
@@ -6129,7 +6140,7 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     };
     use critical_section::Mutex;
     struct PendingTimer;
-    impl crate::timer::Timer for PendingTimer {
+    impl Timer for PendingTimer {
         async fn after_millis(_: u64) {
             core::future::pending::<()>().await;
         }
@@ -6154,7 +6165,7 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     let cache = Box::leak(Box::new(Mutex::new(RefCell::new(ConfigActionCache::new()))));
     let state = Mutex::new(RefCell::new(MotorControlState::new()));
     critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
-    let registry = crate::foc::fault::FaultRegistry::<crate::foc::fault::StandardFault>::new();
+    let registry = FaultRegistry::<StandardFault>::new();
     let mut driver = grant_driver(CurrentLimits::default(), DeratingScales::IDENTITY);
     let next = model_config();
     std::println!(
@@ -6275,7 +6286,7 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     );
     // Timeout cancels both an unconsumed request and a full command queue.
     struct ImmediateTimer;
-    impl crate::timer::Timer for ImmediateTimer {
+    impl Timer for ImmediateTimer {
         async fn after_millis(_: u64) {}
         async fn after_micros(_: u64) {}
     }
@@ -6506,10 +6517,7 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
 #[test]
 fn model_replacement_rejects_unsupported_provider_and_preserves_board_settings() {
     let config = model_config();
-    let mut unsupported = topology_driver(
-        crate::types::CurrentSenseTopology::ThreeShunt,
-        (0.0, 0.0, 0.0),
-    );
+    let mut unsupported = topology_driver(CurrentSenseTopology::ThreeShunt, (0.0, 0.0, 0.0));
     let before_gains = unsupported.controller().id_pi.gains();
     let before_limits = unsupported.current_limits().max_current;
     let mut model = PreparedMotorModel::from_config(&config, volts(24.0), amps(3.0));
@@ -6527,7 +6535,7 @@ fn model_replacement_rejects_unsupported_provider_and_preserves_board_settings()
     assert_eq!(driver.controller().id_pi.gains(), expected.id_pi.gains());
     assert_eq!(
         driver.controller().current_sense_topology(),
-        crate::types::CurrentSenseTopology::TwoShunt
+        CurrentSenseTopology::TwoShunt
     );
     // The prebuilt control model only owns electrical-model settings; the
     // hardware compensation remains active after the current loop is reset.

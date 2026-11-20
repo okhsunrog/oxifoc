@@ -6,23 +6,18 @@ use super::{
 };
 use crate::foc::controller::{CurrentKi, CurrentKp, Decoupling, FocController};
 use crate::foc::current_offset::CurrentOffsetCalibrator;
-use crate::foc::phase::PhaseInput;
-use crate::foc::phase::PhaseProvider;
-use crate::foc::phase::RotorVelocityEstimate;
-use crate::foc::phase_voltage::ObserverVoltage;
-use crate::foc::phase_voltage::PhaseVoltageSense;
-use crate::foc::phase_voltage::observer_voltage_source;
-use crate::foc::position::Position;
-use crate::foc::position::PositionLoopConfig;
-use crate::foc::position::PositionTracker;
-use crate::foc::pwm::PhasePwm;
-use crate::foc::pwm::SvpwmModulator;
+use crate::foc::phase::{PhaseInput, PhaseProvider, PhaseSource, RotorVelocityEstimate};
+use crate::foc::phase_voltage::{ObserverVoltage, PhaseVoltageSense, observer_voltage_source};
+use crate::foc::position::{Position, PositionLoopConfig, PositionTracker};
+use crate::foc::pwm::{PhasePwm, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
-use crate::foc::velocity::VelocityLoop;
-use crate::foc::velocity::VelocityLoopConfig;
-use crate::motor::failsafe::FailsafeConfig;
-use crate::motor::failsafe::FailsafeController;
+use crate::foc::velocity::{VelocityLoop, VelocityLoopConfig};
+use crate::isr_prof;
+use crate::motor::failsafe::{FailsafeConfig, FailsafeController};
+use crate::types::ControlTiming;
+#[cfg(feature = "fast-telemetry")]
+use crate::velocity_telemetry::VelocityDebugFrame;
 
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
@@ -203,7 +198,7 @@ where
         dt: Time,
         now_ticks: u64,
     ) {
-        let voltage_start = crate::isr_prof::phase_now();
+        let voltage_start = isr_prof::phase_now();
         let bridge_driven = !self.mode.is_high_z();
         let (v_alpha, v_beta) =
             match observer_voltage_source(self.phase_voltage.as_ref(), bridge_driven) {
@@ -215,11 +210,7 @@ where
                 },
                 ObserverVoltage::Commanded => self.applied_voltage(),
             };
-        crate::isr_prof::phase_add(
-            &crate::isr_prof::EST_VOLTAGE,
-            voltage_start,
-            crate::isr_prof::phase_now(),
-        );
+        isr_prof::phase_add(&isr_prof::EST_VOLTAGE, voltage_start, isr_prof::phase_now());
         self.phase.update(
             &PhaseInput {
                 v_alpha,
@@ -248,7 +239,7 @@ where
     /// bridge off. The platform must serialize this with the control loop.
     pub fn retime_stopped(
         &mut self,
-        timing: crate::types::ControlTiming,
+        timing: ControlTiming,
         dead_time_comp_ns: u32,
         configure_pwm: impl FnOnce(&mut P),
     ) -> bool {
@@ -331,7 +322,7 @@ where
     }
 
     #[cfg(feature = "fast-telemetry")]
-    pub fn current_debug_sample(&self) -> Option<crate::velocity_telemetry::VelocityDebugFrame> {
+    pub fn current_debug_sample(&self) -> Option<VelocityDebugFrame> {
         if self.current_debug_due {
             self.last_current_debug
         } else {
@@ -604,7 +595,7 @@ where
 
     /// Change a source through its validated hook and discard old cruise
     /// output only on success, including for custom phase providers.
-    pub fn request_phase_source(&mut self, source: crate::foc::phase::PhaseSource) -> bool {
+    pub fn request_phase_source(&mut self, source: PhaseSource) -> bool {
         if !self.phase.request_source(source) {
             return false;
         }

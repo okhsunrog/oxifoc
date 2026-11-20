@@ -6,24 +6,22 @@ use crate::foc::clamp_f32;
 use crate::foc::config::BoardConfig;
 use crate::foc::fast_math::sqrtf;
 #[cfg(feature = "runtime")]
-use crate::foc::fault::FaultCategory;
-#[cfg(feature = "runtime")]
-use crate::foc::fault::FaultRegistry;
-#[cfg(feature = "runtime")]
-use crate::foc::fault::PlatformFault;
-#[cfg(feature = "runtime")]
-use crate::foc::fault::VOLTAGE_HYSTERESIS_MV;
+use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault, VOLTAGE_HYSTERESIS_MV};
 use crate::foc::phase::PhaseProvider;
 use crate::foc::pwm::{PhasePwm, QAxisModulation};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
-use crate::motor::derating::DeratingConfig;
-use crate::motor::derating::DeratingScales;
-use crate::motor::dissipation::RegenBudget;
-use crate::motor::dissipation::WindingModel;
-use crate::motor::dissipation::dissipate_with_id;
-use crate::motor::dissipation::heat_current_limit;
+#[cfg(feature = "isr-profiling")]
+use crate::isr_prof;
+#[cfg(all(feature = "isr-work-events", feature = "runtime"))]
+use crate::isr_work;
+use crate::motor::derating::{DeratingConfig, DeratingScales};
+#[cfg(feature = "iq-authority")]
+use crate::motor::dissipation;
+use crate::motor::dissipation::{RegenBudget, WindingModel, dissipate_with_id, heat_current_limit};
 use crate::motor::drive::DriveConfig;
+#[cfg(feature = "storage")]
+use crate::storage::{RuntimeConfig, VoltageLimitsConfig};
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngularVelocity, Fraction, Frequency,
     Linear, MagneticFlux, Power, Scalar, Sign, Time, per_second, seconds,
@@ -95,7 +93,7 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
     pub fn configure_voltage_protection(
         &mut self,
         board: &BoardConfig,
-        stored: Option<&crate::storage::VoltageLimitsConfig>,
+        stored: Option<&VoltageLimitsConfig>,
     ) -> Result<(), super::MotorModelError> {
         if self.mode() != crate::motor::ControlMode::Stopped || self.current_offset_active() {
             return Err(super::MotorModelError::Busy);
@@ -161,7 +159,7 @@ impl PreparedVoltageLimits {
     }
 
     #[cfg(feature = "storage")]
-    pub fn from_config(config: &crate::storage::VoltageLimitsConfig) -> Option<Self> {
+    pub fn from_config(config: &VoltageLimitsConfig) -> Option<Self> {
         config
             .is_sane()
             .then(|| Self::from_bounds(config.min_vbus_mv, config.max_vbus_mv))
@@ -393,7 +391,7 @@ impl ProtectionMonitor {
         let refresh_derating = self.protection_tick.is_multiple_of(256);
         if refresh_derating {
             #[cfg(feature = "isr-work-events")]
-            crate::isr_work::mark(crate::isr_work::DERATING);
+            isr_work::mark(isr_work::DERATING);
             let omega = sample.velocity;
             let temperature = self.config.thermal_scales(fet_c, motor_c);
             let bus_voltage = self.config.bus_voltage_scales(sample.vbus);
@@ -469,7 +467,7 @@ where
     }
 
     #[cfg(feature = "storage")]
-    pub fn load_drive_config(&mut self, config: &crate::storage::RuntimeConfig) {
+    pub fn load_drive_config(&mut self, config: &RuntimeConfig) {
         self.protection.drive_config_valid = config.drive_is_valid();
         self.protection.drive = if self.protection.drive_config_valid {
             config.drive.unwrap_or_default()
@@ -833,7 +831,7 @@ where
         );
         let budget = self.regen_budget();
         let id_max = heat_current_limit(limits.max_dissipation * brake, model.resistance);
-        crate::motor::dissipation::dissipate_iq(
+        dissipation::dissipate_iq(
             iq,
             constraints.omega,
             &model,
@@ -866,7 +864,7 @@ where
         // brakes less on a full pack).
         let id_max = heat_current_limit(limits.max_dissipation * brake, model.resistance);
         #[cfg(feature = "isr-profiling")]
-        let solve_start = crate::isr_prof::now();
+        let solve_start = isr_prof::now();
         let result = dissipate_with_id(
             id_target,
             iq,
@@ -877,11 +875,7 @@ where
             limits.max_current,
         );
         #[cfg(feature = "isr-profiling")]
-        crate::isr_prof::add(
-            &crate::isr_prof::DISSIPATIVE_SOLVE,
-            solve_start,
-            crate::isr_prof::now(),
-        );
+        isr_prof::add(&isr_prof::DISSIPATIVE_SOLVE, solve_start, isr_prof::now());
         match result {
             // The solver preserves an explicit d-axis direction and uses
             // aligning current when it introduces a new heat request.
@@ -1010,6 +1004,7 @@ mod tests {
     use super::*;
     use crate::foc::config::NtcConfig;
     use crate::foc::fault::StandardFault;
+    use crate::types::CurrentSenseTopology;
     use crate::units::{ToBits, erad_per_s};
 
     #[test]
@@ -1037,7 +1032,7 @@ mod tests {
     fn board(max_vbus_mv: u32, min_vbus_mv: u32) -> BoardConfig {
         BoardConfig {
             calib: Default::default(),
-            current_sense_topology: crate::types::CurrentSenseTopology::TwoShunt,
+            current_sense_topology: CurrentSenseTopology::TwoShunt,
             max_iq_target_a: 10.0,
             max_phase_current_a: 40.0,
             max_vbus_mv,

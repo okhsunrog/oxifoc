@@ -1,4 +1,5 @@
 use super::*;
+use crate::foc;
 use crate::units::{amps, erad};
 use core::cell::{Cell, RefCell};
 use core::task::{Context, Poll, Waker};
@@ -252,7 +253,7 @@ fn settling_turns_do_not_contaminate_measured_centroids_or_transition_geometry()
         let centroid = entry + core::f32::consts::TAU / 12.0;
         let bin = core::f32::consts::TAU / 360.0;
         assert!(
-            crate::foc::angle_difference(
+            foc::angle_difference(
                 geometry.boundary_for_positive_entry(raw).unwrap(),
                 erad(entry),
             )
@@ -260,7 +261,7 @@ fn settling_turns_do_not_contaminate_measured_centroids_or_transition_geometry()
                 <= erad(bin)
         );
         assert!(
-            crate::foc::angle_difference(result.angles[usize::from(raw)], erad(centroid)).abs()
+            foc::angle_difference(result.angles[usize::from(raw)], erad(centroid)).abs()
                 <= erad(bin)
         );
     }

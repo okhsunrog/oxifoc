@@ -1,6 +1,9 @@
 //! Protocol admission is separate from execution. This owner is polled only by
 //! the detection task, including while its measurement future is suspended.
 use super::operations::{Admission, Operations};
+use crate::drive_setup::DriveSetup;
+use crate::storage::MotorParamsConfig;
+use crate::types::ReqId;
 use crate::types::commissioning::CommissioningPlan;
 use crate::types::measurement::*;
 use crate::types::{ConfigGroupId, DetectError, DetectRequest, DetectResponse};
@@ -8,13 +11,13 @@ use crate::units::{henries, ohms, watts, webers};
 
 pub struct Session {
     id: SessionId,
-    previous: Option<(SessionId, crate::types::ReqId)>,
+    previous: Option<(SessionId, ReqId)>,
     active: Option<OperationId>,
     plan: Option<CommissioningPlan>,
     revisions: [u32; ConfigGroupId::COUNT],
     measured: [f32; 4],
     completed: u32,
-    candidate: Option<crate::drive_setup::DriveSetup>,
+    candidate: Option<DriveSetup>,
     matching_stage: bool,
     operations: Operations<DetectRequest, DetectResponse, DetectError>,
 }
@@ -253,7 +256,7 @@ impl Session {
                 flux_linkage_wb,
             ] = self.measured;
             self.candidate = Some(DriveSetup {
-                motor: crate::storage::MotorParamsConfig {
+                motor: MotorParamsConfig {
                     resistance: ohms(resistance_ohm),
                     inductance_d: henries(inductance_d_h),
                     inductance_q: henries(inductance_q_h),
@@ -273,6 +276,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ReqId;
     use crate::units::watts;
     fn open(s: &mut Session) -> SessionId {
         let Reply::Session(expected) = s.handle(Request::Inspect).reply else {
@@ -281,7 +285,7 @@ mod tests {
         let Reply::Session(id) = s
             .handle(Request::Open {
                 expected,
-                client: crate::types::ReqId(1),
+                client: ReqId(1),
                 plan: None,
             })
             .reply
@@ -291,7 +295,7 @@ mod tests {
         let Reply::Session(replayed) = s
             .handle(Request::Open {
                 expected,
-                client: crate::types::ReqId(1),
+                client: ReqId(1),
                 plan: None,
             })
             .reply
@@ -309,7 +313,7 @@ mod tests {
         assert!(matches!(
             s.handle(Request::Open {
                 expected: initial,
-                client: crate::types::ReqId(99),
+                client: ReqId(99),
                 plan: None
             })
             .reply,
@@ -353,7 +357,7 @@ mod tests {
             rebooted
                 .handle(Request::Open {
                     expected: id.session,
-                    client: crate::types::ReqId(2),
+                    client: ReqId(2),
                     plan: None
                 })
                 .reply,
@@ -380,7 +384,7 @@ mod tests {
         assert!(matches!(
             s.handle(Request::Open {
                 expected: id.session,
-                client: crate::types::ReqId(2),
+                client: ReqId(2),
                 plan: None
             })
             .reply,
@@ -403,6 +407,8 @@ mod tests {
 #[cfg(test)]
 mod plan_tests {
     use super::*;
+    use crate::drive_setup::Feedback;
+    use crate::types::ReqId;
     use crate::types::commissioning::{MotorClass, SourceLimits};
     use crate::units::{amps, erpm};
     fn plan() -> CommissioningPlan {
@@ -427,7 +433,7 @@ mod plan_tests {
             let Reply::Session(session) = s
                 .handle(Request::Open {
                     expected: s.id,
-                    client: crate::types::ReqId(1),
+                    client: ReqId(1),
                     plan: Some(p),
                 })
                 .reply
@@ -483,7 +489,7 @@ mod plan_tests {
                 let setup = s.candidate.unwrap();
                 assert_eq!(setup.source, p.source);
                 assert_eq!(setup.motor.resistance.value, 0.063);
-                assert_eq!(setup.feedback, crate::drive_setup::Feedback::Sensorless);
+                assert_eq!(setup.feedback, Feedback::Sensorless);
             } else {
                 assert!(s.candidate.is_none());
             }
@@ -497,7 +503,7 @@ mod plan_tests {
         let p = plan();
         let request = Request::Open {
             expected: initial,
-            client: crate::types::ReqId(1),
+            client: ReqId(1),
             plan: Some(p),
         };
         let Reply::Session(id) = s.handle(request.clone()).reply else {
@@ -509,7 +515,7 @@ mod plan_tests {
         assert!(matches!(
             s.handle(Request::Open {
                 expected: initial,
-                client: crate::types::ReqId(1),
+                client: ReqId(1),
                 plan: Some(changed)
             })
             .reply,
@@ -595,7 +601,7 @@ mod plan_tests {
             assert!(matches!(
                 s.handle(Request::Open {
                     expected: s.id,
-                    client: crate::types::ReqId(1),
+                    client: ReqId(1),
                     plan: Some(p)
                 })
                 .reply,

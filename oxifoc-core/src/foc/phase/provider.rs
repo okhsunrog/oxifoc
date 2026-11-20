@@ -3,7 +3,9 @@
 //! Abstracts electrical phase angle provision, allowing FocDriver to work
 //! with any phase source (Hall, Encoder, Observer, or combinations).
 
-use crate::foc::hall_sensor::HallFaultKind;
+use crate::foc::hall_sensor::{HallFaultKind, PreparedHallCalibration};
+#[cfg(feature = "storage")]
+use crate::storage::HallTuningConfig;
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity, Time,
 };
@@ -160,15 +162,12 @@ pub trait PhaseProvider {
     }
 
     /// Apply a prepared Hall reference; default providers explicitly reject.
-    fn apply_hall_calibration(
-        &mut self,
-        _prepared: &crate::foc::hall_sensor::PreparedHallCalibration,
-    ) -> bool {
+    fn apply_hall_calibration(&mut self, _prepared: &PreparedHallCalibration) -> bool {
         false
     }
 
     #[cfg(feature = "storage")]
-    fn apply_hall_tuning(&mut self, _tuning: &crate::storage::HallTuningConfig) -> bool {
+    fn apply_hall_tuning(&mut self, _tuning: &HallTuningConfig) -> bool {
         false
     }
 

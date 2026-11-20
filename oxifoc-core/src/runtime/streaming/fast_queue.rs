@@ -2,6 +2,8 @@
 
 use bbqueue::{nicknames::Churrasco, traits::coordination::WriteGrantError};
 
+#[cfg(feature = "fast-telemetry")]
+use crate::raw_telemetry;
 use crate::types::{FastTelemetry, FastTelemetryBatchEncoder};
 
 const FRAME_BYTES: usize = size_of::<FastTelemetry>();
@@ -65,12 +67,11 @@ impl<const N: usize> FastTelemetryQueue<N> {
     ) -> u32 {
         let consumer = self.queue.stream_consumer();
         let mut accepted = 0;
-        while accepted < crate::raw_telemetry::RAW_MAX_RECORDS
+        while accepted < raw_telemetry::RAW_MAX_RECORDS
             && let Ok(grant) = consumer.read()
         {
             debug_assert!(grant.len().is_multiple_of(FRAME_BYTES));
-            let count =
-                (grant.len() / FRAME_BYTES).min(crate::raw_telemetry::RAW_MAX_RECORDS - accepted);
+            let count = (grant.len() / FRAME_BYTES).min(raw_telemetry::RAW_MAX_RECORDS - accepted);
             let bytes = &grant[..count * FRAME_BYTES];
             // A grant's base alignment is a property of the queue storage.
             // Check once, and retain the unaligned path for other placements.

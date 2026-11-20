@@ -1,17 +1,18 @@
 use super::select::{blend_angles, compute_blend};
 use super::*;
-use crate::foc::angle_difference;
-use crate::foc::hall_sensor::Direction;
-use crate::foc::hall_sensor::HallSensor;
+use crate::foc::hall_sensor::{Direction, HallSensor};
 use crate::foc::phase::provider::{PhaseInput, PhaseProvider};
 use crate::foc::phase::source::PhaseSourceError;
-use crate::foc::sensors::AngleSample;
-use crate::foc::wrap_angle;
+use crate::foc::sensors::{AngleSample, ControlAngleSample};
+use crate::foc::{angle_difference, wrap_angle};
 #[cfg(feature = "hfi")]
 use crate::units::hertz;
+#[cfg(feature = "storage")]
+use crate::units::quantity;
+#[cfg(any(feature = "hfi", feature = "storage", feature = "virtual-motor"))]
+use crate::units::volts;
 use crate::units::{
-    ElectricalAngle, amps, erad, erad_per_s, henries, ohms, per_second, quantity, seconds, volts,
-    webers,
+    ElectricalAngle, amps, erad, erad_per_s, henries, ohms, per_second, seconds, webers,
 };
 #[cfg(feature = "virtual-motor")]
 use crate::virtual_motor::VirtualMotorOutput;
@@ -796,7 +797,7 @@ fn successful_hall_calibration_resets_control_motion_but_rejected_calibration_do
     use crate::foc::hall_calibration::HallCalibrationResult;
     use crate::foc::hall_sensor::HallSensor;
     let mut phase = PhaseManager::with_hall(HallSensor::new(1_000_000));
-    let sample = crate::foc::sensors::ControlAngleSample {
+    let sample = ControlAngleSample {
         sample: AngleSample {
             angle: erad(0.0),
             omega: erad_per_s(100.0),
@@ -807,7 +808,7 @@ fn successful_hall_calibration_resets_control_motion_but_rejected_calibration_do
     phase
         .hall_control_motion
         .observe(sample, 0, erad_per_s(0.0));
-    let sample = crate::foc::sensors::ControlAngleSample {
+    let sample = ControlAngleSample {
         sample: AngleSample {
             angle: erad(0.005),
             ..sample.sample

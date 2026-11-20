@@ -2,10 +2,14 @@
 
 use super::{CurrentLimits, FocDriver, MotorModelError};
 use crate::foc::controller::{CurrentKi, CurrentKp, Decoupling, FocController};
+use crate::foc::hall_sensor::PreparedHallCalibration;
 use crate::foc::phase::{PhaseProvider, PhaseSource, PreparedPhaseModel};
 use crate::foc::pwm::{PhasePwm, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::{LibmSinCos, SinCos};
+use crate::motor::ControlMode;
+#[cfg(all(feature = "delivery", feature = "detection", feature = "runtime"))]
+use crate::storage::HallCalibrationConfig;
 use crate::storage::{MotorParamsConfig, RuntimeConfig};
 use crate::types::VoltageFeedforwardMode;
 use crate::units::{ConstZero, ElectricCurrent, ElectricPotential};
@@ -32,7 +36,7 @@ impl PreparedMotorModel {
     #[cfg(all(feature = "runtime", feature = "detection", feature = "delivery"))]
     pub(crate) fn prepare_setup_feedback(
         &mut self,
-        hall: Option<crate::storage::HallCalibrationConfig>,
+        hall: Option<HallCalibrationConfig>,
     ) -> Option<()> {
         self.phase.as_mut()?.prepare_setup_feedback(hall)
     }
@@ -66,9 +70,9 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
     /// Replace only the Hall reference, keeping motor/controller tuning intact.
     pub fn apply_hall_calibration(
         &mut self,
-        prepared: &crate::foc::hall_sensor::PreparedHallCalibration,
+        prepared: &PreparedHallCalibration,
     ) -> Result<(), MotorModelError> {
-        if self.mode() != crate::motor::ControlMode::Stopped || self.current_offset_active() {
+        if self.mode() != ControlMode::Stopped || self.current_offset_active() {
             return Err(MotorModelError::Busy);
         }
         if self.phase.apply_hall_calibration(prepared) {
@@ -85,7 +89,7 @@ impl<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCos> FocDriver<P, C
         &mut self,
         model: &mut PreparedMotorModel,
     ) -> Result<PhaseSource, MotorModelError> {
-        if self.mode() != crate::motor::ControlMode::Stopped || self.current_offset_active() {
+        if self.mode() != ControlMode::Stopped || self.current_offset_active() {
             return Err(MotorModelError::Busy);
         }
         let phase = model.phase.as_mut().ok_or(MotorModelError::Consumed)?;

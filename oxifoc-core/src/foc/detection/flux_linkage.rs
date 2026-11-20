@@ -31,6 +31,7 @@
 //! - λ = flux linkage (Wb)
 
 use super::types::{DetectionError, FluxLinkageParams};
+use crate::foc::constants;
 use crate::foc::fast_math::sqrtf;
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngularVelocity, ElectricalResistance,
@@ -657,10 +658,7 @@ pub fn rpm_to_erpm(rpm: f32, pole_pairs: u8) -> f32 {
 #[inline]
 pub fn calculate_kv(flux_linkage_wb: f32, pole_pairs: u8) -> f32 {
     // Kv = 60 / (√3 × 2π × λ × pole_pairs)  — √3 = peak phase → peak line-to-line
-    60.0 / (crate::foc::constants::SQRT_3
-        * core::f32::consts::TAU
-        * flux_linkage_wb
-        * f32::from(pole_pairs))
+    60.0 / (constants::SQRT_3 * core::f32::consts::TAU * flux_linkage_wb * f32::from(pole_pairs))
 }
 
 /// Calculate flux linkage from Kv.
@@ -677,10 +675,7 @@ pub fn calculate_kv(flux_linkage_wb: f32, pole_pairs: u8) -> f32 {
 #[inline]
 pub fn calculate_flux_from_kv(kv_rpm_per_v: f32, pole_pairs: u8) -> f32 {
     // λ = 60 / (√3 × 2π × Kv × pole_pairs)
-    60.0 / (crate::foc::constants::SQRT_3
-        * core::f32::consts::TAU
-        * kv_rpm_per_v
-        * f32::from(pole_pairs))
+    60.0 / (constants::SQRT_3 * core::f32::consts::TAU * kv_rpm_per_v * f32::from(pole_pairs))
 }
 
 /// Calculate observer gain from flux linkage (VESC formula).

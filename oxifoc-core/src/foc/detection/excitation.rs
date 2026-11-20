@@ -4,6 +4,8 @@
 use super::types::DetectionError;
 use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
+#[cfg(feature = "runtime")]
+use crate::state::DetectionCommandToken;
 use crate::units::{amps, erad, erad_per_s, volts};
 
 pub const MAX_BURST_SAMPLES: usize = 256;
@@ -195,7 +197,7 @@ impl BurstCapture {
 #[cfg(feature = "runtime")]
 #[derive(Clone, Debug)]
 pub(crate) struct Excitation {
-    pub authority: Option<crate::state::DetectionCommandToken>,
+    pub authority: Option<DetectionCommandToken>,
     pub program: Option<VoltageBurst>,
     pub outcome: Option<Result<(), DetectionError>>,
     pub cancelled: bool,

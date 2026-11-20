@@ -7,6 +7,8 @@ use crate::foc::angle_difference_single_turn;
 use crate::foc::fast_math::u64_to_f32;
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::ControlAngleSample;
+#[cfg(feature = "isr-work-events")]
+use crate::isr_work;
 use crate::units::{
     ConstZero, ElectricalAngle, ElectricalAngularVelocity, Time, ToBits, erad, erad_per_s, seconds,
 };
@@ -160,8 +162,8 @@ impl HallControlMotion {
                             self.velocity = applied_velocity;
                         } else {
                             #[cfg(feature = "isr-work-events")]
-                            crate::isr_work::angle_difference(
-                                crate::isr_work::HALL_VELOCITY_WRAP,
+                            isr_work::angle_difference(
+                                isr_work::HALL_VELOCITY_WRAP,
                                 sample.angle,
                                 angle,
                             );

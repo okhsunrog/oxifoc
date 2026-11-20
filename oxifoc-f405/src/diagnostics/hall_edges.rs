@@ -5,7 +5,9 @@
 //! sequence is the latest observed loop, not a simultaneous ADC capture.
 
 use core::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "bench-hall-phase")]
 use oxifoc_core::motor::foc_driver::VelocityControlSnapshot;
+#[cfg(feature = "bench-hall-phase")]
 use oxifoc_core::units::{ToBits, erad_per_s};
 
 // Covers a short 120 electrical rad/s velocity/braking capture, including

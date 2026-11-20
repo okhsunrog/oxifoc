@@ -21,6 +21,9 @@ use super::current_sense::ShuntCurrentSense;
 use super::hall_calibration::HallCalibrationResult;
 use super::hall_sensor::Direction;
 use crate::foc::hall_sensor::HallFaultKind;
+#[cfg(feature = "storage")]
+use crate::storage::HallTuningConfig;
+use crate::types::CurrentSenseTopology;
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity,
     ElectricalResistance, Time, volts,
@@ -79,8 +82,8 @@ pub type PhaseCurrents = (ElectricCurrent, ElectricCurrent, ElectricCurrent);
 pub trait CurrentSensor {
     /// Hardware-declared measurement topology. Existing two-channel sensors
     /// remain compatible; three-channel implementations must opt in.
-    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
-        crate::types::CurrentSenseTopology::TwoShunt
+    fn current_sense_topology(&self) -> CurrentSenseTopology {
+        CurrentSenseTopology::TwoShunt
     }
 
     /// Read the three phase currents (i_a, i_b, i_c).
@@ -122,7 +125,7 @@ pub trait AngleSensor {
     }
 
     #[cfg(feature = "storage")]
-    fn apply_hall_tuning(&mut self, _tuning: &crate::storage::HallTuningConfig) -> bool {
+    fn apply_hall_tuning(&mut self, _tuning: &HallTuningConfig) -> bool {
         false
     }
 
@@ -417,7 +420,7 @@ pub trait RawCurrentReader {
 /// type MyCurrentSensor = GenericCurrentSensor<MyAdcReader>;
 /// ```
 pub struct GenericCurrentSensor<R: RawCurrentReader> {
-    topology: crate::types::CurrentSenseTopology,
+    topology: CurrentSenseTopology,
     /// Core conversion logic
     converter: ShuntCurrentSense,
     /// Platform-specific raw ADC reader
@@ -441,7 +444,7 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
         reader: R,
     ) -> Self {
         Self {
-            topology: crate::types::CurrentSenseTopology::TwoShunt,
+            topology: CurrentSenseTopology::TwoShunt,
             converter: ShuntCurrentSense::new(shunt, amp_gain, adc_vref_mv, adc_max_counts),
             reader,
         }
@@ -490,7 +493,7 @@ impl<R: RawCurrentReader> GenericCurrentSensor<R> {
 }
 
 impl<R: RawCurrentReader> CurrentSensor for GenericCurrentSensor<R> {
-    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
+    fn current_sense_topology(&self) -> CurrentSenseTopology {
         self.topology
     }
 

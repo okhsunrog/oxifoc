@@ -39,6 +39,9 @@
 //! register allocation adds one `vmov` per circle-bisection step (rare path,
 //! accepted).
 
+use crate::foc::fast_math;
+#[cfg(feature = "isr-work-events")]
+use crate::isr_work;
 use crate::units::{
     ConstZero, CurrentSquared, ElectricCurrent, ElectricPotential, ElectricalAngularVelocity,
     ElectricalResistance, Inductance, MagneticFlux, Power, sqrt_current,
@@ -86,7 +89,7 @@ pub struct RegenBudget {
 #[inline(always)]
 #[must_use]
 pub fn heat_current_limit(heat: Power, resistance: ElectricalResistance) -> ElectricCurrent {
-    (heat / (1.5 * resistance)).sqrt_with(crate::foc::fast_math::sqrtf)
+    (heat / (1.5 * resistance)).sqrt_with(fast_math::sqrtf)
 }
 
 /// Power the brake pushes into the supply (negative = draws from it).
@@ -112,7 +115,7 @@ fn quadratic_ceiling(
         return ceiling;
     }
     let disc = (w * w - 4.0 * r * c).max(ConstZero::ZERO);
-    2.0 * c / (w + disc.sqrt_with(crate::foc::fast_math::sqrtf))
+    2.0 * c / (w + disc.sqrt_with(fast_math::sqrtf))
 }
 
 /// `q` with the sign of `of` (positive for a zero `of`, as `f32::signum`).
@@ -259,7 +262,7 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
             q
         } else if circle_charge(boundary) <= a {
             #[cfg(feature = "isr-work-events")]
-            crate::isr_work::mark(crate::isr_work::CIRCLE_SEARCH);
+            isr_work::mark(isr_work::CIRCLE_SEARCH);
             #[cfg(feature = "isr-profiling")]
             BENCH_DISSIPATION_SEARCHES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             // q*sqrt(I²-q²) is concave for q>=0. With a feasible left
@@ -337,7 +340,7 @@ fn required_d(
     let need: Power = (w - r * q) * q - a;
     (b + (b * b + 4.0 * r * need)
         .max(ConstZero::ZERO)
-        .sqrt_with(crate::foc::fast_math::sqrtf))
+        .sqrt_with(fast_math::sqrtf))
         / (2.0 * r)
 }
 

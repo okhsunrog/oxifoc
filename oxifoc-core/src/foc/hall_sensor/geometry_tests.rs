@@ -1,5 +1,7 @@
 use super::*;
-use crate::foc::hall_calibration::HallTransitionGeometry;
+use crate::foc::hall_calibration::{HallCalibrationResult, HallTransitionGeometry};
+#[cfg(feature = "storage")]
+use crate::storage::HallCalibrationConfig;
 use crate::units::{ToBits, erad, erad_per_s, seconds};
 
 const RING: [u8; 6] = [3, 2, 6, 4, 5, 1];
@@ -19,14 +21,12 @@ fn measured_hall() -> HallSensor {
     )
     .unwrap();
     let mut hall = HallSensor::new(1_000_000);
-    assert!(
-        hall.apply_calibration(&crate::foc::hall_calibration::HallCalibrationResult {
-            angles: centers.map(erad),
-            valid: [false, true, true, true, true, true, true, false],
-            valid_count: 6,
-            geometry: Some(geometry),
-        })
-    );
+    assert!(hall.apply_calibration(&HallCalibrationResult {
+        angles: centers.map(erad),
+        valid: [false, true, true, true, true, true, true, false],
+        valid_count: 6,
+        geometry: Some(geometry),
+    }));
     hall
 }
 
@@ -34,7 +34,7 @@ fn measured_hall() -> HallSensor {
 fn prepared_geometry_validates_the_current_frame_and_legacy_replaces_it() {
     let mut hall = measured_hall();
     hall.update(3, 100);
-    let result = crate::foc::hall_calibration::HallCalibrationResult {
+    let result = HallCalibrationResult {
         angles: CENTERS_DEG.map(f32::to_radians).map(erad),
         valid: [false, true, true, true, true, true, true, false],
         valid_count: 6,
@@ -68,7 +68,7 @@ fn prepared_geometry_validates_the_current_frame_and_legacy_replaces_it() {
 fn geometry_config_and_detection_install_the_same_reference() {
     let mut detected = measured_hall();
     detected.update(3, 100);
-    let result = crate::foc::hall_calibration::HallCalibrationResult {
+    let result = HallCalibrationResult {
         angles: CENTERS_DEG.map(f32::to_radians).map(erad),
         valid: [false, true, true, true, true, true, true, false],
         valid_count: 6,
@@ -76,7 +76,7 @@ fn geometry_config_and_detection_install_the_same_reference() {
     };
     let mut from_config = HallSensor::new(1_000_000);
     from_config.update(3, 100);
-    let config = crate::storage::HallCalibrationConfig::from(&result);
+    let config = HallCalibrationConfig::from(&result);
     from_config
         .install_prepared_calibration(&PreparedHallCalibration::from_config(&config).unwrap());
     assert_eq!(
@@ -91,7 +91,7 @@ fn geometry_config_and_detection_install_the_same_reference() {
         assert_eq!(actual.angle.to_bits(), expected.angle.to_bits());
         assert_eq!(actual.omega.to_bits(), expected.omega.to_bits());
     }
-    let legacy_config = crate::storage::HallCalibrationConfig {
+    let legacy_config = HallCalibrationConfig {
         geometry: None,
         ..config
     };

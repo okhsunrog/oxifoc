@@ -9,6 +9,8 @@
 
 mod actuation;
 mod commissioning;
+#[cfg(feature = "fast-telemetry")]
+use crate::velocity_telemetry::VelocityDebugFrame;
 pub use commissioning::{CommissioningError, PreparedCommissioning};
 mod calibration;
 mod driver;
@@ -43,19 +45,15 @@ pub enum MotorModelError {
 }
 
 use crate::foc::controller::{CurrentKi, CurrentKp, FocController};
-use crate::foc::current_offset::CurrentOffsetCalibrator;
-use crate::foc::current_offset::CurrentOffsetError;
-use crate::foc::current_offset::CurrentOffsetReport;
+use crate::foc::current_offset::{
+    CurrentOffsetCalibrator, CurrentOffsetError, CurrentOffsetReport,
+};
 use crate::foc::phase::PhaseProvider;
 use crate::foc::phase_voltage::PhaseVoltageSense;
-use crate::foc::position::Position;
-use crate::foc::position::PositionLoopConfig;
-use crate::foc::position::PositionTracker;
-use crate::foc::pwm::PhasePwm;
-use crate::foc::pwm::SvpwmModulator;
+use crate::foc::position::{Position, PositionLoopConfig, PositionTracker};
+use crate::foc::pwm::{PhasePwm, SvpwmModulator};
 use crate::foc::sensors::CurrentSensor;
-use crate::foc::trig::LibmSinCos;
-use crate::foc::trig::SinCos;
+use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::velocity::VelocityLoop;
 use crate::units::{
     ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity, Time, amps,
@@ -66,8 +64,7 @@ use protection::ProtectionMonitor;
 use velocity_schedule::VelocitySchedule;
 use watchdog::CommandWatchdog;
 
-use crate::motor::failsafe::FailsafeConfig;
-use crate::motor::failsafe::FailsafeController;
+use crate::motor::failsafe::{FailsafeConfig, FailsafeController};
 
 /// Command-staleness bound for the bench/calibration modes
 /// (OpenLoop/DirectVoltage) — see [`FocDriver::deadman_expired`]. Sized for
@@ -303,7 +300,7 @@ where
     #[cfg(feature = "fast-telemetry")]
     current_debug_due: bool,
     #[cfg(feature = "fast-telemetry")]
-    last_current_debug: Option<crate::velocity_telemetry::VelocityDebugFrame>,
+    last_current_debug: Option<VelocityDebugFrame>,
     last_granted_iq: ElectricCurrent,
     last_granted_id: ElectricCurrent,
     /// The rotor's unwrapped electrical position, followed every cycle in

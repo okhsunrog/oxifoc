@@ -6,6 +6,13 @@
 //! a platform-provided random boot epoch; retired identities never re-energize.
 //! Hosts retain orchestration of R/L/flux/Hall and may run each stage separately.
 
+use crate::drive_setup::{DriveCurrent, DriveSetup};
+use crate::foc::detection::flux_linkage;
+use crate::state;
+use crate::timer::Timer;
+use crate::types::commissioning::{CommissioningPlan, SourceLimits};
+use crate::types::measurement::SessionId;
+use crate::types::{ConfigGroupId, SaveDriveSetup};
 use core::cell::RefCell;
 
 pub mod operations;
@@ -35,19 +42,19 @@ use crate::units::{
 };
 
 struct ReadySetup {
-    session: crate::types::measurement::SessionId,
-    revisions: [u32; crate::types::ConfigGroupId::COUNT],
-    setup: crate::drive_setup::DriveSetup,
+    session: SessionId,
+    revisions: [u32; ConfigGroupId::COUNT],
+    setup: DriveSetup,
 }
 static READY_SETUP: CriticalSectionMutex<RefCell<Option<ReadySetup>>> =
     CriticalSectionMutex::new(RefCell::new(None));
 
-pub(super) fn setup_is_current(request: &crate::types::SaveDriveSetup) -> bool {
+pub(super) fn setup_is_current(request: &SaveDriveSetup) -> bool {
     critical_section::with(|cs| {
         let ready = READY_SETUP.borrow(cs).borrow();
         ready.as_ref().is_some_and(|ready| {
             let mut offered = request.setup.clone();
-            offered.current = crate::drive_setup::DriveCurrent::Auto;
+            offered.current = DriveCurrent::Auto;
             offered.motor.max_current.value = 0.0;
             ready.session == request.session
                 && offered == ready.setup
@@ -68,7 +75,7 @@ pub(super) fn invalidate_setup_candidate() {
 pub trait DetectionBackend {
     /// Wall-clock timer for the bounded ISR installation acknowledgement.
     /// Simulation's instantaneous measurement clock is unsuitable here.
-    type Timer: crate::timer::Timer;
+    type Timer: Timer;
 
     /// Present DC bus voltage in volts (read from the platform ADC / sim).
     fn vbus(&self) -> f32;
@@ -173,7 +180,7 @@ pub async fn detect_server<NS, B>(
                     &guard,
                     plan,
                 ),
-                <B::Timer as crate::timer::Timer>::after_millis(65_000),
+                <B::Timer as Timer>::after_millis(65_000),
             )
             .await
             {
@@ -193,9 +200,9 @@ pub async fn detect_server<NS, B>(
             // cancellation. Never advertise completion with the stage rate.
             while !backend.restore_timing().await {
                 guard.cancel();
-                <B::Timer as crate::timer::Timer>::after_millis(1).await;
+                <B::Timer as Timer>::after_millis(1).await;
             }
-            if crate::state::detection_cancelled()
+            if state::detection_cancelled()
                 && !matches!(
                     result,
                     DetectResponse::Error(DetectError::SourceLimited | DetectError::Timeout)
@@ -266,7 +273,7 @@ async fn run_step<B: DetectionBackend>(
     foc_freq_hz: f32,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
     detection: &DetectionActiveGuard,
-    plan: Option<crate::types::commissioning::CommissioningPlan>,
+    plan: Option<CommissioningPlan>,
 ) -> DetectResponse {
     if runtime_config.is_some_and(|config| {
         critical_section::with(|cs| !config.borrow(cs).borrow().board_calibration_is_valid())
@@ -299,17 +306,15 @@ async fn run_step<B: DetectionBackend>(
         return DetectResponse::Error(DetectError::Busy);
     }
     let result = measure_step(backend, req, prepared.current_ceiling().value, foc_freq_hz).await;
-    let limited = crate::state::detection_source_limited();
+    let limited = state::detection_source_limited();
     if !detection.end::<B::Timer>().await {
         return DetectResponse::Error(DetectError::HardwareFault);
     }
     if limited {
         DetectResponse::Error(DetectError::SourceLimited)
-    } else if crate::state::detection_cancelled() {
+    } else if state::detection_cancelled() {
         DetectResponse::Error(DetectError::HardwareFault)
-    } else if matches!(result, DetectResponse::Error(_))
-        && crate::state::detection_source_constrained()
-    {
+    } else if matches!(result, DetectResponse::Error(_)) && state::detection_source_constrained() {
         DetectResponse::Error(DetectError::SourceLimited)
     } else {
         result
@@ -448,7 +453,7 @@ async fn measure_step<B: DetectionBackend>(
                     // flux_linkage::calculate_kv); inlining it here is what kept
                     // the detection result √3-high.
                     let kv = if flux > 0.0 {
-                        crate::foc::detection::flux_linkage::calculate_kv(flux, pole_pairs)
+                        flux_linkage::calculate_kv(flux, pole_pairs)
                     } else {
                         0.0
                     };
@@ -532,12 +537,12 @@ fn prepare_commissioning(
     platform_max: f32,
     config: Option<&RuntimeConfig>,
     test_ceiling_a: Option<f32>,
-    source: Option<crate::types::commissioning::SourceLimits>,
+    source: Option<SourceLimits>,
 ) -> Result<PreparedCommissioning, DetectError> {
     let limits = config.and_then(|c| c.current_limits.as_ref());
     let source = source
         .or_else(|| {
-            limits.map(|limits| crate::types::commissioning::SourceLimits {
+            limits.map(|limits| SourceLimits {
                 input: limits.bus_in_max,
                 regen: limits.bus_regen_max,
             })
@@ -591,7 +596,7 @@ fn map_err(e: DetectionError) -> DetectError {
     }
 }
 
-fn config_revisions() -> [u32; crate::types::ConfigGroupId::COUNT] {
+fn config_revisions() -> [u32; ConfigGroupId::COUNT] {
     critical_section::with(|cs| *CONFIG_COORDINATOR.revisions.borrow(cs).borrow())
 }
 
@@ -599,6 +604,7 @@ fn config_revisions() -> [u32; crate::types::ConfigGroupId::COUNT] {
 mod tests {
     use super::*;
     use crate::motor::foc_driver::OVERCURRENT_HEADROOM;
+    use crate::types::commissioning::SourceLimits;
     use crate::units::{amps, erpm, henries, ohms, watts};
 
     #[test]
@@ -632,7 +638,7 @@ mod tests {
         assert!(prepare_commissioning(70.0, Some(&cfg), Some(f32::NAN), None).is_err());
         cfg.current_limits.as_mut().unwrap().bus_regen_max.value = -1.0;
         assert!(prepare_commissioning(70.0, Some(&cfg), None, None).is_err());
-        let confirmed = crate::types::commissioning::SourceLimits {
+        let confirmed = SourceLimits {
             input: amps(5.0),
             regen: amps(0.0),
         };

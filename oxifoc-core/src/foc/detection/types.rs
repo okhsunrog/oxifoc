@@ -3,12 +3,14 @@
 //! Provides motor size classification, detected parameter storage,
 //! and error types used across all detection algorithms.
 
+use crate::foc::constants;
 /// Motor size classification for determining safe test currents.
 ///
 /// Based on VESC's motor size presets, each size maps to a maximum
 /// power loss (in Watts) that's safe for detection measurements.
 /// This prevents overheating during resistance/inductance measurements.
 use crate::foc::fast_math::sqrtf;
+use crate::motor::dissipation;
 use crate::units::{ohms, watts};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -160,7 +162,7 @@ impl MotorParams {
     pub fn calculate_kv(&mut self) {
         if self.flux_linkage_wb > 0.0 && self.pole_pairs > 0 {
             self.kv_rpm_per_v = 60.0
-                / (crate::foc::constants::SQRT_3
+                / (constants::SQRT_3
                     * core::f32::consts::TAU
                     * self.flux_linkage_wb
                     * f32::from(self.pole_pairs));
@@ -172,7 +174,7 @@ impl MotorParams {
     /// Formula: I_max = sqrt(max_power_loss / R / 1.5)
     pub fn calculate_max_current(&mut self, motor_size: MotorSize) {
         if self.resistance_ohm > 0.0 {
-            self.max_current_a = crate::motor::dissipation::heat_current_limit(
+            self.max_current_a = dissipation::heat_current_limit(
                 watts(motor_size.max_power_loss_w()),
                 ohms(self.resistance_ohm),
             )

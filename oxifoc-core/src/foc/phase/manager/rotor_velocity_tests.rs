@@ -1,9 +1,12 @@
 use super::*;
 use crate::foc::hall_calibration::{HallCalibrationResult, HallTransitionGeometry};
 use crate::foc::hall_sensor::{Direction, HallSensor};
+use crate::foc::phase::observer;
 use crate::foc::phase::provider::{PhaseInput, PhaseProvider, RotorVelocityEstimate};
 use crate::foc::sensors::{AngleSample, AngleSensor, ControlAngleSample};
 use crate::foc::wrap_angle;
+#[cfg(feature = "storage")]
+use crate::storage::RuntimeConfig;
 use crate::units::{ToBits, erad, erad_per_s, henries, ohms, seconds, volts, webers};
 #[cfg(feature = "hfi")]
 use crate::units::{amps, hertz, per_second, quantity};
@@ -200,8 +203,7 @@ fn fresh_epoch_uses_its_native_velocity_without_differentiating_reference_jump()
 fn model_replacement_invalidates_native_velocity_until_a_fresh_sample() {
     let mut manager = PhaseManager::with_hall(VelocitySensor::new());
     update_hall(&mut manager, 0, 0.2, 80.0);
-    let mut model =
-        PreparedPhaseModel::from_config(&crate::storage::RuntimeConfig::default(), volts(24.0));
+    let mut model = PreparedPhaseModel::from_config(&RuntimeConfig::default(), volts(24.0));
     assert_eq!(manager.apply_prepared_model(&mut model), PhaseSource::Hall);
     assert_eq!(rotor_speed(&manager), None);
     update_hall(&mut manager, 50, 2.0, 80.0);
@@ -398,11 +400,7 @@ fn hybrid_observer_readiness_and_active_reseed_are_reference_boundaries() {
         observer.force_phase(erad(0.8));
         // A coherent seed just below the speed gate becomes ready in the
         // real observer update, rather than importing readiness by a setter.
-        observer.set_velocity(erad_per_s(
-            crate::foc::phase::observer::READY_MIN_VELOCITY
-                .value
-                .next_down(),
-        ));
+        observer.set_velocity(erad_per_s(observer::READY_MIN_VELOCITY.value.next_down()));
         manager.set_observer(Observer::BackEmf(observer));
         manager
             .set_source(PhaseSource::HallToObserver {

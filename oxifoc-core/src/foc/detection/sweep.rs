@@ -47,9 +47,10 @@ use super::voltage_pulse::VoltagePulseMeasurement;
 use crate::foc::clamp_f32;
 use crate::foc::controller::FocOutput;
 use crate::foc::fast_math::sqrtf;
-use crate::foc::trig::SinCos;
+use crate::foc::trig::{FastSinCos, SinCos};
 use crate::motor::ControlMode;
 use crate::timer::Timer;
+use crate::types::CurrentSenseTopology;
 use crate::units::unit::{henry, ohm, radian_per_second, volt, weber};
 use crate::units::{
     AngularVelocity, ElectricalResistance, amps, erad_per_s, henries, hertz, ohms, volts,
@@ -111,8 +112,8 @@ pub trait DetectionHardware {
         async { Err(DetectionError::MissingPrerequisite) }
     }
     /// The current channels valid for this backend's sampling topology.
-    fn current_sense_topology(&self) -> crate::types::CurrentSenseTopology {
-        crate::types::CurrentSenseTopology::TwoShunt
+    fn current_sense_topology(&self) -> CurrentSenseTopology {
+        CurrentSenseTopology::TwoShunt
     }
 
     /// Send a control mode command to the FOC driver.
@@ -1281,9 +1282,7 @@ async fn pulse_once<H: DetectionHardware>(
     // FastSinCos, not libm: |err| < 1e-6 moves no detection result (see
     // `detection_results_do_not_depend_on_the_sin_cos_backend`), while libm
     // sinf/cosf link ~12 KB of f64 soft-float on the M4F.
-    let capture = hw
-        .capture_voltage_burst::<crate::foc::trig::FastSinCos>(program)
-        .await?;
+    let capture = hw.capture_voltage_burst::<FastSinCos>(program).await?;
     capture.validate(usize::from(program.samples))?;
     let project = |sample: BurstSample| {
         if ax.q_axis {
