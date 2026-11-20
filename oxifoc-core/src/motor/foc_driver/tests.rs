@@ -518,7 +518,7 @@ fn three_shunt_feedback_rejects_common_mode_and_feeds_observers() {
             currents,
             "retain raw phases for protection"
         );
-        assert!((output.id.value - 3.0).abs() < 1e-5);
+        assert_near!(output.id.value, 3.0, 1e-5);
         assert!(output.iq.value.abs() < 1e-5);
         assert_eq!(
             (driver.phase().input.i_alpha, driver.phase().input.i_beta),
@@ -1807,7 +1807,7 @@ fn bus_limit_uses_final_pwm_when_deadtime_compensation_reverses_pi_voltage_sign(
             let [a, b, c] = out.duties.map(f32::from);
             let duty_current = (a * ia + b * ib + c * ic) / 10_000.0;
             let mod_q = driver.controller.bus_mod_q();
-            assert!((mod_q.coefficient() * amps(iq) - duty_current).abs() < amps(1e-6));
+            assert_near!(mod_q.coefficient() * amps(iq), duty_current, amps(1e-6));
             assert!(duty_current.is_positive());
             driver.update_bus_mod_q(mod_q, seconds(0.002));
             assert_eq!(

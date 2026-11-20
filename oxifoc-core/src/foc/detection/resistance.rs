@@ -239,7 +239,7 @@ mod tests {
         }
 
         let r = measurement.finish().unwrap();
-        assert!((r - 0.1).abs() < 0.001);
+        assert_near!(r, 0.1, 0.001);
     }
 
     #[test]
@@ -254,7 +254,7 @@ mod tests {
 
         let r = measurement.finish().unwrap();
         // Average V = 1.0, Average I = 10.0, R = 0.1
-        assert!((r - 0.1).abs() < 0.01);
+        assert_near!(r, 0.1, 0.01);
     }
 
     #[test]
@@ -291,7 +291,7 @@ mod tests {
         // R = 0.1Ω, Medium motor (120W)
         // I_max = sqrt(120 / 0.1 / 1.5) = sqrt(800) = 28.3A
         let i_max = calculate_max_current(ohms(0.1), MotorSize::Medium);
-        assert!((i_max.value - 28.3).abs() < 0.5);
+        assert_near!(i_max.value, 28.3, 0.5);
     }
 
     #[test]
@@ -329,6 +329,6 @@ mod tests {
             measurement.record(1.0, 10.0);
         }
         let estimate = measurement.current_estimate().unwrap();
-        assert!((estimate - 0.1).abs() < 0.01);
+        assert_near!(estimate, 0.1, 0.01);
     }
 }

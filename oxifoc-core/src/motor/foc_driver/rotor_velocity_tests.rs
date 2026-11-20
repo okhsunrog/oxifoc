@@ -110,7 +110,7 @@ fn duty_taper_scales_throttle_and_clamps_only_larger_amp_requests() {
     });
     let voltage_limit = driver.controller.voltage_limit();
     driver.update_duty_utilization(volts(0.0), 0.925 * voltage_limit, seconds(0.002));
-    assert!((driver.throttle_current(0.5) - amps(0.75)).abs() < amps(1e-5));
+    assert_near!(driver.throttle_current(0.5), amps(0.75), amps(1e-5));
     assert!(
         (driver
             .grant_torque(amps(0.0), amps(3.0), erad_per_s(100.0))

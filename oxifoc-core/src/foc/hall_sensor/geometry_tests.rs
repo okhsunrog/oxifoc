@@ -224,11 +224,11 @@ fn current_measured_width_controls_stop_decay_and_stale_deadline() {
     // Currentraw6 is90°, previousraw2 was40°; neither nominal60° nor the
     // previous traversed width is the correct bound for waiting onraw6's exit.
     let width = 90_f32.to_radians();
-    assert!((hall.current_sector_width - erad(width)).abs() < erad(1.0e-6));
+    assert_near!(hall.current_sector_width, erad(width), erad(1.0e-6));
     let within = hall.sample_at(19_000).unwrap();
-    assert!((within.omega - speed).abs() < erad_per_s(1.0e-5));
+    assert_near!(within.omega, speed, erad_per_s(1.0e-5));
     let late = hall.sample_at(24_000).unwrap();
-    assert!((late.omega - erad_per_s(width / 0.012)).abs() < erad_per_s(0.001));
+    assert_near!(late.omega, erad_per_s(width / 0.012), erad_per_s(0.001));
     assert!(!hall.is_stale_at_speed(24_000, speed));
     assert!(hall.is_stale_at_speed(27_000, speed));
     assert!(hall.sample_at(1_000_000).unwrap().omega < erad_per_s(2.0));
@@ -241,11 +241,19 @@ fn reversal_uses_the_sector_just_left_for_bound_and_the_new_sector_for_decay() {
     let previous = hall.electrical_velocity();
     hall.update(2, 12_500); // turn back through the same110° boundary
     assert_eq!(hall.electrical_velocity().to_bits(), (-previous).to_bits());
-    assert!((hall.current_sector_width - erad(40_f32.to_radians())).abs() < erad(1.0e-6));
-    assert!((hall.angle - erad(110_f32.to_radians())).abs() < erad(1.0e-6));
+    assert_near!(
+        hall.current_sector_width,
+        erad(40_f32.to_radians()),
+        erad(1.0e-6)
+    );
+    assert_near!(hall.angle, erad(110_f32.to_radians()), erad(1.0e-6));
     hall.update(6, 13_000);
     assert_eq!(hall.electrical_velocity().to_bits(), previous.to_bits());
-    assert!((hall.current_sector_width - erad(90_f32.to_radians())).abs() < erad(1.0e-6));
+    assert_near!(
+        hall.current_sector_width,
+        erad(90_f32.to_radians()),
+        erad(1.0e-6)
+    );
 }
 
 #[test]
@@ -277,7 +285,11 @@ fn skipped_transition_withholds_frame_then_resynchronizes_on_known_adjacent_edge
         );
         hall.update(next, 18_000);
         let expected = signed_width.to_radians() / 0.004;
-        assert!((hall.electrical_velocity() - erad_per_s(expected)).abs() < erad_per_s(0.001));
+        assert_near!(
+            hall.electrical_velocity(),
+            erad_per_s(expected),
+            erad_per_s(0.001)
+        );
     }
 }
 
@@ -316,12 +328,12 @@ fn invalid_state_glitch_uses_measured_current_width_and_keeps_trusted_speed() {
     assert!((20_998..=21_002).contains(&recovered));
     assert!(hall.sample_at(22_000).is_some());
     assert!(!hall.geometry_resync);
-    assert!((hall.angle - erad(200_f32.to_radians())).abs() < erad(1.0e-6));
+    assert_near!(hall.angle, erad(200_f32.to_radians()), erad(1.0e-6));
     assert_eq!(hall.electrical_velocity().to_bits(), speed.to_bits());
     hall.update(5, 25_000);
     assert_eq!(hall.electrical_velocity().to_bits(), speed.to_bits());
     hall.update(1, 31_000);
-    assert!((hall.electrical_velocity() - speed).abs() < erad_per_s(0.001));
+    assert_near!(hall.electrical_velocity(), speed, erad_per_s(0.001));
 }
 
 #[test]
@@ -343,7 +355,11 @@ fn measured_topology_controls_direction_even_when_adjacent_centroids_are_far_apa
     assert_eq!(hall.direction(), Direction::Clockwise);
     hall.update(6, 34_000);
     let expected = 170_f32.to_radians() / 0.017;
-    assert!((hall.electrical_velocity() - erad_per_s(expected)).abs() < erad_per_s(0.001));
+    assert_near!(
+        hall.electrical_velocity(),
+        erad_per_s(expected),
+        erad_per_s(0.001)
+    );
     hall.update(2, 35_000);
     assert_eq!(hall.direction(), Direction::CounterClockwise);
     assert!(hall.electrical_velocity() < erad_per_s(0.0));

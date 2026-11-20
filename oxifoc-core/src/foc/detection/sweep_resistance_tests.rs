@@ -130,7 +130,7 @@ fn negative_controller_slope_is_rejected_instead_of_hidden_by_absolute_value() {
 #[test]
 fn positive_controller_model_remains_supported() {
     let mut hw = Hardware::new(ResistanceVoltageSource::ControllerCommand, 0.07);
-    assert!((run(&mut hw).unwrap() - ohms(0.07)).abs() < ohms(0.00001));
+    assert_near!(run(&mut hw).unwrap(), ohms(0.07), ohms(0.00001));
     assert!(hw.stopped.get());
 }
 

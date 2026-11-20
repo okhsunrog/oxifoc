@@ -261,9 +261,9 @@ mod tests {
 
         // Default offsets should be mid-scale
         let (oa, ob, oc) = converter.get_offsets();
-        assert!((oa - 2047.5).abs() < 0.1);
-        assert!((ob - 2047.5).abs() < 0.1);
-        assert!((oc - 2047.5).abs() < 0.1);
+        assert_near!(oa, 2047.5, 0.1);
+        assert_near!(ob, 2047.5, 0.1);
+        assert_near!(oc, 2047.5, 0.1);
     }
 
     #[test]
@@ -317,9 +317,9 @@ mod tests {
 
         converter.calibrate_offsets(&samples);
         let (oa, ob, oc) = converter.get_offsets();
-        assert!((oa - 2043.0).abs() < 0.1);
-        assert!((ob - 2053.0).abs() < 0.1);
-        assert!((oc - 2063.0).abs() < 0.1);
+        assert_near!(oa, 2043.0, 0.1);
+        assert_near!(ob, 2053.0, 0.1);
+        assert_near!(oc, 2063.0, 0.1);
         assert!(converter.is_calibrated());
     }
 
@@ -341,7 +341,7 @@ mod tests {
         let adc_c = 2048;
 
         let (ia, ib, ic) = converter.convert_raw(adc_a, adc_b, adc_c);
-        assert!((ia - amps(10.0)).abs() < amps(0.5));
+        assert_near!(ia, amps(10.0), amps(0.5));
         assert!((ib + amps(5.0)).abs() < amps(0.3));
         assert!(ic.abs() < amps(0.1));
     }
@@ -372,9 +372,9 @@ mod tests {
         converter.calibrate_phase_offset(2, &samples_c);
 
         let (oa, ob, oc) = converter.get_offsets();
-        assert!((oa - 2040.0).abs() < 0.1);
-        assert!((ob - 2050.0).abs() < 0.1);
-        assert!((oc - 2060.0).abs() < 0.1);
+        assert_near!(oa, 2040.0, 0.1);
+        assert_near!(ob, 2050.0, 0.1);
+        assert_near!(oc, 2060.0, 0.1);
         assert!(converter.is_calibrated());
     }
 
@@ -389,8 +389,8 @@ mod tests {
         assert!(!converter.is_calibrated());
 
         let (oa, ob, oc) = converter.get_offsets();
-        assert!((oa - 2047.5).abs() < 0.1);
-        assert!((ob - 2047.5).abs() < 0.1);
-        assert!((oc - 2047.5).abs() < 0.1);
+        assert_near!(oa, 2047.5, 0.1);
+        assert_near!(ob, 2047.5, 0.1);
+        assert_near!(oc, 2047.5, 0.1);
     }
 }

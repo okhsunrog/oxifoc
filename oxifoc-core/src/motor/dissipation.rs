@@ -596,7 +596,7 @@ mod tests {
         // Reverse rotation: same magnitudes, iq keeps its sign, id > 0.
         let (id_r, iq_r) = dissipate(10.0, -400.0, &M5065, &NONE, 30.0, 30.0).unwrap();
         assert_eq!(iq_r, 10.0);
-        assert!((id_r - id).abs() < 1e-4);
+        assert_near!(id_r, id, 1e-4);
     }
 
     #[test]
@@ -640,7 +640,7 @@ mod tests {
         let p0 = charge(omega, (0.0, -10.0));
         let out = dissipate(-10.0, omega, &M5065, &half, 30.0, 30.0).unwrap();
         assert_eq!(out.1, -10.0);
-        assert!((charge(omega, out) - 0.5 * p0).abs() < 0.05);
+        assert_near!(charge(omega, out), 0.5 * p0, 0.05);
     }
 
     #[test]
@@ -652,7 +652,7 @@ mod tests {
         };
         let out = dissipate(-10.0, omega, &M5065, &capped, 30.0, 30.0).unwrap();
         assert_eq!(out.1, -10.0);
-        assert!((charge(omega, out) - 5.0).abs() < 0.05);
+        assert_near!(charge(omega, out), 5.0, 0.05);
     }
 
     #[test]

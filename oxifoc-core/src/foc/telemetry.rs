@@ -332,8 +332,8 @@ mod tests {
             ..Default::default()
         };
         let frame = build_fast_telemetry(&AdcSnapshot::empty(), &foc, Some(hall), 7, 0);
-        assert!((frame.angle_rad() - 1.0).abs() < 0.0001);
-        assert!((frame.hall_angle.radians().unwrap() - 2.5).abs() < 0.0001);
+        assert_near!(frame.angle_rad(), 1.0, 0.0001);
+        assert_near!(frame.hall_angle.radians().unwrap(), 2.5, 0.0001);
         assert_eq!(
             build_fast_telemetry(&AdcSnapshot::empty(), &foc, None, 7, 1)
                 .hall_angle
@@ -444,8 +444,8 @@ mod tests {
         };
         let measured = frame.enrich(&ctx);
         let scale = 3.3 * 20.0 / 4095.0;
-        assert!((measured.phase_voltage_v.unwrap()[0] - 1600.0 * scale).abs() < 1e-4);
-        assert!((measured.vd_measured.unwrap() - 400.0 * scale).abs() < 1e-4);
+        assert_near!(measured.phase_voltage_v.unwrap()[0], 1600.0 * scale, 1e-4);
+        assert_near!(measured.vd_measured.unwrap(), 400.0 * scale, 1e-4);
         assert!(measured.vq_measured.unwrap().abs() < 1e-4);
         assert!((measured.vd + 0.2).abs() < 0.003); // PI command remains separate.
         frame.vphase_adc = [1800, 1200, 1200];
@@ -524,9 +524,9 @@ mod tests {
             0,
             CurrentSenseTopology::ThreeShunt,
         ));
-        assert!((magnitude(two) - 6.0681).abs() < 0.001);
-        assert!((magnitude(three) - 2.7035).abs() < 0.001);
-        assert!((three.i_sum.unwrap() - 6.7137).abs() < 0.001);
+        assert_near!(magnitude(two), 6.0681, 0.001);
+        assert_near!(magnitude(three), 2.7035, 0.001);
+        assert_near!(three.i_sum.unwrap(), 6.7137, 0.001);
         assert_eq!((two.ia, two.ib, two.ic), (three.ia, three.ib, three.ic));
     }
 
@@ -563,10 +563,11 @@ mod tests {
             1000,
             seconds(0.00005),
         );
-        assert!((rich.ia - 5.0).abs() < 1e-5);
+        assert_near!(rich.ia, 5.0, 1e-5);
         assert!((rich.ib - 0.5).abs() < 1e-5 && (rich.ic - 0.5).abs() < 1e-5);
-        assert!((rich.i_sum.unwrap() - 6.0).abs() < 1e-5);
-        assert!((rich.id - 3.0).abs() < 1e-5 && rich.iq.abs() < 1e-5);
+        assert_near!(rich.i_sum.unwrap(), 6.0, 1e-5);
+        assert_near!(rich.id, 3.0, 1e-5);
+        assert!(rich.iq.abs() < 1e-5);
         assert_eq!((rich.id, rich.iq), (output.id.value, output.iq.value));
 
         let two = frame.enrich(&EnrichCtx::new(
@@ -576,7 +577,7 @@ mod tests {
             CurrentSenseTopology::TwoShunt,
         ));
         assert_eq!(two.i_sum, None);
-        assert!((two.id - 5.0).abs() < 1e-5);
+        assert_near!(two.id, 5.0, 1e-5);
         assert!(two.iq > 3.4);
     }
 
@@ -699,7 +700,7 @@ mod tests {
             (after.ib, before.ib),
             (after.ic, before.ic),
         ] {
-            assert!((a - b * ratio).abs() < 1e-5);
+            assert_near!(a, b * ratio, 1e-5);
         }
         // VBUS is already converted by the device, unlike the raw current codes.
         assert_eq!(after.vbus_v, before.vbus_v);
@@ -762,7 +763,7 @@ mod tests {
         assert!(r.ic.abs() < 0.1, "ic={}", r.ic);
         // θ=0: id = iα = ia, iq = iβ
         assert!((r.id - r.i_alpha).abs() < 1e-4 && (r.iq - r.i_beta).abs() < 1e-4);
-        assert!((r.id - r.ia).abs() < 1e-4);
+        assert_near!(r.id, r.ia, 1e-4);
     }
 
     #[test]

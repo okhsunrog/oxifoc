@@ -253,10 +253,10 @@ mod tests {
         let (kp, ki) = calculate_current_gains(ohms(0.1), henries(0.0001), rad_per_s(1000.0));
 
         // Kp = L × ω = 0.0001 × 1000 = 0.1
-        assert!((kp - ohms(0.1)).abs() < ohms(1e-6));
+        assert_near!(kp, ohms(0.1), ohms(1e-6));
 
         // Ki = R × ω = 0.1 × 1000 = 100
-        assert!((ki.value - 100.0).abs() < 1e-6);
+        assert_near!(ki.value, 100.0, 1e-6);
     }
 
     #[test]
@@ -292,14 +292,14 @@ mod tests {
         let gains = calculate_foc_gains(&params, rad_per_s(1000.0)).unwrap();
 
         // d-axis: Kp = 0.0001 × 1000 = 0.1
-        assert!((gains.kp_d - ohms(0.1)).abs() < ohms(1e-6));
+        assert_near!(gains.kp_d, ohms(0.1), ohms(1e-6));
 
         // q-axis: Kp = 0.00012 × 1000 = 0.12
-        assert!((gains.kp_q - ohms(0.12)).abs() < ohms(1e-6));
+        assert_near!(gains.kp_q, ohms(0.12), ohms(1e-6));
 
         // Both axes same Ki = 0.1 × 1000 = 100
-        assert!((gains.ki_d.value - 100.0).abs() < 1e-6);
-        assert!((gains.ki_q.value - 100.0).abs() < 1e-6);
+        assert_near!(gains.ki_d.value, 100.0, 1e-6);
+        assert_near!(gains.ki_q.value, 100.0, 1e-6);
     }
 
     #[test]
@@ -329,19 +329,19 @@ mod tests {
         // (conf_general.c:1181) — the same one flux_linkage.rs implements.
         // λ = 10mWb => 0.5e3 / (0.01)² = 5e6
         let gain = calculate_observer_gain(webers(0.01)).unwrap();
-        assert!((gain - 5e6).abs() < 1e3);
+        assert_near!(gain, 5e6, 1e3);
 
         // λ = 5mWb (typical hobby motor) => 0.5e3 / (0.005)² = 2e7
         let gain2 = calculate_observer_gain(webers(0.005)).unwrap();
-        assert!((gain2 - 2e7).abs() < 1e4);
+        assert_near!(gain2, 2e7, 1e4);
 
         // Both call sites must agree (one source of truth)
         let from_flux = super::super::flux_linkage::calculate_observer_gain(webers(0.005));
-        assert!((gain2 - from_flux).abs() < 1.0);
+        assert_near!(gain2, from_flux, 1.0);
 
         // Huge flux linkage clamps to the minimum
         let gain3 = calculate_observer_gain(webers(1.0)).unwrap();
-        assert!((gain3 - 1e3).abs() < 1.0);
+        assert_near!(gain3, 1e3, 1.0);
 
         // Invalid flux linkage
         assert!(calculate_observer_gain(webers(0.0)).is_none());

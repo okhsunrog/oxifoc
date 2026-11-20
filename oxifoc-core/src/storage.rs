@@ -1643,7 +1643,11 @@ mod tests {
             .unwrap()
             .rating_current()
             .unwrap();
-        assert!((rating - setup.thermal_current() / libm::sqrtf(2.5)).abs() < amps(1e-5));
+        assert_near!(
+            rating,
+            setup.thermal_current() / libm::sqrtf(2.5),
+            amps(1e-5)
+        );
         #[cfg(feature = "algorithms")]
         {
             use crate::motor::foc_driver::CurrentLimits;

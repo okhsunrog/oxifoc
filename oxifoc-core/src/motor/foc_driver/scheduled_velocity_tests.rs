@@ -261,7 +261,7 @@ fn failsafe_takes_the_final_grant_and_never_records_against_cruise() {
     });
     driver.enter_failsafe();
     driver.step(150).unwrap();
-    assert!((driver.last_granted_iq - amps(0.1925)).abs() < amps(1e-6));
+    assert_near!(driver.last_granted_iq, amps(0.1925), amps(1e-6));
     for now in (200..=900).step_by(50) {
         driver.step(now).unwrap();
         assert_eq!(driver.velocity_schedule.requested_iq(), amps(0.0));
@@ -347,7 +347,7 @@ fn position_tracks_native_angles_but_only_recomputes_its_target_on_due_ticks() {
     assert_eq!(driver.position().as_angle(), erad(0.05));
     assert_eq!(driver.last_granted_iq, amps(1.0));
     driver.step(1_050).unwrap();
-    assert!((driver.velocity_loop.last_iq().value - 0.5).abs() < 0.002);
+    assert_near!(driver.velocity_loop.last_iq().value, 0.5, 0.002);
     driver.set_mode(ControlMode::PositionControl {
         target_pos: erad(-0.1),
     });

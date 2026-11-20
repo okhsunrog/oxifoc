@@ -517,9 +517,9 @@ mod tests {
     #[test]
     fn derived_dimensions_check_out() {
         let emf: ElectricPotential = erad_per_s(400.0) * webers(2.92e-3);
-        assert!((emf.get::<volt>() - 1.168).abs() < 1e-6);
+        assert_near!(emf.get::<volt>(), 1.168, 1e-6);
         let loss: Power = ohms(0.036) * amps(10.0) * amps(10.0);
-        assert!((loss.get::<watt>() - 3.6).abs() < 1e-6);
+        assert_near!(loss.get::<watt>(), 3.6, 1e-6);
         assert_eq!(sqrt_current(amps(3.0) * amps(3.0)).get::<ampere>(), 3.0);
         assert_eq!(sqrt_current(-(amps(3.0) * amps(3.0))), amps(0.0));
     }
@@ -530,9 +530,9 @@ mod tests {
         use super::unit::rpm;
         let electrical = ElectricalAngularVelocity::new::<erpm>(7000.0);
         let mechanical = electrical.to_mechanical(7);
-        assert!((mechanical.get::<rpm>() - 1000.0).abs() < 1e-3);
+        assert_near!(mechanical.get::<rpm>(), 1000.0, 1e-3);
         assert_eq!(mechanical.to_electrical(7), electrical);
-        assert!((super::erpm(7000.0).get::<erpm>() - 7000.0).abs() < 1e-3);
+        assert_near!(super::erpm(7000.0).get::<erpm>(), 7000.0, 1e-3);
     }
 
     #[test]

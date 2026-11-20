@@ -1136,7 +1136,7 @@ mod tests {
             CURRENT_REF.value,
         ); // full current → max ceiling
         assert!(hi.velocity() > lo.velocity() + erad_per_s(1.0));
-        assert!((lo.velocity() - DEFAULT_HANDOFF_VEL).abs() < erad_per_s(1.0));
+        assert_near!(lo.velocity(), DEFAULT_HANDOFF_VEL, erad_per_s(1.0));
     }
 
     #[test]

@@ -2046,14 +2046,14 @@ mod tests {
         // First edge: centroid fallback (0°). Second edge: the boundary
         // between the 0° and 60° sectors = 30°.
         let angle1 = hall.update(1, 0).unwrap();
-        assert!((angle1 - erad(0.0)).abs() < erad(1e-5));
+        assert_near!(angle1, erad(0.0), erad(1e-5));
 
         let angle2 = hall.update(3, 1).unwrap();
-        assert!((angle2 - erad(TAU / 12.0)).abs() < erad(1e-5));
+        assert_near!(angle2, erad(TAU / 12.0), erad(1e-5));
 
         // From a boundary base, each further edge advances one full sector.
         let angle3 = hall.update(2, 2).unwrap();
-        assert!((angle3 - erad(TAU / 12.0 + TAU / 6.0)).abs() < erad(1e-5));
+        assert_near!(angle3, erad(TAU / 12.0 + TAU / 6.0), erad(1e-5));
     }
 
     #[test]

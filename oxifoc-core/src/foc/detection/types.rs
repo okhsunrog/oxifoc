@@ -553,7 +553,7 @@ mod tests {
         assert!(medium.resistance > mini.resistance);
         assert!(medium.flux > mini.flux && medium.hall > mini.hall);
         let copper_loss = 1.5 * ohms(0.0624) * medium.resistance * medium.resistance;
-        assert!((copper_loss - watts(24.0)).abs() < watts(0.01));
+        assert_near!(copper_loss, watts(24.0), watts(0.01));
         assert!(medium.inductance_bias + 2.0 * medium.inductance_rms <= amps(20.0));
         let capped =
             DetectionCurrents::new(watts(120.0), ohms(0.0624), volts(24.0), amps(6.0)).unwrap();
@@ -597,7 +597,7 @@ mod tests {
         params.calculate_kv();
 
         // Kv = 60 / (√3 × 2π × 0.01 × 7) ≈ 78.8 RPM/V (line-to-line)
-        assert!((params.kv_rpm_per_v - 78.8).abs() < 1.0);
+        assert_near!(params.kv_rpm_per_v, 78.8, 1.0);
     }
 
     #[test]
@@ -609,7 +609,7 @@ mod tests {
         params.calculate_max_current(MotorSize::Medium);
 
         // I_max = sqrt(120 / 0.1 / 1.5) = sqrt(800) ≈ 28.3A
-        assert!((params.max_current - amps(28.3)).abs() < amps(0.5));
+        assert_near!(params.max_current, amps(28.3), amps(0.5));
     }
 
     #[test]

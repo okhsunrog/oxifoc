@@ -175,11 +175,11 @@ mod tests {
     fn position_keeps_turns_and_fraction_apart() {
         let p = Position::from_angle(erad(5.0 * TAU + 1.0));
         assert_eq!(p.turns, 5);
-        assert!((p.angle - 1.0).abs() < 1e-5);
+        assert_near!(p.angle, 1.0, 1e-5);
         let q = Position::from_angle(erad(-0.5));
         assert_eq!(q.turns, -1);
-        assert!((q.angle - (TAU - 0.5)).abs() < 1e-6);
-        assert!((q.minus(p) - erad(-0.5 - 5.0 * TAU - 1.0)).abs() < erad(1e-4));
+        assert_near!(q.angle, (TAU - 0.5), 1e-6);
+        assert_near!(q.minus(p), erad(-0.5 - 5.0 * TAU - 1.0), erad(1e-4));
         // Far from the origin the difference of neighbours stays exact to
         // f32 angle precision, where a plain accumulator would not.
         let far = Position::from_angle(erad(0.0)).advanced(erad(1e6 * TAU));
@@ -201,15 +201,19 @@ mod tests {
             angle = wrap_angle(angle + 0.3);
             t.update(erad(angle));
         }
-        assert!((t.position().as_angle() - erad(63.0 * 0.3)).abs() < erad(1e-3));
+        assert_near!(t.position().as_angle(), erad(63.0 * 0.3), erad(1e-3));
         for _ in 0..21 {
             angle = wrap_angle(angle - 0.3);
             t.update(erad(angle));
         }
-        assert!((t.position().as_angle() - erad(42.0 * 0.3)).abs() < erad(1e-3));
+        assert_near!(t.position().as_angle(), erad(42.0 * 0.3), erad(1e-3));
         // A step just under half a turn is still read the right way.
         t.update(wrap_angle(erad(angle - (PI - 0.01))));
-        assert!((t.position().as_angle() - erad(42.0 * 0.3 - PI + 0.01)).abs() < erad(1e-3));
+        assert_near!(
+            t.position().as_angle(),
+            erad(42.0 * 0.3 - PI + 0.01),
+            erad(1e-3)
+        );
     }
 
     #[test]

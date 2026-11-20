@@ -212,8 +212,8 @@ mod tests {
             let (ia, ib, ic) = inverse_clarke(alpha, beta);
             for offset in [-20.0, -1.0, 0.0, 2.0, 20.0] {
                 let (a, b) = clarke_three(ia + offset, ib + offset, ic + offset);
-                assert!((a - alpha).abs() < 1e-5);
-                assert!((b - beta).abs() < 1e-5);
+                assert_near!(a, alpha, 1e-5);
+                assert_near!(b, beta, 1e-5);
             }
         }
     }
@@ -245,8 +245,8 @@ mod tests {
     #[test]
     fn test_clarke_zero() {
         let (alpha, beta) = clarke(0.0, 0.0);
-        assert!((alpha - 0.0).abs() < EPSILON);
-        assert!((beta - 0.0).abs() < EPSILON);
+        assert_near!(alpha, 0.0, EPSILON);
+        assert_near!(beta, 0.0, EPSILON);
     }
 
     #[test]
@@ -291,8 +291,8 @@ mod tests {
         let beta = 0.8;
         let (d, q) = park(alpha, beta, 0.0, 1.0); // sin(0)=0, cos(0)=1
 
-        assert!((d - alpha).abs() < EPSILON);
-        assert!((q - beta).abs() < EPSILON);
+        assert_near!(d, alpha, EPSILON);
+        assert_near!(q, beta, EPSILON);
     }
 
     #[test]

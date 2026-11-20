@@ -922,7 +922,7 @@ mod tests {
         assert!(measurement.record(0.3, 100.0));
         assert!(!measurement.has_enough_samples());
         assert!(measurement.record(0.6, 200.0));
-        assert!((measurement.finish().unwrap() - 0.003).abs() < 1e-7);
+        assert_near!(measurement.finish().unwrap(), 0.003, 1e-7);
     }
 
     fn coast_plant_sample(n: u32, time: f64, direction: f64, decel: f64) -> CoastSample {
@@ -1058,7 +1058,7 @@ mod tests {
         let omega_e = rpm_to_omega_e(rpm, pole_pairs);
         let rpm_back = omega_e_to_rpm(omega_e, pole_pairs);
 
-        assert!((rpm - rpm_back).abs() < 0.01);
+        assert_near!(rpm, rpm_back, 0.01);
     }
 
     #[test]
@@ -1067,10 +1067,10 @@ mod tests {
         let pole_pairs = 7u8;
 
         let rpm = erpm_to_rpm(erpm, pole_pairs);
-        assert!((rpm - 1000.0).abs() < 0.01);
+        assert_near!(rpm, 1000.0, 0.01);
 
         let erpm_back = rpm_to_erpm(rpm, pole_pairs);
-        assert!((erpm - erpm_back).abs() < 0.01);
+        assert_near!(erpm, erpm_back, 0.01);
     }
 
     #[test]
@@ -1081,11 +1081,11 @@ mod tests {
 
         let kv = calculate_kv(flux, pole_pairs);
         // Kv = 60 / (√3 × 2π × 0.01 × 7) ≈ 78.8 RPM/V (line-to-line)
-        assert!((kv - 78.8).abs() < 1.0);
+        assert_near!(kv, 78.8, 1.0);
 
         // Reverse calculation (inverse carries the same √3, so it round-trips)
         let flux_back = calculate_flux_from_kv(kv, pole_pairs);
-        assert!((flux - flux_back).abs() < webers(0.0001));
+        assert_near!(flux, flux_back, webers(0.0001));
     }
 
     #[test]
@@ -1093,7 +1093,7 @@ mod tests {
         let gain = calculate_observer_gain(webers(0.01));
 
         // gain = 0.5e3 / 0.01² = 0.5e3 / 0.0001 = 5e6
-        assert!((gain - 5e6).abs() < 1e5);
+        assert_near!(gain, 5e6, 1e5);
     }
 
     #[test]

@@ -16,7 +16,7 @@ fn first_request_can_wait_one_native_cycle_but_keeps_zero_initial_pi_dt() {
     let VelocityTick::Update { dt } = clock.advance_with_defer(1_000, false).1 else {
         panic!()
     };
-    assert!((dt - seconds(0.000933)).abs() < seconds(1e-9));
+    assert_near!(dt, seconds(0.000933), seconds(1e-9));
 }
 
 #[test]
@@ -38,12 +38,12 @@ fn postponement_keeps_actual_dt_and_periodic_grid() {
     let VelocityTick::Update { dt } = clock.advance_with_defer(1_067, false).1 else {
         panic!()
     };
-    assert!((dt - seconds(0.001067)).abs() < seconds(1e-9));
+    assert_near!(dt, seconds(0.001067), seconds(1e-9));
     assert_eq!(clock.deadline, 2_000);
     let VelocityTick::Update { dt } = clock.advance_with_defer(2_000, false).1 else {
         panic!()
     };
-    assert!((dt - seconds(0.000933)).abs() < seconds(1e-9));
+    assert_near!(dt, seconds(0.000933), seconds(1e-9));
 }
 
 #[test]
@@ -86,7 +86,11 @@ fn postponed_cycle_retains_native_feedback_and_held_request() {
         VelocityTick::Update { .. }
     ));
     let (residual, blocked, voltage) = schedule.take_feedback();
-    assert!((residual - amps((-2.0 * 1_000.0 - 67.0) / 1_067.0)).abs() < amps(1e-6));
+    assert_near!(
+        residual,
+        amps((-2.0 * 1_000.0 - 67.0) / 1_067.0),
+        amps(1e-6)
+    );
     assert!(blocked.positive() && blocked.negative());
     assert!(voltage.positive() && voltage.negative());
 }
@@ -126,13 +130,13 @@ fn clock_skips_backlog_and_reanchors_bad_time_without_inventing_dt() {
     let VelocityTick::Update { dt } = clock.advance(1_100).1 else {
         panic!()
     };
-    assert!((dt - seconds(0.0011)).abs() < seconds(1e-9));
+    assert_near!(dt, seconds(0.0011), seconds(1e-9));
     assert!(matches!(clock.advance(1_100).1, VelocityTick::Hold));
     assert!(matches!(clock.advance(1_999).1, VelocityTick::Hold));
     let VelocityTick::Update { dt } = clock.advance(2_000).1 else {
         panic!()
     };
-    assert!((dt - seconds(0.0009)).abs() < seconds(1e-9));
+    assert_near!(dt, seconds(0.0009), seconds(1e-9));
     assert!(matches!(clock.advance(1_999).1, VelocityTick::Reanchor));
     assert!(matches!(
         clock.advance(2_999).1,
@@ -150,7 +154,7 @@ fn clock_skips_backlog_and_reanchors_bad_time_without_inventing_dt() {
     let VelocityTick::Update { dt } = wrapped.advance(499).1 else {
         panic!()
     };
-    assert!((dt - seconds(0.001)).abs() < seconds(1e-9));
+    assert_near!(dt, seconds(0.001), seconds(1e-9));
 }
 
 #[test]
@@ -195,7 +199,7 @@ fn clock_bounds_integration_age_and_keeps_short_late_grid_intervals() {
     let VelocityTick::Update { dt } = clock.advance(2_000).1 else {
         panic!()
     };
-    assert!((dt - seconds(0.00005)).abs() < seconds(1e-10));
+    assert_near!(dt, seconds(0.00005), seconds(1e-10));
     assert!(matches!(clock.advance(2_050).1, VelocityTick::Hold));
 }
 

@@ -299,7 +299,7 @@ mod tests {
             for _ in 0..params.num_pulses {
                 measurement.record_pulse(params.hold_current.value, params.hold_current.value + di);
             }
-            assert!((measurement.finish().unwrap() / actual_l - 1.0).abs() < 1e-5);
+            assert_near!(measurement.finish().unwrap() / actual_l, 1.0, 1e-5);
         }
     }
 }

@@ -293,9 +293,9 @@ mod tests {
         s.calibrate_offsets_from_sums([8000, 8200, 8400], 4);
         assert!(s.is_calibrated());
         let o = s.offsets();
-        assert!((o[0] - 2000.0).abs() < 0.1);
-        assert!((o[1] - 2050.0).abs() < 0.1);
-        assert!((o[2] - 2100.0).abs() < 0.1);
+        assert_near!(o[0], 2000.0, 0.1);
+        assert_near!(o[1], 2050.0, 0.1);
+        assert_near!(o[2], 2100.0, 0.1);
         // Reading exactly at the offset → zero phase voltage.
         let v = s.phase_voltages([2000, 2050, 2100]);
         assert!(v.iter().all(|x| x.abs() < volts(1e-3)), "v={v:?}");

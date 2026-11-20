@@ -1446,8 +1446,8 @@ mod tests {
             let n = correction(-ia, -ib);
             let half = correction(ia * 0.5, ib * 0.5);
             assert!((p.0 + n.0).abs() < 1e-7 && (p.1 + n.1).abs() < 1e-7);
-            assert!((p.0 * 0.5 - half.0).abs() < 1e-7);
-            assert!((p.1 * 0.5 - half.1).abs() < 1e-7);
+            assert_near!(p.0 * 0.5, half.0, 1e-7);
+            assert_near!(p.1 * 0.5, half.1, 1e-7);
         }
         assert_eq!(
             correction(10.0, 0.0),

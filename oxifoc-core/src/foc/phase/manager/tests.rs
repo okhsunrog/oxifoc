@@ -459,7 +459,7 @@ fn test_sensorless_manager() {
 fn test_manual_angle() {
     let mut phase = PhaseManager::sensorless();
     phase.set_manual_angle(erad(1.0));
-    assert!((phase.manual_angle() - erad(1.0)).abs() < erad(1e-6));
+    assert_near!(phase.manual_angle(), erad(1.0), erad(1e-6));
 }
 
 #[test]
@@ -484,11 +484,15 @@ fn test_open_loop() {
 #[test]
 fn test_blend_angles() {
     // Same angle
-    assert!((blend_angles(erad(0.0), erad(0.0), 0.5) - erad(0.0)).abs() < erad(1e-6));
+    assert_near!(
+        blend_angles(erad(0.0), erad(0.0), 0.5),
+        erad(0.0),
+        erad(1e-6)
+    );
 
     // 50% blend
     let result = blend_angles(erad(0.0), erad(1.0), 0.5);
-    assert!((result - erad(0.5)).abs() < erad(1e-6));
+    assert_near!(result, erad(0.5), erad(1e-6));
 
     // Wraparound case: blend from 6.0 to 0.5 (crossing 2π)
     let result = blend_angles(erad(6.0), erad(0.5), 0.5);
@@ -708,7 +712,7 @@ fn establish_mock_hall_velocity(phase: &mut PhaseManager<MockHallSensor>, angle:
         phase.hall_mut().set_reading(position, speed);
         phase.update(&input, step * 50);
     }
-    assert!((phase.get().velocity - erad_per_s(speed)).abs() < erad_per_s(0.1));
+    assert_near!(phase.get().velocity, erad_per_s(speed), erad_per_s(0.1));
 }
 
 #[test]
@@ -730,7 +734,7 @@ fn hall_control_speed_and_prediction_do_not_follow_raw_edge_speed_steps() {
         100_050,
     );
     let output = phase.get();
-    assert!((output.velocity - erad_per_s(100.0)).abs() < erad_per_s(0.1));
+    assert_near!(output.velocity, erad_per_s(100.0), erad_per_s(0.1));
     assert!(angle_difference(output.angle, erad(1.01)).abs() < erad(0.00001));
     assert_eq!(
         phase.hall().sample(100_050).unwrap().omega,
@@ -791,7 +795,7 @@ fn hall_timebase_reset_is_cold_and_encoder_prediction_still_uses_encoder_speed()
         200,
     );
     assert_eq!(encoder.get().velocity, erad_per_s(100.0));
-    assert!((encoder.get().angle - erad(0.52)).abs() < erad(0.00001));
+    assert_near!(encoder.get().angle, erad(0.52), erad(0.00001));
 }
 
 #[test]
@@ -925,8 +929,8 @@ fn test_hall_failure_uses_observer_when_available() {
 
     // Should have fallen back to observer
     let output = phase.get();
-    assert!((output.angle - erad(1.5)).abs() < erad(0.01));
-    assert!((output.velocity - erad_per_s(200.0)).abs() < erad_per_s(0.01));
+    assert_near!(output.angle, erad(1.5), erad(0.01));
+    assert_near!(output.velocity, erad_per_s(200.0), erad_per_s(0.01));
 
     // Should not have ObserverNotReady since observer was available
     assert!(!phase.has_fault(PhaseFault::ObserverNotReady));
@@ -2217,7 +2221,7 @@ fn model_replacement_preserves_hardware_source_and_clears_partial_estimators() {
         "a new model resets Hall control motion"
     );
     assert_eq!(manager.tracker.kp, quantity(10_000.0));
-    assert!((manager.tracker.kd - per_second(240.0)).abs() < per_second(1e-4));
+    assert_near!(manager.tracker.kd, per_second(240.0), per_second(1e-4));
     #[cfg(feature = "hfi")]
     {
         let first = manager.hfi_observer().unwrap().get_injection().0;

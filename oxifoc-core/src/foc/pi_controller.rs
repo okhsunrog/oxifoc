@@ -367,7 +367,7 @@ mod tests {
 
         // Zero error should give zero output
         let output = controller.update(5.0, 5.0, DT);
-        assert!((output - 0.0).abs() < EPSILON);
+        assert_near!(output, 0.0, EPSILON);
     }
 
     #[test]
@@ -378,7 +378,7 @@ mod tests {
         let output = controller.update(5.0, 3.0, DT);
 
         // Should be kp * error
-        assert!((output - 0.5 * error).abs() < EPSILON);
+        assert_near!(output, 0.5 * error, EPSILON);
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
         // Steps 2..N: ki * (error + error) / 2 * dt = full contribution
         // Total = ki * error * dt * (steps - 0.5)
         let expected = 10.0 * error * DT * (steps as f32 - 0.5);
-        assert!((controller.get_integral() - expected).abs() < EPSILON);
+        assert_near!(controller.get_integral(), expected, EPSILON);
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
 
         // Reset should clear integral
         controller.reset();
-        assert!((controller.get_integral() - 0.0).abs() < EPSILON);
+        assert_near!(controller.get_integral(), 0.0, EPSILON);
     }
 
     #[test]

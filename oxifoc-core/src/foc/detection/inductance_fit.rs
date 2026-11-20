@@ -175,8 +175,8 @@ mod tests {
                     fit.record(x, [b[0] * x[0] + 0.023, b[1] * x[1] - 0.041]);
                 }
                 let result = fit.finish(r, dt).unwrap();
-                assert!((result.ld / ld - 1.0).abs() < 1e-4);
-                assert!((result.lq / lq - 1.0).abs() < 1e-4);
+                assert_near!(result.ld / ld, 1.0, 1e-4);
+                assert_near!(result.lq / lq, 1.0, 1e-4);
             }
         }
     }

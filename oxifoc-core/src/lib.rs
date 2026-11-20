@@ -101,6 +101,24 @@
 #[macro_use]
 mod fmt;
 
+/// `assert!((actual - expected).abs() < tolerance)` for plain `f32`s and
+/// quantities alike, reporting all three values when it fails. Defined
+/// before the modules so every test module sees it without an import.
+#[cfg(test)]
+macro_rules! assert_near {
+    ($actual:expr, $expected:expr, $tolerance:expr $(,)?) => {{
+        let (actual, expected, tolerance) = ($actual, $expected, $tolerance);
+        assert!(
+            (actual - expected).abs() < tolerance,
+            "{} = {:?}, expected {:?} within {:?}",
+            stringify!($actual),
+            actual,
+            expected,
+            tolerance,
+        );
+    }};
+}
+
 /// BLE GATT UUIDs of the ergot transport service
 pub mod ble;
 

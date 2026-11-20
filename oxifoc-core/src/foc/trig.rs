@@ -343,22 +343,22 @@ mod tests {
     #[test]
     fn libm_sin_cos_zero() {
         let (sin, cos) = LibmSinCos::sin_cos(0.0);
-        assert!((sin - 0.0).abs() < 1e-6);
-        assert!((cos - 1.0).abs() < 1e-6);
+        assert_near!(sin, 0.0, 1e-6);
+        assert_near!(cos, 1.0, 1e-6);
     }
 
     #[test]
     fn libm_sin_cos_pi_over_2() {
         let (sin, cos) = LibmSinCos::sin_cos(FRAC_PI_2);
-        assert!((sin - 1.0).abs() < 1e-6);
-        assert!((cos - 0.0).abs() < 1e-6);
+        assert_near!(sin, 1.0, 1e-6);
+        assert_near!(cos, 0.0, 1e-6);
     }
 
     #[test]
     fn libm_sin_cos_pi() {
         let (sin, cos) = LibmSinCos::sin_cos(PI);
         assert!(sin.abs() < 1e-5);
-        assert!((cos - (-1.0)).abs() < 1e-6);
+        assert_near!(cos, (-1.0), 1e-6);
     }
 
     // ── FastSinCos: known values ────────────────────────────────────────────
@@ -681,12 +681,12 @@ mod tests {
 
     #[test]
     fn sin_poly_at_zero() {
-        assert!((sin_poly(0.0) - 0.0).abs() < 1e-6);
+        assert_near!(sin_poly(0.0), 0.0, 1e-6);
     }
 
     #[test]
     fn sin_poly_at_pi_over_2() {
-        assert!((sin_poly(FRAC_PI_2) - 1.0).abs() < 2e-4);
+        assert_near!(sin_poly(FRAC_PI_2), 1.0, 2e-4);
     }
 
     #[test]
@@ -722,8 +722,8 @@ mod tests {
 
     #[test]
     fn q31_known_values() {
-        assert!((q31_to_f32(i32::MAX) - 1.0).abs() < 1e-6);
-        assert!((q31_to_f32(i32::MIN) - (-1.0)).abs() < 1e-6);
+        assert_near!(q31_to_f32(i32::MAX), 1.0, 1e-6);
+        assert_near!(q31_to_f32(i32::MIN), (-1.0), 1e-6);
         assert_eq!(q31_to_f32(0), 0.0);
     }
 
@@ -744,10 +744,10 @@ mod tests {
     fn angle_to_cordic_q31_typical_foc_range() {
         let q31_half = angle_to_cordic_q31(FRAC_PI_2);
         let f_half = q31_to_f32(q31_half);
-        assert!((f_half - 0.5).abs() < 0.01);
+        assert_near!(f_half, 0.5, 0.01);
 
         let q31_neg_half = angle_to_cordic_q31(3.0 * FRAC_PI_2);
         let f_neg_half = q31_to_f32(q31_neg_half);
-        assert!((f_neg_half - (-0.5)).abs() < 0.01);
+        assert_near!(f_neg_half, (-0.5), 0.01);
     }
 }

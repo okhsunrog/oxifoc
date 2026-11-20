@@ -261,7 +261,7 @@ fn geometry_resync_invalidates_velocity_and_recovers_on_real_boundaries() {
     manager.hall_mut().update(3, 24_000);
     manager.update(&input(), 24_050);
     let expected = 50.0_f32.to_radians() / 0.005;
-    assert!((rotor_speed(&manager).unwrap() - expected).abs() < 0.01);
+    assert_near!(rotor_speed(&manager).unwrap(), expected, 0.01);
 
     // Stop estimation uses growing edge age, not the non-decaying last speed.
     manager.update(&input(), 1_024_000);
@@ -335,7 +335,7 @@ fn hybrid_blend_changes_frame_without_inventing_rotor_acceleration() {
             .unwrap();
         manager.hall_mut().set(0.4, 200.0);
         manager.update(&input, ticks);
-        assert!((rotor_speed(&manager).unwrap() - 200.0).abs() < 1.0);
+        assert_near!(rotor_speed(&manager).unwrap(), 200.0, 1.0);
         min_frame = min_frame.min(manager.get().velocity.value);
         max_frame = max_frame.max(manager.get().velocity.value);
     }
@@ -353,7 +353,7 @@ fn ready_observer_fallback_publishes_its_own_velocity_but_startup_does_not() {
     manager.hall_mut().sample = None;
     manager.update(&input, 100);
     assert!(!manager.is_open_loop_override_active());
-    assert!((rotor_speed(&manager).unwrap() - 200.0).abs() < 1.0);
+    assert_near!(rotor_speed(&manager).unwrap(), 200.0, 1.0);
     manager.startup.begin_cold_start(manager.get().angle, 1.0);
     assert!(manager.is_starting());
     assert_eq!(rotor_speed(&manager), None);

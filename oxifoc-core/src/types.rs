@@ -1292,8 +1292,8 @@ mod tests {
         assert_eq!(timing.stream_hz(1), 20_004);
         assert_eq!(timing.stream_hz(4), 5_001);
         assert_eq!(timing.stream_hz(0), 0);
-        assert!((f64::from(timing.dt().value) - 8390.0 / 167_835_842.0).abs() < 1e-11);
-        assert!((timing.frequency_hz() * timing.dt().value - 1.0).abs() < 1e-6);
+        assert_near!(f64::from(timing.dt().value), 8390.0 / 167_835_842.0, 1e-11);
+        assert_near!(timing.frequency_hz() * timing.dt().value, 1.0, 1e-6);
         assert_eq!(ControlTiming::from_hz(20_000).stream_hz(4), 5_000);
         assert!(!ControlTiming::default().is_valid());
         assert_eq!(ControlTiming::default().stream_hz(1), 0);

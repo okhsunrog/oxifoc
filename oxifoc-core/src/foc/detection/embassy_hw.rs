@@ -574,7 +574,7 @@ mod tests {
         };
         let sample = resistance_sample(&board(true), adc, foc).unwrap();
         // α=0, β=0.2/sqrt(3), at 90° the measured d voltage is β.
-        assert!((sample.voltage - volts(0.115_470_05)).abs() < volts(0.000001));
+        assert_near!(sample.voltage, volts(0.115_470_05), volts(0.000001));
         assert_eq!(sample.current, amps(1.5));
         assert_eq!(sample.source, ResistanceVoltageSource::FilteredPhaseAdc);
     }
@@ -589,7 +589,7 @@ mod tests {
         };
         let (alpha, beta, omega) =
             coast_sample(&board(false), adc, Some(hall), ControlMode::Coast, Some(4)).unwrap();
-        assert!((alpha - volts(0.2)).abs() < volts(1e-6));
+        assert_near!(alpha, volts(0.2), volts(1e-6));
         assert!(beta.abs() < volts(1e-6));
         assert_eq!(omega, erad_per_s(-123.0));
     }

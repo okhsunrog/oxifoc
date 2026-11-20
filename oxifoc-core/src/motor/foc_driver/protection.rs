@@ -1014,7 +1014,7 @@ mod tests {
             let exact = f64::from(raw) / 10.0;
             // Full i16 domain, including temperatures far outside the board
             // range: <0.00025 C versus the input's 0.1 C quantum.
-            assert!((f64::from(actual) - exact).abs() < 0.00025);
+            assert_near!(f64::from(actual), exact, 0.00025);
         }
         for threshold in [0.1, 85.0, 85.1, 100.0, 100.1, 120.0, 120.3] {
             let old_trip = (0..=i16::MAX)

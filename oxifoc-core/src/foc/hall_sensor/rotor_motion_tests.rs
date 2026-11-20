@@ -104,7 +104,7 @@ fn travel_filter_retains_multiple_captures_and_ignores_duplicate_samples() {
         erad_per_s(0.0)
     );
     let speed = motion.sample(1100, seconds(1e-6), erad(0.0), erad_per_s(0.0));
-    assert!((speed * seconds(0.021) - erad(TAU + 0.5)).abs() < erad(1e-5));
+    assert_near!(speed * seconds(0.021), erad(TAU + 0.5), erad(1e-5));
     assert_eq!(
         motion.sample(1100, seconds(1e-6), erad(0.0), erad_per_s(0.0)),
         speed

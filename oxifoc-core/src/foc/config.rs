@@ -371,9 +371,9 @@ mod tests {
 
     #[test]
     fn test_duty_to_iq() {
-        assert!((TEST_BOARD.duty_to_iq(0) - amps(0.0)).abs() < amps(0.01));
-        assert!((TEST_BOARD.duty_to_iq(50) - amps(5.0)).abs() < amps(0.01));
-        assert!((TEST_BOARD.duty_to_iq(100) - amps(10.0)).abs() < amps(0.01));
+        assert_near!(TEST_BOARD.duty_to_iq(0), amps(0.0), amps(0.01));
+        assert_near!(TEST_BOARD.duty_to_iq(50), amps(5.0), amps(0.01));
+        assert_near!(TEST_BOARD.duty_to_iq(100), amps(10.0), amps(0.01));
         assert!((TEST_BOARD.duty_to_iq(150) - amps(10.0)).abs() < amps(0.01)); // Clamped
     }
 

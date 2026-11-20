@@ -619,7 +619,7 @@ mod tests {
         assert_eq!(s.value(), 50.0);
         // Symmetric downward.
         let v = s.step(0.0, DT);
-        assert!((v - (50.0 - 100.0 * DT)).abs() < 1e-4);
+        assert_near!(v, (50.0 - 100.0 * DT), 1e-4);
     }
 
     #[test]

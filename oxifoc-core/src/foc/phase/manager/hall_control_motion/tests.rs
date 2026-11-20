@@ -92,7 +92,7 @@ fn pole_uses_elapsed_ticks_across_active_and_decimated_cadences() {
             velocity = observe(&mut motion, angle, 10.0, step * period_us, velocity);
             residual *= gain;
         }
-        assert!((velocity - 10.0 * (1.0 - residual)).abs() < 0.001);
+        assert_near!(velocity, 10.0 * (1.0 - residual), 0.001);
         responses[index] = velocity;
     }
     assert!(responses.iter().all(|v| (*v - responses[0]).abs() < 0.4));
@@ -104,7 +104,7 @@ fn pole_uses_elapsed_ticks_across_active_and_decimated_cadences() {
     let stopped = observe(&mut motion, 0.02, 100.0, 200, 0.0);
     let active = observe(&mut motion, 0.025, 100.0, 250, stopped);
     let expected = (VELOCITY_TAU_S * stopped + 0.005) / (VELOCITY_TAU_S + 0.00005);
-    assert!((active - expected).abs() < 0.0001);
+    assert_near!(active, expected, 0.0001);
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn angle_step_is_filtered_and_reversal_is_continuous() {
     let mut motion = HallControlMotion::default();
     observe(&mut motion, 0.0, 100.0, 0, 0.0);
     let jump = observe(&mut motion, 0.1, 100.0, 50, 0.0);
-    assert!((jump - 20.0).abs() < 0.001);
+    assert_near!(jump, 20.0, 0.001);
     let next = observe(&mut motion, 0.1, 100.0, 100, jump);
     assert!(next < jump && next > 19.0);
     let mut angle = 0.1;
@@ -121,7 +121,7 @@ fn angle_step_is_filtered_and_reversal_is_continuous() {
         angle = wrap_angle(angle - 100.0 * 0.00005);
         let previous = velocity;
         velocity = observe(&mut motion, angle, -100.0, step * 50, previous);
-        assert!((velocity - previous).abs() < 1.3);
+        assert_near!(velocity, previous, 1.3);
     }
     assert!((velocity + 100.0).abs() < 0.02);
 }
@@ -150,14 +150,14 @@ fn duplicate_backward_long_gap_and_ambiguous_angles_reanchor_without_speed_infer
     assert_eq!(observe(&mut motion, 1.0, 100.0, 100, 55.0), 0.0);
     assert_eq!(observe(&mut motion, 2.0, 100.0, 10, 45.0), 45.0);
     let next = observe(&mut motion, 2.005, 100.0, 60, 45.0);
-    assert!((next - 45.55).abs() < 0.001);
+    assert_near!(next, 45.55, 0.001);
     assert_eq!(observe(&mut motion, 0.5, 100.0, 30_060, 12.0), 12.0);
     let next = observe(&mut motion, 0.505, 100.0, 30_110, 12.0);
-    assert!((next - 12.88).abs() < 0.001);
+    assert_near!(next, 12.88, 0.001);
     // A gap inside four tau can still contain more than a half-turn.
     assert_eq!(observe(&mut motion, 1.0, 400.0, 40_110, 25.0), 25.0);
     let next = observe(&mut motion, 1.005, 100.0, 40_160, 25.0);
-    assert!((next - 25.75).abs() < 0.001);
+    assert_near!(next, 25.75, 0.001);
 }
 
 #[test]
@@ -165,11 +165,11 @@ fn small_u64_wrap_is_elapsed_time_and_timebase_change_discards_history() {
     let mut motion = HallControlMotion::default();
     observe(&mut motion, 0.0, 100.0, u64::MAX - 25, 0.0);
     let wrapped = observe(&mut motion, 0.005, 100.0, 24, 0.0);
-    assert!((wrapped - 1.0).abs() < 0.001);
+    assert_near!(wrapped, 1.0, 0.001);
     motion.set_ticks_per_sec(2_000_000);
     assert_eq!(observe(&mut motion, 2.0, 100.0, 1000, 700.0), 0.0);
     let velocity = observe(&mut motion, 2.005, 100.0, 1100, 0.0);
-    assert!((velocity - 1.0).abs() < 0.001);
+    assert_near!(velocity, 1.0, 0.001);
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn exact_rest_keeps_time_history_and_does_not_override_nonzero_source_reentry() 
         assert_eq!(observe(&mut motion, 1.0, 100.0, ticks, 0.0).to_bits(), 0);
     }
     let moving = observe(&mut motion, 1.005, 100.0, 149, 0.0);
-    assert!((moving - 1.0).abs() < 0.001);
+    assert_near!(moving, 1.0, 0.001);
 
     motion.reset();
     observe(&mut motion, 1.0, 400.0, 0, 0.0);
@@ -208,5 +208,5 @@ fn high_rate_timebase_keeps_full_u64_elapsed_conversion() {
     motion.set_ticks_per_sec(1_000_000_000_000);
     observe(&mut motion, 0.0, 100.0, 0, 0.0);
     let speed = observe(&mut motion, 0.5, 100.0, 5_000_000_000, 0.0);
-    assert!((speed - 0.5 / (VELOCITY_TAU_S + 0.005)).abs() < 0.001);
+    assert_near!(speed, 0.5 / (VELOCITY_TAU_S + 0.005), 0.001);
 }
