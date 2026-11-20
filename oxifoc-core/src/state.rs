@@ -53,6 +53,8 @@ use crate::timer::Timer;
 use crate::types::{
     DriveOwnership, DriveSessionId, MotorCommand, MotorCommandOutcome, MotorRequest, MotorState,
 };
+#[cfg(feature = "detection")]
+use crate::units::{ConstZero, ElectricalAngularVelocity};
 use crate::units::{ElectricPotential, si};
 
 // ============================================================================
@@ -1565,9 +1567,9 @@ where
             let program = ex.program?;
             let starting_in_hold = matches!(driver.mode(), ControlMode::OpenLoop {
                 velocity, current, angle: angle_rad, ..
-            } if velocity.value == 0.0
-                && current.value == program.hold_current
-                && angle_rad.value == program.angle);
+            } if velocity == ElectricalAngularVelocity::ZERO
+                && current == program.hold_current
+                && angle_rad == program.angle);
             if fault_registry.any_stopping()
                 || driver.failsafe_active()
                 || saw_set_mode
@@ -1580,7 +1582,7 @@ where
                 cancel_detection();
                 return Some(BurstAction::Stop);
             }
-            if let Err(e) = ex.check_timing(cycle, now_ticks as u32, driver.dt().value) {
+            if let Err(e) = ex.check_timing(cycle, now_ticks as u32, driver.dt()) {
                 ex.abort(e);
                 cancel_detection();
                 return Some(BurstAction::Stop);
@@ -1611,13 +1613,7 @@ where
                     angle,
                     compensation_current,
                 } => {
-                    use crate::units::{amps, erad, volts};
-                    driver.set_detection_voltage(
-                        volts(vd),
-                        volts(vq),
-                        erad(angle),
-                        (amps(compensation_current.0), amps(compensation_current.1)),
-                    );
+                    driver.set_detection_voltage(vd, vq, angle, compensation_current);
                     driver.mode()
                 }
                 BurstAction::Hold(program) => program.hold_mode(),
@@ -1719,11 +1715,9 @@ where
             let Some(program) = ex.program else {
                 return (false, false);
             };
-            let (alpha, beta) = board.current_sense_topology.clarke((
-                telem.ia.value,
-                telem.ib.value,
-                telem.ic.value,
-            ));
+            let (alpha, beta) = board
+                .current_sense_topology
+                .clarke((telem.ia, telem.ib, telem.ic));
             if !program.current_in_budget(alpha, beta) {
                 ex.abort(DetectionError::HardwareFault);
                 cancel_detection();

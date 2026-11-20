@@ -182,6 +182,13 @@ pub const fn erpm(value: f32) -> ElectricalAngularVelocity {
     erad_per_s(value * (core::f32::consts::PI / 30.0))
 }
 
+/// Mechanical angular velocity from revolutions per minute.
+#[inline(always)]
+#[must_use]
+pub const fn rpm(value: f32) -> AngularVelocity {
+    rad_per_s(value * (core::f32::consts::PI / 30.0))
+}
+
 /// A plain `f32` or any quantity, built from a value in SI base units.
 ///
 /// For generated code that only knows a JSON number, such as

@@ -22,6 +22,7 @@ use crate::foc::detection::sweep::{
 };
 use crate::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use crate::foc::phase_voltage::PhaseVoltageSense;
+use crate::foc::sensors::PhaseCurrents;
 use crate::foc::sensors::{AdcSnapshot, HallSnapshot};
 use crate::foc::transforms;
 use crate::foc::trig::{FastSinCos, SinCos};
@@ -29,6 +30,10 @@ use crate::motor::ControlMode;
 use crate::state::{self, MotorControlState};
 use crate::timer::EmbassyTimer;
 use crate::types::{CurrentSenseTopology, MotorState};
+use crate::units::{
+    AngleRepr, ElectricPotential, ElectricalAngularVelocity, ElectricalResistance, Frequency,
+    Inductance, MagneticFlux,
+};
 
 // Re-export types from core for convenience
 pub use crate::foc::detection::sweep::{DetectionParams, DetectionResult};
@@ -139,7 +144,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
             }
         }
         self.check_health()?;
-        let (sin, cos) = S::sin_cos(program.angle);
+        let (sin, cos) = S::sin_cos(program.angle.radians());
         critical_section::with(|cs| {
             let mut state = self.state_mutex.borrow(cs).borrow_mut();
             state.excitation.compensation_current =
@@ -237,7 +242,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
         resistance_sample(self.board, adc, foc)
     }
 
-    fn read_phase_currents(&self) -> (f32, f32, f32) {
+    fn read_phase_currents(&self) -> PhaseCurrents {
         let ia_raw = self.ia.load(Ordering::Relaxed);
         let ib_raw = self.ib.load(Ordering::Relaxed);
         let ic_raw = self.ic.load(Ordering::Relaxed);
@@ -262,7 +267,7 @@ impl DetectionHardware for EmbassyDetectionHardware {
             v_beta,
             omega_e,
             hall_sector: Some(hall.state),
-            hall_edge_age_s: hall.edge_age.value,
+            hall_edge_age: hall.edge_age,
         })
     }
 }
@@ -273,7 +278,14 @@ fn coast_sample(
     hall: Option<HallSnapshot>,
     mode: ControlMode,
     initial_errors: Option<u32>,
-) -> Result<(f32, f32, f32), DetectionError> {
+) -> Result<
+    (
+        ElectricPotential,
+        ElectricPotential,
+        ElectricalAngularVelocity,
+    ),
+    DetectionError,
+> {
     if mode != ControlMode::Coast {
         return Err(DetectionError::HardwareFault);
     }
@@ -293,7 +305,7 @@ fn coast_sample(
     if alpha * alpha + beta * beta < voltage_floor * voltage_floor {
         return Err(DetectionError::InsufficientSamples);
     }
-    Ok((alpha.value, beta.value, hall.velocity.value))
+    Ok((alpha, beta, hall.velocity))
 }
 
 async fn wait_next_telemetry(
@@ -310,8 +322,8 @@ fn resistance_sample(
     let Some(sense) = PhaseVoltageSense::from_board(board).filter(PhaseVoltageSense::has_filters)
     else {
         return Ok(ResistanceSample {
-            voltage_v: foc.vd.value,
-            current_a: foc.id.value,
+            voltage: foc.vd,
+            current: foc.id,
             source: ResistanceVoltageSource::ControllerCommand,
         });
     };
@@ -322,11 +334,11 @@ fn resistance_sample(
     let (alpha, beta) = sense.alpha_beta(raw);
     // FastSinCos: its 6e-7 error at the lock angle is far below one phase-ADC
     // LSB; libm sinf/cosf would link ~12 KB of f64 soft-float.
-    let (sin, cos) = FastSinCos::sin_cos(foc.angle.value);
-    let (voltage_v, _) = transforms::park(alpha, beta, sin, cos);
+    let (sin, cos) = FastSinCos::sin_cos(foc.angle.radians());
+    let (voltage, _) = transforms::park(alpha, beta, sin, cos);
     Ok(ResistanceSample {
-        voltage_v: voltage_v.value,
-        current_a: foc.id.value,
+        voltage,
+        current: foc.id,
         source: ResistanceVoltageSource::FilteredPhaseAdc,
     })
 }
@@ -413,7 +425,7 @@ pub async fn measure_resistance(
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
-) -> Result<f32, DetectionError> {
+) -> Result<ElectricalResistance, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::measure_resistance::<_, EmbassyTimer>(&mut hw, params).await
 }
@@ -427,21 +439,20 @@ pub async fn measure_resistance(
 )]
 pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
-    pwm_freq_hz: f32,
+    pwm_freq: Frequency,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
-) -> Result<(f32, f32), DetectionError> {
+) -> Result<(Inductance, Inductance), DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     // Experiment build (`impedance-sweep`): replace the normal L step with a
     // one-lock R(f)/L(f) frequency sweep, logged to RTT. Same safe lock + probe.
     #[cfg(feature = "impedance-sweep")]
-    return sweep::measure_impedance_sweep::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz)
-        .await;
+    return sweep::measure_impedance_sweep::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq).await;
     #[cfg(not(feature = "impedance-sweep"))]
-    sweep::measure_inductance_auto::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq_hz).await
+    sweep::measure_inductance_auto::<_, EmbassyTimer, S>(&mut hw, params, pwm_freq).await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
@@ -451,7 +462,7 @@ pub async fn measure_inductance<S: SinCos>(
 /// do — `EmbassyDetectionHardware` keeps the default `false`), otherwise
 /// the back-EMF-vector driven method (load-angle invariant, unlike the
 /// q-axis method which is biased by up to −90% in open loop);
-/// `params.inductance_h` (0.0 if unknown) trims its `ωL·i` reactance term.
+/// `params.inductance` (zero if unknown) trims its `ωL·i` reactance term.
 pub async fn measure_flux_linkage(
     params: &FluxLinkageParams,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
@@ -459,7 +470,7 @@ pub async fn measure_flux_linkage(
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
-) -> Result<f32, DetectionError> {
+) -> Result<MagneticFlux, DetectionError> {
     let mut hw = EmbassyDetectionHardware::new(state_mutex, ia, ib, ic, board);
     sweep::measure_flux_linkage_auto::<_, EmbassyTimer>(&mut hw, params).await
 }
@@ -563,8 +574,8 @@ mod tests {
         };
         let sample = resistance_sample(&board(true), adc, foc).unwrap();
         // α=0, β=0.2/sqrt(3), at 90° the measured d voltage is β.
-        assert!((sample.voltage_v - 0.115_470_05).abs() < 0.000001);
-        assert_eq!(sample.current_a, 1.5);
+        assert!((sample.voltage - volts(0.115_470_05)).abs() < volts(0.000001));
+        assert_eq!(sample.current, amps(1.5));
         assert_eq!(sample.source, ResistanceVoltageSource::FilteredPhaseAdc);
     }
 
@@ -578,9 +589,9 @@ mod tests {
         };
         let (alpha, beta, omega) =
             coast_sample(&board(false), adc, Some(hall), ControlMode::Coast, Some(4)).unwrap();
-        assert!((alpha - 0.2).abs() < 1e-6);
-        assert!(beta.abs() < 1e-6);
-        assert_eq!(omega, -123.0);
+        assert!((alpha - volts(0.2)).abs() < volts(1e-6));
+        assert!(beta.abs() < volts(1e-6));
+        assert_eq!(omega, erad_per_s(-123.0));
     }
 
     #[test]
@@ -681,7 +692,7 @@ mod tests {
                 ..FocOutput::empty()
             };
             let sample = resistance_sample(&board, AdcSnapshot::default(), foc).unwrap();
-            assert_eq!(sample.voltage_v, 0.25);
+            assert_eq!(sample.voltage, volts(0.25));
             assert_eq!(sample.source, ResistanceVoltageSource::ControllerCommand);
         }
     }

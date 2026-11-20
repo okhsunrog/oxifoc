@@ -31,6 +31,7 @@ use crate::foc::detection::types::DetectionError;
 use crate::foc::hall_calibration::HallReader;
 use crate::foc::pi_controller::PIController;
 use crate::foc::pwm::SvpwmModulator;
+use crate::foc::sensors::PhaseCurrents;
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
 use crate::motor::ControlMode;
@@ -263,11 +264,11 @@ impl DetectionHardware for VirtualHardware {
         core::future::ready(SIM.with(|s| s.borrow_mut().as_mut().unwrap().step_one()))
     }
 
-    fn read_phase_currents(&self) -> (f32, f32, f32) {
+    fn read_phase_currents(&self) -> PhaseCurrents {
         SIM.with(|s| {
             let s = s.borrow();
             let s = s.as_ref().unwrap();
-            (s.out.ia, s.out.ib, s.out.ic)
+            (amps(s.out.ia), amps(s.out.ib), amps(s.out.ic))
         })
     }
 

@@ -35,7 +35,7 @@ use crate::foc::constants;
 use crate::foc::fast_math::sqrtf;
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngularVelocity, ElectricalResistance,
-    Inductance, MagneticFlux, erad_per_s, ohms, seconds, volts, webers,
+    Inductance, MagneticFlux, Sign, Time, erad_per_s, seconds, webers,
 };
 
 /// Plausible permanent-magnet flux linkage.
@@ -50,16 +50,16 @@ const MIN_VALID_OMEGA: ElectricalAngularVelocity = erad_per_s(10.0);
 pub struct CoastSample {
     pub sequence: u32,
     pub timestamp_us: u64,
-    pub v_alpha: f32,
-    pub v_beta: f32,
-    pub omega_e: f32,
+    pub v_alpha: ElectricPotential,
+    pub v_beta: ElectricPotential,
+    pub omega_e: ElectricalAngularVelocity,
     pub hall_sector: Option<u8>,
-    pub hall_edge_age_s: f32,
+    pub hall_edge_age: Time,
 }
 
 impl CoastSample {
-    pub fn magnitude(&self) -> f32 {
-        sqrtf(self.v_alpha * self.v_alpha + self.v_beta * self.v_beta)
+    pub fn magnitude(&self) -> ElectricPotential {
+        (self.v_alpha * self.v_alpha + self.v_beta * self.v_beta).sqrt_with(sqrtf)
     }
 }
 
@@ -109,11 +109,11 @@ impl HallCoastMeasurement {
             .hall_sector
             .filter(|s| *s < 6)
             .ok_or(DetectionError::LowConfidence)?;
-        let voltage = volts(sample.magnitude());
+        let voltage = sample.magnitude();
         if !voltage.is_finite()
             || !sample.omega_e.is_finite()
-            || !sample.hall_edge_age_s.is_finite()
-            || sample.hall_edge_age_s < 0.0
+            || !sample.hall_edge_age.is_finite()
+            || sample.hall_edge_age.is_negative()
         {
             return Err(DetectionError::LowConfidence);
         }
@@ -144,7 +144,7 @@ impl HallCoastMeasurement {
             return Err(DetectionError::LowConfidence);
         }
         self.direction = direction;
-        let tail = seconds(sample.hall_edge_age_s).min(dt);
+        let tail = sample.hall_edge_age.min(dt);
         let edge_voltage = voltage + (previous_voltage - voltage) * tail / dt;
         let at_edge = self.integral - 0.5 * (edge_voltage + voltage) * tail;
         let Some((anchor_sector, anchor_integral)) = self.anchor else {
@@ -222,11 +222,11 @@ impl FluxLinkageMeasurement {
 
     /// Create from flux linkage parameters.
     pub fn from_params(params: &FluxLinkageParams) -> Result<Self, DetectionError> {
-        if params.resistance_ohm <= 0.0 {
+        if params.resistance.is_non_positive() {
             return Err(DetectionError::MissingPrerequisite);
         }
 
-        Ok(Self::new(ohms(params.resistance_ohm), params.num_samples))
+        Ok(Self::new(params.resistance, params.num_samples))
     }
 
     /// Record a sample during steady-state spinning.
@@ -484,10 +484,7 @@ impl SpinDownFluxMeasurement {
     /// perfectly measurable. 500 samples (~0.25 s) is statistically ample
     /// for the V/ω ratio.
     pub fn from_params(params: &FluxLinkageParams) -> Self {
-        Self::new(
-            params.num_samples.min(500),
-            erad_per_s(params.min_coast_omega_e),
-        )
+        Self::new(params.num_samples.min(500), params.min_coast_speed)
     }
 
     /// Create a new spin-down flux measurement.
@@ -649,16 +646,17 @@ pub fn rpm_to_erpm(rpm: f32, pole_pairs: u8) -> f32 {
 /// # Example
 /// ```
 /// use oxifoc_core::foc::detection::flux_linkage::calculate_kv;
+/// use oxifoc_core::units::webers;
 ///
 /// // 10 mWb flux, 7 pole pairs
-/// let kv = calculate_kv(0.01, 7);
+/// let kv = calculate_kv(webers(0.01), 7);
 /// // Kv ≈ 78.8 RPM/V (line-to-line)
 /// assert!((kv - 78.8).abs() < 1.0);
 /// ```
 #[inline]
-pub fn calculate_kv(flux_linkage_wb: f32, pole_pairs: u8) -> f32 {
+pub fn calculate_kv(flux_linkage: MagneticFlux, pole_pairs: u8) -> f32 {
     // Kv = 60 / (√3 × 2π × λ × pole_pairs)  — √3 = peak phase → peak line-to-line
-    60.0 / (constants::SQRT_3 * core::f32::consts::TAU * flux_linkage_wb * f32::from(pole_pairs))
+    60.0 / (constants::SQRT_3 * core::f32::consts::TAU * flux_linkage.value * f32::from(pole_pairs))
 }
 
 /// Calculate flux linkage from Kv.
@@ -668,14 +666,16 @@ pub fn calculate_kv(flux_linkage_wb: f32, pole_pairs: u8) -> f32 {
 /// * `pole_pairs` - Number of pole pairs
 ///
 /// # Returns
-/// Flux linkage in Weber
+/// Flux linkage
 ///
 /// Inverse of [`calculate_kv`] — `kv_rpm_per_v` is the line-to-line Kv, so the
 /// same √3 factor applies: `λ = 60 / (√3 · 2π · Kv · Pp)` (matches VESC).
 #[inline]
-pub fn calculate_flux_from_kv(kv_rpm_per_v: f32, pole_pairs: u8) -> f32 {
+pub fn calculate_flux_from_kv(kv_rpm_per_v: f32, pole_pairs: u8) -> MagneticFlux {
     // λ = 60 / (√3 × 2π × Kv × pole_pairs)
-    60.0 / (constants::SQRT_3 * core::f32::consts::TAU * kv_rpm_per_v * f32::from(pole_pairs))
+    webers(
+        60.0 / (constants::SQRT_3 * core::f32::consts::TAU * kv_rpm_per_v * f32::from(pole_pairs)),
+    )
 }
 
 /// Calculate observer gain from flux linkage (VESC formula).
@@ -683,14 +683,14 @@ pub fn calculate_flux_from_kv(kv_rpm_per_v: f32, pole_pairs: u8) -> f32 {
 /// The observer gain is used for sensorless position estimation.
 ///
 /// # Arguments
-/// * `flux_linkage_wb` - Flux linkage in Weber
+/// * `flux_linkage` - Flux linkage
 ///
 /// # Returns
-/// Observer gain
+/// Observer gain in VESC's units of 1/Wb²
 #[inline]
-pub fn calculate_observer_gain(flux_linkage_wb: f32) -> f32 {
+pub fn calculate_observer_gain(flux_linkage: MagneticFlux) -> f32 {
     // VESC uses: gain = 0.5e3 / λ²
-    0.5e3 / (flux_linkage_wb * flux_linkage_wb)
+    0.5e3 / (flux_linkage.value * flux_linkage.value)
 }
 
 /// Validate measured flux linkage.
@@ -712,7 +712,7 @@ pub fn validate_flux_linkage(flux_linkage: f32) -> Result<(), DetectionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::units::{amps, henries};
+    use crate::units::{amps, erad_per_s, henries, ohms, volts};
 
     // The numeric checks below are in plain SI floats; these views shadow
     // the typed accumulators at the test boundary.
@@ -943,11 +943,11 @@ mod tests {
         CoastSample {
             sequence: n,
             timestamp_us: (time * 1e6).round() as u64,
-            v_alpha: (0.0032 * omega * (direction * theta).cos()) as f32,
-            v_beta: (0.0032 * omega * (direction * theta).sin()) as f32,
-            omega_e: (direction * omega) as f32,
+            v_alpha: volts((0.0032 * omega * (direction * theta).cos()) as f32),
+            v_beta: volts((0.0032 * omega * (direction * theta).sin()) as f32),
+            omega_e: erad_per_s((direction * omega) as f32),
             hall_sector: Some(sector),
-            hall_edge_age_s: (time - edge_time) as f32,
+            hall_edge_age: seconds((time - edge_time) as f32),
         }
     }
 
@@ -961,9 +961,9 @@ mod tests {
                     let mut sample = coast_plant_sample(n, time, direction, decel);
                     // Instantaneous Hall speed may lag badly during deceleration;
                     // only captured sector boundaries establish total rotation.
-                    sample.omega_e = direction as f32 * 700.0;
-                    sample.v_alpha += 0.02;
-                    sample.v_beta -= 0.015;
+                    sample.omega_e = erad_per_s(direction as f32 * 700.0);
+                    sample.v_alpha += volts(0.02);
+                    sample.v_beta -= volts(0.015);
                     measurement.record(sample).unwrap();
                     if measurement.has_enough_samples() {
                         break;
@@ -993,7 +993,7 @@ mod tests {
                 sample.timestamp_us = 0;
             }
             if kind == 2 {
-                sample.v_alpha = f32::NAN;
+                sample.v_alpha = volts(f32::NAN);
             }
             assert_eq!(
                 measurement.record(sample),
@@ -1076,7 +1076,7 @@ mod tests {
     #[test]
     fn test_kv_calculation() {
         // λ = 10mWb, 7 pole pairs
-        let flux = 0.01;
+        let flux = webers(0.01);
         let pole_pairs = 7u8;
 
         let kv = calculate_kv(flux, pole_pairs);
@@ -1085,13 +1085,12 @@ mod tests {
 
         // Reverse calculation (inverse carries the same √3, so it round-trips)
         let flux_back = calculate_flux_from_kv(kv, pole_pairs);
-        assert!((flux - flux_back).abs() < 0.0001);
+        assert!((flux - flux_back).abs() < webers(0.0001));
     }
 
     #[test]
     fn test_observer_gain() {
-        let flux = 0.01; // 10mWb
-        let gain = calculate_observer_gain(flux);
+        let gain = calculate_observer_gain(webers(0.01));
 
         // gain = 0.5e3 / 0.01² = 0.5e3 / 0.0001 = 5e6
         assert!((gain - 5e6).abs() < 1e5);

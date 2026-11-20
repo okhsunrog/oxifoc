@@ -12,6 +12,7 @@
 use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::foc::trig::SinCos;
+use oxifoc_core::units::{ElectricalResistance, Frequency, Inductance, MagneticFlux};
 
 use crate::STATE;
 use crate::config::BOARD;
@@ -24,29 +25,27 @@ pub use oxifoc_core::foc::detection::embassy_hw::{
 };
 
 /// Measure motor phase resistance.
-pub async fn measure_resistance(params: &ResistanceParams) -> Result<f32, DetectionError> {
+pub async fn measure_resistance(
+    params: &ResistanceParams,
+) -> Result<ElectricalResistance, DetectionError> {
     embassy_hw::measure_resistance(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD).await
 }
 
 /// Measure motor inductance using rotating HFI.
 pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
-    pwm_freq_hz: f32,
-) -> Result<(f32, f32), DetectionError> {
+    pwm_freq: Frequency,
+) -> Result<(Inductance, Inductance), DetectionError> {
     embassy_hw::measure_inductance::<S>(
-        params,
-        pwm_freq_hz,
-        &STATE,
-        &IA_SAMPLE,
-        &IB_SAMPLE,
-        &IC_SAMPLE,
-        &BOARD,
+        params, pwm_freq, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD,
     )
     .await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
-pub async fn measure_flux_linkage(params: &FluxLinkageParams) -> Result<f32, DetectionError> {
+pub async fn measure_flux_linkage(
+    params: &FluxLinkageParams,
+) -> Result<MagneticFlux, DetectionError> {
     embassy_hw::measure_flux_linkage(params, &STATE, &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE, &BOARD)
         .await
 }

@@ -4,6 +4,7 @@
 //! platform-specific board parameters like shunt resistance, amplifier gains,
 //! voltage dividers, and calibration settings.
 
+use crate::foc::sensors::PhaseCurrents;
 /// Board-specific hardware configuration
 ///
 /// Contains all the hardware parameters needed for current sensing,
@@ -58,7 +59,7 @@
 ///
 /// See `foc::phase_voltage` for the converter and the per-cycle source decision.
 use crate::types::{BoardCalib, CurrentSenseTopology};
-use crate::units::ElectricCurrent;
+use crate::units::{ElectricCurrent, volts};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhaseSense {
     /// Divider ratio Vphase / Vadc, e.g. `(39_000.0 + 2_200.0) / 2_200.0` for
@@ -145,20 +146,18 @@ impl BoardConfig {
     /// calibration offsets — fine for rough conversion, but prefer the
     /// calibrated `CurrentSensor` path for control.
     #[inline]
-    pub fn convert_raw_currents(&self, raw_a: u16, raw_b: u16, raw_c: u16) -> (f32, f32, f32) {
+    pub fn convert_raw_currents(&self, raw_a: u16, raw_b: u16, raw_c: u16) -> PhaseCurrents {
         let offset = f32::from(self.calib.adc_max_counts) / 2.0;
-        let mut scale = self.calib.adc_vref_mv as f32
-            / 1000.0
-            / f32::from(self.calib.adc_max_counts)
-            / self.calib.shunt_ohms.value
-            / self.calib.amp_gain;
+        let mut amps_per_count: ElectricCurrent = volts(self.calib.adc_vref_mv as f32 / 1000.0)
+            / (f32::from(self.calib.adc_max_counts) * self.calib.amp_gain)
+            / self.calib.shunt_ohms;
         if self.calib.invert_current_sign {
-            scale = -scale;
+            amps_per_count = -amps_per_count;
         }
         (
-            (f32::from(raw_a) - offset) * scale,
-            (f32::from(raw_b) - offset) * scale,
-            (f32::from(raw_c) - offset) * scale,
+            amps_per_count * (f32::from(raw_a) - offset),
+            amps_per_count * (f32::from(raw_b) - offset),
+            amps_per_count * (f32::from(raw_c) - offset),
         )
     }
 
@@ -280,7 +279,7 @@ impl NtcConfig {
 mod tests {
     use super::*;
     use crate::types::{BoardCalib, CurrentSenseTopology};
-    use crate::units::{amps, ohms};
+    use crate::units::{Sign, amps, ohms};
 
     const TEST_BOARD: BoardConfig = BoardConfig {
         current_sense_topology: CurrentSenseTopology::TwoShunt,
@@ -358,13 +357,16 @@ mod tests {
         // that must read as NEGATIVE motor current (and vice versa).
         let (ia, _, _) = inverted.convert_raw_currents(3000, 2048, 2048);
         assert!(
-            ia < 0.0,
-            "inverted board: raw>mid must be negative, got {ia}"
+            ia.is_negative(),
+            "inverted board: raw>mid must be negative, got {ia:?}"
         );
         let (ia_n, _, _) = TEST_BOARD.convert_raw_currents(3000, 2048, 2048);
-        assert!(ia_n > 0.0, "non-inverted board: raw>mid must be positive");
+        assert!(
+            ia_n.is_positive(),
+            "non-inverted board: raw>mid must be positive"
+        );
         // Same magnitude either way
-        assert!((ia + ia_n).abs() < 1e-6);
+        assert!((ia + ia_n).abs() < amps(1e-6));
     }
 
     #[test]

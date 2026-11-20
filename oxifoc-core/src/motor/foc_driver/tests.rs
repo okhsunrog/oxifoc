@@ -3868,17 +3868,17 @@ mod severity_gate {
         fn program() -> VoltageBurst {
             VoltageBurst {
                 waveform: Waveform::Pulse {
-                    vd: 0.1,
-                    vq: 0.0,
+                    vd: volts(0.1),
+                    vq: volts(0.0),
                     start: 4,
                     periods: 2,
                 },
                 samples: 12,
-                vd_hold: 0.03,
-                vq_hold: 0.0,
-                hold_current: 1.0,
-                max_current_a: None,
-                angle: 0.0,
+                vd_hold: volts(0.03),
+                vq_hold: volts(0.0),
+                hold_current: quantity(1.0),
+                max_current: None,
+                angle: erad(0.0),
             }
         }
 
@@ -4036,7 +4036,7 @@ mod severity_gate {
                     .program
                     .as_mut()
                     .unwrap()
-                    .max_current_a = Some(2.0);
+                    .max_current = Some(amps(2.0));
             });
             h.driver.current_sensor_mut().currents = (2.5, -1.25, -1.25);
             tick(&mut h, 50);
@@ -4073,7 +4073,7 @@ mod severity_gate {
                     .program
                     .as_mut()
                     .unwrap()
-                    .max_current_a = Some(2.0);
+                    .max_current = Some(amps(2.0));
             });
             h.driver.current_sensor_mut().currents = (2.0, -1.0, -1.0);
             tick(&mut h, 50);
@@ -4082,7 +4082,7 @@ mod severity_gate {
                 let state = h.state.borrow(cs).borrow();
                 assert_eq!(state.excitation.index, 1);
                 assert_eq!(state.excitation.outcome, None);
-                assert_eq!(state.excitation.samples[0].alpha, 2.0);
+                assert_eq!(state.excitation.samples[0].alpha, amps(2.0));
             });
 
             let over = f32::from_bits(2.0_f32.to_bits() + 1);

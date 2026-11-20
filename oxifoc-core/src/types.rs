@@ -949,24 +949,12 @@ pub enum DetectRequest {
 
 impl DetectRequest {
     /// Current cap requested for the measurement, in addition to active limits.
-    pub fn current_limit_a(self) -> Option<f32> {
+    pub fn current_limit(self) -> Option<ElectricCurrent> {
         match self {
-            Self::MeasureResistance {
-                current_limit: current_limit_a,
-                ..
-            }
-            | Self::MeasureInductance {
-                current_limit: current_limit_a,
-                ..
-            }
-            | Self::MeasureFlux {
-                current_limit: current_limit_a,
-                ..
-            }
-            | Self::CalibrateHall {
-                current_limit: current_limit_a,
-                ..
-            } => current_limit_a.map(|limit| limit.value),
+            Self::MeasureResistance { current_limit, .. }
+            | Self::MeasureInductance { current_limit, .. }
+            | Self::MeasureFlux { current_limit, .. }
+            | Self::CalibrateHall { current_limit, .. } => current_limit,
             Self::MeasureCurrentOffsets { .. } => None,
         }
     }

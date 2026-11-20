@@ -12,7 +12,7 @@
 use super::types::{DetectionError, VoltagePulseParams};
 use crate::units::{
     ConstZero, ElectricCurrent, ElectricPotential, ElectricalResistance, Frequency, Inductance,
-    Time, amps, henries, ohms, volts,
+    Time, amps, henries, volts,
 };
 
 /// Minimum measurable current change.  Below this the pulse is
@@ -76,12 +76,12 @@ impl VoltagePulseMeasurement {
         pwm_freq: Frequency,
         hold_voltage: ElectricPotential,
     ) -> Self {
-        let resistance = ohms(params.resistance_ohm);
+        let resistance = params.resistance;
         // This is a signed command-side bias. Overcompensation can require a
         // negative PI hold; clipping its residual to zero fails to cancel it.
-        let v_deadtime = hold_voltage - resistance * amps(params.hold_current_a);
+        let v_deadtime = hold_voltage - resistance * params.hold_current;
         Self {
-            applied_voltage: hold_voltage + volts(params.pulse_voltage_v),
+            applied_voltage: hold_voltage + params.pulse_voltage,
             resistance,
             v_deadtime,
             dt: pwm_freq.recip(),
@@ -155,7 +155,7 @@ impl VoltagePulseMeasurement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::units::hertz;
+    use crate::units::{hertz, ohms};
 
     /// Plain-SI-float view of the measurement for the numeric checks below.
     struct Meas(VoltagePulseMeasurement);
@@ -180,9 +180,9 @@ mod tests {
     fn pure_inductor_pulse() {
         // Simulate a pure inductor (R=0): L = V * dt / di
         let params = VoltagePulseParams {
-            pulse_voltage_v: 5.0,
-            resistance_ohm: 0.0,
-            hold_current_a: 2.0,
+            pulse_voltage: volts(5.0),
+            resistance: ohms(0.0),
+            hold_current: amps(2.0),
             num_pulses: 10,
             ..Default::default()
         };
@@ -194,7 +194,7 @@ mod tests {
 
         for _ in 0..10 {
             // di = V * dt / L
-            let di = params.pulse_voltage_v * dt / l_actual;
+            let di = params.pulse_voltage.value * dt / l_actual;
             let i_after = i_before + di;
             meas.record_pulse(i_before, i_after);
         }
@@ -217,9 +217,9 @@ mod tests {
         // For short pulses R*di/2 is small so di ≈ V_pulse * dt / L.
         let r = 0.5;
         let params = VoltagePulseParams {
-            pulse_voltage_v: 5.0,
-            resistance_ohm: r,
-            hold_current_a: 2.0,
+            pulse_voltage: volts(5.0),
+            resistance: ohms(r),
+            hold_current: amps(2.0),
             num_pulses: 10,
             ..Default::default()
         };
@@ -234,7 +234,7 @@ mod tests {
         for _ in 0..10 {
             // Exact first-order: V_pulse = R*di/2 + L*di/dt
             // di = V_pulse * dt / (L + R*dt/2)
-            let di = params.pulse_voltage_v * dt / (l_actual + r * dt / 2.0);
+            let di = params.pulse_voltage.value * dt / (l_actual + r * dt / 2.0);
             meas.record_pulse(i_before, i_before + di);
         }
 
@@ -255,9 +255,9 @@ mod tests {
         let r = 8.0;
         let l_actual = 0.003;
         let params = VoltagePulseParams {
-            pulse_voltage_v: 5.0,
-            resistance_ohm: r,
-            hold_current_a: 0.3,
+            pulse_voltage: volts(5.0),
+            resistance: ohms(r),
+            hold_current: amps(0.3),
             num_pulses: 10,
             ..Default::default()
         };
@@ -266,7 +266,7 @@ mod tests {
         let mut meas = Meas::new(&params, 20_000.0, r * i_before);
 
         for _ in 0..10 {
-            let di = params.pulse_voltage_v * dt / (l_actual + r * dt / 2.0);
+            let di = params.pulse_voltage.value * dt / (l_actual + r * dt / 2.0);
             meas.record_pulse(i_before, i_before + di);
         }
 
@@ -288,16 +288,16 @@ mod tests {
         let dt = 50e-6;
         for hold_voltage in [-0.13, 0.036, 0.24] {
             let params = VoltagePulseParams {
-                pulse_voltage_v: 0.05,
-                resistance_ohm: r,
-                hold_current_a: 1.2,
+                pulse_voltage: volts(0.05),
+                resistance: ohms(r),
+                hold_current: amps(1.2),
                 num_pulses: 8,
                 ..Default::default()
             };
             let mut measurement = Meas::new(&params, 20_000.0, hold_voltage);
-            let di = params.pulse_voltage_v * dt / (actual_l + r * dt * 0.5);
+            let di = params.pulse_voltage.value * dt / (actual_l + r * dt * 0.5);
             for _ in 0..params.num_pulses {
-                measurement.record_pulse(params.hold_current_a, params.hold_current_a + di);
+                measurement.record_pulse(params.hold_current.value, params.hold_current.value + di);
             }
             assert!((measurement.finish().unwrap() / actual_l - 1.0).abs() < 1e-5);
         }

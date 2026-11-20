@@ -18,8 +18,8 @@ use crate::foc::trig::SinCos;
 use crate::foc::fast_math::sqrtf;
 use crate::foc::trig::LibmSinCos;
 use crate::units::{
-    ConstZero, ElectricCurrent, ElectricPotential, ElectricalResistance, Inductance, Time, amps,
-    henries, hertz, ohms,
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalResistance, Fraction, Frequency,
+    Inductance, Time, amps, henries,
 };
 #[path = "inductance_fit.rs"]
 mod fit;
@@ -72,10 +72,10 @@ pub struct InductanceResult {
 /// The vector completes `HFI_CYCLES_PER_FFT` rotations over `FFT_SIZE` samples.
 #[derive(Clone, Debug)]
 pub struct HfiInjector<S: SinCos = LibmSinCos> {
-    /// Base HFI frequency in rad/s (the carrier frequency)
-    omega_hfi: f32,
-    /// Voltage amplitude in Volts
-    voltage_amplitude: f32,
+    /// Carrier angular frequency, in rad/s
+    omega_hfi: Frequency,
+    /// Peak injection voltage
+    voltage_amplitude: ElectricPotential,
     /// HFI phase accumulator (carrier phase)
     hfi_phase: f32,
     /// Injection angle (rotates through 360° over FFT_SIZE samples)
@@ -91,17 +91,21 @@ impl<S: SinCos> HfiInjector<S> {
     /// Create a new rotating HFI injector.
     ///
     /// # Arguments
-    /// * `hfi_frequency_hz` - HFI carrier frequency in Hz (typically 500-2000 Hz)
-    /// * `voltage_amplitude` - Peak voltage amplitude in Volts
-    /// * `pwm_frequency_hz` - PWM/sampling frequency in Hz
-    pub fn new(hfi_frequency_hz: f32, voltage_amplitude: f32, _pwm_frequency_hz: f32) -> Self {
+    /// * `hfi_frequency` - HFI carrier frequency (typically 500-2000 Hz)
+    /// * `voltage_amplitude` - Peak voltage amplitude
+    /// * `pwm_frequency` - PWM/sampling frequency
+    pub fn new(
+        hfi_frequency: Frequency,
+        voltage_amplitude: ElectricPotential,
+        _pwm_frequency: Frequency,
+    ) -> Self {
         // The injection angle advances such that we complete HFI_CYCLES_PER_FFT
         // full rotations over FFT_SIZE samples
         let angle_increment =
             (HFI_CYCLES_PER_FFT as f32 * core::f32::consts::TAU) / FFT_SIZE as f32;
 
         Self {
-            omega_hfi: hfi_frequency_hz * core::f32::consts::TAU,
+            omega_hfi: core::f32::consts::TAU * hfi_frequency,
             voltage_amplitude,
             hfi_phase: 0.0,
             injection_angle: 0.0,
@@ -114,11 +118,11 @@ impl<S: SinCos> HfiInjector<S> {
     /// Get the injection voltage for the current sample.
     ///
     /// # Arguments
-    /// * `dt` - Time step in seconds (1 / PWM_frequency)
+    /// * `dt` - Time step (1 / PWM_frequency)
     ///
     /// # Returns
     /// (v_alpha, v_beta) - Voltage to apply in stator frame
-    pub fn step(&mut self, dt: f32) -> (f32, f32) {
+    pub fn step(&mut self, dt: Time) -> (ElectricPotential, ElectricPotential) {
         // HFI carrier: sin(ω_hfi × t)
         let (hfi_sin, _) = S::sin_cos(self.hfi_phase);
         let hfi_signal = self.voltage_amplitude * hfi_sin;
@@ -130,7 +134,7 @@ impl<S: SinCos> HfiInjector<S> {
         let v_beta = hfi_signal * inj_sin;
 
         // Advance HFI carrier phase
-        self.hfi_phase += self.omega_hfi * dt;
+        self.hfi_phase += self.phase_step(dt);
         if self.hfi_phase > core::f32::consts::TAU {
             self.hfi_phase -= core::f32::consts::TAU;
         }
@@ -155,7 +159,7 @@ impl<S: SinCos> HfiInjector<S> {
 
     /// Change the injection amplitude (e.g. mid-measurement adaptation).
     #[inline]
-    pub fn set_amplitude(&mut self, voltage_amplitude: f32) {
+    pub fn set_amplitude(&mut self, voltage_amplitude: ElectricPotential) {
         self.voltage_amplitude = voltage_amplitude;
     }
 
@@ -180,14 +184,20 @@ impl<S: SinCos> HfiInjector<S> {
 
     /// Get voltage amplitude.
     #[inline]
-    pub fn voltage_amplitude(&self) -> f32 {
+    pub fn voltage_amplitude(&self) -> ElectricPotential {
         self.voltage_amplitude
     }
 
-    /// Get HFI frequency in rad/s.
+    /// Get the carrier angular frequency, in rad/s.
     #[inline]
-    pub fn omega_hfi(&self) -> f32 {
+    pub fn omega_hfi(&self) -> Frequency {
         self.omega_hfi
+    }
+
+    /// Carrier phase advance over `dt`, in radians.
+    #[inline]
+    pub fn phase_step(&self, dt: Time) -> f32 {
+        (self.omega_hfi * dt).fraction()
     }
 }
 
@@ -241,8 +251,8 @@ impl<S: SinCos> InductanceMeasurement<S> {
     ///
     /// # Arguments
     /// * `params` - Measurement parameters
-    /// * `pwm_freq_hz` - PWM frequency in Hz
-    pub fn new(params: &InductanceParams, pwm_freq_hz: f32) -> Self {
+    /// * `pwm_freq` - PWM frequency
+    pub fn new(params: &InductanceParams, pwm_freq: Frequency) -> Self {
         // Each identification window is FFT_SIZE samples
         // num_cycles from params is how many identification windows to average
         let target_cycles = params.num_cycles;
@@ -262,9 +272,9 @@ impl<S: SinCos> InductanceMeasurement<S> {
             error_sum: 0.0,
             current_sum: ElectricCurrent::ZERO,
             total_samples: 0,
-            dt: hertz(pwm_freq_hz).recip(),
-            resistance: ohms(params.resistance_ohm),
-            hold_current: amps(params.hold_current_a),
+            dt: pwm_freq.recip(),
+            resistance: params.resistance,
+            hold_current: params.hold_current,
             first_sample: true,
             _sincos: PhantomData,
         }
@@ -392,12 +402,11 @@ impl<S: SinCos> InductanceMeasurement<S> {
         Some((self.ld_sum / n + self.lq_sum / n) / 2.0)
     }
 
-    /// Restart accumulation with a new injection amplitude, keeping the
-    /// configuration (target cycles, R compensation, hold current).
-    ///
-    /// The amplitude argument remains for compatibility; the fit uses the
-    /// supplied voltage vector directly, without an amplitude threshold.
-    pub fn restart(&mut self, _voltage_amplitude: f32) {
+    /// Restart accumulation for a new injection amplitude, keeping the
+    /// configuration (target cycles, R compensation, hold current). The fit
+    /// uses the supplied voltage vector directly, so the amplitude itself
+    /// is not needed.
+    pub fn restart(&mut self) {
         self.sample_idx = 0;
         self.window = RlWindow::default();
         self.fit_error = None;
@@ -529,7 +538,7 @@ pub enum Axis {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::units::volts;
+    use crate::units::{Linear, hertz, ohms, seconds, volts};
 
     #[test]
     fn exact_packet_plant_recovers_saliency_at_quarter_rate_and_other_carriers() {
@@ -540,13 +549,14 @@ mod tests {
             for (ld, lq) in [(18e-6, 28e-6), (28e-6, 18e-6), (25e-6, 25e-6)] {
                 for angle in [0.0, 0.2617994] {
                     let params = InductanceParams {
-                        resistance_ohm: r,
-                        hold_current_a: 3.0,
+                        resistance: ohms(r),
+                        hold_current: amps(3.0),
                         num_cycles: 8,
-                        hfi_frequency_hz: carrier,
+                        hfi_frequency: hertz(carrier),
                         ..Default::default()
                     };
-                    let mut measurement = InductanceMeasurement::<LibmSinCos>::new(&params, fs);
+                    let mut measurement =
+                        InductanceMeasurement::<LibmSinCos>::new(&params, hertz(fs));
                     let (sin, cos) = LibmSinCos::sin_cos(angle);
                     let decay = [ld, lq].map(|l| libm::expf(-r * dt / l));
                     let response = decay.map(|a| (1.0 - a) / r);
@@ -604,7 +614,8 @@ mod tests {
 
     #[test]
     fn test_hfi_injector_rotation() {
-        let mut injector = HfiInjector::<LibmSinCos>::new(1000.0, 3.0, 20000.0);
+        let mut injector =
+            HfiInjector::<LibmSinCos>::new(hertz(1000.0), volts(3.0), hertz(20000.0));
 
         // Collect injection angles over one FFT window
         let dt = 1.0 / 20000.0;
@@ -613,7 +624,7 @@ mod tests {
         for _ in 0..FFT_SIZE {
             let angle = injector.injection_angle();
             angles.push(angle);
-            injector.step(dt);
+            injector.step(seconds(dt));
         }
 
         // First angle should be ~0
@@ -646,21 +657,22 @@ mod tests {
 
     #[test]
     fn test_hfi_injector_output() {
-        let mut injector = HfiInjector::<LibmSinCos>::new(1000.0, 3.0, 20000.0);
+        let mut injector =
+            HfiInjector::<LibmSinCos>::new(hertz(1000.0), volts(3.0), hertz(20000.0));
         let dt = 1.0 / 20000.0;
 
         // At angle = 0, v_alpha should be non-zero, v_beta should be ~0
-        let (v_alpha, v_beta) = injector.step(dt);
+        let (v_alpha, v_beta) = injector.step(seconds(dt));
         // First sample: sin(0) = 0 for HFI, so both should be small
-        assert!(v_alpha.abs() < 0.5);
-        assert!(v_beta.abs() < 0.5);
+        assert!(v_alpha.abs() < volts(0.5));
+        assert!(v_beta.abs() < volts(0.5));
 
         // After a few samples, we should see non-zero values
         for _ in 0..4 {
-            injector.step(dt);
+            injector.step(seconds(dt));
         }
-        let (v_alpha, v_beta) = injector.step(dt);
-        let v_mag = sqrtf(v_alpha * v_alpha + v_beta * v_beta);
+        let (v_alpha, v_beta) = injector.step(seconds(dt));
+        let v_mag = sqrtf((v_alpha * v_alpha + v_beta * v_beta).value);
         assert!(v_mag > 0.5, "Expected non-zero voltage, got {v_mag}");
     }
 
@@ -669,43 +681,35 @@ mod tests {
         // Test with simulated SPM motor (Ld ≈ Lq)
         let pwm_freq_hz = 20000.0;
         let params = InductanceParams {
-            hfi_frequency_hz: 1000.0,
-            hfi_voltage_v: 3.0,
+            hfi_frequency: hertz(1000.0),
+            hfi_voltage: volts(3.0),
             num_cycles: 5,
             ..Default::default()
         };
 
-        let mut measurement = InductanceMeasurement::<LibmSinCos>::new(&params, pwm_freq_hz);
-        let mut injector = HfiInjector::<LibmSinCos>::new(1000.0, 3.0, pwm_freq_hz);
-        let dt = 1.0 / pwm_freq_hz;
+        let pwm_freq = hertz(pwm_freq_hz);
+        let mut measurement = InductanceMeasurement::<LibmSinCos>::new(&params, pwm_freq);
+        let mut injector = HfiInjector::<LibmSinCos>::new(hertz(1000.0), volts(3.0), pwm_freq);
+        let dt = pwm_freq.recip();
 
         // Simulate SPM motor: L = 100µH (same for all angles)
-        let l_actual = 0.0001; // 100µH
+        let l_actual = henries(0.0001);
 
         // Track current for simulation (integrating di over time)
-        let mut i_alpha = 0.0f32;
-        let mut i_beta = 0.0f32;
-        let mut prev_v_alpha = 0.0f32;
-        let mut prev_v_beta = 0.0f32;
+        let mut i_alpha = ElectricCurrent::ZERO;
+        let mut i_beta = ElectricCurrent::ZERO;
+        let mut prev_v_alpha = ElectricPotential::ZERO;
+        let mut prev_v_beta = ElectricPotential::ZERO;
 
         while !measurement.is_complete() {
             let injection_angle = injector.injection_angle();
             let (v_alpha, v_beta) = injector.step(dt);
 
             // Physics: V = L × di/dt, so di = (V/L) × dt
-            let di_alpha = v_alpha * dt / l_actual;
-            let di_beta = v_beta * dt / l_actual;
+            i_alpha += v_alpha * dt / l_actual;
+            i_beta += v_beta * dt / l_actual;
 
-            i_alpha += di_alpha;
-            i_beta += di_beta;
-
-            measurement.record(
-                amps(i_alpha),
-                amps(i_beta),
-                injection_angle,
-                volts(prev_v_alpha),
-                volts(prev_v_beta),
-            );
+            measurement.record(i_alpha, i_beta, injection_angle, prev_v_alpha, prev_v_beta);
             prev_v_alpha = v_alpha;
             prev_v_beta = v_beta;
         }
@@ -714,22 +718,22 @@ mod tests {
 
         // For SPM, Ld ≈ Lq ≈ L_actual
         // Allow larger tolerance due to simulation simplifications
-        let ld_error = (result.ld.value - l_actual).abs() / l_actual;
-        let lq_error = (result.lq.value - l_actual).abs() / l_actual;
+        let ld_error = (result.ld - l_actual).abs().ratio_to(l_actual);
+        let lq_error = (result.lq - l_actual).abs().ratio_to(l_actual);
 
         assert!(
             ld_error < 0.5,
             "Ld error too large: {:.1}% (got {:.2}µH, expected {:.2}µH)",
             ld_error * 100.0,
             result.ld.value * 1e6,
-            l_actual * 1e6
+            l_actual.value * 1e6
         );
         assert!(
             lq_error < 0.5,
             "Lq error too large: {:.1}% (got {:.2}µH, expected {:.2}µH)",
             lq_error * 100.0,
             result.lq.value * 1e6,
-            l_actual * 1e6
+            l_actual.value * 1e6
         );
 
         // Ld and Lq should be similar for SPM

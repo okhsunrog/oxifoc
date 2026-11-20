@@ -6,7 +6,11 @@ use crate::foc::trig::SinCos;
 use crate::motor::ControlMode;
 #[cfg(feature = "runtime")]
 use crate::state::DetectionCommandToken;
-use crate::units::{amps, erad, erad_per_s, volts};
+#[cfg(feature = "runtime")]
+use crate::units::Time;
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle, ElectricalAngularVelocity, Sign,
+};
 
 pub const MAX_BURST_SAMPLES: usize = 256;
 #[cfg(any(feature = "hfi-detect", all(feature = "embassy", feature = "runtime")))]
@@ -19,12 +23,14 @@ pub(crate) static DONE_WAKER: embassy_sync::waitqueue::AtomicWaker =
 #[derive(Clone, Copy, Debug)]
 pub enum Waveform {
     RotatingHfi {
-        amplitude: f32,
+        amplitude: ElectricPotential,
+        /// Carrier phase advance per control period, in radians. A time
+        /// phase of the injected voltage, not a rotor angle.
         phase_step: f32,
     },
     Pulse {
-        vd: f32,
-        vq: f32,
+        vd: ElectricPotential,
+        vq: ElectricPotential,
         start: u16,
         periods: u16,
     },
@@ -34,13 +40,13 @@ pub enum Waveform {
 pub struct VoltageBurst {
     pub waveform: Waveform,
     pub samples: u16,
-    pub vd_hold: f32,
-    pub vq_hold: f32,
-    pub hold_current: f32,
+    pub vd_hold: ElectricPotential,
+    pub vq_hold: ElectricPotential,
+    pub hold_current: ElectricCurrent,
     /// Optional sampled alpha-beta magnitude ceiling for this packet.
     /// The driver's independent overcurrent protection remains active.
-    pub max_current_a: Option<f32>,
-    pub angle: f32,
+    pub max_current: Option<ElectricCurrent>,
+    pub angle: ElectricalAngle,
 }
 
 impl VoltageBurst {
@@ -50,10 +56,10 @@ impl VoltageBurst {
             || !self.vd_hold.is_finite()
             || !self.vq_hold.is_finite()
             || !self.hold_current.is_finite()
-            || self.hold_current <= 0.0
+            || self.hold_current.is_non_positive()
             || !self.angle.is_finite()
             || self
-                .max_current_a
+                .max_current
                 .is_some_and(|limit| !limit.is_finite() || limit <= self.hold_current)
         {
             return false;
@@ -64,7 +70,7 @@ impl VoltageBurst {
                 phase_step,
             } => {
                 amplitude.is_finite()
-                    && amplitude > 0.0
+                    && amplitude.is_positive()
                     && phase_step.is_finite()
                     && phase_step > 0.0
                     && phase_step < core::f32::consts::PI
@@ -83,15 +89,15 @@ impl VoltageBurst {
         }
     }
 
-    pub fn current_in_budget(&self, alpha: f32, beta: f32) -> bool {
+    pub fn current_in_budget(&self, alpha: ElectricCurrent, beta: ElectricCurrent) -> bool {
         alpha.is_finite()
             && beta.is_finite()
             && self
-                .max_current_a
+                .max_current
                 .is_none_or(|limit| alpha * alpha + beta * beta <= limit * limit)
     }
 
-    pub fn injection<S: SinCos>(&self, index: usize) -> (f32, f32) {
+    pub fn injection<S: SinCos>(&self, index: usize) -> (ElectricPotential, ElectricPotential) {
         match self.waveform {
             Waveform::RotatingHfi {
                 amplitude,
@@ -99,7 +105,7 @@ impl VoltageBurst {
             } => {
                 let (carrier, _) = S::sin_cos((index as f32 * phase_step) % core::f32::consts::TAU);
                 let (sin, cos) = S::sin_cos((index % 32) as f32 * (core::f32::consts::TAU / 32.0));
-                (amplitude * carrier * cos, amplitude * carrier * sin)
+                (amplitude * (carrier * cos), amplitude * (carrier * sin))
             }
             Waveform::Pulse {
                 vd,
@@ -111,7 +117,7 @@ impl VoltageBurst {
                 {
                     (vd, vq)
                 } else {
-                    (0.0, 0.0)
+                    (ElectricPotential::ZERO, ElectricPotential::ZERO)
                 }
             }
         }
@@ -120,17 +126,17 @@ impl VoltageBurst {
     pub fn command<S: SinCos>(&self, index: usize) -> ControlMode {
         let (vd, vq) = self.injection::<S>(index);
         ControlMode::DirectVoltage {
-            vd: volts(self.vd_hold + vd),
-            vq: volts(self.vq_hold + vq),
-            angle: erad(self.angle),
+            vd: self.vd_hold + vd,
+            vq: self.vq_hold + vq,
+            angle: self.angle,
         }
     }
 
     pub fn hold_mode(&self) -> ControlMode {
         ControlMode::OpenLoop {
-            angle: erad(self.angle),
-            current: amps(self.hold_current),
-            velocity: erad_per_s(0.0),
+            angle: self.angle,
+            current: self.hold_current,
+            velocity: ElectricalAngularVelocity::ZERO,
             pi_gains: None,
         }
     }
@@ -138,8 +144,8 @@ impl VoltageBurst {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BurstSample {
-    pub alpha: f32,
-    pub beta: f32,
+    pub alpha: ElectricCurrent,
+    pub beta: ElectricCurrent,
     pub cycle: u32,
     pub tick_us: u32,
 }
@@ -154,10 +160,10 @@ pub struct BurstCapture {
 pub(crate) enum BurstAction {
     Stop,
     Voltage {
-        vd: f32,
-        vq: f32,
-        angle: f32,
-        compensation_current: (f32, f32),
+        vd: ElectricPotential,
+        vq: ElectricPotential,
+        angle: ElectricalAngle,
+        compensation_current: (ElectricCurrent, ElectricCurrent),
     },
     Hold(VoltageBurst),
 }
@@ -203,8 +209,8 @@ pub(crate) struct Excitation {
     pub cancelled: bool,
     pub index: usize,
     pub preparing: bool,
-    pub voltages: [(f32, f32); MAX_BURST_SAMPLES],
-    pub compensation_current: (f32, f32),
+    pub voltages: [(ElectricPotential, ElectricPotential); MAX_BURST_SAMPLES],
+    pub compensation_current: (ElectricCurrent, ElectricCurrent),
     last_cycle: Option<u32>,
     last_tick: u32,
     first_tick: u32,
@@ -222,15 +228,15 @@ impl Excitation {
             cancelled: false,
             index: 0,
             preparing: false,
-            voltages: [(0.0, 0.0); MAX_BURST_SAMPLES],
-            compensation_current: (0.0, 0.0),
+            voltages: [(ElectricPotential::ZERO, ElectricPotential::ZERO); MAX_BURST_SAMPLES],
+            compensation_current: (ElectricCurrent::ZERO, ElectricCurrent::ZERO),
             last_cycle: None,
             last_tick: 0,
             first_tick: 0,
             first_cycle: 0,
             samples: [BurstSample {
-                alpha: 0.0,
-                beta: 0.0,
+                alpha: ElectricCurrent::ZERO,
+                beta: ElectricCurrent::ZERO,
                 cycle: 0,
                 tick_us: 0,
             }; MAX_BURST_SAMPLES],
@@ -271,15 +277,17 @@ impl Excitation {
     /// Sequence continuity detects skipped/corrupt software samples. The
     /// independent timestamp also rejects a stalled control ISR (>1.9 periods).
     /// Entry jitter alone is allowed; this is not a hardware trigger counter.
-    pub fn check_timing(&mut self, cycle: u32, tick: u32, dt: f32) -> Result<(), DetectionError> {
+    pub fn check_timing(&mut self, cycle: u32, tick: u32, dt: Time) -> Result<(), DetectionError> {
+        // Ticks are microseconds.
+        let period_ticks = dt.value * 1_000_000.0;
         if let Some(last) = self.last_cycle {
             let elapsed = tick.wrapping_sub(self.last_tick);
             let span = tick.wrapping_sub(self.first_tick) as f32;
-            let expected = cycle.wrapping_sub(self.first_cycle) as f32 * dt * 1_000_000.0;
+            let expected = cycle.wrapping_sub(self.first_cycle) as f32 * period_ticks;
             if cycle.wrapping_sub(last) != 1
                 || elapsed == 0
-                || elapsed as f32 > dt * 1_900_000.0 + 1.0
-                || (span - expected).abs() > dt * 1_000_000.0 + 1.0
+                || elapsed as f32 > period_ticks * 1.9 + 1.0
+                || (span - expected).abs() > period_ticks + 1.0
             {
                 return Err(DetectionError::InsufficientSamples);
             }
@@ -296,6 +304,9 @@ impl Excitation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::amps;
+    #[cfg(feature = "runtime")]
+    use crate::units::seconds;
 
     #[test]
     fn captures_reject_missing_duplicate_and_nonfinite_samples() {
@@ -316,7 +327,7 @@ mod tests {
             Err(DetectionError::InsufficientSamples)
         );
         capture.samples[1].cycle = 0;
-        capture.samples[1].alpha = f32::NAN;
+        capture.samples[1].alpha = amps(f32::NAN);
         assert_eq!(capture.validate(2), Err(DetectionError::HardwareFault));
     }
 
@@ -326,12 +337,12 @@ mod tests {
         let mut engine = Excitation::new();
         assert!(
             engine
-                .check_timing(u32::MAX, u32::MAX - 25, 0.00005)
+                .check_timing(u32::MAX, u32::MAX - 25, seconds(0.00005))
                 .is_ok()
         );
-        assert!(engine.check_timing(0, 24, 0.00005).is_ok());
+        assert!(engine.check_timing(0, 24, seconds(0.00005)).is_ok());
         assert_eq!(
-            engine.check_timing(2, 74, 0.00005),
+            engine.check_timing(2, 74, seconds(0.00005)),
             Err(DetectionError::InsufficientSamples)
         );
     }

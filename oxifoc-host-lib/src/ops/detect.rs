@@ -5,12 +5,12 @@
 //! particular: **apply writes only the measured motor parameters (plus the
 //! thermal current rating); it never writes PI gains.** The device retunes
 //! the current loop from the motor params on write, using
-//! [`calculate_current_gains`] at [`DEFAULT_BANDWIDTH_RAD_S`] — the single
+//! [`calculate_current_gains`] at [`DEFAULT_BANDWIDTH`] — the single
 //! source of truth. [`suggested_pi_gains`] reproduces that math purely so a
 //! front-end can *show* the operator what the device will use.
 
 use anyhow::{Context, Result, bail};
-use oxifoc_core::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH_RAD_S, calculate_current_gains};
+use oxifoc_core::foc::detection::pi_tuning::{DEFAULT_BANDWIDTH, calculate_current_gains};
 use oxifoc_core::foc::detection::resistance::calculate_max_current;
 use oxifoc_core::foc::detection::types::MotorSize;
 use oxifoc_core::types::commissioning::{CommissioningPlan, MotorClass, SourceLimits};
@@ -19,7 +19,7 @@ use oxifoc_core::types::{
     ConfigGroupId, ControlMode, CurrentOffsetMethod, CurrentOffsetReport, DetectRequest,
     DetectResponse, MotorState,
 };
-use oxifoc_core::units::{henries, ohms, rad_per_s};
+use oxifoc_core::units::{henries, ohms};
 use serde_json::json;
 
 use super::config;
@@ -123,11 +123,8 @@ impl DetectionOutcome {
 #[must_use]
 pub fn suggested_pi_gains(resistance_ohm: f32, l_avg_h: f32) -> (f32, f32) {
     if l_avg_h > 0.0 && resistance_ohm > 0.0 {
-        let (kp, ki) = calculate_current_gains(
-            ohms(resistance_ohm),
-            henries(l_avg_h),
-            rad_per_s(DEFAULT_BANDWIDTH_RAD_S),
-        );
+        let (kp, ki) =
+            calculate_current_gains(ohms(resistance_ohm), henries(l_avg_h), DEFAULT_BANDWIDTH);
         (kp.value, ki.value)
     } else {
         (0.0, 0.0)
@@ -139,7 +136,11 @@ pub fn suggested_pi_gains(resistance_ohm: f32, l_avg_h: f32) -> (f32, f32) {
 #[must_use]
 pub fn rating_from_loss(resistance_ohm: f32, max_power_loss_w: f32) -> f32 {
     if resistance_ohm > 0.0 && max_power_loss_w > 0.0 {
-        calculate_max_current(ohms(resistance_ohm), MotorSize::Custom(max_power_loss_w)).value
+        calculate_max_current(
+            ohms(resistance_ohm),
+            MotorSize::Custom(watts(max_power_loss_w)),
+        )
+        .value
     } else {
         0.0
     }

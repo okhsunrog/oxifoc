@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{
     constants::{FRAC_1_SQRT_3, SQRT_3_DIV_2},
-    detection::pi_tuning::{self, DEFAULT_BANDWIDTH_RAD_S},
+    detection::pi_tuning::{self, DEFAULT_BANDWIDTH},
     pi_controller::PIController,
     pwm::{Modulator, QAxisModulation, SvpwmModulator},
     transforms,
@@ -25,7 +25,7 @@ use crate::types::{CurrentSenseTopology, VoltageFeedforwardMode};
 use crate::units::{
     AngularVelocity, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
     ElectricalAngularVelocity, ElectricalResistance, Fraction, Inductance, Linear, MagneticFlux,
-    Scalar, Sign, Time, erad, ohms, rad_per_s, si, unit::electrical::radian, volts,
+    Scalar, Sign, Time, erad, ohms, si, unit::electrical::radian, volts,
 };
 
 /// Current PI proportional gain: V per A (an impedance).
@@ -386,12 +386,7 @@ impl<M: Modulator, S: SinCos> FocController<M, S> {
         inductance: Inductance,
         vbus: ElectricPotential,
     ) -> Self {
-        Self::from_motor_params_with_bw(
-            resistance,
-            inductance,
-            vbus,
-            rad_per_s(DEFAULT_BANDWIDTH_RAD_S),
-        )
+        Self::from_motor_params_with_bw(resistance, inductance, vbus, DEFAULT_BANDWIDTH)
     }
 
     /// Create a controller with PI gains computed from motor parameters and custom bandwidth.

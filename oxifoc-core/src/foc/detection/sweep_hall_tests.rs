@@ -1,5 +1,6 @@
 use super::*;
 use crate::foc;
+use crate::foc::sensors::PhaseCurrents;
 use crate::units::{amps, erad};
 use core::cell::{Cell, RefCell};
 use core::task::{Context, Poll, Waker};
@@ -62,7 +63,7 @@ impl DetectionHardware for Hardware {
         }
     }
 
-    fn read_phase_currents(&self) -> (f32, f32, f32) {
+    fn read_phase_currents(&self) -> PhaseCurrents {
         panic!("Hall calibration must not depend on raw current readings");
     }
 }

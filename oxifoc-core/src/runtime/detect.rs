@@ -38,8 +38,10 @@ use crate::state::model::CONFIG_COORDINATOR;
 use crate::storage::{HallCalibrationConfig, RuntimeConfig};
 use crate::types::{DetectError, DetectRequest, DetectResponse};
 use crate::units::{
-    ConstZero, ElectricCurrent, Sign, amps, henries, ohms, unit::electrical, webers,
+    ConstZero, ElectricCurrent, ElectricPotential, Electrical, ElectricalResistance, Frequency,
+    Inductance, MagneticFlux, Sign, amps,
 };
+use uom::si::{Dimension, Quantity, Units};
 
 struct ReadySetup {
     session: SessionId,
@@ -77,17 +79,17 @@ pub trait DetectionBackend {
     /// Simulation's instantaneous measurement clock is unsuitable here.
     type Timer: Timer;
 
-    /// Present DC bus voltage in volts (read from the platform ADC / sim).
-    fn vbus(&self) -> f32;
+    /// Present DC bus voltage (read from the platform ADC / sim).
+    fn vbus(&self) -> ElectricPotential;
 
     /// Select the stage timebase while the commissioning lease owns the
     /// stopped actuator. Platforms with fixed timing use the boot rate.
     async fn prepare_timing(
         &mut self,
         _request: &DetectRequest,
-        drive_foc_hz: f32,
-    ) -> Result<f32, DetectError> {
-        Ok(drive_foc_hz)
+        drive_foc: Frequency,
+    ) -> Result<Frequency, DetectError> {
+        Ok(drive_foc)
     }
 
     /// Restore the drive timebase after the ISR has disarmed commissioning.
@@ -95,21 +97,24 @@ pub trait DetectionBackend {
         true
     }
 
-    /// Measure phase-to-neutral resistance (Ω).
+    /// Measure phase-to-neutral resistance.
     async fn measure_resistance(
         &mut self,
         params: &ResistanceParams,
-    ) -> Result<f32, DetectionError>;
+    ) -> Result<ElectricalResistance, DetectionError>;
 
-    /// Measure d/q-axis inductance (H) via rotating HFI.
+    /// Measure d/q-axis inductance via rotating HFI.
     async fn measure_inductance(
         &mut self,
         params: &InductanceParams,
-        pwm_freq_hz: f32,
-    ) -> Result<(f32, f32), DetectionError>;
+        pwm_freq: Frequency,
+    ) -> Result<(Inductance, Inductance), DetectionError>;
 
-    /// Measure flux linkage (Wb) via open-loop spin.
-    async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError>;
+    /// Measure flux linkage via open-loop spin.
+    async fn measure_flux(
+        &mut self,
+        params: &FluxLinkageParams,
+    ) -> Result<MagneticFlux, DetectionError>;
 
     /// Measure Hall sensors without installing the result.
     async fn calibrate_hall(
@@ -128,17 +133,17 @@ pub trait DetectionBackend {
 
 /// Serve `DetectEndpoint` with effectively-once dedup, forever.
 ///
-/// `max_current_a` is the per-platform current ceiling fed into the safe-test-
+/// `max_current` is the per-platform current ceiling fed into the safe-test-
 /// current formulas. Inverter protection and an optional diagnostic ceiling
 /// further bound it. Finite source limits must be configured explicitly.
-/// `foc_freq_hz` is the PWM/FOC loop frequency (used by the inductance HFI).
+/// `foc_freq` is the PWM/FOC loop frequency (used by the inductance HFI).
 /// Hall calibration returns candidate data without changing the installed setup.
 pub async fn detect_server<NS, B>(
     endpoints: Endpoints<NS>,
     mut backend: B,
     boot_epoch: u64,
-    max_current_a: f32,
-    foc_freq_hz: f32,
+    max_current: ElectricCurrent,
+    foc_freq: Frequency,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
 ) where
     NS: NetStackHandle + Clone,
@@ -174,8 +179,8 @@ pub async fn detect_server<NS, B>(
                 run_step(
                     &mut backend,
                     measurement.request,
-                    max_current_a,
-                    foc_freq_hz,
+                    max_current,
+                    foc_freq,
                     runtime_config,
                     &guard,
                     plan,
@@ -244,20 +249,24 @@ pub async fn detect_server<NS, B>(
 
 /// Positive-and-finite gate for detection request payloads. Wire input is
 /// arbitrary bits and the safe-current formulas are NaN-transparent —
-/// `f32::min` discards a NaN operand, so `sqrtf(NaN).min(max_current_a)`
+/// `f32::min` discards a NaN operand, so `sqrt(NaN).min(max_current)`
 /// SELECTS the platform's maximum test current instead of failing.
 #[inline]
-fn pos(v: f32) -> bool {
-    v.is_finite() && v > 0.0
+fn pos<D, U>(v: Quantity<D, U, f32>) -> bool
+where
+    D: Dimension + ?Sized,
+    U: Units<f32> + ?Sized,
+{
+    v.is_finite() && v.is_positive()
 }
 
 /// Validate a physical resistance result before it reaches current-limit math.
 /// Backend implementations are a trust boundary just like wire requests: a
 /// non-finite result would otherwise make `f32::min` select the platform limit.
 #[inline]
-fn measured_resistance(v: f32) -> Result<f32, DetectError> {
-    if pos(v) {
-        Ok(v)
+fn measured_resistance(r: ElectricalResistance) -> Result<ElectricalResistance, DetectError> {
+    if pos(r) {
+        Ok(r)
     } else {
         Err(DetectError::HardwareFault)
     }
@@ -269,8 +278,8 @@ fn measured_resistance(v: f32) -> Result<f32, DetectError> {
 async fn run_step<B: DetectionBackend>(
     backend: &mut B,
     req: DetectRequest,
-    max_current_a: f32,
-    foc_freq_hz: f32,
+    max_current: ElectricCurrent,
+    foc_freq: Frequency,
     runtime_config: Option<&'static CriticalSectionMutex<RefCell<RuntimeConfig>>>,
     detection: &DetectionActiveGuard,
     plan: Option<CommissioningPlan>,
@@ -281,14 +290,14 @@ async fn run_step<B: DetectionBackend>(
         return DetectResponse::Error(DetectError::Unsafe);
     }
     if matches!(req, DetectRequest::MeasureCurrentOffsets { .. }) {
-        return measure_step(backend, req, max_current_a, foc_freq_hz).await;
+        return measure_step(backend, req, max_current, foc_freq).await;
     }
     let prepared = match runtime_config {
         Some(config) => critical_section::with(|cs| {
             prepare_commissioning(
-                max_current_a,
+                max_current,
                 Some(&config.borrow(cs).borrow()),
-                req.current_limit_a(),
+                req.current_limit(),
                 plan.map(|p| p.source),
             )
         }),
@@ -298,14 +307,14 @@ async fn run_step<B: DetectionBackend>(
         Ok(prepared) => prepared,
         Err(error) => return DetectResponse::Error(error),
     };
-    let foc_freq_hz = match backend.prepare_timing(&req, foc_freq_hz).await {
-        Ok(hz) => hz,
+    let foc_freq = match backend.prepare_timing(&req, foc_freq).await {
+        Ok(freq) => freq,
         Err(error) => return DetectResponse::Error(error),
     };
     if !detection.begin::<B::Timer>(prepared).await {
         return DetectResponse::Error(DetectError::Busy);
     }
-    let result = measure_step(backend, req, prepared.current_ceiling().value, foc_freq_hz).await;
+    let result = measure_step(backend, req, prepared.current_ceiling(), foc_freq).await;
     let limited = state::detection_source_limited();
     if !detection.end::<B::Timer>().await {
         return DetectResponse::Error(DetectError::HardwareFault);
@@ -324,142 +333,134 @@ async fn run_step<B: DetectionBackend>(
 async fn measure_step<B: DetectionBackend>(
     backend: &mut B,
     req: DetectRequest,
-    max_current_a: f32,
-    foc_freq_hz: f32,
+    max_current: ElectricCurrent,
+    foc_freq: Frequency,
 ) -> DetectResponse {
     match req {
-        DetectRequest::MeasureResistance {
-            max_power_loss: max_power_loss_w,
-            ..
-        } => {
-            let max_power_loss_w = max_power_loss_w.value;
-            if !pos(max_power_loss_w) {
+        DetectRequest::MeasureResistance { max_power_loss, .. } => {
+            if !pos(max_power_loss) {
                 return DetectResponse::Error(DetectError::OutOfRange);
             }
+            let motor_size = MotorSize::Custom(max_power_loss);
             // Probe at low current to find a safe test current, then measure.
-            let probe_current = (max_current_a / 50.0).max(0.5);
             let probe = ResistanceParams {
-                motor_size: MotorSize::Custom(max_power_loss_w),
-                current_max: probe_current,
+                motor_size,
+                current_max: (max_current / 50.0).max(amps(0.5)),
                 num_samples: 20,
                 ramp_time_ms: 200,
                 settle_time_ms: 100,
                 ..Default::default()
             };
-            match backend.measure_resistance(&probe).await {
-                Ok(r_probe) => {
-                    let r_probe = match measured_resistance(r_probe) {
-                        Ok(r) => r,
-                        Err(e) => return DetectResponse::Error(e),
-                    };
-                    let currents = match DetectionCurrents::new(
-                        max_power_loss_w,
-                        r_probe,
-                        backend.vbus(),
-                        max_current_a,
-                    ) {
-                        Ok(currents) if currents.resistance_a >= 0.5 => currents,
-                        Ok(_) => return DetectResponse::Error(DetectError::OutOfRange),
-                        Err(error) => return DetectResponse::Error(map_err(error)),
-                    };
-                    let params = ResistanceParams {
-                        motor_size: MotorSize::Custom(max_power_loss_w),
-                        current_max: currents.resistance_a,
-                        ..Default::default()
-                    };
-                    match backend.measure_resistance(&params).await {
-                        Ok(r) => match measured_resistance(r) {
-                            Ok(resistance_ohm) => DetectResponse::Resistance {
-                                resistance: ohms(resistance_ohm),
-                            },
-                            Err(e) => DetectResponse::Error(e),
-                        },
-                        Err(e) => DetectResponse::Error(map_err(e)),
-                    }
-                }
+            let r_probe = match backend.measure_resistance(&probe).await {
+                Ok(r) => r,
+                Err(e) => return DetectResponse::Error(map_err(e)),
+            };
+            let r_probe = match measured_resistance(r_probe) {
+                Ok(r) => r,
+                Err(e) => return DetectResponse::Error(e),
+            };
+            let currents = match DetectionCurrents::new(
+                max_power_loss,
+                r_probe,
+                backend.vbus(),
+                max_current,
+            ) {
+                Ok(currents) if currents.resistance >= amps(0.5) => currents,
+                Ok(_) => return DetectResponse::Error(DetectError::OutOfRange),
+                Err(error) => return DetectResponse::Error(map_err(error)),
+            };
+            let params = ResistanceParams {
+                motor_size,
+                current_max: currents.resistance,
+                ..Default::default()
+            };
+            match backend.measure_resistance(&params).await {
+                Ok(r) => match measured_resistance(r) {
+                    Ok(resistance) => DetectResponse::Resistance { resistance },
+                    Err(e) => DetectResponse::Error(e),
+                },
                 Err(e) => DetectResponse::Error(map_err(e)),
             }
         }
 
         DetectRequest::MeasureInductance {
-            max_power_loss: max_power_loss_w,
-            resistance: r,
+            max_power_loss,
+            resistance,
             ..
         } => {
-            let (max_power_loss_w, r) = (max_power_loss_w.value, r.value);
-            if !pos(max_power_loss_w) || !pos(r) {
+            if !pos(max_power_loss) || !pos(resistance) {
                 return DetectResponse::Error(DetectError::OutOfRange);
             }
             let params = match InductanceParams::commissioning(
-                MotorSize::Custom(max_power_loss_w),
-                r,
+                MotorSize::Custom(max_power_loss),
+                resistance,
                 backend.vbus(),
-                max_current_a,
+                max_current,
             ) {
                 Ok(params) => params,
                 Err(error) => return DetectResponse::Error(map_err(error)),
             };
-            match backend.measure_inductance(&params, foc_freq_hz).await {
-                Ok((ld, lq)) => DetectResponse::Inductance {
-                    inductance_d: henries(ld),
-                    inductance_q: henries(lq),
+            match backend.measure_inductance(&params, foc_freq).await {
+                Ok((inductance_d, inductance_q)) => DetectResponse::Inductance {
+                    inductance_d,
+                    inductance_q,
                 },
                 Err(e) => DetectResponse::Error(map_err(e)),
             }
         }
 
         DetectRequest::MeasureFlux {
-            max_power_loss: max_power_loss_w,
-            resistance: r,
-            inductance: inductance_h,
+            max_power_loss,
+            resistance,
+            inductance,
             pole_pairs,
-            openloop_speed: openloop_erpm,
+            openloop_speed,
             ..
         } => {
-            let (max_power_loss_w, r, inductance_h) =
-                (max_power_loss_w.value, r.value, inductance_h.value);
-            let openloop_erpm = openloop_erpm.get::<electrical::erpm>();
-            // pole_pairs = 0 would turn openloop_erpm into an infinite
-            // spin target via the erpm/pole_pairs division below.
-            if !pos(max_power_loss_w)
-                || !pos(r)
-                || !pos(inductance_h)
+            // pole_pairs = 0 would turn the open-loop speed into an infinite
+            // mechanical spin target.
+            if !pos(max_power_loss)
+                || !pos(resistance)
+                || !pos(inductance)
                 || pole_pairs == 0
-                || !pos(openloop_erpm)
+                || !pos(openloop_speed)
             {
                 return DetectResponse::Error(DetectError::OutOfRange);
             }
-            let currents =
-                match DetectionCurrents::new(max_power_loss_w, r, backend.vbus(), max_current_a) {
-                    Ok(currents) => currents,
-                    Err(error) => return DetectResponse::Error(map_err(error)),
-                };
-            let spin_rpm = openloop_erpm / f32::from(pole_pairs);
+            let currents = match DetectionCurrents::new(
+                max_power_loss,
+                resistance,
+                backend.vbus(),
+                max_current,
+            ) {
+                Ok(currents) => currents,
+                Err(error) => return DetectResponse::Error(map_err(error)),
+            };
             let params = FluxLinkageParams {
-                motor_size: MotorSize::Custom(max_power_loss_w),
-                resistance_ohm: r,
-                inductance_h,
+                motor_size: MotorSize::Custom(max_power_loss),
+                resistance,
+                inductance,
                 pole_pairs,
-                spin_rpm,
-                current_a: currents.flux_a,
+                spin_speed: openloop_speed.to_mechanical(pole_pairs),
+                current: currents.flux,
                 // Ramp until back-EMF dominates R·I (VESC's duty-0.3 idea);
-                // spin_rpm above remains the hard speed cap.
+                // spin_speed above remains the hard speed cap.
                 v_target: 0.2 * backend.vbus(),
                 ..Default::default()
             };
             match backend.measure_flux(&params).await {
-                Ok(flux) => {
+                Ok(flux_linkage) => {
                     // Line-to-line Kv (carries the √3 phase→line factor — see
                     // flux_linkage::calculate_kv); inlining it here is what kept
                     // the detection result √3-high.
-                    let kv = if flux > 0.0 {
-                        flux_linkage::calculate_kv(flux, pole_pairs)
+                    let kv_rpm_per_v = if flux_linkage.is_positive() {
+                        flux_linkage::calculate_kv(flux_linkage, pole_pairs)
                     } else {
                         0.0
                     };
                     DetectResponse::FluxLinkage {
-                        flux_linkage: webers(flux),
-                        kv_rpm_per_v: kv,
+                        flux_linkage,
+                        kv_rpm_per_v,
                     }
                 }
                 Err(e) => DetectResponse::Error(map_err(e)),
@@ -467,22 +468,21 @@ async fn measure_step<B: DetectionBackend>(
         }
 
         DetectRequest::CalibrateHall {
-            max_power_loss: max_power_loss_w,
-            resistance: resistance_ohm,
+            max_power_loss,
+            resistance,
             ..
         } => {
-            let (max_power_loss_w, resistance_ohm) = (max_power_loss_w.value, resistance_ohm.value);
             let currents = match DetectionCurrents::new(
-                max_power_loss_w,
-                resistance_ohm,
+                max_power_loss,
+                resistance,
                 backend.vbus(),
-                max_current_a,
+                max_current,
             ) {
                 Ok(currents) => currents,
                 Err(error) => return DetectResponse::Error(map_err(error)),
             };
             let params = HallCalibrationParams {
-                current: amps(currents.hall_a),
+                current: currents.hall,
                 ..Default::default()
             };
             match backend.calibrate_hall(params).await {
@@ -534,9 +534,9 @@ async fn measure_step<B: DetectionBackend>(
 /// Wizard sessions supply confirmed limits; individual diagnostics retain the
 /// explicit finite source limits configured on the device.
 fn prepare_commissioning(
-    platform_max: f32,
+    platform_max: ElectricCurrent,
     config: Option<&RuntimeConfig>,
-    test_ceiling_a: Option<f32>,
+    test_ceiling: Option<ElectricCurrent>,
     source: Option<SourceLimits>,
 ) -> Result<PreparedCommissioning, DetectError> {
     let limits = config.and_then(|c| c.current_limits.as_ref());
@@ -550,7 +550,6 @@ fn prepare_commissioning(
         .ok_or(DetectError::Unsafe)?;
     let source =
         PowerSourceLimits::new(source.input, source.regen).map_err(|_| DetectError::Unsafe)?;
-    let platform_max = amps(platform_max);
     // A fresh board has no user override. Its independent platform trip still
     // applies; an explicitly stored stricter protection always survives.
     let configured_trip = limits.map_or(ElectricCurrent::ZERO, |limits| limits.max_phase_current);
@@ -562,7 +561,7 @@ fn prepare_commissioning(
     } else {
         configured_trip
     };
-    let prepared = PreparedCommissioning::new(platform_max, trip, source, test_ceiling_a.map(amps))
+    let prepared = PreparedCommissioning::new(platform_max, trip, source, test_ceiling)
         .map_err(|_| DetectError::Unsafe)?;
     if prepared.current_ceiling() < amps(0.5) {
         return Err(DetectError::OutOfRange);
@@ -611,7 +610,7 @@ mod tests {
     fn commissioning_uses_inverter_and_source_without_old_motor_limits() {
         use crate::storage::{CurrentLimitsConfig, MotorParamsConfig};
         let mut cfg = RuntimeConfig::default();
-        assert!(prepare_commissioning(70.0, None, None, None).is_err());
+        assert!(prepare_commissioning(amps(70.0), None, None, None).is_err());
         cfg.current_limits = Some(CurrentLimitsConfig {
             max_iq: amps(3.0),
             max_phase_current: amps(30.0),
@@ -624,34 +623,39 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            prepare_commissioning(70.0, Some(&cfg), None, None)
+            prepare_commissioning(amps(70.0), Some(&cfg), None, None)
                 .unwrap()
                 .current_ceiling(),
             amps(30.0 / OVERCURRENT_HEADROOM),
         );
         assert_eq!(
-            prepare_commissioning(70.0, Some(&cfg), Some(4.0), None)
+            prepare_commissioning(amps(70.0), Some(&cfg), Some(amps(4.0)), None)
                 .unwrap()
                 .current_ceiling(),
             amps(4.0),
         );
-        assert!(prepare_commissioning(70.0, Some(&cfg), Some(f32::NAN), None).is_err());
+        assert!(prepare_commissioning(amps(70.0), Some(&cfg), Some(amps(f32::NAN)), None).is_err());
         cfg.current_limits.as_mut().unwrap().bus_regen_max.value = -1.0;
-        assert!(prepare_commissioning(70.0, Some(&cfg), None, None).is_err());
+        assert!(prepare_commissioning(amps(70.0), Some(&cfg), None, None).is_err());
         let confirmed = SourceLimits {
             input: amps(5.0),
             regen: amps(0.0),
         };
         assert_eq!(
-            prepare_commissioning(70.0, Some(&cfg), None, Some(confirmed))
+            prepare_commissioning(amps(70.0), Some(&cfg), None, Some(confirmed))
                 .unwrap()
                 .current_ceiling(),
             amps(30.0 / OVERCURRENT_HEADROOM),
         );
         assert_eq!(
-            prepare_commissioning(70.0, Some(&RuntimeConfig::default()), None, Some(confirmed))
-                .unwrap()
-                .current_ceiling(),
+            prepare_commissioning(
+                amps(70.0),
+                Some(&RuntimeConfig::default()),
+                None,
+                Some(confirmed)
+            )
+            .unwrap()
+            .current_ceiling(),
             amps(70.0 / OVERCURRENT_HEADROOM),
         );
     }
@@ -663,12 +667,12 @@ mod tests {
             DetectRequest::MeasureResistance {
                 max_power_loss: max_power_loss_w,
                 ..
-            } => pos(max_power_loss_w.value),
+            } => pos(max_power_loss_w),
             DetectRequest::MeasureInductance {
                 max_power_loss: max_power_loss_w,
                 resistance: resistance_ohm,
                 ..
-            } => pos(max_power_loss_w.value) && pos(resistance_ohm.value),
+            } => pos(max_power_loss_w) && pos(resistance_ohm),
             DetectRequest::MeasureFlux {
                 max_power_loss: max_power_loss_w,
                 resistance: resistance_ohm,
@@ -677,17 +681,17 @@ mod tests {
                 openloop_speed: openloop_erpm,
                 ..
             } => {
-                pos(max_power_loss_w.value)
-                    && pos(resistance_ohm.value)
-                    && pos(inductance_h.value)
+                pos(max_power_loss_w)
+                    && pos(resistance_ohm)
+                    && pos(inductance_h)
                     && pole_pairs >= 1
-                    && pos(openloop_erpm.value)
+                    && pos(openloop_erpm)
             }
             DetectRequest::CalibrateHall {
                 max_power_loss: max_power_loss_w,
                 resistance: resistance_ohm,
                 ..
-            } => pos(max_power_loss_w.value) && pos(resistance_ohm.value),
+            } => pos(max_power_loss_w) && pos(resistance_ohm),
             DetectRequest::MeasureCurrentOffsets { .. } => true,
         }
     }
@@ -744,10 +748,10 @@ mod tests {
 
     #[test]
     fn resistance_results_reject_non_finite_and_non_positive_values() {
-        assert_eq!(measured_resistance(0.25).unwrap(), 0.25);
+        assert_eq!(measured_resistance(ohms(0.25)).unwrap(), ohms(0.25));
         for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.1] {
             assert!(matches!(
-                measured_resistance(invalid),
+                measured_resistance(ohms(invalid)),
                 Err(DetectError::HardwareFault)
             ));
         }

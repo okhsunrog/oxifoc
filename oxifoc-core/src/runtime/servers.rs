@@ -86,7 +86,7 @@ pub const MOTOR_ACK_TIMEOUT_MS: u64 = 1_000;
 #[cfg(feature = "storage")]
 use crate::storage::{FLASH_CHANNEL, FLASH_DONE, FlashOperation, RuntimeConfig};
 #[cfg(feature = "storage")]
-use crate::units::{ConstZero, ElectricCurrent, rad_per_s, volts};
+use crate::units::{ConstZero, ElectricCurrent, volts};
 
 /// Device info server - responds to info requests from host
 ///
@@ -398,12 +398,11 @@ fn resolved_config(
             Some(ConfigValue::PiGains(PiGainsConfig {
                 kp,
                 ki,
-                bandwidth: rad_per_s(
-                    cfg.pi_gains
-                        .as_ref()
-                        .filter(|v| v.is_sane())
-                        .map_or(pi_tuning::DEFAULT_BANDWIDTH_RAD_S, |v| v.bandwidth.value),
-                ),
+                bandwidth: cfg
+                    .pi_gains
+                    .as_ref()
+                    .filter(|v| v.is_sane())
+                    .map_or(pi_tuning::DEFAULT_BANDWIDTH, |v| v.bandwidth),
             }))
         }
         _ => None,

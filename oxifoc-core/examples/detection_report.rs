@@ -14,6 +14,7 @@ use oxifoc_core::foc::detection::types::{FluxLinkageParams, MotorSize};
 use oxifoc_core::foc::detection::virtual_harness::{
     VirtualHardware, VirtualTimer, block_on, run_detection, with_sim,
 };
+use oxifoc_core::units::{Electrical, amps, erpm, henries, hertz, ohms, volts};
 use oxifoc_core::virtual_motor::MotorParams;
 
 // ── Motor catalog ──────────────────────────────────────────────────────────
@@ -219,11 +220,11 @@ fn det_params(def: &MotorDef) -> DetectionParams {
     DetectionParams {
         motor_size: def.motor_size,
         pole_pairs: def.params.pole_pairs,
-        current_max: 10.0,
-        max_power_loss_w: def.motor_size.max_power_loss_w(),
-        pwm_freq_hz: 20_000.0,
-        vbus: def.vbus,
-        openloop_erpm: def.openloop_erpm,
+        current_max: amps(10.0),
+        max_power_loss: def.motor_size.max_power_loss(),
+        pwm_freq: hertz(20_000.0),
+        vbus: volts(def.vbus),
+        openloop_speed: erpm(def.openloop_erpm),
     }
 }
 
@@ -300,10 +301,10 @@ fn main() {
 
         let (r_s, ld_s, lq_s, lam_s) = match result {
             Ok(det) => (
-                fmt_err(det.params.resistance_ohm, p.r),
-                fmt_err(det.params.inductance_d_h, p.ld),
-                fmt_err(det.params.inductance_q_h, p.lq),
-                fmt_err(det.params.flux_linkage_wb, p.lambda),
+                fmt_err(det.params.resistance.value, p.r),
+                fmt_err(det.params.inductance_d.value, p.ld),
+                fmt_err(det.params.inductance_q.value, p.lq),
+                fmt_err(det.params.flux_linkage.value, p.lambda),
             ),
             Err(_) => (
                 " FAIL".into(),
@@ -336,10 +337,10 @@ fn main() {
 
         let (r_s, ld_s, lq_s, lam_s) = match result {
             Ok(det) => (
-                fmt_err(det.params.resistance_ohm, p.r),
-                fmt_err(det.params.inductance_d_h, p.ld),
-                fmt_err(det.params.inductance_q_h, p.lq),
-                fmt_err(det.params.flux_linkage_wb, p.lambda),
+                fmt_err(det.params.resistance.value, p.r),
+                fmt_err(det.params.inductance_d.value, p.ld),
+                fmt_err(det.params.inductance_q.value, p.lq),
+                fmt_err(det.params.flux_linkage.value, p.lambda),
             ),
             Err(e) => {
                 eprintln!("  [{}] detection error: {e:?}", def.name);
@@ -381,24 +382,24 @@ fn main() {
                 let l = with_sim(p, def.vbus, |hw| {
                     let params = InductanceParams {
                         motor_size: def.motor_size,
-                        resistance_ohm: r_val,
-                        hold_current_a: hold,
-                        hfi_frequency_hz: freq,
-                        vbus: def.vbus,
+                        resistance: ohms(r_val),
+                        hold_current: amps(hold),
+                        hfi_frequency: hertz(freq),
+                        vbus: volts(def.vbus),
                         ..Default::default()
                     };
                     block_on(measure_inductance::<
                         VirtualHardware,
                         VirtualTimer,
                         oxifoc_core::foc::trig::LibmSinCos,
-                    >(hw, &params, 20_000.0))
+                    >(hw, &params, hertz(20_000.0)))
                 });
                 match l {
                     Ok((ld, lq)) => {
                         results.push(format!(
                             "{:+.1}/{:+.1}%",
-                            err_pct(ld, p.ld),
-                            err_pct(lq, p.lq)
+                            err_pct(ld.value, p.ld),
+                            err_pct(lq.value, p.lq)
                         ));
                     }
                     Err(_) => results.push("FAIL".to_string()),
@@ -425,11 +426,11 @@ fn main() {
         // from openloop_erpm and a back-EMF rise target of 0.2·vbus.
         let flux_params = FluxLinkageParams {
             motor_size: def.motor_size,
-            resistance_ohm: p.r,
-            inductance_h: (p.ld + p.lq) / 2.0,
+            resistance: ohms(p.r),
+            inductance: henries((p.ld + p.lq) / 2.0),
             pole_pairs: p.pole_pairs,
-            spin_rpm: def.openloop_erpm / f32::from(p.pole_pairs),
-            v_target: 0.2 * def.vbus,
+            spin_speed: erpm(def.openloop_erpm).to_mechanical(p.pole_pairs),
+            v_target: volts(0.2 * def.vbus),
             ..Default::default()
         };
 
@@ -440,7 +441,7 @@ fn main() {
             ))
         });
         let q_s = match qaxis {
-            Ok(v) => format!("{:+.1}%", err_pct(v, p.lambda)),
+            Ok(v) => format!("{:+.1}%", err_pct(v.value, p.lambda)),
             Err(_) => "FAIL".to_string(),
         };
 
@@ -451,13 +452,13 @@ fn main() {
             >(hw, &flux_params))
         });
         let m_s = match mag {
-            Ok(v) => format!("{:+.1}%", err_pct(v, p.lambda)),
+            Ok(v) => format!("{:+.1}%", err_pct(v.value, p.lambda)),
             Err(_) => "FAIL".to_string(),
         };
 
         let prod_s = match (mag, qaxis) {
-            (Ok(m), _) => format!("{:+.1}%", err_pct(m, p.lambda)),
-            (Err(_), Ok(q)) => format!("{:+.1}%", err_pct(q, p.lambda)),
+            (Ok(m), _) => format!("{:+.1}%", err_pct(m.value, p.lambda)),
+            (Err(_), Ok(q)) => format!("{:+.1}%", err_pct(q.value, p.lambda)),
             _ => "FAIL".to_string(),
         };
 

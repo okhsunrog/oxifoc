@@ -1,8 +1,13 @@
 use super::*;
 #[cfg(feature = "hfi-detect")]
 use crate::foc::detection::excitation::{BurstSample, Waveform};
+use crate::foc::sensors::PhaseCurrents;
 use crate::foc::trig::LibmSinCos;
-use crate::units::{amps, erad, volts};
+use crate::units::{
+    ConstZero, ElectricCurrent, ElectricalAngle, amps, erad, erad_per_s, hertz, ohms, volts,
+};
+#[cfg(feature = "hfi-detect")]
+use crate::units::{henries, seconds};
 use core::cell::Cell;
 use core::task::{Context, Poll, Waker};
 
@@ -57,8 +62,12 @@ fn flux_settle_keeps_command_deadman_fed_and_observes_hardware_health() {
         async fn wait_telemetry(&mut self) -> FocOutput {
             FocOutput::empty()
         }
-        fn read_phase_currents(&self) -> (f32, f32, f32) {
-            (0.0, 0.0, 0.0)
+        fn read_phase_currents(&self) -> PhaseCurrents {
+            (
+                ElectricCurrent::ZERO,
+                ElectricCurrent::ZERO,
+                ElectricCurrent::ZERO,
+            )
         }
     }
     for failed in [false, true] {
@@ -69,10 +78,14 @@ fn flux_settle_keeps_command_deadman_fed_and_observes_hardware_health() {
         };
         let params = FluxLinkageParams {
             settle_time_ms: 3000,
-            current_a: 2.0,
+            current: amps(2.0),
             ..Default::default()
         };
-        let mut future = core::pin::pin!(settle_open_loop::<_, Clock>(&mut hw, &params, 200.0));
+        let mut future = core::pin::pin!(settle_open_loop::<_, Clock>(
+            &mut hw,
+            &params,
+            erad_per_s(200.0)
+        ));
         let result = future
             .as_mut()
             .poll(&mut Context::from_waker(Waker::noop()));
@@ -136,8 +149,8 @@ impl DetectionHardware for CompensatedHold {
         }
     }
 
-    fn read_phase_currents(&self) -> (f32, f32, f32) {
-        let i = self.current.get();
+    fn read_phase_currents(&self) -> PhaseCurrents {
+        let i = amps(self.current.get());
         (i, -i / 2.0, -i / 2.0)
     }
 }
@@ -152,17 +165,20 @@ fn failed_inductance_pulse_removes_negative_voltage_hold_without_current_runaway
         saw_negative_voltage: Cell::new(false),
     };
     let params = VoltagePulseParams {
-        hold_current_a: 1.2,
-        resistance_ohm: 0.03,
-        pulse_voltage_v: 0.0001,
-        current_target_a: 0.0,
+        hold_current: amps(1.2),
+        resistance: ohms(0.03),
+        pulse_voltage: volts(0.0001),
+        current_target: amps(0.0),
         num_pulses: 2,
         settle_time_ms: 0,
     };
     let result = {
-        let mut future = core::pin::pin!(
-            measure_inductance_pulse::<_, ImmediateTimer, LibmSinCos>(&mut hw, &params, 20_000.0)
-        );
+        let mut future =
+            core::pin::pin!(measure_inductance_pulse::<_, ImmediateTimer, LibmSinCos>(
+                &mut hw,
+                &params,
+                hertz(20_000.0)
+            ));
         match future
             .as_mut()
             .poll(&mut Context::from_waker(Waker::noop()))
@@ -202,7 +218,7 @@ fn stationary_release_stops_and_fails_if_current_samples_stop_arriving() {
             core::future::pending().await
         }
 
-        fn read_phase_currents(&self) -> (f32, f32, f32) {
+        fn read_phase_currents(&self) -> PhaseCurrents {
             unreachable!("release requires a fresh current sample")
         }
     }
@@ -210,7 +226,10 @@ fn stationary_release_stops_and_fails_if_current_samples_stop_arriving() {
     let mut hw = NoFreshCurrent(Cell::new(ControlMode::Stopped));
     let result = {
         let mut release = core::pin::pin!(ramp_down_stationary_current::<_, ImmediateTimer>(
-            &mut hw, 1.0, 0.0, 20
+            &mut hw,
+            amps(1.0),
+            ElectricalAngle::ZERO,
+            20
         ));
         release
             .as_mut()
@@ -235,7 +254,7 @@ fn hfi_fault_timeout_or_missing_cycles_cannot_fall_back_or_report_success() {
         async fn wait_telemetry(&mut self) -> FocOutput {
             self.hold.wait_telemetry().await
         }
-        fn read_phase_currents(&self) -> (f32, f32, f32) {
+        fn read_phase_currents(&self) -> PhaseCurrents {
             self.hold.read_phase_currents()
         }
         async fn capture_voltage_burst<S: SinCos>(
@@ -243,7 +262,7 @@ fn hfi_fault_timeout_or_missing_cycles_cannot_fall_back_or_report_success() {
             program: VoltageBurst,
         ) -> Result<BurstCapture, DetectionError> {
             assert!(
-                (program.vq_hold - 0.15).abs() < 1e-5,
+                (program.vq_hold - volts(0.15)).abs() < volts(1e-5),
                 "preserve the q-axis holding bias"
             );
             self.bursts += 1;
@@ -267,15 +286,16 @@ fn hfi_fault_timeout_or_missing_cycles_cannot_fall_back_or_report_success() {
             bursts: 0,
         };
         let params = InductanceParams {
-            resistance_ohm: 0.03,
-            hold_current_a: 1.2,
+            resistance: ohms(0.03),
+            hold_current: amps(1.2),
             ..Default::default()
         };
         {
-            let mut future =
-                core::pin::pin!(measure_inductance_auto::<_, ImmediateTimer, LibmSinCos>(
-                    &mut hw, &params, 20_000.0
-                ));
+            let mut future = core::pin::pin!(measure_inductance_auto::<
+                _,
+                ImmediateTimer,
+                LibmSinCos,
+            >(&mut hw, &params, hertz(20_000.0)));
             assert_eq!(
                 future
                     .as_mut()
@@ -307,8 +327,12 @@ fn missing_holding_current_refuses_all_excitation_methods() {
                 ..FocOutput::empty()
             }
         }
-        fn read_phase_currents(&self) -> (f32, f32, f32) {
-            (0.0, 0.0, 0.0)
+        fn read_phase_currents(&self) -> PhaseCurrents {
+            (
+                ElectricCurrent::ZERO,
+                ElectricCurrent::ZERO,
+                ElectricCurrent::ZERO,
+            )
         }
         async fn capture_voltage_burst<S: SinCos>(
             &mut self,
@@ -321,13 +345,15 @@ fn missing_holding_current_refuses_all_excitation_methods() {
         stopped: Cell::new(true),
     };
     let params = InductanceParams {
-        resistance_ohm: 0.03,
-        hold_current_a: 1.2,
+        resistance: ohms(0.03),
+        hold_current: amps(1.2),
         ..Default::default()
     };
     {
         let mut future = core::pin::pin!(measure_inductance_auto::<_, ImmediateTimer, LibmSinCos>(
-            &mut hw, &params, 20_000.0
+            &mut hw,
+            &params,
+            hertz(20_000.0)
         ));
         assert_eq!(
             future
@@ -358,7 +384,7 @@ fn weak_main_response_cannot_bypass_voltage_and_growth_limits() {
         async fn wait_telemetry(&mut self) -> FocOutput {
             self.hold.wait_telemetry().await
         }
-        fn read_phase_currents(&self) -> (f32, f32, f32) {
+        fn read_phase_currents(&self) -> PhaseCurrents {
             self.hold.read_phase_currents()
         }
         async fn capture_voltage_burst<S: SinCos>(
@@ -369,11 +395,11 @@ fn weak_main_response_cannot_bypass_voltage_and_growth_limits() {
                 panic!("expected HFI only");
             };
             if self.previous_amplitude > 0.0 {
-                assert!(amplitude <= self.previous_amplitude * 1.701);
+                assert!(amplitude <= volts(self.previous_amplitude * 1.701));
             }
-            self.previous_amplitude = amplitude;
+            self.previous_amplitude = amplitude.value;
             if self.bursts > 0 {
-                self.max_run_voltage = self.max_run_voltage.max(amplitude);
+                self.max_run_voltage = self.max_run_voltage.max(amplitude.value);
             }
             let l = if self.bursts == 0 { 25e-6 } else { 5e-3 };
             self.bursts += 1;
@@ -381,12 +407,14 @@ fn weak_main_response_cannot_bypass_voltage_and_growth_limits() {
                 len: usize::from(program.samples),
                 ..Default::default()
             };
-            let (mut alpha, mut beta) = (program.hold_current, 0.0);
+            let (mut alpha, mut beta) = (program.hold_current, ElectricCurrent::ZERO);
+            // One 20 kHz period through the winding inductance.
+            let admittance_step = seconds(1.0 / 20_000.0) / henries(l);
             for k in 0..capture.len {
                 if k >= 2 {
                     let (va, vb) = program.injection::<S>(k - 2);
-                    alpha += va / (20_000.0 * l);
-                    beta += vb / (20_000.0 * l);
+                    alpha += va * admittance_step;
+                    beta += vb * admittance_step;
                 }
                 capture.samples[k] = BurstSample {
                     alpha,
@@ -411,13 +439,15 @@ fn weak_main_response_cannot_bypass_voltage_and_growth_limits() {
         previous_amplitude: 0.0,
     };
     let params = InductanceParams {
-        resistance_ohm: 0.03,
-        hold_current_a: 1.0,
+        resistance: ohms(0.03),
+        hold_current: amps(1.0),
         ..Default::default()
     };
     {
         let mut future = core::pin::pin!(measure_inductance::<_, ImmediateTimer, LibmSinCos>(
-            &mut hw, &params, 20_000.0
+            &mut hw,
+            &params,
+            hertz(20_000.0)
         ));
         assert_eq!(
             future
@@ -429,7 +459,7 @@ fn weak_main_response_cannot_bypass_voltage_and_growth_limits() {
     assert!(hw.bursts >= 3, "exercise the probe and pilot packets");
     assert!(hw.max_run_voltage > 0.0);
     assert!(
-        hw.max_run_voltage <= params.hfi_voltage_v,
+        hw.max_run_voltage <= params.hfi_voltage.value,
         "inflated HFI voltage: {}",
         hw.max_run_voltage
     );

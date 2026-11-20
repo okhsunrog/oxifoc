@@ -23,6 +23,10 @@ use oxifoc_core::foc::detection::virtual_harness::{
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::foc::trig::LibmSinCos;
 use oxifoc_core::runtime::detect::{DetectionBackend, detect_server as core_detect_server};
+use oxifoc_core::units::{
+    ElectricPotential, ElectricalResistance, Frequency, Inductance, MagneticFlux, amps, hertz,
+    volts,
+};
 use oxifoc_core::virtual_motor::MotorParams;
 
 /// Detection backend backed by the virtual-motor simulation.
@@ -36,14 +40,14 @@ struct VirtualBackend {
 impl DetectionBackend for VirtualBackend {
     type Timer = crate::TokioTimer;
 
-    fn vbus(&self) -> f32 {
-        self.vbus
+    fn vbus(&self) -> ElectricPotential {
+        volts(self.vbus)
     }
 
     async fn measure_resistance(
         &mut self,
         params: &ResistanceParams,
-    ) -> Result<f32, DetectionError> {
+    ) -> Result<ElectricalResistance, DetectionError> {
         let params = *params;
         let vbus = self.vbus;
         let params_m = self.params;
@@ -60,8 +64,8 @@ impl DetectionBackend for VirtualBackend {
     async fn measure_inductance(
         &mut self,
         params: &InductanceParams,
-        pwm_freq_hz: f32,
-    ) -> Result<(f32, f32), DetectionError> {
+        pwm_freq: Frequency,
+    ) -> Result<(Inductance, Inductance), DetectionError> {
         let params = *params;
         let vbus = self.vbus;
         let params_m = self.params;
@@ -70,9 +74,7 @@ impl DetectionBackend for VirtualBackend {
                 hw.set_current_sense_topology(crate::CURRENT_SENSE_TOPOLOGY);
                 // HFI with voltage-pulse fallback — same ladder the boards run.
                 block_on(measure_inductance_auto::<_, VirtualTimer, LibmSinCos>(
-                    hw,
-                    &params,
-                    pwm_freq_hz,
+                    hw, &params, pwm_freq,
                 ))
             })
         })
@@ -80,7 +82,10 @@ impl DetectionBackend for VirtualBackend {
         .unwrap_or(Err(DetectionError::HardwareFault))
     }
 
-    async fn measure_flux(&mut self, params: &FluxLinkageParams) -> Result<f32, DetectionError> {
+    async fn measure_flux(
+        &mut self,
+        params: &FluxLinkageParams,
+    ) -> Result<MagneticFlux, DetectionError> {
         let params = *params;
         let vbus = self.vbus;
         let params_m = self.params;
@@ -147,8 +152,8 @@ pub async fn detect_server<NS: NetStackHandle>(
             params: motor_params,
         },
         rand::random::<u64>(),
-        max_current_a,
-        foc_freq_hz as f32,
+        amps(max_current_a),
+        hertz(foc_freq_hz as f32),
         Some(&crate::RUNTIME_CONFIG),
     )
     .await;

@@ -12,6 +12,7 @@
 use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::foc::trig::SinCos;
+use oxifoc_core::units::{ElectricalResistance, Frequency, Inductance, MagneticFlux};
 
 // Re-export types from core for convenience
 use oxifoc_core::foc::detection::embassy_hw;
@@ -39,21 +40,21 @@ pub async fn measure_resistance(
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
-) -> Result<f32, DetectionError> {
+) -> Result<ElectricalResistance, DetectionError> {
     embassy_hw::measure_resistance(params, state_mutex, ia, ib, ic, board).await
 }
 
 /// Measure motor inductance using rotating HFI.
 pub async fn measure_inductance<S: SinCos>(
     params: &InductanceParams,
-    pwm_freq_hz: f32,
+    pwm_freq: Frequency,
     state_mutex: &'static CriticalSectionMutex<RefCell<MotorControlState>>,
     ia: &'static AtomicU16,
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
-) -> Result<(f32, f32), DetectionError> {
-    embassy_hw::measure_inductance::<S>(params, pwm_freq_hz, state_mutex, ia, ib, ic, board).await
+) -> Result<(Inductance, Inductance), DetectionError> {
+    embassy_hw::measure_inductance::<S>(params, pwm_freq, state_mutex, ia, ib, ic, board).await
 }
 
 /// Measure motor flux linkage via open-loop spinning.
@@ -64,7 +65,7 @@ pub async fn measure_flux_linkage(
     ib: &'static AtomicU16,
     ic: &'static AtomicU16,
     board: &'static BoardConfig,
-) -> Result<f32, DetectionError> {
+) -> Result<MagneticFlux, DetectionError> {
     embassy_hw::measure_flux_linkage(params, state_mutex, ia, ib, ic, board).await
 }
 
@@ -129,7 +130,9 @@ use crate::config::measured_board;
 use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
 
 /// Measure resistance using platform statics.
-pub async fn measure_resistance_ez(params: &ResistanceParams) -> Result<f32, DetectionError> {
+pub async fn measure_resistance_ez(
+    params: &ResistanceParams,
+) -> Result<ElectricalResistance, DetectionError> {
     measure_resistance(
         params,
         &STATE,
@@ -144,11 +147,11 @@ pub async fn measure_resistance_ez(params: &ResistanceParams) -> Result<f32, Det
 /// Measure inductance using platform statics.
 pub async fn measure_inductance_ez<S: SinCos>(
     params: &InductanceParams,
-    pwm_freq_hz: f32,
-) -> Result<(f32, f32), DetectionError> {
+    pwm_freq: Frequency,
+) -> Result<(Inductance, Inductance), DetectionError> {
     measure_inductance::<S>(
         params,
-        pwm_freq_hz,
+        pwm_freq,
         &STATE,
         &IA_SAMPLE,
         &IB_SAMPLE,
@@ -159,7 +162,9 @@ pub async fn measure_inductance_ez<S: SinCos>(
 }
 
 /// Measure flux linkage using platform statics.
-pub async fn measure_flux_linkage_ez(params: &FluxLinkageParams) -> Result<f32, DetectionError> {
+pub async fn measure_flux_linkage_ez(
+    params: &FluxLinkageParams,
+) -> Result<MagneticFlux, DetectionError> {
     measure_flux_linkage(
         params,
         &STATE,

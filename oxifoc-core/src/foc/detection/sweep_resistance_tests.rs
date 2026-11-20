@@ -1,5 +1,6 @@
 use super::*;
-use crate::units::{amps, volts};
+use crate::foc::sensors::PhaseCurrents;
+use crate::units::{ElectricalResistance, amps, ohms, volts};
 use core::cell::Cell;
 use core::task::{Context, Poll, Waker};
 
@@ -70,8 +71,8 @@ impl DetectionHardware for Hardware {
             ResistanceVoltageSource::ControllerCommand => self.pi_slope * self.current.get(),
         };
         Ok(ResistanceSample {
-            voltage_v,
-            current_a: self.current.get(),
+            voltage: volts(voltage_v),
+            current: amps(self.current.get()),
             source: if self.mix_sources && self.samples == 1000 {
                 ResistanceVoltageSource::ControllerCommand
             } else {
@@ -80,12 +81,9 @@ impl DetectionHardware for Hardware {
         })
     }
 
-    fn read_phase_currents(&self) -> (f32, f32, f32) {
-        (
-            self.current.get(),
-            -self.current.get() / 2.0,
-            -self.current.get() / 2.0,
-        )
+    fn read_phase_currents(&self) -> PhaseCurrents {
+        let i = amps(self.current.get());
+        (i, -i / 2.0, -i / 2.0)
     }
 }
 
@@ -93,9 +91,9 @@ impl DetectionHardware for Hardware {
     clippy::panic_in_result_fn,
     reason = "a pending immediate test backend is a broken fixture"
 )]
-fn run(hw: &mut Hardware) -> Result<f32, DetectionError> {
+fn run(hw: &mut Hardware) -> Result<ElectricalResistance, DetectionError> {
     let params = ResistanceParams {
-        current_max: 3.0,
+        current_max: amps(3.0),
         ..ResistanceParams::default()
     };
     let mut future = core::pin::pin!(measure_resistance::<_, ImmediateTimer>(hw, &params,));
@@ -114,7 +112,10 @@ fn filtered_resistance_cancels_offset_without_using_negative_pi_slope() {
         let mut hw = Hardware::new(ResistanceVoltageSource::FilteredPhaseAdc, -0.12);
         hw.measured_offset = offset;
         let resistance = run(&mut hw).unwrap();
-        assert!((resistance - 0.031).abs() < 0.00001, "R={resistance}");
+        assert!(
+            (resistance - ohms(0.031)).abs() < ohms(0.00001),
+            "R={resistance:?}"
+        );
         assert!(hw.stopped.get());
     }
 }
@@ -129,7 +130,7 @@ fn negative_controller_slope_is_rejected_instead_of_hidden_by_absolute_value() {
 #[test]
 fn positive_controller_model_remains_supported() {
     let mut hw = Hardware::new(ResistanceVoltageSource::ControllerCommand, 0.07);
-    assert!((run(&mut hw).unwrap() - 0.07).abs() < 0.00001);
+    assert!((run(&mut hw).unwrap() - ohms(0.07)).abs() < ohms(0.00001));
     assert!(hw.stopped.get());
 }
 

@@ -40,6 +40,9 @@ use oxifoc_core::runtime::streaming::fast_telemetry_stream;
 use oxifoc_core::runtime::streaming::fault_topic_stream;
 use oxifoc_core::runtime::{DetectionBackend, run_all_servers_with_config};
 use oxifoc_core::timer::EmbassyTimer;
+use oxifoc_core::units::{
+    ElectricPotential, ElectricalResistance, Frequency, Inductance, MagneticFlux, hertz, volts,
+};
 
 use crate::RUNTIME_CONFIG;
 use crate::calibration::{
@@ -346,8 +349,8 @@ pub async fn detect_server(stack: &'static Stack, boot_epoch: u64) {
         stack.endpoints(),
         F405Backend,
         boot_epoch,
-        BOARD.max_phase_current.value,
-        crate::config::CONTROL_TIMING.get().await.frequency_hz(),
+        BOARD.max_phase_current,
+        hertz(crate::config::CONTROL_TIMING.get().await.frequency_hz()),
         Some(&RUNTIME_CONFIG),
     )
     .await;
@@ -360,16 +363,16 @@ struct F405Backend;
 impl DetectionBackend for F405Backend {
     type Timer = EmbassyTimer;
 
-    fn vbus(&self) -> f32 {
-        measured_vbus_mv().unwrap_or(0) as f32 / 1000.0
+    fn vbus(&self) -> ElectricPotential {
+        volts(measured_vbus_mv().unwrap_or(0) as f32 / 1000.0)
     }
 
     #[cfg(feature = "board-vesc6-mk5")]
     async fn prepare_timing(
         &mut self,
         request: &DetectRequest,
-        drive_foc_hz: f32,
-    ) -> Result<f32, DetectError> {
+        drive_foc: Frequency,
+    ) -> Result<Frequency, DetectError> {
         use crate::config::detection_pwm;
         use oxifoc_core::types::{ControlTiming, DetectError, DetectRequest};
 
@@ -378,7 +381,7 @@ impl DetectionBackend for F405Backend {
             DetectRequest::MeasureInductance { .. } => detection_pwm::INDUCTANCE_HZ,
             DetectRequest::MeasureFlux { .. } => detection_pwm::FLUX_HZ,
             DetectRequest::CalibrateHall { .. } => detection_pwm::HALL_HZ,
-            DetectRequest::MeasureCurrentOffsets { .. } => return Ok(drive_foc_hz),
+            DetectRequest::MeasureCurrentOffsets { .. } => return Ok(drive_foc),
         };
         let drive = crate::config::CONTROL_TIMING
             .try_get()
@@ -393,7 +396,7 @@ impl DetectionBackend for F405Backend {
         if !crate::control::foc::retime_for_detection(timing).await {
             return Err(DetectError::Busy);
         }
-        Ok(timing.frequency_hz())
+        Ok(hertz(timing.frequency_hz()))
     }
 
     #[cfg(feature = "board-vesc6-mk5")]
@@ -410,20 +413,20 @@ impl DetectionBackend for F405Backend {
     fn measure_resistance(
         &mut self,
         params: &ResistanceParams,
-    ) -> impl Future<Output = Result<f32, DetectionError>> {
+    ) -> impl Future<Output = Result<ElectricalResistance, DetectionError>> {
         measure_resistance_ez(params)
     }
     fn measure_inductance(
         &mut self,
         params: &InductanceParams,
-        pwm_freq_hz: f32,
-    ) -> impl Future<Output = Result<(f32, f32), DetectionError>> {
-        measure_inductance_ez::<FastSinCos>(params, pwm_freq_hz)
+        pwm_freq: Frequency,
+    ) -> impl Future<Output = Result<(Inductance, Inductance), DetectionError>> {
+        measure_inductance_ez::<FastSinCos>(params, pwm_freq)
     }
     fn measure_flux(
         &mut self,
         params: &FluxLinkageParams,
-    ) -> impl Future<Output = Result<f32, DetectionError>> {
+    ) -> impl Future<Output = Result<MagneticFlux, DetectionError>> {
         measure_flux_linkage_ez(params)
     }
     fn calibrate_hall(

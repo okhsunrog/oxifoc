@@ -23,7 +23,7 @@
 use super::types::{DetectionError, MotorSize};
 use crate::motor::dissipation::heat_current_limit;
 use crate::units::{
-    ConstZero, ElectricCurrent, ElectricPotential, ElectricalResistance, amps, ohms, watts,
+    ConstZero, ElectricCurrent, ElectricPotential, ElectricalResistance, amps, ohms,
 };
 
 /// Minimum valid resistance (below this suggests short circuit)
@@ -168,7 +168,7 @@ pub fn calculate_max_current(
     resistance: ElectricalResistance,
     motor_size: MotorSize,
 ) -> ElectricCurrent {
-    heat_current_limit(watts(motor_size.max_power_loss_w()), resistance)
+    heat_current_limit(motor_size.max_power_loss(), resistance)
 }
 
 /// Validate measured resistance is physically reasonable.

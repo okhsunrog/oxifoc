@@ -22,47 +22,49 @@
 use core::ops::Div;
 
 use super::types::MotorParams;
+#[cfg(feature = "detection")]
 use crate::foc::clamp_f32;
-use crate::units::unit::{ohm, radian_per_second};
+#[cfg(feature = "detection")]
+use crate::units::MagneticFlux;
 use crate::units::{
     AngularVelocity, ElectricCurrent, ElectricPotential, ElectricalResistance, Frequency,
-    Inductance, Time, henries, ohms, rad_per_s,
+    Inductance, Scalar, Sign, Time, henries, rad_per_s,
 };
 
 /// Integral gain of a current PI: volts per ampere-second (`R·ω_bw`).
 pub type CurrentIntegralGain = <ElectricalResistance as Div<Time>>::Output;
 
-/// Default current loop bandwidth in rad/s.
+/// Default current loop bandwidth.
 ///
 /// 1000 rad/s corresponds to ~160 Hz, suitable for most applications.
-pub const DEFAULT_BANDWIDTH_RAD_S: f32 = 1000.0;
+pub const DEFAULT_BANDWIDTH: AngularVelocity = rad_per_s(1000.0);
 
-/// Maximum recommended bandwidth in rad/s.
+/// Maximum recommended bandwidth.
 ///
 /// Higher bandwidths may cause instability due to PWM delays and sampling.
-pub const MAX_BANDWIDTH_RAD_S: f32 = 5000.0;
+pub const MAX_BANDWIDTH: AngularVelocity = rad_per_s(5000.0);
 
 /// Minimum recommended bandwidth in rad/s.
-pub const MIN_BANDWIDTH_RAD_S: f32 = 100.0;
+pub const MIN_BANDWIDTH: AngularVelocity = rad_per_s(100.0);
 
 /// Result of PI tuning calculation.
 #[derive(Clone, Copy, Debug, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PiGains {
     /// Proportional gain for d-axis current controller
-    pub kp_d: f32,
+    pub kp_d: ElectricalResistance,
 
     /// Integral gain for d-axis current controller
-    pub ki_d: f32,
+    pub ki_d: CurrentIntegralGain,
 
     /// Proportional gain for q-axis current controller
-    pub kp_q: f32,
+    pub kp_q: ElectricalResistance,
 
     /// Integral gain for q-axis current controller
-    pub ki_q: f32,
+    pub ki_q: CurrentIntegralGain,
 
-    /// Actual bandwidth achieved (rad/s)
-    pub bandwidth_rad_s: f32,
+    /// Actual bandwidth achieved
+    pub bandwidth: AngularVelocity,
 }
 
 /// Calculate PI gains for current control from motor parameters.
@@ -132,12 +134,9 @@ pub fn calculate_current_gains_limited(
     let max_bandwidth_from_kp: AngularVelocity = (max_kp / inductance).into();
 
     // Use the more limiting bandwidth
-    let actual_bandwidth = target_bandwidth.min(max_bandwidth_from_kp);
-    let actual_bandwidth = rad_per_s(clamp_f32(
-        actual_bandwidth.get::<radian_per_second>(),
-        MIN_BANDWIDTH_RAD_S,
-        MAX_BANDWIDTH_RAD_S,
-    ));
+    let actual_bandwidth = target_bandwidth
+        .min(max_bandwidth_from_kp)
+        .clamp_to(MIN_BANDWIDTH, MAX_BANDWIDTH);
 
     let (kp, ki) = calculate_current_gains(resistance, inductance, actual_bandwidth);
     (kp, ki, actual_bandwidth)
@@ -150,43 +149,37 @@ pub fn calculate_current_gains_limited(
 ///
 /// # Arguments
 /// * `params` - Measured motor parameters
-/// * `bandwidth_rad_s` - Desired control bandwidth in rad/s
+/// * `bandwidth` - Desired control bandwidth
 ///
 /// # Returns
 /// Complete PI gains for both axes, or None if parameters are invalid
-pub fn calculate_foc_gains(params: &MotorParams, bandwidth_rad_s: f32) -> Option<PiGains> {
-    if params.resistance_ohm <= 0.0 {
+pub fn calculate_foc_gains(params: &MotorParams, bandwidth: AngularVelocity) -> Option<PiGains> {
+    if !params.resistance.is_positive() {
         return None;
     }
-
-    let ld = if params.inductance_d_h > 0.0 {
-        params.inductance_d_h
-    } else if params.inductance_avg_h > 0.0 {
-        params.inductance_avg_h
-    } else {
-        return None;
+    // A measured axis wins; a missing one falls back to the average.
+    let axis = |measured: Inductance| {
+        if measured.is_positive() {
+            Some(measured)
+        } else if params.inductance_avg.is_positive() {
+            Some(params.inductance_avg)
+        } else {
+            None
+        }
     };
+    let ld = axis(params.inductance_d)?;
+    let lq = axis(params.inductance_q)?;
 
-    let lq = if params.inductance_q_h > 0.0 {
-        params.inductance_q_h
-    } else if params.inductance_avg_h > 0.0 {
-        params.inductance_avg_h
-    } else {
-        return None;
-    };
-
-    let bandwidth = clamp_f32(bandwidth_rad_s, MIN_BANDWIDTH_RAD_S, MAX_BANDWIDTH_RAD_S);
-    let r = ohms(params.resistance_ohm);
-
-    let (kp_d, ki_d) = calculate_current_gains(r, henries(ld), rad_per_s(bandwidth));
-    let (kp_q, ki_q) = calculate_current_gains(r, henries(lq), rad_per_s(bandwidth));
+    let bandwidth = bandwidth.clamp_to(MIN_BANDWIDTH, MAX_BANDWIDTH);
+    let (kp_d, ki_d) = calculate_current_gains(params.resistance, ld, bandwidth);
+    let (kp_q, ki_q) = calculate_current_gains(params.resistance, lq, bandwidth);
 
     Some(PiGains {
-        kp_d: kp_d.get::<ohm>(),
-        ki_d: ki_d.value,
-        kp_q: kp_q.get::<ohm>(),
-        ki_q: ki_q.value,
-        bandwidth_rad_s: bandwidth,
+        kp_d,
+        ki_d,
+        kp_q,
+        ki_q,
+        bandwidth,
     })
 }
 
@@ -222,11 +215,7 @@ pub fn estimate_bandwidth(inductance: Inductance, pwm_freq: Frequency) -> Angula
         3000.0
     };
 
-    rad_per_s(clamp_f32(
-        suggested.min(max_from_pwm),
-        MIN_BANDWIDTH_RAD_S,
-        MAX_BANDWIDTH_RAD_S,
-    ))
+    rad_per_s(suggested.min(max_from_pwm)).clamp_to(MIN_BANDWIDTH, MAX_BANDWIDTH)
 }
 
 /// Calculate observer gain from motor parameters.
@@ -237,36 +226,37 @@ pub fn estimate_bandwidth(inductance: Inductance, pwm_freq: Frequency) -> Angula
 /// source of truth, and clamps the result to a sane range.
 ///
 /// # Arguments
-/// * `flux_linkage_wb` - Motor flux linkage in Weber
+/// * `flux_linkage` - Motor flux linkage
 ///
 /// # Returns
 /// Observer gain, or None if flux linkage is invalid
 #[cfg(feature = "detection")]
-pub fn calculate_observer_gain(flux_linkage_wb: f32) -> Option<f32> {
-    if flux_linkage_wb <= 0.0 {
+pub fn calculate_observer_gain(flux_linkage: MagneticFlux) -> Option<f32> {
+    if !flux_linkage.is_positive() {
         return None;
     }
 
-    let gain = super::flux_linkage::calculate_observer_gain(flux_linkage_wb);
+    let gain = super::flux_linkage::calculate_observer_gain(flux_linkage);
     Some(clamp_f32(gain, 1e3, 1e9))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::units::{amps, hertz, volts};
+    #[cfg(feature = "detection")]
+    use crate::units::webers;
+    use crate::units::{amps, hertz, ohms, volts};
 
     #[test]
     fn test_calculate_current_gains() {
         // R = 0.1Ω, L = 100µH, ω = 1000 rad/s
         let (kp, ki) = calculate_current_gains(ohms(0.1), henries(0.0001), rad_per_s(1000.0));
-        let (kp, ki) = (kp.value, ki.value);
 
         // Kp = L × ω = 0.0001 × 1000 = 0.1
-        assert!((kp - 0.1).abs() < 1e-6);
+        assert!((kp - ohms(0.1)).abs() < ohms(1e-6));
 
         // Ki = R × ω = 0.1 × 1000 = 100
-        assert!((ki - 100.0).abs() < 1e-6);
+        assert!((ki.value - 100.0).abs() < 1e-6);
     }
 
     #[test]
@@ -280,37 +270,36 @@ mod tests {
             volts(24.0),
             amps(50.0),
         );
-        let (kp, ki, actual_bw) = (kp.value, ki.value, actual_bw.value);
 
         // Max Kp = 24/50 = 0.48
         // Max ω from Kp = 0.48/0.0001 = 4800 rad/s
         // Should use limited bandwidth
-        assert!(actual_bw <= 5000.0);
-        assert!(kp <= 0.5);
-        assert!(ki > 0.0);
+        assert!(actual_bw <= rad_per_s(5000.0));
+        assert!(kp <= ohms(0.5));
+        assert!(ki.is_positive());
     }
 
     #[test]
     fn test_calculate_foc_gains() {
         let params = MotorParams {
-            resistance_ohm: 0.1,
-            inductance_d_h: 0.0001,
-            inductance_q_h: 0.00012,
-            inductance_avg_h: 0.00011,
+            resistance: ohms(0.1),
+            inductance_d: henries(0.0001),
+            inductance_q: henries(0.00012),
+            inductance_avg: henries(0.00011),
             ..Default::default()
         };
 
-        let gains = calculate_foc_gains(&params, 1000.0).unwrap();
+        let gains = calculate_foc_gains(&params, rad_per_s(1000.0)).unwrap();
 
         // d-axis: Kp = 0.0001 × 1000 = 0.1
-        assert!((gains.kp_d - 0.1).abs() < 1e-6);
+        assert!((gains.kp_d - ohms(0.1)).abs() < ohms(1e-6));
 
         // q-axis: Kp = 0.00012 × 1000 = 0.12
-        assert!((gains.kp_q - 0.12).abs() < 1e-6);
+        assert!((gains.kp_q - ohms(0.12)).abs() < ohms(1e-6));
 
         // Both axes same Ki = 0.1 × 1000 = 100
-        assert!((gains.ki_d - 100.0).abs() < 1e-6);
-        assert!((gains.ki_q - 100.0).abs() < 1e-6);
+        assert!((gains.ki_d.value - 100.0).abs() < 1e-6);
+        assert!((gains.ki_q.value - 100.0).abs() < 1e-6);
     }
 
     #[test]
@@ -318,18 +307,18 @@ mod tests {
         let params = MotorParams::default();
 
         // Should return None for invalid parameters
-        assert!(calculate_foc_gains(&params, 1000.0).is_none());
+        assert!(calculate_foc_gains(&params, rad_per_s(1000.0)).is_none());
     }
 
     #[test]
     fn test_estimate_bandwidth() {
         // Low inductance motor
-        let bw = estimate_bandwidth(henries(50e-6), hertz(20000.0)).value;
-        assert!((MIN_BANDWIDTH_RAD_S..=MAX_BANDWIDTH_RAD_S).contains(&bw));
+        let bw = estimate_bandwidth(henries(50e-6), hertz(20000.0));
+        assert!((MIN_BANDWIDTH..=MAX_BANDWIDTH).contains(&bw));
 
         // Should not exceed PWM limit
-        let bw_limited = estimate_bandwidth(henries(10e-6), hertz(5000.0)).value;
-        let pwm_limit = 5000.0 * core::f32::consts::TAU / 10.0;
+        let bw_limited = estimate_bandwidth(henries(10e-6), hertz(5000.0));
+        let pwm_limit = rad_per_s(5000.0 * core::f32::consts::TAU / 10.0);
         assert!(bw_limited <= pwm_limit);
     }
 
@@ -339,23 +328,23 @@ mod tests {
         // Must match the VESC detection-wizard formula gain = 0.5e3/λ²
         // (conf_general.c:1181) — the same one flux_linkage.rs implements.
         // λ = 10mWb => 0.5e3 / (0.01)² = 5e6
-        let gain = calculate_observer_gain(0.01).unwrap();
+        let gain = calculate_observer_gain(webers(0.01)).unwrap();
         assert!((gain - 5e6).abs() < 1e3);
 
         // λ = 5mWb (typical hobby motor) => 0.5e3 / (0.005)² = 2e7
-        let gain2 = calculate_observer_gain(0.005).unwrap();
+        let gain2 = calculate_observer_gain(webers(0.005)).unwrap();
         assert!((gain2 - 2e7).abs() < 1e4);
 
         // Both call sites must agree (one source of truth)
-        let from_flux = super::super::flux_linkage::calculate_observer_gain(0.005);
+        let from_flux = super::super::flux_linkage::calculate_observer_gain(webers(0.005));
         assert!((gain2 - from_flux).abs() < 1.0);
 
         // Huge flux linkage clamps to the minimum
-        let gain3 = calculate_observer_gain(1.0).unwrap();
+        let gain3 = calculate_observer_gain(webers(1.0)).unwrap();
         assert!((gain3 - 1e3).abs() < 1.0);
 
         // Invalid flux linkage
-        assert!(calculate_observer_gain(0.0).is_none());
-        assert!(calculate_observer_gain(-1.0).is_none());
+        assert!(calculate_observer_gain(webers(0.0)).is_none());
+        assert!(calculate_observer_gain(webers(-1.0)).is_none());
     }
 }
