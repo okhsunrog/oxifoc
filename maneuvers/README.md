@@ -102,9 +102,8 @@ Caveats:
   rotor can reorient even though commanded electrical velocity is zero.
   The 3 A profile additionally pauses each up-ramp at signed 0.6 A for 1.8 s
   to allow reorientation before increasing the current.
-  The MK5 bench setup uses 24 V, PSU limit 5.5 A, stored current limit 3 A
-  and independent phase-current protection 6 A. Inspect the 1.5 A run before
-  proceeding to 3 A; do not bypass a protection fault or incomplete capture.
+  Inspect the 1.5 A run before proceeding to 3 A; do not bypass a protection
+  fault or incomplete capture.
 
 Choose analysis by the measurement question. For stationary resistance, first
 inspect settling, zero-current offsets, signed V/I plateaus and repeat drift.
