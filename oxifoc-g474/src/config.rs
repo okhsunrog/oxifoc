@@ -47,8 +47,8 @@ pub const BOARD: BoardConfig = BoardConfig {
     max_phase_current: amps(10.0), // Conservative limit (hw OCP trips at ~30 A)
     max_vbus_mv: 45_000,           // Max 45V (board rated 10-48V, leave margin)
     min_vbus_mv: 8_000,            // Undervoltage at 8V
-    max_fet_temp_c: 85.0,          // Conservative overtemp threshold
-    max_motor_temp_c: 0.0,         // no motor NTC wired
+    max_fet_temp_c: Some(85.0),    // Conservative overtemp threshold
+    max_motor_temp_c: None,        // no motor NTC wired
     phase_sense: None,             // X-NUCLEO-IHM08M1: no phase-voltage sensing wired
 };
 

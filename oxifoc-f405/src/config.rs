@@ -80,8 +80,8 @@ pub const BOARD: BoardConfig = BoardConfig {
     max_phase_current: amps(60.0), // Peak phase current limit (FET rating)
     max_vbus_mv: 57_000,           // Overvoltage at 57V (VESC HW_LIM_VIN)
     min_vbus_mv: 6_000,            // Undervoltage at 6V (VESC HW_LIM_VIN)
-    max_fet_temp_c: 100.0,         // FET overtemp at 100°C
-    max_motor_temp_c: MAX_MOTOR_TEMP_C,
+    max_fet_temp_c: Some(100.0),   // FET overtemp at 100°C
+    max_motor_temp_c: Some(MAX_MOTOR_TEMP_C),
     // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus divider
     // (39k/2.2k). No RC phase filters on this board → usable only undriven
     // (back-EMF / coasting-rotation detection), not while PWMing.
@@ -117,8 +117,8 @@ pub const BOARD: BoardConfig = BoardConfig {
     max_phase_current: amps(70.0), // Flipsky continuous rating (200A "instantaneous" ignored)
     max_vbus_mv: 57_000,           // Overvoltage at 57V (VESC HW_LIM_VIN; vendor abs max 60V)
     min_vbus_mv: 6_000,            // UV fault floor (VESC HW_LIM_VIN; operating min is 14V)
-    max_fet_temp_c: 100.0,         // Conservative (original hw60 cutoff: 110°C)
-    max_motor_temp_c: MAX_MOTOR_TEMP_C,
+    max_fet_temp_c: Some(100.0),   // Conservative (original hw60 cutoff: 110°C)
+    max_motor_temp_c: Some(MAX_MOTOR_TEMP_C),
     // Phase-voltage sensing on PA0/PA1/PA2 (SENS1/2/3), divider = Vbus
     // divider. MK5 has switchable RC phase filters (enabled via PC13 at
     // boot) → usable while PWMing, unlike CF2.

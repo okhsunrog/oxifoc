@@ -554,8 +554,8 @@ mod tests {
             max_phase_current: amps(6.0),
             max_vbus_mv: 57_000,
             min_vbus_mv: 6_000,
-            max_fet_temp_c: 100.0,
-            max_motor_temp_c: 120.0,
+            max_fet_temp_c: Some(100.0),
+            max_motor_temp_c: Some(120.0),
             phase_sense: Some(PhaseSense {
                 divider_ratio: 1.0,
                 has_filters: filtered,

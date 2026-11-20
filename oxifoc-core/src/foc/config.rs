@@ -33,8 +33,8 @@ use crate::foc::sensors::PhaseCurrents;
 ///     max_phase_current: amps(40.0), // Peak phase current limit
 ///     max_vbus_mv: 60_000,         // Overvoltage at 60V
 ///     min_vbus_mv: 8_000,          // Undervoltage at 8V
-///     max_fet_temp_c: 100.0,       // FET overtemp at 100°C
-///     max_motor_temp_c: 0.0,       // 0 = no motor NTC wired
+///     max_fet_temp_c: Some(100.0), // FET overtemp at 100°C
+///     max_motor_temp_c: None,      // no motor NTC wired
 ///     phase_sense: None,           // no phase-voltage sensing
 /// };
 /// ```
@@ -89,11 +89,12 @@ pub struct BoardConfig {
     pub max_vbus_mv: u32,
     /// Minimum DC bus voltage in millivolts (undervoltage threshold)
     pub min_vbus_mv: u32,
-    /// Maximum FET temperature in Celsius (overtemperature threshold)
-    pub max_fet_temp_c: f32,
-    /// Maximum motor temperature in Celsius (overtemperature threshold).
-    /// 0.0 disables the check (board has no motor NTC wired).
-    pub max_motor_temp_c: f32,
+    /// Maximum FET temperature in Celsius (overtemperature threshold);
+    /// `None` = no FET sensor.
+    pub max_fet_temp_c: Option<f32>,
+    /// Maximum motor temperature in Celsius (overtemperature threshold);
+    /// `None` = no motor NTC wired.
+    pub max_motor_temp_c: Option<f32>,
 
     /// Phase-voltage sensing capability. `None` on boards that don't route
     /// phase terminals to the ADC (the observer then always uses commanded
@@ -296,8 +297,8 @@ mod tests {
         max_phase_current: amps(40.0),
         max_vbus_mv: 60_000,
         min_vbus_mv: 8_000,
-        max_fet_temp_c: 100.0,
-        max_motor_temp_c: 120.0,
+        max_fet_temp_c: Some(100.0),
+        max_motor_temp_c: Some(120.0),
         phase_sense: None,
     };
 

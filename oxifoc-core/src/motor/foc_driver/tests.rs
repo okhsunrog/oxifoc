@@ -588,8 +588,8 @@ fn raw_phase_protection_survives_zero_sequence_rejection() {
         max_phase_current: amps(6.0),
         max_vbus_mv: 60_000,
         min_vbus_mv: 8_000,
-        max_fet_temp_c: 100.0,
-        max_motor_temp_c: 0.0,
+        max_fet_temp_c: Some(100.0),
+        max_motor_temp_c: None,
         phase_sense: None,
     });
     // Pure common mode projects to zero, but each raw phase exceeds ABS.
@@ -653,8 +653,8 @@ fn coast_observer_tracks_measured_bemf() {
         max_phase_current: amps(60.0),
         max_vbus_mv: 57_000,
         min_vbus_mv: 6_000,
-        max_fet_temp_c: 100.0,
-        max_motor_temp_c: 120.0,
+        max_fet_temp_c: Some(100.0),
+        max_motor_temp_c: Some(120.0),
         phase_sense: None,
     };
     const SENSE_BOARD: BoardConfig = BoardConfig {
@@ -3780,8 +3780,8 @@ mod severity_gate {
         max_phase_current: amps(40.0),
         max_vbus_mv: 60_000,
         min_vbus_mv: 8_000,
-        max_fet_temp_c: 100.0,
-        max_motor_temp_c: 120.0,
+        max_fet_temp_c: Some(100.0),
+        max_motor_temp_c: Some(120.0),
         phase_sense: None,
     });
 

@@ -105,8 +105,8 @@ pub fn board(max_current_a: f32) -> BoardConfig {
         max_phase_current: amps(max_current_a),
         max_vbus_mv: 60_000,
         min_vbus_mv: 8_000,
-        max_fet_temp_c: 100.0,
-        max_motor_temp_c: 0.0,
+        max_fet_temp_c: Some(100.0),
+        max_motor_temp_c: None,
         phase_sense: None,
     }
 }

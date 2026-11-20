@@ -13,8 +13,8 @@ fn board() -> BoardConfig {
         max_phase_current: amps(70.0),
         min_vbus_mv: 6_000,
         max_vbus_mv: 57_000,
-        max_fet_temp_c: 100.0,
-        max_motor_temp_c: 120.0,
+        max_fet_temp_c: Some(100.0),
+        max_motor_temp_c: Some(120.0),
         phase_sense: None,
     }
 }

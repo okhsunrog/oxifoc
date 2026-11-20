@@ -124,9 +124,10 @@ pub struct Decoupling {
     pub lq: Inductance,
     /// Permanent-magnet flux linkage (Wb) — the back-EMF feedforward term
     pub flux_linkage: MagneticFlux,
-    /// Phase resistance (Ω). Not a decoupling term: it rides along for the
-    /// driver's dissipative-braking power balance (`motor::dissipation`);
-    /// `0` = unknown, which disables that.
+    /// Phase resistance (Ω), positive. Not a decoupling term: it rides along
+    /// for the driver's dissipative-braking power balance
+    /// (`motor::dissipation`). Every source (the stored motor parameters)
+    /// has a measured value.
     pub resistance: ElectricalResistance,
 }
 
@@ -141,7 +142,7 @@ impl Decoupling {
             && self.ld.is_positive()
             && self.lq.is_positive()
             && self.flux_linkage.is_non_negative()
-            && self.resistance.is_non_negative()
+            && self.resistance.is_positive()
     }
 
     /// Electrical coefficients decoded from stored motor params, at boot and

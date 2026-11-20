@@ -70,6 +70,10 @@ pub(super) struct TorqueConstraints {
 pub struct PreparedBoardConfig {
     board: BoardConfig,
     voltage: PreparedVoltageLimits,
+    /// The board temperature limits as the protection update tests them:
+    /// a limit at or below zero (or NaN) is off.
+    fet_temp_limit_c: f32,
+    motor_temp_limit_c: f32,
 }
 
 /// Voltage thresholds and excursion constants are replaced as one value.
@@ -174,8 +178,16 @@ impl PreparedVoltageLimits {
 #[cfg(feature = "runtime")]
 impl PreparedBoardConfig {
     pub const fn new(board: BoardConfig) -> Self {
+        const fn limit(threshold: Option<f32>) -> f32 {
+            match threshold {
+                Some(threshold) => threshold,
+                None => 0.0,
+            }
+        }
         Self {
             voltage: PreparedVoltageLimits::from_bounds(board.min_vbus_mv, board.max_vbus_mv),
+            fet_temp_limit_c: limit(board.max_fet_temp_c),
+            motor_temp_limit_c: limit(board.max_motor_temp_c),
             board,
         }
     }
@@ -309,7 +321,6 @@ impl ProtectionMonitor {
         prepared: &PreparedBoardConfig,
         sample: ProtectionSample,
     ) {
-        let board = prepared.board();
         // --- Voltage excursion integrals (every cycle) ---
         // Leaky-bucket trip: integrate the excursion, fire past `trip`,
         // bleed it off in-range with τ≈5 ms. The integral is capped at a few
@@ -363,13 +374,12 @@ impl ProtectionMonitor {
             }
         }
 
-        // --- Temperatures (board thresholds; <= 0 = sensor not wired) ---
+        // --- Temperatures (board thresholds; a limit <= 0 = no sensor) ---
         let fet_c = sample.fet_temp_c_x10.map(temperature_c);
         let motor_c = sample.motor_temp_c_x10.map(temperature_c);
-        let fet_over =
-            fet_c.is_some_and(|t| board.max_fet_temp_c > 0.0 && t > board.max_fet_temp_c);
-        let motor_over =
-            motor_c.is_some_and(|t| board.max_motor_temp_c > 0.0 && t > board.max_motor_temp_c);
+        let (fet_limit, motor_limit) = (prepared.fet_temp_limit_c, prepared.motor_temp_limit_c);
+        let fet_over = fet_c.is_some_and(|t| fet_limit > 0.0 && t > fet_limit);
+        let motor_over = motor_c.is_some_and(|t| motor_limit > 0.0 && t > motor_limit);
         if (fet_over || motor_over)
             && !registry.has_category(FaultCategory::OverTemp)
             && let Some(f) = F::from_category(FaultCategory::OverTemp)
@@ -1044,8 +1054,8 @@ mod tests {
             max_phase_current: amps(40.0),
             max_vbus_mv,
             min_vbus_mv,
-            max_fet_temp_c: 100.0,
-            max_motor_temp_c: 120.0,
+            max_fet_temp_c: Some(100.0),
+            max_motor_temp_c: Some(120.0),
             phase_sense: None,
         }
     }
@@ -1266,7 +1276,11 @@ mod tests {
             Some(1201),
             Some(NtcConfig::INVALID_TEMP_C_X10),
         ];
-        for (fet_limit, motor_limit) in [(100.0, 120.0), (0.0, -1.0), (f32::NAN, f32::INFINITY)] {
+        for (fet_limit, motor_limit) in [
+            (Some(100.0), Some(120.0)),
+            (None, Some(-1.0)),
+            (Some(f32::NAN), Some(f32::INFINITY)),
+        ] {
             let mut source = board(60_000, 8_000);
             source.max_fet_temp_c = fet_limit;
             source.max_motor_temp_c = motor_limit;
@@ -1301,8 +1315,10 @@ mod tests {
                     }
                     let fet_c = fet.map(|t| f32::from(t) / 10.0);
                     let motor_c = motor.map(|t| f32::from(t) / 10.0);
-                    let expected_hot = fet_c.is_some_and(|t| fet_limit > 0.0 && t > fet_limit)
-                        || motor_c.is_some_and(|t| motor_limit > 0.0 && t > motor_limit);
+                    // An unset limit, and one at or below zero or NaN, never trips.
+                    let over = |t: f32, limit: Option<f32>| limit.is_some_and(|l| l > 0.0 && t > l);
+                    let expected_hot = fet_c.is_some_and(|t| over(t, fet_limit))
+                        || motor_c.is_some_and(|t| over(t, motor_limit));
                     assert_eq!(registry.has_category(FaultCategory::OverTemp), expected_hot);
                     assert_eq!(
                         monitor.scales,
