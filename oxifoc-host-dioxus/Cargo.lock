@@ -5382,7 +5382,6 @@ dependencies = [
 name = "oxifoc-core"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.2",
  "bytemuck",
  "critical-section",
  "embassy-futures 0.1.2 (git+https://github.com/embassy-rs/embassy.git?rev=72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8)",

@@ -61,9 +61,6 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "block-device-driver"
@@ -823,7 +820,6 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "oxifoc-core"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.2",
  "critical-section",
  "defmt",
  "dsp-fixedpoint",

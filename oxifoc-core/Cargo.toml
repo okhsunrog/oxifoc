@@ -50,7 +50,6 @@ embedded-io-async = { version = "0.7", optional = true }
 # Lock-free queue for ISR → async telemetry transfer (runtime feature)
 bbqueue = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
-bitflags = { version = "2", default-features = false, features = ["serde"] }
 embedded-storage-async = { version = "0.4", optional = true }
 cortex-m = { version = "0.7.10", optional = true }
 dsp-fixedpoint = { version = "0.2.2", default-features = false, optional = true }
