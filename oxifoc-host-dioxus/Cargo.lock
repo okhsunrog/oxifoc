@@ -8241,7 +8241,7 @@ checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
 
 [[package]]
 name = "uom-ng"
-version = "0.39.0"
+version = "0.40.0"
 dependencies = [
  "num-bigint",
  "num-complex",

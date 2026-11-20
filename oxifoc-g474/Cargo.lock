@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "uom-ng"
-version = "0.39.0"
+version = "0.40.0"
 dependencies = [
  "defmt 1.2.0",
  "num-bigint",

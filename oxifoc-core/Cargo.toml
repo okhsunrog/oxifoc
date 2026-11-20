@@ -28,7 +28,7 @@ sequential-storage = { version = "8.0", default-features = false, features = ["p
 
 # Typed physical quantities (SI, f32 storage). no_std: no libm, `sqrt` comes
 # from `fast_math` through `Quantity::sqrt_with`. The library name stays `uom`.
-uom = { package = "uom-ng", version = "0.39", default-features = false, features = ["f32", "si", "serde", "postcard-schema"] }
+uom = { package = "uom-ng", version = "0.40", default-features = false, features = ["f32", "si", "serde", "postcard-schema"] }
 
 # Serialization (always required for shared types)
 serde = { version = "1.0", default-features = false, features = ["derive"] }

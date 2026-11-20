@@ -1,5 +1,6 @@
-# TEMPORARY: local uom-ng with the oxifoc fixes (compile-time `recip` in `get`,
-# `sqrt_with`, `postcard-schema`). Remove this file after publishing
-# uom-ng 0.39.1 and bumping the dependency in oxifoc-core/Cargo.toml.
+# TEMPORARY: local uom-ng 0.40.0 (electrical angle kinds, compile-time
+# `recip` in `get`, `sqrt_with`, `postcard-schema`, `defmt`). Remove this
+# file after publishing uom-ng 0.40.0, then run `cargo update -p uom-ng` in
+# the workspace and in each crate with its own Cargo.lock.
 [patch.crates-io]
 uom-ng = { path = "/home/okhsunrog/tmp_zfs/uom-ng-work" }
