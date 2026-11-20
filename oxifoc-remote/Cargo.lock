@@ -2561,6 +2561,8 @@ dependencies = [
 [[package]]
 name = "uom-ng"
 version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30b05cba93a88b811d7be82405aa7c6b340eb765095594b10dae2211ff07a5f1"
 dependencies = [
  "defmt 1.2.0",
  "num-bigint",
