@@ -30,7 +30,6 @@ bench = false
 # CF2 and diagnostic transports require an explicit feature selection.
 default = [
     "transport-spi", "board-vesc6-mk5", "ccm-telemetry",
-    "pi-bounds-ahead", "lean-angle", "observer-turn",
 ]
 # Exactly one board feature must be enabled (compile_error in main.rs).
 # Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
@@ -75,13 +74,8 @@ bench-ntc-check = []
 # Finite ADC-owned records of the first and longest over-budget cycles.
 bench-cycle-outliers = ["isr-profiling"]
 bench-dissipative-inline = ["oxifoc-core/bench-dissipative-inline"]
-iq-authority = ["oxifoc-core/iq-authority"]
-service-slots = ["oxifoc-core/service-slots"]
 bench-hall-single-turn = ["oxifoc-core/bench-hall-single-turn"]
 bench-hall-bit-step = ["bench-hall-single-turn", "oxifoc-core/bench-hall-bit-step"]
-pi-bounds-ahead = ["service-slots", "iq-authority", "oxifoc-core/pi-bounds-ahead"]
-lean-angle = ["oxifoc-core/lean-angle"]
-observer-turn = ["oxifoc-core/observer-turn"]
 # Work classes indexed by PI/command/deadman/derating plus authority-ahead,
 # Hall seam, observer-error wrap and general angle wrap.
 bench-work-class-wraps = ["bench-foc-work"]

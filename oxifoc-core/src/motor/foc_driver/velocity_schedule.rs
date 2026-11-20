@@ -6,10 +6,8 @@
 use crate::foc::fast_math::u64_to_f32;
 use crate::foc::phase::MotionReferenceEpoch;
 use crate::foc::velocity::VelocityBlockage;
-#[cfg(feature = "service-slots")]
 use crate::units::Fraction;
 use crate::units::{ConstZero, ElectricCurrent, Time, seconds};
-#[cfg(feature = "pi-bounds-ahead")]
 use crate::units::{ElectricalAngularVelocity, Sign};
 
 const PERIOD_US: u64 = 1_000;
@@ -18,14 +16,12 @@ const PERIOD_US: u64 = 1_000;
 // handling remains separate.
 const MAX_GAP_US: u64 = PERIOD_US * 4;
 
-#[cfg(feature = "service-slots")]
 pub(super) struct ServiceSlots {
     pub slot: u8,
     frame: u8,
     length: u8,
 }
 
-#[cfg(feature = "service-slots")]
 impl ServiceSlots {
     pub fn new(dt: Time) -> Self {
         let length = (((seconds(0.001) / dt).fraction() + 0.5) as u8).max(2);
@@ -63,19 +59,16 @@ impl ServiceSlots {
         }
     }
 
-    #[cfg(feature = "pi-bounds-ahead")]
     pub fn length(&self) -> u8 {
         self.length
     }
 }
 
 /// Two native cycles at 15 kHz plus entry jitter. Older bounds are recomputed.
-#[cfg(feature = "pi-bounds-ahead")]
 const MAX_AUTHORITY_AGE_US: u64 = 250;
 
 /// Anti-windup bounds sampled one slot before the outer update. The actual
 /// current grant remains fresh in every native cycle.
-#[cfg(feature = "pi-bounds-ahead")]
 #[derive(Clone, Copy)]
 struct PreparedAuthority {
     iq_min: ElectricCurrent,
@@ -87,7 +80,6 @@ struct PreparedAuthority {
     prepared_us: u64,
 }
 
-#[cfg(feature = "pi-bounds-ahead")]
 fn direction(omega: ElectricalAngularVelocity) -> i8 {
     i8::from(omega.is_positive()) - i8::from(omega.is_negative())
 }
@@ -95,7 +87,6 @@ fn direction(omega: ElectricalAngularVelocity) -> i8 {
 pub(super) enum VelocityTick {
     Hold,
     /// Compute the authority bounds for the following outer update.
-    #[cfg(feature = "pi-bounds-ahead")]
     Prepare,
     Update {
         dt: Time,
@@ -125,7 +116,6 @@ impl OuterClock {
     /// update or reanchor, surviving invalidation like the microsecond grid.
     /// A regular frame reaches it only in the scheduled slot, so it selects
     /// another slot only after missed native cycles.
-    #[cfg(feature = "service-slots")]
     fn overdue(&self, now_us: u64) -> bool {
         now_us.wrapping_sub(self.deadline) < 1 << 63
     }
@@ -135,7 +125,7 @@ impl OuterClock {
         self.advance_with_defer(now_us, false)
     }
 
-    #[cfg(any(test, not(feature = "service-slots")))]
+    #[cfg(test)]
     fn advance_with_defer(&mut self, now_us: u64, defer: bool) -> (u32, VelocityTick) {
         let Some(previous) = self.previous.replace(now_us) else {
             if defer {
@@ -245,15 +235,13 @@ pub(super) struct VelocitySchedule {
     epoch: Option<MotionReferenceEpoch>,
     requested_iq: ElectricCurrent,
     defer_requested: bool,
-    #[cfg(feature = "pi-bounds-ahead")]
     authority: Option<PreparedAuthority>,
     /// The prepare slot carried fresh drive activity; both stages move by one cycle.
-    #[cfg(feature = "pi-bounds-ahead")]
     prepare_skipped: bool,
 }
 
 impl VelocitySchedule {
-    #[cfg(all(feature = "service-slots", any(test, not(feature = "pi-bounds-ahead"))))]
+    #[cfg(test)]
     pub fn begin_slotted_cycle(&mut self, now_us: u64, due: bool) -> VelocityTick {
         let elapsed = self
             .clock
@@ -287,7 +275,6 @@ impl VelocitySchedule {
     /// Slot frame with the authority bounds one native cycle ahead of the PI.
     /// Fresh drive activity never shares a cycle with either stage, and the
     /// update is never later than slot 1.
-    #[cfg(feature = "pi-bounds-ahead")]
     pub fn begin_pipelined_cycle(&mut self, now_us: u64, slot: u8, length: u8) -> VelocityTick {
         let elapsed = self
             .clock
@@ -335,7 +322,6 @@ impl VelocitySchedule {
         VelocityTick::Update { dt }
     }
 
-    #[cfg(feature = "pi-bounds-ahead")]
     pub fn store_authority(
         &mut self,
         iq_min: ElectricCurrent,
@@ -355,7 +341,6 @@ impl VelocitySchedule {
 
     /// Bounds are single-use. A changed speed direction or bus-modulation
     /// class moves them discontinuously, so those bounds are recomputed.
-    #[cfg(feature = "pi-bounds-ahead")]
     pub fn take_authority(
         &mut self,
         omega: ElectricalAngularVelocity,
@@ -369,7 +354,6 @@ impl VelocitySchedule {
             .then_some((prepared.iq_min, prepared.iq_max))
     }
 
-    #[cfg(feature = "pi-bounds-ahead")]
     pub fn drop_authority(&mut self) {
         self.authority = None;
     }
@@ -377,10 +361,7 @@ impl VelocitySchedule {
     pub fn invalidate(&mut self) {
         self.epoch = None;
         self.requested_iq = ElectricCurrent::ZERO;
-        #[cfg(feature = "pi-bounds-ahead")]
-        {
-            self.authority = None;
-        }
+        self.authority = None;
         self.feedback = ActuatorFeedback::default();
         // Do not move a live deadline: command/config floods cannot turn the
         // bounded outer controller back into a native-rate PI.
@@ -396,7 +377,7 @@ impl VelocitySchedule {
         self.epoch == Some(epoch)
     }
 
-    #[cfg(any(test, not(feature = "service-slots")))]
+    #[cfg(test)]
     pub fn begin_cycle(&mut self, now_us: u64) -> VelocityTick {
         let (elapsed, tick) = self.clock.advance_with_defer(now_us, self.defer_requested);
         if matches!(tick, VelocityTick::Reanchor) {
@@ -409,10 +390,7 @@ impl VelocitySchedule {
 
     pub fn clear_request(&mut self) {
         self.requested_iq = ElectricCurrent::ZERO;
-        #[cfg(feature = "pi-bounds-ahead")]
-        {
-            self.authority = None;
-        }
+        self.authority = None;
     }
 
     pub fn defer_for_cycle(&mut self, requested: bool) {
@@ -450,7 +428,7 @@ impl VelocitySchedule {
 #[path = "velocity_schedule_tests.rs"]
 mod tests;
 
-#[cfg(all(test, feature = "service-slots"))]
+#[cfg(test)]
 mod slot_tests {
     use super::*;
 
@@ -482,7 +460,7 @@ mod slot_tests {
     }
 }
 
-#[cfg(all(test, feature = "pi-bounds-ahead"))]
+#[cfg(test)]
 mod pipeline_tests {
     use super::*;
     use crate::units::{amps, erad_per_s};

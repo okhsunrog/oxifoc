@@ -6599,7 +6599,7 @@ fn model_replacement_rejects_unsupported_provider_and_preserves_board_settings()
 
 /// Stale-data audit for the pipelined outer-PI bounds: existing closed-loop
 /// scenarios, with every prepared bound compared against same-cycle probes.
-#[cfg(all(feature = "virtual-motor", feature = "pi-bounds-ahead"))]
+#[cfg(feature = "virtual-motor")]
 #[test]
 fn prepared_authority_tracks_same_cycle_bounds_in_closed_loop_scenarios() {
     use super::modes::authority_audit::{AUDIT, Audit};

@@ -289,7 +289,6 @@ pub mod foc {
 
     /// One-turn steps decided on the bit pattern, without Flash literals or
     /// FP compares. Every other input keeps the complete fallback below.
-    #[cfg(feature = "lean-angle")]
     #[cold]
     #[inline(never)]
     fn wrap_angle_general(angle: f32) -> f32 {
@@ -310,22 +309,9 @@ pub mod foc {
         wrap_angle_complete(angle)
     }
 
-    #[cfg(feature = "lean-angle")]
     #[cold]
     #[inline(never)]
     fn wrap_angle_complete(angle: f32) -> f32 {
-        wrap_angle_complete_body(angle)
-    }
-
-    #[cfg(not(feature = "lean-angle"))]
-    #[cold]
-    #[inline(never)]
-    fn wrap_angle_general(angle: f32) -> f32 {
-        wrap_angle_complete_body(angle)
-    }
-
-    #[inline(always)]
-    fn wrap_angle_complete_body(angle: f32) -> f32 {
         #[cfg(feature = "isr-work-events")]
         isr_work::mark(isr_work::ANGLE_WRAP);
         let mut a = angle;
@@ -447,13 +433,11 @@ pub mod foc {
     /// (-3*pi, pi], so only the negative side ever needs a turn. That side
     /// covers half of every revolution, hence the inline step. Results match
     /// [`angle_difference`] bit for bit; other inputs keep the fallback.
-    #[cfg(feature = "observer-turn")]
     #[inline(always)]
     pub fn angle_difference_signed_minus_wrapped<A: AngleRepr>(a: A, b: A) -> A {
         A::from_radians(signed_minus_wrapped(a.radians(), b.radians()))
     }
 
-    #[cfg(feature = "observer-turn")]
     #[inline(always)]
     fn signed_minus_wrapped(a: f32, b: f32) -> f32 {
         let diff = a - b;
@@ -470,7 +454,6 @@ pub mod foc {
 
     /// One-turn correction on the bit pattern. The complete fallback keeps
     /// exact +/-3*pi, NaN and unwrapped inputs.
-    #[cfg(feature = "lean-angle")]
     #[cold]
     #[inline(never)]
     fn angle_difference_general(diff: f32) -> f32 {
@@ -488,22 +471,9 @@ pub mod foc {
         angle_difference_complete(diff)
     }
 
-    #[cfg(feature = "lean-angle")]
     #[cold]
     #[inline(never)]
-    fn angle_difference_complete(diff: f32) -> f32 {
-        angle_difference_complete_body(diff)
-    }
-
-    #[cfg(not(feature = "lean-angle"))]
-    #[cold]
-    #[inline(never)]
-    fn angle_difference_general(diff: f32) -> f32 {
-        angle_difference_complete_body(diff)
-    }
-
-    #[inline(always)]
-    fn angle_difference_complete_body(mut diff: f32) -> f32 {
+    fn angle_difference_complete(mut diff: f32) -> f32 {
         let three_pi = TAU + core::f32::consts::PI;
         if diff <= -three_pi || diff > three_pi || diff.is_nan() {
             // Cold: inputs weren't wrapped angles.
@@ -620,7 +590,6 @@ pub mod foc {
             }
         }
 
-        #[cfg(feature = "observer-turn")]
         #[test]
         fn observer_turn_matches_frozen_boundaries_and_random_values() {
             edge_values(|a| {

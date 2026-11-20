@@ -16,7 +16,6 @@ use crate::isr_prof;
 #[cfg(all(feature = "isr-work-events", feature = "runtime"))]
 use crate::isr_work;
 use crate::motor::derating::{DeratingConfig, DeratingScales, PreparedDerating};
-#[cfg(feature = "iq-authority")]
 use crate::motor::dissipation;
 use crate::motor::dissipation::{RegenBudget, WindingModel, dissipate_with_id, heat_current_limit};
 use crate::motor::drive::DriveConfig;
@@ -199,7 +198,6 @@ impl PreparedBoardConfig {
 
 /// Slow-sensor fault detection and derating, independent of PWM and modes.
 pub(super) struct ProtectionMonitor {
-    #[cfg(feature = "service-slots")]
     pub(super) service_slots: super::velocity_schedule::ServiceSlots,
     board_voltage: Option<PreparedVoltageLimits>,
     voltage: Option<PreparedVoltageLimits>,
@@ -244,7 +242,6 @@ impl ProtectionMonitor {
 
     pub(super) fn new(dt: Time) -> Self {
         Self {
-            #[cfg(feature = "service-slots")]
             service_slots: super::velocity_schedule::ServiceSlots::new(dt),
             board_voltage: None,
             voltage: None,
@@ -271,10 +268,7 @@ impl ProtectionMonitor {
     }
 
     pub(super) fn set_control_period(&mut self, dt: Time) {
-        #[cfg(feature = "service-slots")]
-        {
-            self.service_slots = super::velocity_schedule::ServiceSlots::new(dt);
-        }
+        self.service_slots = super::velocity_schedule::ServiceSlots::new(dt);
         self.voltage_decay = voltage_decay(dt);
     }
 
@@ -397,10 +391,7 @@ impl ProtectionMonitor {
 
         // --- Graduated derating (decimated) ---
         self.protection_tick = self.protection_tick.wrapping_add(1);
-        #[cfg(feature = "service-slots")]
         let refresh_derating = self.service_slots.derating_due();
-        #[cfg(not(feature = "service-slots"))]
-        let refresh_derating = self.protection_tick.is_multiple_of(256);
         if refresh_derating {
             #[cfg(feature = "isr-work-events")]
             isr_work::mark(isr_work::DERATING);
@@ -445,14 +436,7 @@ where
     #[cfg(feature = "runtime")]
     #[inline]
     pub fn deadman_check_due(&self) -> bool {
-        #[cfg(feature = "service-slots")]
-        {
-            self.protection.service_slots.deadman_due()
-        }
-        #[cfg(not(feature = "service-slots"))]
-        {
-            self.protection.protection_tick & 15 == 0
-        }
+        self.protection.service_slots.deadman_due()
     }
 
     /// Apply derating configuration (boot / live config write). The caller
@@ -569,7 +553,6 @@ where
     /// Store freshly computed derating scales (protection update).
     pub fn set_derating_scales(&mut self, scales: DeratingScales) {
         self.protection.set_scales(scales);
-        #[cfg(feature = "pi-bounds-ahead")]
         self.velocity_schedule.drop_authority();
     }
 
@@ -826,7 +809,6 @@ where
         )
     }
 
-    #[cfg(feature = "iq-authority")]
     pub(super) fn grant_iq_authority(
         &self,
         iq_target: ElectricCurrent,
@@ -956,7 +938,6 @@ where
 
     /// Sign of the filtered q modulation outside the bus-bound dead band.
     /// The bus bounds map to the opposite iq direction when it changes.
-    #[cfg(feature = "pi-bounds-ahead")]
     pub(super) fn bus_modulation_class(&self) -> i8 {
         let mod_q = self.bus_mod_q_filt;
         if mod_q.abs() < 1e-3 {
@@ -1291,10 +1272,7 @@ mod tests {
                 for motor in readings {
                     let mut monitor = ProtectionMonitor::new(seconds(0.00005));
                     let registry = FaultRegistry::<StandardFault>::new();
-                    #[cfg(feature = "service-slots")]
                     let first_refresh = 11;
-                    #[cfg(not(feature = "service-slots"))]
-                    let first_refresh = 256;
                     for cycle in 1..=256 {
                         monitor.update(
                             &registry,
@@ -1312,7 +1290,6 @@ mod tests {
                         }
                         // Protection precedes the driver step, which advances
                         // the shared service frame once per native cycle.
-                        #[cfg(feature = "service-slots")]
                         monitor.service_slots.advance();
                     }
                     let fet_c = fet.map(|t| f32::from(t) / 10.0);
@@ -1331,7 +1308,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "service-slots")]
     #[test]
     fn slotted_derating_refreshes_every_eight_frames_at_both_pwm_rates() {
         let prepared = PreparedBoardConfig::new(board(60_000, 8_000));

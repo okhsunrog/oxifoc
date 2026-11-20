@@ -18,7 +18,7 @@ use crate::units::{
 };
 
 /// Host-only comparison of prepared bounds against the same-cycle probes.
-#[cfg(all(test, feature = "pi-bounds-ahead"))]
+#[cfg(test)]
 pub(super) mod authority_audit {
     use crate::units::{ElectricCurrent, ElectricalAngularVelocity};
     use core::cell::Cell;
@@ -286,21 +286,13 @@ where
             self.velocity_schedule.rearm(epoch);
             self.velocity_feedback_available = true;
         }
-        #[cfg(all(feature = "service-slots", not(feature = "pi-bounds-ahead")))]
-        let tick = self
-            .velocity_schedule
-            .begin_slotted_cycle(now_ticks, self.protection.service_slots.slot == 0);
-        #[cfg(feature = "pi-bounds-ahead")]
         let tick = self.velocity_schedule.begin_pipelined_cycle(
             now_ticks,
             self.protection.service_slots.slot,
             self.protection.service_slots.length(),
         );
-        #[cfg(not(feature = "service-slots"))]
-        let tick = self.velocity_schedule.begin_cycle(now_ticks);
         match tick {
             super::velocity_schedule::VelocityTick::Hold => {}
-            #[cfg(feature = "pi-bounds-ahead")]
             super::velocity_schedule::VelocityTick::Prepare => {
                 self.prepare_velocity_authority(now_ticks);
             }
@@ -323,7 +315,6 @@ where
     }
 
     /// Both anti-windup probes at the current torque speed.
-    #[cfg(feature = "pi-bounds-ahead")]
     #[inline(never)]
     fn velocity_authority(&self) -> (ElectricCurrent, ElectricCurrent, ElectricalAngularVelocity) {
         let full = if self.current_limits.max_current.is_positive() {
@@ -333,24 +324,13 @@ where
         };
         let omega = self.torque_speed();
         let constraints = self.torque_constraints(omega);
-        #[cfg(not(feature = "iq-authority"))]
-        let iq_min = self
-            .grant_torque_constrained(ElectricCurrent::ZERO, -full, &constraints)
-            .1;
-        #[cfg(feature = "iq-authority")]
         let iq_min = self.grant_iq_authority(-full, &constraints);
-        #[cfg(not(feature = "iq-authority"))]
-        let iq_max = self
-            .grant_torque_constrained(ElectricCurrent::ZERO, full, &constraints)
-            .1;
-        #[cfg(feature = "iq-authority")]
         let iq_max = self.grant_iq_authority(full, &constraints);
         (iq_min, iq_max, omega)
     }
 
     /// Stage A, one slot before the outer update. Commands, limit changes and
     /// velocity invalidation drop the stored bounds.
-    #[cfg(feature = "pi-bounds-ahead")]
     #[inline(never)]
     fn prepare_velocity_authority(&mut self, now_ticks: u64) {
         #[cfg(feature = "isr-work-events")]
@@ -373,7 +353,7 @@ where
         target: Option<ElectricalAngularVelocity>,
         omega: ElectricalAngularVelocity,
         dt: Time,
-        _now_ticks: u64,
+        now_ticks: u64,
     ) {
         #[cfg(feature = "isr-work-events")]
         isr_work::mark(isr_work::VELOCITY_PI);
@@ -404,52 +384,12 @@ where
         // 10.8 A commanded against 1 A delivered), and the reference ran on
         // toward a target past top speed: told to slow down, the motor held
         // top speed for seconds while the reference ramped back.
-        #[cfg(not(feature = "pi-bounds-ahead"))]
-        let (iq_min, iq_max) = {
-            let full = if self.current_limits.max_current.is_positive() {
-                self.current_limits.max_current
-            } else {
-                ElectricCurrent::INFINITY
-            };
-            // The bounds and final current grant use the same speed policy.
-            let constraints = self.torque_constraints(self.torque_speed());
-            #[cfg(feature = "isr-profiling")]
-            let negative_start = isr_prof::now();
-            #[cfg(not(feature = "iq-authority"))]
-            let iq_min = self
-                .grant_torque_constrained(ElectricCurrent::ZERO, -full, &constraints)
-                .1;
-            #[cfg(feature = "iq-authority")]
-            let iq_min = self.grant_iq_authority(-full, &constraints);
-            #[cfg(feature = "isr-profiling")]
-            isr_prof::add(
-                &isr_prof::AUTHORITY_NEGATIVE,
-                negative_start,
-                isr_prof::now(),
-            );
-            #[cfg(feature = "isr-profiling")]
-            let positive_start = isr_prof::now();
-            #[cfg(not(feature = "iq-authority"))]
-            let iq_max = self
-                .grant_torque_constrained(ElectricCurrent::ZERO, full, &constraints)
-                .1;
-            #[cfg(feature = "iq-authority")]
-            let iq_max = self.grant_iq_authority(full, &constraints);
-            #[cfg(feature = "isr-profiling")]
-            isr_prof::add(
-                &isr_prof::AUTHORITY_POSITIVE,
-                positive_start,
-                isr_prof::now(),
-            );
-            (iq_min, iq_max)
-        };
         // Prepared bounds are at most two native cycles old. Anything else
         // falls back to the same probes inline.
-        #[cfg(feature = "pi-bounds-ahead")]
         let (iq_min, iq_max) = match self.velocity_schedule.take_authority(
             self.torque_speed(),
             self.bus_modulation_class(),
-            _now_ticks,
+            now_ticks,
         ) {
             Some(bounds) => {
                 #[cfg(test)]
@@ -491,7 +431,7 @@ where
             // torque peaks 90 electrical degrees away, at 47°.
             let feedforward =
                 self.phase
-                    .bench_hall_position(_now_ticks)
+                    .bench_hall_position(now_ticks)
                     .map_or(ElectricCurrent::ZERO, |angle| {
                         let doubled = wrap_angle(2.0 * (angle - erad(47.0_f32.to_radians())));
                         let (_, cos) = S::sin_cos(doubled.radians());
@@ -532,7 +472,7 @@ where
                 }
             }
             self.last_velocity_update = Some(super::VelocityUpdate {
-                tick_us: _now_ticks,
+                tick_us: now_ticks,
                 target: target_vel,
                 feedback: omega,
                 iq_min,

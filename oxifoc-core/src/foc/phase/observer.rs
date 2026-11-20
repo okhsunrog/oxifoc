@@ -786,10 +786,7 @@ impl BackEmfObserver {
         // always non-negative and the velocity integrator could only grow.
         #[cfg(feature = "isr-work-events")]
         isr_work::angle_difference(isr_work::OBSERVER_ERROR_WRAP, phase_raw, self.phase_pll);
-        #[cfg(feature = "observer-turn")]
         let phase_error = foc::angle_difference_signed_minus_wrapped(phase_raw, self.phase_pll);
-        #[cfg(not(feature = "observer-turn"))]
-        let phase_error = foc::angle_difference(phase_raw, self.phase_pll);
         self.velocity_pll += self.pll_ki * phase_error * dt;
         // Physics acceleration prior (see set_accel_prior): |ω̂| is clamped
         // to an envelope that slews at the physically-allowed rate. The

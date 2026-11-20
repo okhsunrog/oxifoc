@@ -35,7 +35,6 @@ embedded-test = { version = "0.7.3", features = ["defmt", "external-executor", "
 [features]
 bench-hall-single-turn = ["oxifoc-core/bench-hall-single-turn"]
 bench-hall-bit-step = ["bench-hall-single-turn", "oxifoc-core/bench-hall-bit-step"]
-lean-angle = ["oxifoc-core/lean-angle"]
 
 [profile.dev]
 debug = true

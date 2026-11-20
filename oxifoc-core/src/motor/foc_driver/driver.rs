@@ -381,7 +381,6 @@ where
     }
 
     /// Any dequeued command may change limits, mode or models.
-    #[cfg(feature = "pi-bounds-ahead")]
     pub fn drop_velocity_authority(&mut self) {
         self.velocity_schedule.drop_authority();
     }

@@ -841,7 +841,6 @@ where
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
         #[cfg(feature = "isr-work-events")]
         isr_work::mark(isr_work::COMMAND);
-        #[cfg(feature = "pi-bounds-ahead")]
         foc.drop_velocity_authority();
         let detection_authority = match cmd {
             DriverCommand::DetectionMode { token, .. } => Some(token),

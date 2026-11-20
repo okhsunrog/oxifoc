@@ -149,7 +149,6 @@ fn check(driver: &GrantDriver, id: f32, iq: f32, omega: f32) -> (f32, f32) {
     let constraints = driver.torque_constraints(omega_q);
     let constrained = driver.grant_torque_constrained(id_q, iq_q, &constraints);
     let constrained = (constrained.0.value, constrained.1.value);
-    #[cfg(feature = "iq-authority")]
     if id == 0.0 {
         let projected = driver.grant_iq_authority(iq_q, &constraints).value;
         assert!(

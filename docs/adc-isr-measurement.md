@@ -149,8 +149,8 @@ over-budget records and distinguish the angle-wrap branches.
 | 11 | Observer phase error enters its general wrap path |
 | 12 | General angle normalization executes |
 | 13 | Dissipative current-circle bisection executes |
-| 14 | Outer-PI authority bounds are prepared one slot ahead (`pi-bounds-ahead`) |
-| 15 | Outer PI recomputes its authority bounds inline (`pi-bounds-ahead`) |
+| 14 | Outer-PI authority bounds are prepared one slot ahead |
+| 15 | Outer PI recomputes its authority bounds inline |
 
 Class summaries use bits 0–7 by default. `bench-work-class-wraps` indexes the
 classes by bits 0–3, 14, 15, 8 and 11 instead: PI, command, deadman, derating,

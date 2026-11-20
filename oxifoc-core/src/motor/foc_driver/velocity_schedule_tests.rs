@@ -110,7 +110,6 @@ fn clock_keeps_its_grid_and_uses_actual_elapsed_time_at_different_native_rates()
                 }
                 VelocityTick::Hold => {}
                 VelocityTick::Reanchor => panic!("valid native cadence"),
-                #[cfg(feature = "pi-bounds-ahead")]
                 VelocityTick::Prepare => panic!("the microsecond clock has no prepare stage"),
             }
         }
