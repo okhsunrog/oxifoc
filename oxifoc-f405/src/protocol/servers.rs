@@ -10,11 +10,7 @@ use heapless::String;
 use oxifoc_core::foc::current_offset::{
     CurrentOffsetError, CurrentOffsetReport, CurrentOffsetRequest,
 };
-#[cfg(any(
-    feature = "bench-raw-usb",
-    feature = "bench-raw-rtt",
-    feature = "fast-telemetry"
-))]
+#[cfg(feature = "fast-telemetry")]
 use oxifoc_core::runtime::raw_stream;
 use oxifoc_core::types::PhaseVoltageInfo;
 #[cfg(feature = "board-vesc6-mk5")]
@@ -31,11 +27,7 @@ use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::types::{FluxLinkageParams, InductanceParams, ResistanceParams};
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::foc::trig::FastSinCos;
-#[cfg(not(any(
-    feature = "bench-raw-usb",
-    feature = "bench-raw-rtt",
-    feature = "fast-telemetry"
-)))]
+#[cfg(not(feature = "fast-telemetry"))]
 use oxifoc_core::runtime::streaming::fast_telemetry_stream;
 use oxifoc_core::runtime::streaming::fault_topic_stream;
 use oxifoc_core::runtime::{DetectionBackend, run_all_servers_with_config};
@@ -135,10 +127,6 @@ pub async fn usb_io_task(
     spawner.spawn(defmt::unwrap!(run_usb_tx(
         transport.ep_in,
         crate::transport::USB_OUTQ.framed_consumer()
-    )));
-    #[cfg(feature = "bench-raw-usb")]
-    spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::usb_task(
-        transport.raw_ep_in
     )));
 }
 
@@ -444,11 +432,7 @@ impl DetectionBackend for F405Backend {
 }
 
 /// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
-#[cfg(not(any(
-    feature = "bench-raw-usb",
-    feature = "bench-raw-rtt",
-    feature = "fast-telemetry"
-)))]
+#[cfg(not(feature = "fast-telemetry"))]
 #[embassy_executor::task]
 pub async fn fast_telemetry_task(stack: &'static Stack) {
     #[cfg(feature = "bench-scheduler-deadline")]
@@ -463,11 +447,7 @@ pub async fn fast_telemetry_task(stack: &'static Stack) {
 
 /// Session control stays on Ergot while the sole consumer owns the fast queue.
 /// Normal MK5 images use the same routed Ergot/SPI path for control and data.
-#[cfg(any(
-    feature = "bench-raw-usb",
-    feature = "bench-raw-rtt",
-    feature = "fast-telemetry"
-))]
+#[cfg(feature = "fast-telemetry")]
 #[embassy_executor::task]
 async fn raw_telemetry_server_task(stack: &'static Stack) {
     #[cfg(feature = "task-priority")]
@@ -517,24 +497,10 @@ pub fn spawn_servers(
         foc_freq_hz,
         detection_boot
     )));
-    #[cfg(feature = "bench-raw-codec")]
-    spawner.spawn(defmt::unwrap!(
-        crate::diagnostics::codec_bench::report_task(stack)
-    ));
-    #[cfg(not(any(
-        feature = "bench-raw-usb",
-        feature = "bench-raw-rtt",
-        feature = "fast-telemetry"
-    )))]
+    #[cfg(not(feature = "fast-telemetry"))]
     spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
-    #[cfg(any(
-        feature = "bench-raw-usb",
-        feature = "bench-raw-rtt",
-        feature = "fast-telemetry"
-    ))]
+    #[cfg(feature = "fast-telemetry")]
     spawner.spawn(defmt::unwrap!(raw_telemetry_server_task(stack)));
-    #[cfg(feature = "bench-raw-rtt")]
-    spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::rtt_task()));
     #[cfg(feature = "fast-telemetry")]
     spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::ergot_task(
         stack

@@ -71,8 +71,6 @@ bench-cycle-outliers = ["isr-profiling"]
 bench-work-class-wraps = ["bench-foc-work"]
 # A/B reproduction of the former periodic observer log inside ADC.
 bench-observer-logging = ["oxifoc-core/observer-logging"]
-# Finite Stopped-only CPU comparison; no transport I/O inside timed regions.
-bench-raw-codec = ["transport-usb", "isr-timing", "bench-clock-reference"]
 # ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
 # telemetry over the debug probe; adds a diagnostic interface alongside USB.
 transport-rtt = ["ergot/rtt", "ergot/nostd-seed-router"]
@@ -113,11 +111,6 @@ bench-cogging-compensation = ["bench-hall-phase", "oxifoc-core/bench-cogging-com
 bench-spi-pump-priority = ["task-priority"]
 # Production fixed Packed28 sessions over the selected Ergot interface.
 fast-telemetry = ["task-priority", "oxifoc-core/fast-telemetry"]
-# Alternative carriers/codecs are explicit diagnostics, mutually exclusive
-# with the production publisher. Commands stay on Ergot.
-bench-raw-usb = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
-bench-raw-rtt = ["transport-usb", "task-priority", "oxifoc-core/bench-raw-stream"]
-bench-raw-ergot = ["fast-telemetry", "oxifoc-core/diagnostic-telemetry-codecs"]
 # Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.
 bench-scheduler-deadline = ["embassy-executor/scheduler-deadline", "bench-executor-trace"]
 # Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.

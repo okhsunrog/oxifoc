@@ -5,11 +5,7 @@ use embassy_sync::once_lock::OnceLock;
 use oxifoc_core::foc::config::{BoardConfig, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
 use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
-#[cfg(any(
-    feature = "bench-raw-usb",
-    feature = "bench-raw-rtt",
-    feature = "fast-telemetry"
-))]
+#[cfg(feature = "fast-telemetry")]
 use oxifoc_core::raw_telemetry;
 use oxifoc_core::storage::PwmConfigLimits;
 use oxifoc_core::types;
@@ -298,11 +294,7 @@ const _: () = assert!(CLOCK_PROFILE.apb_hz(CLOCK_PROFILE.apb2_pre) <= 84_000_000
 
 /// Size of outgoing packet queue for ergot over USB (framed)
 #[cfg(feature = "transport-usb")]
-pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(any(
-    feature = "bench-raw-usb",
-    feature = "bench-raw-rtt",
-    feature = "fast-telemetry"
-)) {
+pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(feature = "fast-telemetry") {
     8192
 } else {
     4096
@@ -313,21 +305,13 @@ pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(any(
 pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
 
 /// Maximum packet size for ergot framing
-pub const MAX_PACKET_SIZE: usize = if cfg!(any(
-    feature = "bench-raw-usb",
-    feature = "bench-raw-rtt",
-    feature = "fast-telemetry"
-)) {
+pub const MAX_PACKET_SIZE: usize = if cfg!(feature = "fast-telemetry") {
     2304
 } else {
     512
 };
 
-#[cfg(any(
-    feature = "bench-raw-usb",
-    feature = "bench-raw-rtt",
-    feature = "fast-telemetry"
-))]
+#[cfg(feature = "fast-telemetry")]
 const _: () = assert!(MAX_PACKET_SIZE >= raw_telemetry::RAW_MAX_BLOCK_BYTES + 30);
 
 // This value is also every interface's TX MTU: a full fast-telemetry batch

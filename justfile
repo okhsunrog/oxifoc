@@ -235,21 +235,15 @@ flash-mk5-hall profiling="off" transport="usb": (build-mk5-hall profiling transp
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
 
-# Finite Stopped-only paired codec CPU experiment; this recipe never flashes.
-build-mk5-codec-bench:
-    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-raw-codec") }}
-
-# Raw sink: timing adds its 1-Hz report; hall-phase adds finite RAM events;
-# hall-timing enables both; hall-outliers also records section costs of slow cycles.
-# Ergot USB remains the command and defmt path; use build-mk5-hall for Hall text logs.
+# Packed28 sessions over Ergot USB: timing adds its 1-Hz report; hall-phase adds
+# finite RAM events; hall-timing enables both; hall-outliers also records section
+# costs of slow cycles. Use build-mk5-hall for Hall text logs.
 # compensation=off disables only command correction, retaining hardware gate deadtime.
-build-mk5-raw sink="usb" profiling="normal" compensation="on":
-    @test {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt -o {{ quote(sink) }} = ergot
+build-mk5-raw profiling="normal" compensation="on":
     @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing -o {{ quote(profiling) }} = hall-phase -o {{ quote(profiling) }} = hall-timing -o {{ quote(profiling) }} = hall-outliers
     @test {{ quote(compensation) }} = on -o {{ quote(compensation) }} = off
     cd oxifoc-f405 && DEFMT_LOG={{ quote(if profiling == "timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-outliers" { "warn,oxifoc_f405::control::foc=info" } else { "warn" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + (if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else if profiling == "hall-timing" { ",bench-hall-phase,isr-timing" } else if profiling == "hall-outliers" { ",bench-hall-phase,isr-timing,bench-cycle-outliers" } else { "" }) + (if compensation == "off" { ",bench-no-deadtime-comp" } else { "" })) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall,fast-telemetry" + (if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else if profiling == "hall-timing" { ",bench-hall-phase,isr-timing" } else if profiling == "hall-outliers" { ",bench-hall-phase,isr-timing,bench-cycle-outliers" } else { "" }) + (if compensation == "off" { ",bench-no-deadtime-comp" } else { "" })) }}
 
 # Detect one parameter without applying motor parameters, recording every cycle.
 detect-mk5 step capture *ARGS:
@@ -303,18 +297,17 @@ build-mk5-usb-cpu-trace:
         --features {{ quote(mk5_usb_trace_features) }}
 
 # Same velocity workload: minimal timing, section outliers, or finite CPU trace.
-build-mk5-runtime-profile sink="ergot" detail="timing" observer_log="off" logging="timing":
-    @test {{ quote(sink) }} = ergot -o {{ quote(sink) }} = usb -o {{ quote(sink) }} = rtt
+build-mk5-runtime-profile detail="timing" observer_log="off" logging="timing":
     @test {{ quote(detail) }} = timing -o {{ quote(detail) }} = outliers -o {{ quote(detail) }} = trace
     @test {{ quote(observer_log) }} = off -o {{ quote(observer_log) }} = on
     @test {{ quote(logging) }} = timing -o {{ quote(logging) }} = verbose -o {{ quote(logging) }} = quiet
     cd oxifoc-f405 && DEFMT_LOG={{ quote((if logging == "verbose" { "debug" } else if logging == "quiet" { "warn" } else { "warn,oxifoc_f405::control::foc=info" }) + if observer_log == "on" { ",oxifoc_core::foc::phase::manager::update=info" } else { "" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-" + sink + ",isr-timing" + (if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "trace" { ",bench-executor-trace" } else { "" }) + if observer_log == "on" { ",bench-observer-logging" } else { "" }) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall,fast-telemetry,isr-timing" + (if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "trace" { ",bench-executor-trace" } else { "" }) + if observer_log == "on" { ",bench-observer-logging" } else { "" }) }}
 
 # Exhaustive temperature conversion check before PWM initialization.
 build-mk5-thermal-check:
     cd oxifoc-f405 && DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,bench-raw-rtt,isr-timing,bench-ntc-check") }}
+        --features {{ quote(mk5_bench_features + ",bench-hall,fast-telemetry,isr-timing,bench-ntc-check") }}
 
 # Explicit motor excitation, no fast stream; same secured +40 erad/s CPU control.
 test-velocity-no-stream-mk5 elf:
@@ -634,9 +627,9 @@ flash-mk5-foc-profile detail="minimal" logging="quiet": (build-mk5-foc-profile d
 # Fixed-format telemetry through a chosen link; legacy remains an explicit baseline.
 build-mk5-link-bench link="spi" source="ergot" detail="timing":
     @test {{quote(link)}} = spi -o {{quote(link)}} = usb
-    @test {{quote(source)}} = ergot -o {{quote(source)}} = legacy-ergot -o {{quote(source)}} = raw-ergot -o {{quote(source)}} = raw-usb -o {{quote(source)}} = raw-rtt
-    @test {{quote(detail)}} = timing -o {{quote(detail)}} = trace -o {{quote(detail)}} = codec
-    cd oxifoc-f405 && DEFMT_LOG={{quote(if detail == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if source == "ergot" { ",fast-telemetry" } else if source == "raw-ergot" { ",bench-raw-ergot" } else if source == "raw-usb" { ",bench-raw-usb" } else if source == "raw-rtt" { ",bench-raw-rtt" } else { "" }) + (if detail == "trace" { ",bench-executor-trace" } else if detail == "codec" { ",bench-raw-codec" } else { "" }))}}
+    @test {{quote(source)}} = ergot -o {{quote(source)}} = legacy-ergot
+    @test {{quote(detail)}} = timing -o {{quote(detail)}} = trace
+    cd oxifoc-f405 && DEFMT_LOG={{quote(if detail == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if source == "ergot" { ",fast-telemetry" } else { "" }) + (if detail == "trace" { ",bench-executor-trace" } else { "" }))}}
 
 flash-mk5-link-bench link="spi" source="ergot" detail="timing": (build-mk5-link-bench link source detail)
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}

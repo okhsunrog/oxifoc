@@ -11,9 +11,6 @@ pub mod foc_distribution;
 #[cfg(feature = "bench-overclock")]
 pub mod clock_stress;
 
-#[cfg(feature = "bench-raw-codec")]
-pub mod codec_bench;
-
 #[cfg(feature = "bench-cycle-outliers")]
 pub mod cycle_outliers;
 

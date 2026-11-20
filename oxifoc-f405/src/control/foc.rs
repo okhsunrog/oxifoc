@@ -40,14 +40,12 @@ use oxifoc_core::state::{
 };
 use oxifoc_core::storage::RuntimeConfig;
 #[cfg(any(
-    any(
-        feature = "bench-executor-trace",
-        feature = "bench-pwm-commit",
-        feature = "bench-netstack-trace"
-    ),
-    any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"),
-    feature = "bench-hall-crossover",
-    feature = "bench-raw-codec"
+    feature = "bench-executor-trace",
+    feature = "bench-pwm-commit",
+    feature = "bench-netstack-trace",
+    feature = "bench-cycle-outliers",
+    feature = "bench-foc-distribution",
+    feature = "bench-hall-crossover"
 ))]
 use oxifoc_core::types::ControlMode;
 #[cfg(feature = "board-vesc6-mk5")]
@@ -588,9 +586,6 @@ fn ADC() {
     #[cfg(feature = "bench-hall-phase")]
     static mut HALL_PHASE: crate::diagnostics::hall_edges::PhaseRecorder =
         crate::diagnostics::hall_edges::PhaseRecorder::new();
-    #[cfg(feature = "bench-raw-codec")]
-    static mut CODEC_BENCH: crate::diagnostics::codec_bench::Bench =
-        crate::diagnostics::codec_bench::Bench::new();
 
     #[cfg(feature = "bench-netstack-trace")]
     let trace_adc = crate::diagnostics::trace::is_recording();
@@ -758,8 +753,6 @@ fn ADC() {
     let mut outlier_active = false;
     #[cfg(feature = "bench-cycle-outliers")]
     let mut outlier_velocity = ElectricalAngularVelocity::ZERO;
-    #[cfg(feature = "bench-raw-codec")]
-    let mut codec_bench_stopped = false;
     // The release flag avoids touching the boot handoff while the task
     // waits for its first VBUS reading. Once taken, DRIVER stays ISR-local.
     if DRIVER.is_none() && FOC_READY.load(Ordering::Acquire) {
@@ -802,10 +795,6 @@ fn ADC() {
                 .rotor_velocity()
                 .map(RotorVelocityEstimate::velocity)
         });
-        #[cfg(feature = "bench-raw-codec")]
-        {
-            codec_bench_stopped = matches!(driver.mode(), ControlMode::Stopped);
-        }
         #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
         {
             outlier_active = !matches!(driver.mode(), ControlMode::Stopped);
@@ -881,12 +870,6 @@ fn ADC() {
     }
     #[cfg(feature = "board-vesc6-mk5")]
     detection_timing::after_sample(DRIVER);
-    #[cfg(feature = "bench-raw-codec")]
-    CODEC_BENCH.on_adc(
-        codec_bench_stopped,
-        enables,
-        DWT_GENERATION.load(Ordering::Relaxed),
-    );
     #[cfg(feature = "bench-cycle-outliers")]
     let core_after = Snapshot::observe();
     // Every recorder uses this same end point. Recorder/statistics work
