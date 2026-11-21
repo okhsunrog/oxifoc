@@ -15,6 +15,7 @@ use crate::foc::hall_sensor::HallFaultKind;
 #[cfg(feature = "storage")]
 use crate::storage::RuntimeConfig;
 use core::cell::{Cell, RefCell};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
@@ -93,16 +94,16 @@ fn hall_now_ticks() -> u64 {
 /// the same (invalid reading → `m_ang_hall_int_prev = -1` → fallback).
 #[inline]
 pub fn update_hall_edge(state: u8, ticks: u64) {
-    // Edge memory via static mutable — safe because this is called only from
-    // a single ISR (the hall capture timer's). 0xFF = "no edge seen yet":
-    // 0 is also a real (invalid, all-low) reading, and using it as the
-    // sentinel swallowed a first edge into state 0 — the estimator never
-    // learned of it and its error counter stayed flat.
+    // Edge memory. The capture ISR is the only caller after init (boot seeds
+    // it once with interrupts masked), so relaxed accesses suffice; they are
+    // plain loads and stores on Cortex-M. 0xFF = "no edge seen yet": 0 is
+    // also a real (invalid, all-low) reading, and using it as the sentinel
+    // swallowed a first edge into state 0 — the estimator never learned of
+    // it and its error counter stayed flat.
     const NO_EDGE_YET: u8 = 0xFF;
-    static mut LAST_STATE: u8 = NO_EDGE_YET;
+    static LAST_STATE: AtomicU8 = AtomicU8::new(NO_EDGE_YET);
 
-    // SAFETY: called only from a single ISR context
-    let last = unsafe { LAST_STATE };
+    let last = LAST_STATE.load(Ordering::Relaxed);
 
     if state != last {
         HALL_ESTIMATOR.lock(|est| {
@@ -111,10 +112,7 @@ pub fn update_hall_edge(state: u8, ticks: u64) {
             }
         });
 
-        // SAFETY: called only from a single ISR context
-        unsafe {
-            LAST_STATE = state;
-        }
+        LAST_STATE.store(state, Ordering::Relaxed);
     }
 }
 

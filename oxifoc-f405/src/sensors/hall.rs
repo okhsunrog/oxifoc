@@ -181,18 +181,20 @@ pub fn init_hall(
         clippy::multiple_unsafe_ops_per_block,
         reason = "single logical operation: hall-capture IRQ bring-up"
     )]
-    // SAFETY: one-time IRQ bring-up during init, before the capture
-    // interrupt can fire; Peripherals::steal() only touches NVIC priority
+    // SAFETY: one-time IRQ bring-up during init. The capture interrupts are
+    // already enabled in the timer, so the priority is set while the line is
+    // still masked: an edge pending at unmask must not run at priority 0,
+    // level with the FOC ADC ISR. Peripherals::steal() only touches NVIC
     // registers nothing else owns at this point.
     unsafe {
-        interrupt::typelevel::TIM3::unpend();
-        cortex_m::peripheral::NVIC::unmask(interrupt::TIM3);
         let mut nvic = cortex_m::peripheral::Peripherals::steal().NVIC;
         // NVIC::set_priority takes the RAW 8-bit IPR value; STM32 implements
         // only the upper 4 bits. Below the FOC ADC ISR is fine: edge
         // timestamps are latched in hardware, so delaying this handler only
         // delays when the estimator learns of the edge, not the timestamp.
         nvic.set_priority(interrupt::TIM3, 1 << 4);
+        interrupt::typelevel::TIM3::unpend();
+        cortex_m::peripheral::NVIC::unmask(interrupt::TIM3);
     }
 
     defmt::info!(
