@@ -173,7 +173,16 @@ pub async fn run(
 
     let mut prev_conn: Option<(CancellationToken, u8)> = None;
     loop {
-        let (socket, addr) = listener.accept().await?;
+        // A failure belongs to one pending connection (ECONNABORTED) or is a
+        // transient resource limit (EMFILE); neither may stop the device.
+        let (socket, addr) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                warn!("accept failed: {error}");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            }
+        };
         info!("Client connected: {addr}");
 
         // Single-client server: cancel the previous telemetry tasks and remove

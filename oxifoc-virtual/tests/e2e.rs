@@ -879,7 +879,13 @@ fn tcp_connection_churn_does_not_kill_server() {
     // interfaces and returned from run() on the fifth registration failure.
     let mut clients = vec![first];
     for _ in 0..8 {
-        clients.push(TcpStream::connect(("127.0.0.1", port)).expect("connect churn client"));
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => clients.push(stream),
+            Err(e) => panic!(
+                "connect churn client: {e}; device exit status: {:?}",
+                guard.0.try_wait()
+            ),
+        }
         std::thread::sleep(Duration::from_millis(25));
     }
     std::thread::sleep(Duration::from_millis(250));
