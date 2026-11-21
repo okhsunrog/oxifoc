@@ -88,3 +88,6 @@ INSERT AFTER .bss;
 /* flip-link links twice and moves RAM in between, so only the size can be
  * asserted here: the last 16 KiB of the packed RAM image are this section. */
 ASSERT(__bss_cold_end - __bss_cold_start >= 0x4000, "The cold filler must be at least as large as SRAM2 (16 KiB)");
+/* cortex-m-rt places .uninit after .bss, i.e. above the filler at the very
+ * top of RAM. Anything there would take SRAM2 and push the filler down. */
+ASSERT(__euninit == __suninit, ".uninit would sit above the SRAM2 filler; place it before .bss_cold");
