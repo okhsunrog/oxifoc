@@ -140,7 +140,9 @@ pub async fn init(
         cell.replace(Some(foc_driver));
     });
 
-    state::BOOT_CURRENT_OFFSET_PENDING.store(false, Ordering::Release);
+    state::ISR_FLAGS
+        .boot_current_offset_pending
+        .store(false, Ordering::Release);
     defmt::info!("FOC driver initialized and calibrated");
 }
 

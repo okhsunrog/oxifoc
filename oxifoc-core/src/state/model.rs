@@ -698,7 +698,7 @@ pub(super) fn apply<P, C, Ph, S>(
     let group = pending.update.group();
     let current_revision =
         critical_section::with(|cs| pending.revisions.borrow(cs).borrow()[group.index()]);
-    let authorized = !super::DETECTION_ACTIVE.load(Ordering::Acquire);
+    let authorized = !super::ISR_FLAGS.detection_active.load(Ordering::Acquire);
     let allowed = allowed
         || (running_allowed
             && matches!(&pending.update, ModelConfigUpdate::Tuning(value) if value.allows_running()));

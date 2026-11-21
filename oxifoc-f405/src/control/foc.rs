@@ -35,9 +35,7 @@ use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
 #[cfg(feature = "velocity-debug")]
 use oxifoc_core::runtime::velocity_debug;
 use oxifoc_core::state::model;
-use oxifoc_core::state::{
-    BOOT_CURRENT_OFFSET_PENDING, CURRENT_OFFSET_DONE, DriverOperation, run_foc_cycle,
-};
+use oxifoc_core::state::{CURRENT_OFFSET_DONE, DriverOperation, ISR_FLAGS, run_foc_cycle};
 use oxifoc_core::storage::RuntimeConfig;
 #[cfg(any(
     feature = "bench-executor-trace",
@@ -321,8 +319,8 @@ mod detection_timing {
             REQUEST.store(REJECTED, Ordering::Release);
             return;
         };
-        if !state::DETECTION_ACTIVE.load(Ordering::Acquire)
-            || state::FLASH_OP_PENDING.load(Ordering::Acquire)
+        if !state::ISR_FLAGS.detection_active.load(Ordering::Acquire)
+            || state::ISR_FLAGS.flash_op_pending.load(Ordering::Acquire)
         {
             REQUEST.store(REJECTED, Ordering::Release);
             return;
@@ -413,7 +411,7 @@ pub async fn init(
     // offset calibration are fed by the ISR's atomics, so it MUST start
     // first. The window is benign by construction: run_foc_cycle is
     // skipped (None), the bridge stays high-Z, host commands are rejected
-    // by BOOT_CURRENT_OFFSET_PENDING and bounded by the motor server's
+    // by ISR_FLAGS.boot_current_offset_pending and bounded by the motor server's
     // ack timeout, and publish_cycle_telemetry emits a default FocOutput
     // (streaming is off until the host enables it anyway).
     #[expect(
@@ -524,7 +522,9 @@ pub async fn init(
             Err(_) => defmt::error!("current-offset calibration failed"),
         }
     }
-    BOOT_CURRENT_OFFSET_PENDING.store(false, Ordering::Release);
+    ISR_FLAGS
+        .boot_current_offset_pending
+        .store(false, Ordering::Release);
 
     defmt::info!("F405 FOC driver initialized and calibrated");
 }

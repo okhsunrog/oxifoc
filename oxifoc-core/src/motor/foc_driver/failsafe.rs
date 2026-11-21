@@ -62,7 +62,7 @@ where
     /// dwells up to ~5 s between `SetMode`s (settle waits, sample windows,
     /// the flux-spin collection), which the 150 ms deadman would cut
     /// mid-measurement — but a *hung* measurement must still be cut, because
-    /// `DETECTION_ACTIVE` suspends the Layer-1 link gate for exactly these
+    /// `ISR_FLAGS.detection_active` suspends the Layer-1 link gate for exactly these
     /// windows (until 2026-07-06 these modes were exempt entirely, leaving a
     /// detection with BOTH comm failsafes off). Host-driven bench modes are
     /// affirmed every 50 ms like drive modes, so the long bound never fires

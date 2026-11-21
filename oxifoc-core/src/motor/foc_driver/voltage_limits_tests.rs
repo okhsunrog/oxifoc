@@ -131,11 +131,15 @@ fn voltage_apply_acknowledges_only_an_installed_and_validated_revision() {
     struct BootFlag(bool);
     impl Drop for BootFlag {
         fn drop(&mut self) {
-            state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, core::sync::atomic::Ordering::Release);
+            state::ISR_FLAGS
+                .boot_current_offset_pending
+                .store(self.0, core::sync::atomic::Ordering::Release);
         }
     }
     let _boot = BootFlag(
-        state::BOOT_CURRENT_OFFSET_PENDING.swap(false, core::sync::atomic::Ordering::AcqRel),
+        state::ISR_FLAGS
+            .boot_current_offset_pending
+            .swap(false, core::sync::atomic::Ordering::AcqRel),
     );
     let coordinator = Box::leak(Box::new(ConfigCoordinator::new()));
     let config = Box::leak(Box::new(Mutex::new(RefCell::new(RuntimeConfig::default()))));

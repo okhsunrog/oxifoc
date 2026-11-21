@@ -38,12 +38,18 @@ impl PlatformFault for TestFault {
 struct BootFlag(bool);
 impl BootFlag {
     fn clear() -> Self {
-        Self(state::BOOT_CURRENT_OFFSET_PENDING.swap(false, core::sync::atomic::Ordering::AcqRel))
+        Self(
+            state::ISR_FLAGS
+                .boot_current_offset_pending
+                .swap(false, core::sync::atomic::Ordering::AcqRel),
+        )
     }
 }
 impl Drop for BootFlag {
     fn drop(&mut self) {
-        state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, core::sync::atomic::Ordering::Release);
+        state::ISR_FLAGS
+            .boot_current_offset_pending
+            .store(self.0, core::sync::atomic::Ordering::Release);
     }
 }
 

@@ -741,7 +741,7 @@ fn coast_observer_tracks_measured_bemf() {
     assert!(!blind_obs.is_ready());
 }
 
-/// CMD_CHANNEL and FLASH_OP_PENDING are process-wide globals — tests
+/// CMD_CHANNEL and ISR_FLAGS.flash_op_pending are process-wide globals — tests
 /// that touch them must not run concurrently. Also drains any stale
 /// commands a previous test left behind.
 #[cfg(feature = "runtime")]
@@ -762,15 +762,21 @@ fn cmd_channel_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(feature = "hfi")]
 fn process_commands_switches_phase_source() {
     let _serial = cmd_channel_lock();
-    use crate::state::BOOT_CURRENT_OFFSET_PENDING;
+    use crate::state::ISR_FLAGS;
     use core::sync::atomic::Ordering;
     struct BootFlag(bool);
     impl Drop for BootFlag {
         fn drop(&mut self) {
-            BOOT_CURRENT_OFFSET_PENDING.store(self.0, Ordering::Release);
+            ISR_FLAGS
+                .boot_current_offset_pending
+                .store(self.0, Ordering::Release);
         }
     }
-    let _boot = BootFlag(BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel));
+    let _boot = BootFlag(
+        ISR_FLAGS
+            .boot_current_offset_pending
+            .swap(false, Ordering::AcqRel),
+    );
     use crate::foc::fault::{FaultCategory, FaultRegistry, PlatformFault};
     use crate::foc::phase::{HfiObserver, PhaseManager, PhaseSource};
     use crate::foc::trig::LibmSinCos;
@@ -1011,7 +1017,7 @@ fn process_commands_rejects_non_finite_payloads() {
 /// Motor start must be refused while a flash operation is in flight:
 /// internal-flash erase stalls the chip, which must never overlap an
 /// energized motor. This is the ISR half of the config server's
-/// Busy-gate TOCTOU fix (the server arms FLASH_OP_PENDING before
+/// Busy-gate TOCTOU fix (the server arms ISR_FLAGS.flash_op_pending before
 /// re-checking the motor state).
 #[test]
 #[cfg(feature = "runtime")]
@@ -3302,7 +3308,7 @@ fn deadman_arms_failsafe_on_stale_command() {
 /// bound, not the configured drive one and not an exemption: detection
 /// legitimately dwells seconds between SetModes (the configured 150 ms
 /// would cut a settle wait), but a HUNG measurement must still be cut —
-/// DETECTION_ACTIVE suspends the link gate, so this is the only comm
+/// ISR_FLAGS.detection_active suspends the link gate, so this is the only comm
 /// failsafe covering it (until 2026-07-06 there was none).
 #[test]
 fn deadman_long_bound_covers_bench_modes() {
@@ -4017,7 +4023,7 @@ mod severity_gate {
             });
 
             // A cancelled preparation still owns a reservation even though
-            // neither DETECTION_ACTIVE nor Excitation::running() is true.
+            // neither ISR_FLAGS.detection_active nor Excitation::running() is true.
             drop(detect);
             critical_section::with(|cs| {
                 h.state.borrow(cs).borrow_mut().excitation.cancelled = true;
@@ -4296,10 +4302,16 @@ mod severity_gate {
             struct BootFlag(bool);
             impl Drop for BootFlag {
                 fn drop(&mut self) {
-                    state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, Ordering::Release);
+                    state::ISR_FLAGS
+                        .boot_current_offset_pending
+                        .store(self.0, Ordering::Release);
                 }
             }
-            let _boot = BootFlag(state::BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel));
+            let _boot = BootFlag(
+                state::ISR_FLAGS
+                    .boot_current_offset_pending
+                    .swap(false, Ordering::AcqRel),
+            );
             let mut h = running_harness();
             CMD_CHANNEL
                 .try_send(DriverCommand::SetMode(ControlMode::Stopped))
@@ -4436,7 +4448,7 @@ mod severity_gate {
     #[test]
     fn braking_a_coasting_stopped_rotor_keeps_flash_gate_busy() {
         use crate::foc::phase::{PhaseInput, PhaseOutput};
-        use crate::state::BOOT_CURRENT_OFFSET_PENDING;
+        use crate::state::ISR_FLAGS;
         use core::sync::atomic::Ordering;
         struct SpinningPhase;
         impl PhaseProvider for SpinningPhase {
@@ -4469,7 +4481,9 @@ mod severity_gate {
             seconds(0.00005),
         );
         // Boot has completed; it must not mask the state bug in busy().
-        let boot_pending = BOOT_CURRENT_OFFSET_PENDING.swap(false, Ordering::AcqRel);
+        let boot_pending = ISR_FLAGS
+            .boot_current_offset_pending
+            .swap(false, Ordering::AcqRel);
         assert!(!critical_section::with(|cs| state
             .borrow(cs)
             .borrow()
@@ -4483,7 +4497,9 @@ mod severity_gate {
                     .is_some()
             );
         }
-        BOOT_CURRENT_OFFSET_PENDING.store(boot_pending, Ordering::Release);
+        ISR_FLAGS
+            .boot_current_offset_pending
+            .store(boot_pending, Ordering::Release);
         assert!(driver.failsafe_active() && driver.pwm().enabled);
         critical_section::with(|cs| {
             let s = state.borrow(cs).borrow();
@@ -6207,11 +6223,15 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
     struct BootFlag(bool);
     impl Drop for BootFlag {
         fn drop(&mut self) {
-            state::BOOT_CURRENT_OFFSET_PENDING.store(self.0, core::sync::atomic::Ordering::Release);
+            state::ISR_FLAGS
+                .boot_current_offset_pending
+                .store(self.0, core::sync::atomic::Ordering::Release);
         }
     }
     let _boot = BootFlag(
-        state::BOOT_CURRENT_OFFSET_PENDING.swap(false, core::sync::atomic::Ordering::AcqRel),
+        state::ISR_FLAGS
+            .boot_current_offset_pending
+            .swap(false, core::sync::atomic::Ordering::AcqRel),
     );
     let config = Box::leak(Box::new(Mutex::new(RefCell::new(RuntimeConfig::default()))));
     let revisions = Box::leak(Box::new(Mutex::new(RefCell::new(
@@ -6371,7 +6391,10 @@ fn model_transaction_is_durable_and_cancelled_generations_cannot_apply() {
         2
     );
 
-    for flag in [&state::FLASH_OP_PENDING, &state::DETECTION_ACTIVE] {
+    for flag in [
+        &state::ISR_FLAGS.flash_op_pending,
+        &state::ISR_FLAGS.detection_active,
+    ] {
         flag.store(true, core::sync::atomic::Ordering::Release);
         let mut maintenance = Box::pin(prepare(8, 2).apply::<PendingTimer>());
         assert!(maintenance.as_mut().poll(&mut cx).is_pending());

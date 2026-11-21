@@ -330,7 +330,7 @@ async fn control_request_with_options(
             foc_hz,
             link_block_bytes,
             READY.load(Ordering::Acquire),
-            state::FLASH_OP_PENDING.load(Ordering::SeqCst),
+            state::ISR_FLAGS.flash_op_pending.load(Ordering::SeqCst),
             debug,
         );
         if !matches!(outcome.1, Action::None) {
@@ -348,7 +348,7 @@ async fn control_request_with_options(
         PRODUCER_DROPS.store(0, Ordering::Relaxed);
         FAST_DECIM_CTR.store(0, Ordering::Relaxed);
         critical_section::with(|_| {
-            if state::FLASH_OP_PENDING.load(Ordering::SeqCst) {
+            if state::ISR_FLAGS.flash_op_pending.load(Ordering::SeqCst) {
                 control.phase = Phase::Failed;
                 status = RawTelemetryStatus::Busy;
             } else {

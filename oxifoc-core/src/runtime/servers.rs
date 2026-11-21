@@ -645,7 +645,8 @@ pub async fn config_server<NS, T: Timer, const N: usize>(
                                             // has already raised a stop fault.
                                             if state.actuator_busy()
                                                 || state.control_mode != ControlMode::Stopped
-                                                || state::DETECTION_ACTIVE
+                                                || state::ISR_FLAGS
+                                                    .detection_active
                                                     .load(core::sync::atomic::Ordering::Acquire)
                                             {
                                                 return ConfigResponse::Busy;
@@ -838,7 +839,8 @@ pub async fn config_server<NS, T: Timer, const N: usize>(
                                 state_mutex.borrow(cs).borrow().actuator_busy()
                             });
                             if actuator_busy
-                                || state::DETECTION_ACTIVE
+                                || state::ISR_FLAGS
+                                    .detection_active
                                     .load(core::sync::atomic::Ordering::Acquire)
                             {
                                 return ConfigResponse::Busy;
@@ -1022,7 +1024,7 @@ async fn save_drive_setup<T: Timer>(
     board_trip: ElectricCurrent,
     persist: bool,
 ) -> ConfigResponse {
-    use crate::state::DETECTION_ACTIVE;
+    use crate::state::ISR_FLAGS;
     use crate::types::{ConfigGroupId, ControlMode, MotorState};
     use core::sync::atomic::Ordering;
     if !persist {
@@ -1035,7 +1037,7 @@ async fn save_drive_setup<T: Timer>(
             && state.control_mode == ControlMode::Stopped
             && !state.actuator_busy()
             && state.board_calibration_valid
-            && !DETECTION_ACTIVE.load(Ordering::Acquire)
+            && !ISR_FLAGS.detection_active.load(Ordering::Acquire)
     });
     if !stopped {
         return ConfigResponse::Busy;

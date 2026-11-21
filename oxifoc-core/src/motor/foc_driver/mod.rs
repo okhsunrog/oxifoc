@@ -71,7 +71,7 @@ use crate::motor::failsafe::{FailsafeConfig, FailsafeController};
 /// the longest legitimate device-side detection dwell between `SetMode`s
 /// (~5 s flux-spin sample collection) with 2× margin; a hung measurement
 /// (dead telemetry, no commands) is cut this long in even though
-/// `DETECTION_ACTIVE` suspends the link gate.
+/// `ISR_FLAGS.detection_active` suspends the link gate.
 pub const BENCH_STALENESS_TIMEOUT_US: u64 = 10_000_000;
 
 /// Command-staleness bound while the sensorless startup sequencer owns

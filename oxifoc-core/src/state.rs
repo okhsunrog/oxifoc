@@ -61,18 +61,85 @@ use crate::units::{ElectricPotential, Sign};
 // Global Communication Channels
 // ============================================================================
 
-#[cfg(feature = "storage")]
-static MOTOR_TEMPERATURE_INPUT_ENABLED: AtomicBool = AtomicBool::new(true);
+/// Atomic flags shared by the control ISR and the async tasks.
+///
+/// One static rather than one per flag, so the ISR reaches every flag from a
+/// single base address. As separate small statics they were grouped by LLVM's
+/// global merging, and that grouping, and with it the ISR's register
+/// allocation, changed whenever an unrelated static elsewhere in the image was
+/// added or removed.
+pub struct IsrFlags {
+    #[cfg(feature = "storage")]
+    pub(crate) motor_temperature_input_enabled: AtomicBool,
+    pub(crate) detection_source_limited: AtomicBool,
+    pub(crate) detection_source_constrained: AtomicBool,
+    /// True until platform boot calibration completes. F405 starts protocol
+    /// servers before FOC initialisation, so runtime offset requests use this to
+    /// fail Busy without resetting/consuming the boot completion signal.
+    pub boot_current_offset_pending: AtomicBool,
+    /// Closes the async-command TOCTOU window before the ISR mirrors a runtime
+    /// calibration into [`MotorControlState::driver_operation`].
+    #[cfg(feature = "offset-diagnostics")]
+    pub current_offset_request_pending: AtomicBool,
+    /// True while a flash operation is queued or running. Internal-flash erase
+    /// stalls the whole chip (code executes from the same flash), so it must
+    /// never overlap an energized motor.
+    ///
+    /// Closes the TOCTOU gap in the config server's Busy check from both ends:
+    /// the server arms this flag *before* re-checking the motor state, and
+    /// [`process_commands`] refuses to start the motor while it is set — so
+    /// whichever side wins the race, the unsafe overlap is impossible.
+    pub flash_op_pending: AtomicBool,
+    pub(crate) drive_setup_recovery: AtomicBool,
+    /// Set while a device-side detection step is actively driving the motor.
+    ///
+    /// Detection is host-initiated but device-driven: the host then blocks on the
+    /// result and sends no frames, so the ergot interface liveness times out within
+    /// `LIVENESS_TIMEOUT_MS` and the **link-loss** failsafe would otherwise cut the
+    /// drive mid-measurement (current collapses, the failsafe latches) and fight the
+    /// (bounded, current-limited, rotor-locked/slow) detection. The detect server
+    /// raises this around each measurement so the link-loss path is suspended.
+    ///
+    /// The command-staleness deadman still covers detection, but with the LONG
+    /// [`crate::motor::foc_driver::BENCH_STALENESS_TIMEOUT_US`] bound that
+    /// OpenLoop/DirectVoltage always get (detection dwells up to ~5 s between
+    /// device-side `SetMode`s — settle waits, sample windows, the flux-spin
+    /// collection). A truly hung measurement (telemetry dead, no commands
+    /// flowing) is cut ~10 s in. Historical note: until 2026-07-06 those modes
+    /// were exempt from the deadman entirely, so this flag used to disable BOTH
+    /// comm failsafes despite this comment claiming otherwise. The instantaneous
+    /// over-current check was never gated by it.
+    pub detection_active: AtomicBool,
+    pub(crate) detection_cancelled: AtomicBool,
+    pub(crate) detection_generation: core::sync::atomic::AtomicU32,
+}
+
+pub static ISR_FLAGS: IsrFlags = IsrFlags {
+    #[cfg(feature = "storage")]
+    motor_temperature_input_enabled: AtomicBool::new(true),
+    detection_source_limited: AtomicBool::new(false),
+    detection_source_constrained: AtomicBool::new(false),
+    boot_current_offset_pending: AtomicBool::new(true),
+    #[cfg(feature = "offset-diagnostics")]
+    current_offset_request_pending: AtomicBool::new(false),
+    flash_op_pending: AtomicBool::new(false),
+    drive_setup_recovery: AtomicBool::new(false),
+    detection_active: AtomicBool::new(false),
+    detection_cancelled: AtomicBool::new(false),
+    detection_generation: core::sync::atomic::AtomicU32::new(0),
+};
 
 /// Board samplers consult this before publishing a motor temperature sample.
 #[cfg(feature = "storage")]
 pub fn motor_temperature_input_enabled() -> bool {
-    MOTOR_TEMPERATURE_INPUT_ENABLED.load(Ordering::Relaxed)
+    ISR_FLAGS
+        .motor_temperature_input_enabled
+        .load(Ordering::Relaxed)
 }
 
 #[cfg(feature = "storage")]
 pub fn set_motor_temperature_input(config: MotorTemperatureConfig) {
-    MOTOR_TEMPERATURE_INPUT_ENABLED.store(
+    ISR_FLAGS.motor_temperature_input_enabled.store(
         config.sensor == MotorTemperatureSensor::BoardDefault,
         Ordering::Relaxed,
     );
@@ -184,15 +251,15 @@ struct CommissioningAck {
 
 #[cfg(all(feature = "detection", feature = "delivery", feature = "storage"))]
 static COMMISSIONING_DONE: Signal<CriticalSectionRawMutex, CommissioningAck> = Signal::new();
-static DETECTION_SOURCE_LIMITED: AtomicBool = AtomicBool::new(false);
-static DETECTION_SOURCE_CONSTRAINED: AtomicBool = AtomicBool::new(false);
 
 pub fn detection_source_constrained() -> bool {
-    DETECTION_SOURCE_CONSTRAINED.load(Ordering::Acquire)
+    ISR_FLAGS
+        .detection_source_constrained
+        .load(Ordering::Acquire)
 }
 
 pub fn detection_source_limited() -> bool {
-    DETECTION_SOURCE_LIMITED.load(Ordering::Acquire)
+    ISR_FLAGS.detection_source_limited.load(Ordering::Acquire)
 }
 
 /// Completion of the single serialized protocol motor request. The motor
@@ -210,24 +277,18 @@ pub static CURRENT_OFFSET_DONE: Signal<
     Result<CurrentOffsetReport, CurrentOffsetError>,
 > = Signal::new();
 
-/// True until platform boot calibration completes. F405 starts protocol
-/// servers before FOC initialisation, so runtime offset requests use this to
-/// fail Busy without resetting/consuming the boot completion signal.
-pub static BOOT_CURRENT_OFFSET_PENDING: AtomicBool = AtomicBool::new(true);
-
 pub fn boot_current_offset_pending() -> bool {
-    BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Acquire)
+    ISR_FLAGS
+        .boot_current_offset_pending
+        .load(Ordering::Acquire)
 }
-
-/// Closes the async-command TOCTOU window before the ISR mirrors a runtime
-/// calibration into [`MotorControlState::driver_operation`].
-#[cfg(feature = "offset-diagnostics")]
-pub static CURRENT_OFFSET_REQUEST_PENDING: AtomicBool = AtomicBool::new(false);
 
 pub fn current_offset_request_pending() -> bool {
     #[cfg(feature = "offset-diagnostics")]
     {
-        CURRENT_OFFSET_REQUEST_PENDING.load(Ordering::Acquire)
+        ISR_FLAGS
+            .current_offset_request_pending
+            .load(Ordering::Acquire)
     }
     #[cfg(not(feature = "offset-diagnostics"))]
     {
@@ -284,70 +345,38 @@ impl CycleNotification {
     }
 }
 
-/// True while a flash operation is queued or running. Internal-flash erase
-/// stalls the whole chip (code executes from the same flash), so it must
-/// never overlap an energized motor.
-///
-/// Closes the TOCTOU gap in the config server's Busy check from both ends:
-/// the server arms this flag *before* re-checking the motor state, and
-/// [`process_commands`] refuses to start the motor while it is set — so
-/// whichever side wins the race, the unsafe overlap is impossible.
-pub static FLASH_OP_PENDING: AtomicBool = AtomicBool::new(false);
-
-static DRIVE_SETUP_RECOVERY: AtomicBool = AtomicBool::new(false);
-
 #[cfg(feature = "storage")]
 pub(crate) fn set_drive_setup_recovery(required: bool) {
-    DRIVE_SETUP_RECOVERY.store(required, Ordering::Release);
+    ISR_FLAGS
+        .drive_setup_recovery
+        .store(required, Ordering::Release);
 }
 
 #[cfg(feature = "storage")]
 pub(crate) fn drive_setup_recovery_required() -> bool {
-    DRIVE_SETUP_RECOVERY.load(Ordering::Acquire)
+    ISR_FLAGS.drive_setup_recovery.load(Ordering::Acquire)
 }
 
-/// Set while a device-side detection step is actively driving the motor.
-///
-/// Detection is host-initiated but device-driven: the host then blocks on the
-/// result and sends no frames, so the ergot interface liveness times out within
-/// `LIVENESS_TIMEOUT_MS` and the **link-loss** failsafe would otherwise cut the
-/// drive mid-measurement (current collapses, the failsafe latches) and fight the
-/// (bounded, current-limited, rotor-locked/slow) detection. The detect server
-/// raises this around each measurement so the link-loss path is suspended.
-///
-/// The command-staleness deadman still covers detection, but with the LONG
-/// [`crate::motor::foc_driver::BENCH_STALENESS_TIMEOUT_US`] bound that
-/// OpenLoop/DirectVoltage always get (detection dwells up to ~5 s between
-/// device-side `SetMode`s — settle waits, sample windows, the flux-spin
-/// collection). A truly hung measurement (telemetry dead, no commands
-/// flowing) is cut ~10 s in. Historical note: until 2026-07-06 those modes
-/// were exempt from the deadman entirely, so this flag used to disable BOTH
-/// comm failsafes despite this comment claiming otherwise. The instantaneous
-/// over-current check was never gated by it.
-pub static DETECTION_ACTIVE: AtomicBool = AtomicBool::new(false);
-static DETECTION_CANCELLED: AtomicBool = AtomicBool::new(false);
-
 pub fn detection_cancelled() -> bool {
-    DETECTION_ACTIVE.load(Ordering::Acquire) && DETECTION_CANCELLED.load(Ordering::Acquire)
+    ISR_FLAGS.detection_active.load(Ordering::Acquire)
+        && ISR_FLAGS.detection_cancelled.load(Ordering::Acquire)
 }
 
 fn cancel_detection() {
     critical_section::with(|_| {
-        if DETECTION_ACTIVE.load(Ordering::Acquire) {
-            DETECTION_CANCELLED.store(true, Ordering::Release);
+        if ISR_FLAGS.detection_active.load(Ordering::Acquire) {
+            ISR_FLAGS.detection_cancelled.store(true, Ordering::Release);
         }
     });
 }
 
-/// RAII guard for [`DETECTION_ACTIVE`]: clears the flag on every exit path.
+/// RAII guard for [`IsrFlags::detection_active`]: clears the flag on every exit path.
 /// Without it, any future `select`/timeout wrapper around the measurement
 /// future would strand the flag on cancellation and leave the link-loss
 /// failsafe disabled forever.
 pub struct DetectionActiveGuard {
     generation: u32,
 }
-
-static DETECTION_GENERATION: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// A capability captured when a detection backend is constructed. The field
 /// is private: an old backend cannot mint authority for a subsequent run.
@@ -358,17 +387,17 @@ impl DetectionCommandToken {
     #[cfg(any(test, all(feature = "detection", feature = "embassy")))]
     pub(crate) fn capture() -> Option<Self> {
         critical_section::with(|_| {
-            (DETECTION_ACTIVE.load(Ordering::Acquire)
-                && !DETECTION_CANCELLED.load(Ordering::Acquire))
-            .then(|| Self(DETECTION_GENERATION.load(Ordering::Acquire)))
+            (ISR_FLAGS.detection_active.load(Ordering::Acquire)
+                && !ISR_FLAGS.detection_cancelled.load(Ordering::Acquire))
+            .then(|| Self(ISR_FLAGS.detection_generation.load(Ordering::Acquire)))
         })
     }
 
     pub(crate) fn is_current(self) -> bool {
         critical_section::with(|_| {
-            DETECTION_ACTIVE.load(Ordering::Acquire)
-                && !DETECTION_CANCELLED.load(Ordering::Acquire)
-                && DETECTION_GENERATION.load(Ordering::Acquire) == self.0
+            ISR_FLAGS.detection_active.load(Ordering::Acquire)
+                && !ISR_FLAGS.detection_cancelled.load(Ordering::Acquire)
+                && ISR_FLAGS.detection_generation.load(Ordering::Acquire) == self.0
         })
     }
 }
@@ -378,8 +407,8 @@ impl DetectionActiveGuard {
     /// Revoke only this generation; ISR cleanup rejects its queued work.
     pub(crate) fn cancel(&self) {
         critical_section::with(|_| {
-            if DETECTION_GENERATION.load(Ordering::Acquire) == self.generation {
-                DETECTION_CANCELLED.store(true, Ordering::Release);
+            if ISR_FLAGS.detection_generation.load(Ordering::Acquire) == self.generation {
+                ISR_FLAGS.detection_cancelled.store(true, Ordering::Release);
             }
         });
     }
@@ -435,22 +464,33 @@ impl DetectionActiveGuard {
 
     pub fn try_arm() -> Option<Self> {
         critical_section::with(|_| {
-            if DETECTION_ACTIVE.load(Ordering::Acquire) {
+            if ISR_FLAGS.detection_active.load(Ordering::Acquire) {
                 return None;
             }
             #[cfg(feature = "storage")]
             if model_apply_pending()
-                || FLASH_OP_PENDING.load(Ordering::Acquire)
-                || DRIVE_SETUP_RECOVERY.load(Ordering::Acquire)
+                || ISR_FLAGS.flash_op_pending.load(Ordering::Acquire)
+                || ISR_FLAGS.drive_setup_recovery.load(Ordering::Acquire)
             {
                 return None;
             }
-            let generation = DETECTION_GENERATION.load(Ordering::Relaxed).wrapping_add(1);
-            DETECTION_GENERATION.store(generation, Ordering::Release);
-            DETECTION_CANCELLED.store(false, Ordering::Release);
-            DETECTION_SOURCE_LIMITED.store(false, Ordering::Release);
-            DETECTION_SOURCE_CONSTRAINED.store(false, Ordering::Release);
-            DETECTION_ACTIVE.store(true, Ordering::Release);
+            let generation = ISR_FLAGS
+                .detection_generation
+                .load(Ordering::Relaxed)
+                .wrapping_add(1);
+            ISR_FLAGS
+                .detection_generation
+                .store(generation, Ordering::Release);
+            ISR_FLAGS
+                .detection_cancelled
+                .store(false, Ordering::Release);
+            ISR_FLAGS
+                .detection_source_limited
+                .store(false, Ordering::Release);
+            ISR_FLAGS
+                .detection_source_constrained
+                .store(false, Ordering::Release);
+            ISR_FLAGS.detection_active.store(true, Ordering::Release);
             Some(Self { generation })
         })
     }
@@ -459,27 +499,27 @@ impl DetectionActiveGuard {
 impl Drop for DetectionActiveGuard {
     fn drop(&mut self) {
         critical_section::with(|_| {
-            if DETECTION_GENERATION.load(Ordering::Acquire) == self.generation {
-                DETECTION_ACTIVE.store(false, Ordering::Release);
+            if ISR_FLAGS.detection_generation.load(Ordering::Acquire) == self.generation {
+                ISR_FLAGS.detection_active.store(false, Ordering::Release);
             }
         });
     }
 }
 
-/// RAII guard for [`FLASH_OP_PENDING`]: clears the flag on every exit
+/// RAII guard for [`IsrFlags::flash_op_pending`]: clears the flag on every exit
 /// path, including the early returns on flash errors.
 pub struct FlashPendingGuard(());
 
 impl FlashPendingGuard {
     pub fn arm() -> Self {
-        FLASH_OP_PENDING.store(true, Ordering::SeqCst);
+        ISR_FLAGS.flash_op_pending.store(true, Ordering::SeqCst);
         Self(())
     }
 }
 
 impl Drop for FlashPendingGuard {
     fn drop(&mut self) {
-        FLASH_OP_PENDING.store(false, Ordering::SeqCst);
+        ISR_FLAGS.flash_op_pending.store(false, Ordering::SeqCst);
     }
 }
 
@@ -622,7 +662,7 @@ impl MotorControlState {
             && !boot_current_offset_pending()
             && !current_offset_request_pending()
             && !model_apply_pending()
-            && !DETECTION_ACTIVE.load(Ordering::Acquire)
+            && !ISR_FLAGS.detection_active.load(Ordering::Acquire)
             && streaming::FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0
     }
 
@@ -800,8 +840,8 @@ fn apply_phase_source<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCo
             || foc.failsafe_active()
             || boot_current_offset_pending()
             || current_offset_request_pending()
-            || FLASH_OP_PENDING.load(Ordering::Acquire)
-            || DETECTION_ACTIVE.load(Ordering::Acquire)
+            || ISR_FLAGS.flash_op_pending.load(Ordering::Acquire)
+            || ISR_FLAGS.detection_active.load(Ordering::Acquire)
         {
             return Err(MotorModelError::Busy);
         }
@@ -888,9 +928,11 @@ where
                     token.is_current()
                         && state.motor_state == MotorState::Stopped
                         && !fault_registry.any_stopping()
-                        && !BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Acquire)
+                        && !ISR_FLAGS
+                            .boot_current_offset_pending
+                            .load(Ordering::Acquire)
                         && !current_offset_request_pending()
-                        && !FLASH_OP_PENDING.load(Ordering::Acquire)
+                        && !ISR_FLAGS.flash_op_pending.load(Ordering::Acquire)
                         && !model_apply_pending()
                         && foc.begin_commissioning(token.0, prepared).is_ok()
                 });
@@ -1014,7 +1056,7 @@ where
                     let idle = state.driver_operation == DriverOperation::Idle
                         && !boot_current_offset_pending()
                         && !current_offset_request_pending()
-                        && !FLASH_OP_PENDING.load(Ordering::Acquire)
+                        && !ISR_FLAGS.flash_op_pending.load(Ordering::Acquire)
                         && !fault_registry.any_stopping();
                     (
                         idle && state.motor_state == MotorState::Stopped
@@ -1059,7 +1101,7 @@ where
                     state.driver_operation == DriverOperation::Idle
                         && state.motor_state == MotorState::Stopped
                         && !fault_registry.any_stopping()
-                        && !FLASH_OP_PENDING.load(Ordering::SeqCst)
+                        && !ISR_FLAGS.flash_op_pending.load(Ordering::SeqCst)
                         && !model_apply_pending()
                 });
                 let result = if allowed {
@@ -1073,7 +1115,9 @@ where
                             DriverOperation::CurrentOffsetCalibration;
                     }),
                     Err(error) => {
-                        CURRENT_OFFSET_REQUEST_PENDING.store(false, Ordering::Release);
+                        ISR_FLAGS
+                            .current_offset_request_pending
+                            .store(false, Ordering::Release);
                         CURRENT_OFFSET_DONE.signal(Err(error));
                     }
                 }
@@ -1091,7 +1135,10 @@ where
             // Boot owns initialisation: even an early Stop from the F405's
             // already-running protocol server must not turn calibration into
             // a partially initialised device.
-            if BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Relaxed) {
+            if ISR_FLAGS
+                .boot_current_offset_pending
+                .load(Ordering::Relaxed)
+            {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("Mode rejected: boot current calibration active");
                 if let Some(request) = protocol_request {
@@ -1142,11 +1189,11 @@ where
             }
 
             // A queued flash write/erase would stall the chip mid-spin —
-            // refuse to start until it finishes (see FLASH_OP_PENDING).
+            // refuse to start until it finishes (see ISR_FLAGS.flash_op_pending).
             if mode != ControlMode::Stopped
-                && (FLASH_OP_PENDING.load(Ordering::SeqCst)
+                && (ISR_FLAGS.flash_op_pending.load(Ordering::SeqCst)
                     || model_apply_pending()
-                    || DRIVE_SETUP_RECOVERY.load(Ordering::Acquire))
+                    || ISR_FLAGS.drive_setup_recovery.load(Ordering::Acquire))
             {
                 #[cfg(feature = "defmt")]
                 defmt::warn!("Motor start rejected: flash operation in flight");
@@ -1281,7 +1328,7 @@ where
     // `run_foc_cycle`, so e.g. the config server's motor-running gate can't
     // admit a flash stall mid-brake.
     if !link_active
-        && !DETECTION_ACTIVE.load(Ordering::Relaxed)
+        && !ISR_FLAGS.detection_active.load(Ordering::Relaxed)
         && !matches!(
             foc.mode(),
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
@@ -1414,9 +1461,10 @@ where
         ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
     );
     // Link-loss is suspended during a device-side detection (see
-    // `DETECTION_ACTIVE`); the command-staleness deadman is not, so a hung
+    // `ISR_FLAGS.detection_active`); the command-staleness deadman is not, so a hung
     // detection still raises CommTimeout.
-    let link_lost_unacked = link_lost && !in_safe_mode && !DETECTION_ACTIVE.load(Ordering::Relaxed);
+    let link_lost_unacked =
+        link_lost && !in_safe_mode && !ISR_FLAGS.detection_active.load(Ordering::Relaxed);
     let deadman_expired = check_deadman && {
         let staleness = driver.command_staleness_us(now_ticks);
         driver.deadman_expired_with(staleness, now_ticks)
@@ -1557,7 +1605,7 @@ where
             if fault_registry.any_stopping()
                 || driver.failsafe_active()
                 || saw_set_mode
-                || !DETECTION_ACTIVE.load(Ordering::Relaxed)
+                || !ISR_FLAGS.detection_active.load(Ordering::Relaxed)
                 || ex.authority.is_some_and(|token| !token.is_current())
                 || detection_cancelled()
                 || (ex.index == 0 && !starting_in_hold)
@@ -1619,7 +1667,9 @@ where
     let was_failsafe = driver.failsafe_active();
     let step_result = driver.step(now_ticks);
     if driver.commissioning_source_constrained() {
-        DETECTION_SOURCE_CONSTRAINED.store(true, Ordering::Release);
+        ISR_FLAGS
+            .detection_source_constrained
+            .store(true, Ordering::Release);
     }
     publish_current_offset_outcome(state_mutex, driver);
     let prof_t4 = isr_prof::now();
@@ -1648,7 +1698,9 @@ where
         }
         Err(_e) => {
             if matches!(_e, StepError::SourceLimit) {
-                DETECTION_SOURCE_LIMITED.store(true, Ordering::Release);
+                ISR_FLAGS
+                    .detection_source_limited
+                    .store(true, Ordering::Release);
                 cancel_detection();
                 driver.end_commissioning();
             }
@@ -1779,15 +1831,23 @@ where
 pub async fn measure_current_offsets(
     request: CurrentOffsetRequest,
 ) -> Result<CurrentOffsetReport, CurrentOffsetError> {
-    if BOOT_CURRENT_OFFSET_PENDING.load(Ordering::Acquire) {
+    if ISR_FLAGS
+        .boot_current_offset_pending
+        .load(Ordering::Acquire)
+    {
         return Err(CurrentOffsetError::Busy);
     }
-    if CURRENT_OFFSET_REQUEST_PENDING.swap(true, Ordering::AcqRel) {
+    if ISR_FLAGS
+        .current_offset_request_pending
+        .swap(true, Ordering::AcqRel)
+    {
         return Err(CurrentOffsetError::Busy);
     }
     // Release the claim if this waiter is cancelled before the request is queued.
     let enqueue = core::mem::DropGuard::new((), |()| {
-        CURRENT_OFFSET_REQUEST_PENDING.store(false, Ordering::Release);
+        ISR_FLAGS
+            .current_offset_request_pending
+            .store(false, Ordering::Release);
     });
     CURRENT_OFFSET_DONE.reset();
     CMD_CHANNEL
@@ -1810,7 +1870,9 @@ fn publish_current_offset_outcome<P, C, Ph, S>(
 {
     if let Some(outcome) = driver.take_current_offset_outcome() {
         #[cfg(feature = "offset-diagnostics")]
-        CURRENT_OFFSET_REQUEST_PENDING.store(false, Ordering::Release);
+        ISR_FLAGS
+            .current_offset_request_pending
+            .store(false, Ordering::Release);
         critical_section::with(|cs| {
             let mut state = state_mutex.borrow(cs).borrow_mut();
             state.driver_operation = DriverOperation::Idle;
