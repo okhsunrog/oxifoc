@@ -20,6 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use oxifoc_core::foc::telemetry::{EnrichCtx, RichSample};
 use oxifoc_core::types::{CAP_PWM_TIMING_FROM_ARR, ControlTiming, FastTelemetry, HardwareInfo};
+use oxifoc_host_lib::raw_telemetry::RawCaptureReport;
 use oxifoc_host_lib::{HostRuntime, build_enrich_ctx};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::data_type::{DoubleType, Int32Type, Int64Type};
@@ -81,8 +82,12 @@ pub struct RecordSummary {
     pub gaps: usize,
     /// Total samples missing across all gaps.
     pub samples_lost: u64,
+    /// Host seconds per device second: multiply `t_s` by it for host time.
+    /// Absent for captures shorter than the host-rate estimate needs.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw_telemetry: Option<oxifoc_host_lib::raw_telemetry::RawCaptureReport>,
+    pub device_clock_scale: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_telemetry: Option<RawCaptureReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub velocity_debug_path: Option<String>,
 }
@@ -304,6 +309,17 @@ impl Capture {
         Ok(())
     }
 
+    /// Device-declared sample rate over the rate the host clock measured.
+    /// `t_s` follows the device's nominal clock; a board whose oscillator
+    /// deviates stretches it by this factor.
+    fn device_clock_scale(&self, raw: Option<&RawCaptureReport>) -> Option<f64> {
+        let measured = raw?.host_sample_rate_hz?;
+        let declared = f64::from(self.control_timing.clock_hz)
+            / f64::from(self.control_timing.period_ticks)
+            / f64::from(self.expected_step());
+        (measured > 0.0).then(|| declared / measured)
+    }
+
     /// Expected seq step between consecutive samples.
     pub fn expected_step(&self) -> u32 {
         if let Some(decimation_m) = self.decimation_m {
@@ -380,6 +396,10 @@ impl Capture {
         if let Some(raw) = &raw_report {
             metadata.push(("oxifoc.raw_telemetry".into(), serde_json::to_string(raw)?));
         }
+        let device_clock_scale = self.device_clock_scale(raw_report.as_ref());
+        if let Some(scale) = device_clock_scale {
+            metadata.push(("oxifoc.device_clock_scale".into(), scale.to_string()));
+        }
         if let Some(session) = self.raw_session {
             metadata.push(("oxifoc.raw_session".into(), session.to_string()));
         }
@@ -447,6 +467,7 @@ impl Capture {
             duration_s: self.started.elapsed().as_secs_f64(),
             gaps,
             samples_lost,
+            device_clock_scale,
             raw_telemetry: raw_report,
             velocity_debug_path,
         };

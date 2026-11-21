@@ -51,6 +51,53 @@ pub struct RawCaptureReport {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub velocity_debug: Option<VelocityDebugReport>,
+    /// Session sample rate measured with the host clock; `None` until the
+    /// capture spans [`HOST_RATE_MIN_SPAN`].
+    pub host_sample_rate_hz: Option<f64>,
+}
+
+/// Shortest capture for a host-clock rate estimate: block arrival jitter of a
+/// few milliseconds then stays below 0.1 % of the span.
+pub const HOST_RATE_MIN_SPAN: Duration = Duration::from_secs(5);
+
+/// Least-squares fit of cumulative records against host arrival time.
+///
+/// A constant delivery latency does not change the slope, and arrival jitter
+/// averages out over the capture. The device's sequence-derived timestamps
+/// are scaled by its oscillator's deviation from nominal; this rate exposes
+/// that factor without rewriting the samples.
+#[derive(Default)]
+struct HostRateFit {
+    origin: Option<Instant>,
+    points: f64,
+    sum_t: f64,
+    sum_n: f64,
+    sum_tt: f64,
+    sum_tn: f64,
+    last_t: f64,
+}
+
+impl HostRateFit {
+    fn record(&mut self, now: Instant, records: u64) {
+        let origin = *self.origin.get_or_insert(now);
+        let t = now.duration_since(origin).as_secs_f64();
+        let n = records as f64;
+        self.points += 1.0;
+        self.sum_t += t;
+        self.sum_n += n;
+        self.sum_tt += t * t;
+        self.sum_tn += t * n;
+        self.last_t = t;
+    }
+
+    fn rate_hz(&self) -> Option<f64> {
+        if self.last_t < HOST_RATE_MIN_SPAN.as_secs_f64() {
+            return None;
+        }
+        let denominator = self.points * self.sum_tt - self.sum_t * self.sum_t;
+        (denominator > 0.0)
+            .then(|| (self.points * self.sum_tn - self.sum_t * self.sum_n) / denominator)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -95,6 +142,7 @@ struct CaptureState {
     next_block: u32,
     last_progress: Instant,
     velocity_frames: Vec<VelocityDebugFrame>,
+    host_rate: HostRateFit,
 }
 
 #[derive(Default)]
@@ -242,10 +290,12 @@ impl RawTelemetryState {
                 ended: false,
                 error: None,
                 velocity_debug: self.velocity_debug.then(VelocityDebugReport::default),
+                host_sample_rate_hz: None,
             },
             next_block: 0,
             last_progress: Instant::now(),
             velocity_frames: Vec::new(),
+            host_rate: HostRateFit::default(),
         });
         Ok(session)
     }
@@ -432,6 +482,10 @@ impl RawTelemetryState {
             } else {
                 capture.report.packed28_blocks += 1;
                 capture.report.records_received += block.samples.len() as u64;
+                capture
+                    .host_rate
+                    .record(capture.last_progress, capture.report.records_received);
+                capture.report.host_sample_rate_hz = capture.host_rate.rate_hz();
                 for sample in block.samples {
                     if self.tx.try_send(sample).is_ok() {
                         capture.report.records_delivered += 1;
@@ -793,6 +847,35 @@ impl RawIngress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_rate_fit_ignores_constant_latency_and_averages_jitter() {
+        // A device declaring 20 kHz whose oscillator runs 0.69 % slow
+        // delivers 64-record blocks with constant latency and ±3 ms jitter.
+        let actual_hz = 20_000.0 * (1.0 - 0.0069);
+        let origin = Instant::now();
+        let mut fit = HostRateFit::default();
+        let mut jitter = 0x1234_5678_u32;
+        let mut records = 0_u64;
+        for _ in 0..2_000 {
+            records += 64;
+            jitter = jitter.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (f64::from(jitter >> 8) / f64::from(1_u32 << 24) - 0.5) * 0.006;
+            let t = records as f64 / actual_hz + 0.040 + noise;
+            fit.record(origin + Duration::from_secs_f64(t), records);
+        }
+        let rate = fit.rate_hz().expect("span exceeds the minimum");
+        assert!((rate / actual_hz - 1.0).abs() < 1e-4, "{rate}");
+    }
+
+    #[test]
+    fn host_rate_fit_waits_for_the_minimum_span() {
+        let origin = Instant::now();
+        let mut fit = HostRateFit::default();
+        fit.record(origin, 64);
+        fit.record(origin + Duration::from_secs(1), 20_064);
+        assert_eq!(fit.rate_hz(), None);
+    }
     use crossbeam_channel::{Receiver, bounded};
     use oxifoc_core::raw_telemetry::RawBlockEncoder;
 
