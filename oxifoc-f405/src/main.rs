@@ -5,8 +5,6 @@
 compile_error!("select exactly one board feature: board-cf2 or board-vesc6-mk5");
 #[cfg(all(feature = "board-cf2", feature = "board-vesc6-mk5"))]
 compile_error!("board-cf2 and board-vesc6-mk5 are mutually exclusive");
-#[cfg(all(feature = "bench-calibrated-clock", not(feature = "board-vesc6-mk5")))]
-compile_error!("bench-calibrated-clock is an experiment for the measured MK5 device only");
 
 use embassy_executor::Spawner;
 use embassy_stm32::{bind_interrupts, exti, interrupt};

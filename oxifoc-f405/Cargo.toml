@@ -55,8 +55,6 @@ isr-profiling = ["oxifoc-core/isr-profiling"]
 # velocity-loop, crossover and fault records read over SWD after Stop
 # (scripts/bench_hall_edges.py), plus a 50-Hz Hall log while driving.
 hall-diagnostics = ["oxifoc-core/hall-diagnostics"]
-# Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.
-bench-calibrated-clock = []
 
 [dependencies]
 # Embassy + Cortex-M

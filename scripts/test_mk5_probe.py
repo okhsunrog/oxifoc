@@ -5,7 +5,7 @@ import mk5_probe as bench
 
 
 class ClockReadbackTests(unittest.TestCase):
-    def registers(self, n=169):
+    def registers(self, n=168):
         # F405 HSE/4 * PLLN / 2, AHB /1, APB1 /4, APB2 /2. Independent fixtures.
         return {
             0x40023800: [0x03037e83, (7 << 24) | (1 << 22) | (n << 6) | 4, 0x940a],
@@ -22,9 +22,9 @@ class ClockReadbackTests(unittest.TestCase):
 
     def test_normal_profile(self):
         x = self.decode(self.registers())
-        self.assertEqual(x["cpu_hz"], 167835864)
-        self.assertEqual(x["tim1_hz"], 167835864)
-        self.assertEqual(x["adc_hz"], 20979483)
+        self.assertEqual(x["cpu_hz"], 168_000_000)
+        self.assertEqual(x["tim1_hz"], 168_000_000)
+        self.assertEqual(x["adc_hz"], 21_000_000)
 
     def test_rejects_incomplete_capture(self):
         meta = dict(gaps=0, samples_lost=0, rows=10, raw_telemetry=dict(

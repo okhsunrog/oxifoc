@@ -203,21 +203,14 @@ impl ClockProfile {
     }
 }
 
-/// Default board clock, or the UUID-guarded bench estimate; never persisted in
-/// runtime calibration. RCC must be configured before that storage is loaded.
+/// Board clock from the nominal 8 MHz HSE, as on the schematic. A board whose
+/// oscillator deviates runs every timebase scaled by the same factor; the host
+/// reports that factor for captures instead of the firmware guessing it.
 pub const CLOCK_PROFILE: ClockProfile = ClockProfile {
-    hse_hz: if cfg!(feature = "bench-calibrated-clock") {
-        7_944_893
-    } else {
-        8_000_000
-    },
+    hse_hz: 8_000_000,
     pll: Pll {
         prediv: PllPreDiv::Div4,
-        mul: if cfg!(feature = "bench-calibrated-clock") {
-            PllMul::Mul169
-        } else {
-            PllMul::Mul168
-        },
+        mul: PllMul::Mul168,
         divp: Some(PllPDiv::Div2),
         divq: Some(PllQDiv::Div7),
         divr: None,

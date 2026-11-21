@@ -20,7 +20,7 @@ replay-hall *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example replay_hall -- "$@"
 
 mk5_features := "transport-spi,board-vesc6-mk5"
-mk5_bench_features := "transport-usb,board-vesc6-mk5,bench-calibrated-clock"
+mk5_bench_features := "transport-usb,board-vesc6-mk5"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 # Bench hardware selectors come from the environment or a local .env file
 # (see .env.example). Unset, probe-rs uses the only attached probe and the
@@ -48,7 +48,7 @@ bench-mk5-bridge-spi output c5_project=c5_project: build-mk5-bridge-spi
     uv run --no-project python scripts/bench-bridge-spi.py --output {{quote(output)}} --c5-project {{quote(c5_project)}}
 
 build-mk5-spi:
-    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + ",bench-calibrated-clock")}} --bin oxifoc-f405
+    cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features)}} --bin oxifoc-f405
 
 flash-mk5-spi: build-mk5-spi
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
@@ -248,7 +248,7 @@ profile-mk5 output seconds="8":
 # isrp/isrc/isrd/isre/isrh breakdowns over defmt.
 build-mk5-profile:
     cd oxifoc-f405 && DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_features + ",bench-calibrated-clock,isr-profiling") }}
+        --features {{ quote(mk5_features + ",isr-profiling") }}
 
 flash-mk5-profile: build-mk5-profile
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{ mk5_elf }}
@@ -501,7 +501,7 @@ test-link link capture maneuver velocity_debug="off" phase_source="configured":
 
 # Production SPI image with hall-diagnostics, for captures through the C5.
 build-mk5-motion:
-    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,hall-diagnostics")}}
+    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",hall-diagnostics")}}
 
 flash-mk5-motion: build-mk5-motion
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}

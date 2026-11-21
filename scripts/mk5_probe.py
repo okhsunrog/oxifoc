@@ -34,7 +34,7 @@ def clocks(expected_pwm_hz=20_000):
             break
         assert time.monotonic() < deadline, f"PLL not locked/selected: RCC={cr:08x},{pll:08x},{cfgr:08x}"
         time.sleep(.1)
-    hse = 7_944_893  # measured estimate for the UID checked by firmware
+    hse = 8_000_000  # nominal HSE, as configured by the firmware
     sys = hse * ((pll >> 6) & 511) // ((pll & 63) * 2 * (((pll >> 16) & 3) + 1))
     hpre = (cfgr >> 4) & 15
     hclk = sys // ([1] * 8 + [2, 4, 8, 16, 64, 128, 256, 512])[hpre]

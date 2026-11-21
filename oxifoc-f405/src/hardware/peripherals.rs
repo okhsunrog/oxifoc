@@ -7,14 +7,8 @@ use embassy_stm32::{
 use oxifoc_core::foc::config;
 
 /// Initialize the STM32F405 PLL from the external oscillator.
-/// Board defaults use 8 MHz; the device-specific bench feature uses its measured rate.
+/// The HSE is the nominal 8 MHz on every supported board.
 pub fn init_clock() -> Peripherals {
-    #[cfg(feature = "bench-calibrated-clock")]
-    assert_eq!(
-        embassy_stm32::uid::uid_hex(),
-        "2B002C001047343031363330",
-        "temporary HSE estimate belongs to a different device"
-    );
     defmt::info!("oxifoc-f405 boot");
 
     let mut config = StmConfig::default();
