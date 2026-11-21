@@ -254,54 +254,6 @@ flash-mk5-profile: build-mk5-profile
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
-profile-netstack-mk5 capture mask="basepri" maneuver="maneuvers/mk5-hall-current-check.json":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mask={{ quote(mask) }}
-    test "$mask" = basepri -o "$mask" = primask
-    symbols={{ quote(capture + ".symbols") }}
-    rust-nm -n -S -C {{ mk5_elf }} > "$symbols"
-    uv run python scripts/bench_executor_trace.py arm --symbols "$symbols" --on-active --active-delay-ms 1200 --timer-hz 83917920
-    capture_status=0
-    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} usb {{ mk5_elf }} || capture_status=$?
-    uv run python scripts/bench_executor_trace.py read --symbols "$symbols" --out {{ quote(capture + ".trace.bin") }} \
-        --timer-hz 83917920 --schema netstack-v1 --elf {{ mk5_elf }} --capture {{ quote(capture) }}
-    uv run python scripts/bench_netstack_analysis.py {{ quote(capture + ".trace.bin") }} --mask {{ quote(mask) }} \
-        --trim-to-complete-window --export-spans --out {{ quote(capture + ".trace.json") }}
-    exit "$capture_status"
-
-profile-pwm-l-mk5 capture resistance:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    symbols={{ quote(capture + ".symbols") }}
-    rust-nm -n -S -C {{ mk5_elf }} > "$symbols"
-    uv run python scripts/bench_executor_trace.py arm --symbols "$symbols" --on-active --timer-hz 83917920
-    capture_status=0
-    RUST_LOG=warn,device=info just cli-usb --elf {{ mk5_elf }} detect inductance \
-        --resistance {{ quote(resistance) }} --motor-class medium-outrunner --advanced --current-limit-a 3 --record-hz 20000 --record {{ quote(capture) }} \
-        > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }} || capture_status=$?
-    uv run python scripts/bench_executor_trace.py read --symbols "$symbols" --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
-    exit "$capture_status"
-
-# Read the finite trace after Stop; preserve capture failure as an exit status.
-profile-usb-cpu-mk5 capture maneuver="maneuvers/mk5-hall-current-check.json":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    symbols={{ quote(capture + ".symbols") }}
-    rust-nm -n -S -C {{ mk5_elf }} > "$symbols"
-    uv run python scripts/bench_executor_trace.py arm --symbols "$symbols" --on-active --active-delay-ms 1200 --timer-hz 83917920
-    capture_status=0
-    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} || capture_status=$?
-    uv run python scripts/bench_executor_trace.py read --symbols "$symbols" --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
-    uv run python scripts/bench_trace_analysis.py {{ quote(capture + ".trace.bin") }} --trim-to-complete-window --export-intervals --out {{ quote(capture + ".trace.json") }}
-    exit "$capture_status"
-
-# Arm a finite TIM5 trace before native L detection; export after automatic Stop.
-profile-l-mk5 capture symbols resistance="0.031":
-    uv run python scripts/bench_executor_trace.py arm --symbols {{ quote(symbols) }} --on-active --timer-hz 83917920
-    @just detect-mk5 inductance {{ quote(capture) }} --resistance {{ quote(resistance) }}
-    uv run python scripts/bench_executor_trace.py read --symbols {{ quote(symbols) }} --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
-
 # Hardware: energizes the secured MK5 motor, records at 20 kHz, then tests Stop.
 test-stop-mk5 capture resistance:
     OXIFOC_HARDWARE_TEST=1 OXIFOC_HARDWARE_CAPTURE={{ quote(capture) }} OXIFOC_HARDWARE_RESISTANCE={{quote(resistance)}} \
@@ -517,9 +469,6 @@ bench-mk5-foc-pc output maneuver="maneuvers/foc-profile-velocity40.json":
     wait "$profiler" || status=$?
     exit "$status"
 
-bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,velocity40,velocity120" logging="quiet" velocity_debug="off":
-    uv run --no-project python -B scripts/bench_foc_profile.py {{quote(output)}} --detail {{quote(detail)}} --repeats {{repeats}} --cases {{quote(cases)}} --logging {{quote(logging)}} --recovery-elf {{quote(recovery)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}}
-
 # Production command route through the C5; never select the ST-Link VCP.
 [positional-arguments]
 cli-bridge *ARGS:
@@ -549,10 +498,6 @@ test-link link capture maneuver velocity_debug="off" phase_source="configured":
         "${cli[@]}" source {{quote(phase_source)}} > {{quote(capture + ".source.json")}}
     fi
     "${cli[@]}" {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
-
-# Matching bench-executor-trace firmware must already be flashed.
-profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" repeats="3":
-    uv run --no-project python -B scripts/bench_link_profile.py {{quote(link)}} {{quote(maneuver)}} {{quote(output)}} --repeats {{repeats}}
 
 # Production SPI image with hall-diagnostics, for captures through the C5.
 build-mk5-motion:
@@ -588,11 +533,8 @@ bench-mk5-low-speed-interp output recovery hall_config interp="0" repeats="2":
 bench-mk5-velocity-debug output recovery hall_config repeats="2" cases="velocity40-long,velocity120-to40-long,velocity40-to-iq045":
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --velocity-debug --cases {{quote(cases)}}
 
-bench-mk5-cogging output recovery hall_config repeats="2" cases="velocity40-long,velocity120-to40-long,velocity80-sweep" hz="20000":
-    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --cogging-ab --velocity-debug --cases {{quote(cases)}} --capture-hz {{hz}}
-
-bench-mk5-crossover output recovery hall_config repeats="1" phase_source="hall" cases="velocity320-hold-to40" spi_priority="off" hz="20000":
-    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --phase-source {{quote(phase_source)}} --cases {{quote(cases)}} {{if spi_priority == "on" { "--spi-priority" } else { "" }}} --capture-hz {{hz}}
+bench-mk5-crossover output recovery hall_config repeats="1" phase_source="hall" cases="velocity320-hold-to40" hz="20000":
+    uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --phase-source {{quote(phase_source)}} --cases {{quote(cases)}} --capture-hz {{hz}}
 
 test-velocity-debug:
     cargo test --locked -p oxifoc-core --lib --features {{quote(core_embassy_features + ",velocity-debug")}}

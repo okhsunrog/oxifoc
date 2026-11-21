@@ -106,6 +106,16 @@ Caveats:
   to allow reorientation before increasing the current.
   Inspect the 1.5 A run before proceeding to 3 A; do not bypass a protection
   fault or incomplete capture.
+- `mk5-hall-current-pilot.json` and `mk5-hall-hold-check.json` — short
+  Hall-commutated current checks for `just test-current-mk5` and
+  `just bench-current-mk5`.
+- `foc-profile-*.json` — the velocity, sweep, torque-isolation and rearm cases
+  of `scripts/bench_motion_profile.py` (the `bench-mk5-motion*`,
+  `bench-mk5-speed-sweep`, `bench-mk5-crossover` and related recipes), which
+  loads `foc-profile-CASE.json` and captures hall-diagnostics evidence after
+  each run.
+- `spin-punch-15-2k.json`, `prof-openloop-ramp960.json`, `endurance-20s.json`
+  and `velocity-step.json` — the sensorless scenarios of `scripts/benchsuite.py`.
 
 Choose analysis by the measurement question. For stationary resistance, first
 inspect settling, zero-current offsets, signed V/I plateaus and repeat drift.

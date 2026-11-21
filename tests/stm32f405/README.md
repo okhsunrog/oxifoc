@@ -78,15 +78,13 @@ measurement of the board's oscillator or the production calibrated clock.
 | Question | Tool |
 |---|---|
 | Isolated Cortex-M4 operation cost | This `embedded-test` target |
-| Running ADC ISR body distribution | `bench-foc-distribution`, `diagnostics/foc_distribution.rs` |
-| ISR entry intervals | Separate histogram in the same recorder |
-| PWM applied before preload | `bench-foc-deadline`, `diagnostics/pwm_deadline.rs`, TIM5/TIM1 |
+| Running ADC ISR load, mean/max cost and overruns | The 1-Hz `isr/s` line every F405 image logs |
+| Nested ISR stages and entry intervals | `isr-profiling` (`just build-mk5-profile`) |
 | Actual TIM1/ADC cadence and phase | `scripts/f405_timing.py`, Stopped register readback |
 | Motor, commands and deadman | Bounded CLI maneuver, Packed28, ACK, fault generation |
 
-Use `just bench-mk5-foc` / `scripts/bench_foc_profile.py` for the full controller.
-Research matrices reuse those hardware recorders and decoders with fixed images
-and scenarios. Isolated tests lack ADC interrupt load, protocol activity, real
-motion and PI/command collisions. Body timing excludes final statistics; entry
-intervals and PWM margins answer different questions. Do not combine their
-values or treat different instrumentation levels as identical builds.
+See [the ADC ISR measurement workflow](../../docs/adc-isr-measurement.md) for
+the full controller. Isolated tests lack ADC interrupt load, protocol activity,
+real motion and PI/command collisions. Do not combine their values with
+full-controller timing or treat different instrumentation levels as identical
+builds.

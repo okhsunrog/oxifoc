@@ -26,10 +26,10 @@ map is identical).
 - Motor/power wires 12 AWG; 67×39×18.7 mm with heatsink
 
 Firmware target: `oxifoc-f405` with `--no-default-features
---features transport-usb,board-vesc6-mk5,task-priority`.
-The MK5 build/flash recipes select cooperative task priorities together with
-the USB interrupt executor, following the [on-device comparison](../notes/bench-usb-priority-2026-11-09.md).
-Other F405 board defaults are unchanged; omit `task-priority` for queue A/B tests.
+--features transport-spi,board-vesc6-mk5` (the C5 bridge; `transport-usb`
+instead for a standalone USB image). Every F405 image uses cooperative task
+priorities together with the USB interrupt executor, following the
+[on-device comparison](../notes/bench-usb-priority-2026-11-09.md).
 
 ## Pin map
 
@@ -153,8 +153,8 @@ The setting is saved to flash. `sensor=BoardDefault` restores the NTC input.
 With the input disabled, motor temperature is absent in status. MOSFET
 temperature limits and the other drive protections still apply.
 
-Use `just build-mk5-link-bench usb` for a standalone USB diagnostic image;
-SPI DirectEdge and diagnostic USB/RTT routing cannot be combined. High-level embassy-usb, its Ergot
+Use `just build-mk5-bench` for a standalone USB diagnostic image;
+SPI DirectEdge and diagnostic USB routing cannot be combined. High-level embassy-usb, its Ergot
 adapter, USB task/executor/queues and RX storage are excluded in the SPI build.
 The C5 bridge keeps GPIO26 low for the Waveshare onboard antenna.
 

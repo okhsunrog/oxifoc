@@ -24,7 +24,7 @@ setup. The control loop, estimators and protection logic live in
    async task packs the queue into Packed28 blocks with session, block index
    and drop counts, sends them to the host that armed it, and ends with an
    END block carrying the record total. Each block fits one frame of the
-   slowest link: full 64-sample blocks over USB, SPI, RTT, serial, TCP and
+   slowest link: full 64-sample blocks over USB, SPI, serial, TCP and
    UDP, 15 samples over BLE. The control interrupt does not wait for the
    receiver.
 
@@ -81,7 +81,7 @@ runs this admission on each connection generation.
 
 On the MK5 SPI image, the STM32 is an ergot DirectEdge and the SPI master.
 The ESP32-C5 is the root Router and SPI slave. The host reaches it over USB
-Serial/JTAG. The STM32 has separate USB and RTT diagnostic build profiles.
+Serial/JTAG. The STM32 has a separate USB diagnostic build profile.
 See [MK5 bridge wiring and transport](hw/vesc6-mk5.md#c5-bridge-wiring-and-continuity-check).
 
 The release MK5 recipe uses a [48 KiB CCM telemetry queue][streaming]. Startup

@@ -51,11 +51,9 @@ CLI = REPO / "target" / "release" / "oxifoc-host-cli"
 
 # Set from --transport; the CF2/f405 bench is USB.
 TRANSPORT = "usb"
-# Optional --elf/--chip overrides: oxifoc-host.toml's elf/chip keys name ONE
-# board; on any other board the defmt table is wrong (device log lines
-# vanish) and the RTT control-block pin never routes.
+# Optional --elf override: oxifoc-host.toml's elf key names ONE board; on any
+# other board the defmt table is wrong and device log lines vanish.
 ELF: str | None = None
-CHIP: str | None = None
 
 # Seconds of coast-down between scenarios: the terminal `stop` gates off,
 # the rotor freewheels from the ~7.6k erpm ceiling and needs a few seconds
@@ -173,13 +171,11 @@ def run_cli(args: list[str], timeout: float) -> tuple[int, list[str], str]:
     """Run the host CLI; split stdout into tracing/device log lines and the
     non-tracing remainder (the --json document)."""
     elf_args = ["--elf", ELF] if ELF else []
-    if CHIP:
-        elf_args += ["--chip", CHIP]
     proc = subprocess.run(
         # Explicit transport so a serial_path in oxifoc-host.toml can't
         # route the suite to a UART the firmware doesn't serve.
         [str(CLI), "--transport", TRANSPORT, *elf_args, *args],
-        cwd=REPO,  # oxifoc-host.toml (chip/elf/probe) is loaded from cwd
+        cwd=REPO,  # oxifoc-host.toml (elf, transport) is loaded from cwd
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -431,21 +427,17 @@ def main() -> int:
     ap.add_argument("--out-dir", default=None,
                     help="capture/report directory (default: captures/bench/<UTC>)")
     ap.add_argument("--json", action="store_true", help="JSON report on stdout")
-    ap.add_argument("--transport", default="usb", choices=["rtt", "usb", "serial"],
+    ap.add_argument("--transport", default="usb", choices=["usb", "serial"],
                     help="host transport (CF2/f405 bench: usb)")
     ap.add_argument("--elf", default=None,
                     help="firmware ELF for defmt decoding (required when the "
                          "bench board differs from oxifoc-host.toml's elf)")
-    ap.add_argument("--chip", default=None,
-                    help="probe-rs chip name for the rtt transport (required "
-                         "when the bench board differs from oxifoc-host.toml)")
     ap.add_argument("--board", default="cf2", choices=BOARD_OVERRIDES,
                     help="bench board profile (scenario/threshold overrides)")
     args = ap.parse_args()
-    global TRANSPORT, ELF, CHIP
+    global TRANSPORT, ELF
     TRANSPORT = args.transport
     ELF = args.elf
-    CHIP = args.chip
     for name, override in BOARD_OVERRIDES[args.board].items():
         SCENARIOS[name] = {**SCENARIOS[name], **override}
 
