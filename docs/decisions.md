@@ -178,7 +178,7 @@ their section.
   gone.** B-G431B-ESC1 is a drone-motor board: non-salient SPM, so HFI
   (which exploits Ld≠Lq) does nothing there, and it's flash-tight (128K).
   Split HFI into `hfi` (runtime sensorless observer) and `hfi-detect`
-  (rotating-injection + FFT inductance measurement, pulls `microfft`) —
+  (rotating-injection inductance measurement) —
   two flags, off on g431, on for g474/f405. Six-step removed entirely
   (unused). **−8.9 KB on g431** (headroom 8.3 → 17.2 KB) for the room to
   add features. **Wire is preserved across boards**: `PhaseSource` keeps

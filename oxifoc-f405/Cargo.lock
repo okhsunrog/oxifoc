@@ -1481,17 +1481,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "microfft"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2b6673eb0cc536241d6734c2ca45abfdbf90e9e7791c66a36a7ba3c315b76cf"
-dependencies = [
- "cfg-if",
- "num-complex",
- "static_assertions",
-]
-
-[[package]]
 name = "mutex"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1617,7 +1606,6 @@ dependencies = [
  "ergot",
  "heapless 0.9.3",
  "libm",
- "microfft",
  "postcard-schema",
  "rand_core 0.9.5",
  "sequential-storage",
@@ -1997,12 +1985,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "static_assertions"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "static_cell"

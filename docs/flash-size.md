@@ -19,8 +19,8 @@ dropped 2026-08-06 — see the history table. The size discipline stays:
 the rules are what let a 128K board carry the full stack.)
 
 **Six-step** was removed for all boards; **`hfi`** (runtime HFI
-sensorless observer) and **`hfi-detect`** (rotating-injection + FFT
-inductance measurement, pulls `microfft`) are per-board feature flags —
+sensorless observer) and **`hfi-detect`** (rotating-injection
+inductance measurement) are per-board feature flags —
 g474/f405 enable both. See the history table and
 [decisions.md](decisions.md → Firmware / platform).
 

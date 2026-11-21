@@ -3929,17 +3929,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "microfft"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2b6673eb0cc536241d6734c2ca45abfdbf90e9e7791c66a36a7ba3c315b76cf"
-dependencies = [
- "cfg-if",
- "num-complex",
- "static_assertions",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4785,7 +4774,6 @@ dependencies = [
  "heapless 0.9.3",
  "libm",
  "log",
- "microfft",
  "postcard",
  "postcard-schema",
  "rand_core 0.9.5",

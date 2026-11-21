@@ -21,7 +21,6 @@ log = { version = "0.4", optional = true }
 # FFT for inductance measurement via HFI (required for detection)
 # Only size-32 needed (28 bytes sine table vs 4KB default). No bitrev-tables
 # since Cortex-M4 has hardware RBIT instruction.
-microfft = { version = "0.6", default-features = false, features = ["size-32"], optional = true }
 
 # Optional persistent storage
 sequential-storage = { version = "8.0", default-features = false, features = ["postcard"], optional = true }
@@ -103,11 +102,11 @@ isr-speed = []
 # (`PhaseSourceError::HfiNotConfigured`).
 hfi = []
 
-# HFI-based inductance/saliency detection: rotating HF injection + FFT
-# (microfft). Builds on `detection`. When off, `measure_inductance_auto`
-# uses the voltage-pulse method only — wanted on non-salient boards (drone
-# outrunners) and to drop the FFT on flash-tight boards.
-hfi-detect = ["detection", "dep:microfft"]
+# HFI-based inductance/saliency detection: rotating HF injection and a
+# discrete-response fit. Builds on `detection`. When off,
+# `measure_inductance_auto` uses the voltage-pulse method only — wanted on
+# non-salient boards (drone outrunners) and on flash-tight boards.
+hfi-detect = ["detection"]
 
 
 # Interface Control Document - ergot endpoints and wire types
