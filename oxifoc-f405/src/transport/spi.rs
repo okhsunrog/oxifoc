@@ -18,18 +18,8 @@ use ergot::interface_manager::{
 use oxifoc_core::spi_link::{Builder, SLOT_BYTES, parse};
 
 bind_interrupts!(struct Irqs {
-    DMA2_STREAM0 =>
-        #[cfg(feature = "bench-executor-trace")]
-        crate::diagnostics::trace::SpiRxIrqBegin,
-        dma::InterruptHandler<DMA2_CH0>,
-        #[cfg(feature = "bench-executor-trace")]
-        crate::diagnostics::trace::SpiRxIrqEnd;
-    DMA2_STREAM3 =>
-        #[cfg(feature = "bench-executor-trace")]
-        crate::diagnostics::trace::SpiTxIrqBegin,
-        dma::InterruptHandler<DMA2_CH3>,
-        #[cfg(feature = "bench-executor-trace")]
-        crate::diagnostics::trace::SpiTxIrqEnd;
+    DMA2_STREAM0 => dma::InterruptHandler<DMA2_CH0>;
+    DMA2_STREAM3 => dma::InterruptHandler<DMA2_CH3>;
 });
 
 pub struct Resources {
@@ -64,10 +54,6 @@ fn checksum(crc: &mut Crc<'_>, bytes: &[u8]) -> u32 {
 
 #[embassy_executor::task]
 async fn pump(stack: &'static Stack, r: Resources, epoch: u32) {
-    #[cfg(feature = "bench-spi-pump-priority")]
-    embassy_executor::MetadataRef::for_current_task()
-        .await
-        .set_priority(3);
     use embassy_stm32::interrupt::{InterruptExt, Priority};
     embassy_stm32::interrupt::DMA2_STREAM0.set_priority(Priority::P6);
     embassy_stm32::interrupt::DMA2_STREAM3.set_priority(Priority::P6);

@@ -150,7 +150,9 @@ velocity-debug = []
 # section. The board crate links that section into CPU-only memory and clears
 # it before the ADC interrupt runs (F405: ccm.x and __pre_init).
 ccm-telemetry = []
-bench-phase-observation = []
+# PhaseManager keeps the last Hall/observer blend weight for the F405
+# hall-diagnostics crossover records.
+hall-diagnostics = []
 bench-cogging-compensation = []
 
 # Virtual motor simulation for testing without hardware

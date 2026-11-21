@@ -26,8 +26,6 @@ use oxifoc_core::foc::sensors::HallSnapshot;
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, PwmSnapshot, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
 use oxifoc_core::isr_prof::Snapshot;
-#[cfg(feature = "bench-foc-work")]
-use oxifoc_core::isr_work;
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
 use oxifoc_core::motor::foc_driver::PreparedMotorModel;
@@ -37,14 +35,6 @@ use oxifoc_core::runtime::velocity_debug;
 use oxifoc_core::state::model;
 use oxifoc_core::state::{CURRENT_OFFSET_DONE, DriverOperation, ISR_FLAGS, run_foc_cycle};
 use oxifoc_core::storage::RuntimeConfig;
-#[cfg(any(
-    feature = "bench-executor-trace",
-    feature = "bench-pwm-commit",
-    feature = "bench-netstack-trace",
-    feature = "bench-cycle-outliers",
-    feature = "bench-foc-distribution",
-    feature = "bench-hall-crossover"
-))]
 use oxifoc_core::types::ControlMode;
 #[cfg(feature = "board-vesc6-mk5")]
 use oxifoc_core::types::ControlTiming;
@@ -61,13 +51,11 @@ use crate::{FAULT_REGISTRY, STATE};
 
 #[path = "profiling_window.rs"]
 pub(crate) mod profiling_window;
-#[cfg(feature = "bench-cycle-outliers")]
-use oxifoc_core::units::ToBits;
 #[cfg(feature = "velocity-debug")]
 use oxifoc_core::units::amps;
-#[cfg(any(feature = "bench-cycle-outliers", feature = "isr-timing"))]
-use oxifoc_core::units::{ConstZero, ElectricalAngularVelocity};
-use oxifoc_core::units::{ElectricCurrent, Fraction, seconds, volts};
+use oxifoc_core::units::{
+    ConstZero, ElectricCurrent, ElectricalAngularVelocity, Fraction, seconds, volts,
+};
 use profiling_window::{DwtSample, DwtWindow};
 
 // ========== ADC Sample Storage (Global Atomics) ==========
@@ -136,7 +124,6 @@ pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
 // Split active current/velocity loops with a nonzero control-speed estimate
 // from stationary holds. This selects a computational path, not physical
 // rotation evidence. Bookkeeping follows the ISR end timestamp.
-#[cfg(feature = "isr-timing")]
 mod motion_timing {
     use super::*;
     static N: AtomicU32 = AtomicU32::new(0);
@@ -553,17 +540,10 @@ async fn first_vbus_v() -> f32 {
 
 // ========== ADC Interrupt Handler ==========
 
-/// Read the profiling clock; compile away when timing is disabled.
+/// Read the ISR timing clock: two DWT reads bracket every ADC interrupt.
 #[inline(always)]
 fn isr_timing_now() -> u32 {
-    #[cfg(feature = "isr-timing")]
-    {
-        cortex_m::peripheral::DWT::cycle_count()
-    }
-    #[cfg(not(feature = "isr-timing"))]
-    {
-        0
-    }
+    cortex_m::peripheral::DWT::cycle_count()
 }
 
 /// Read all injected ADC samples and run FOC control.
@@ -574,53 +554,11 @@ fn ADC() {
     static mut ADCS: Option<AdcHandles> = None;
     static mut DRIVER: Option<&'static mut FocDriverType> = None;
     static mut SEQ: u32 = 0;
-    #[cfg(all(
-        feature = "bench-foc-distribution",
-        not(feature = "bench-foc-deadline")
-    ))]
-    static mut DISTRIBUTION: crate::diagnostics::foc_distribution::Recorder =
-        crate::diagnostics::foc_distribution::Recorder::new();
-    #[cfg(feature = "bench-cycle-outliers")]
-    static mut CYCLE_OUTLIERS: crate::diagnostics::cycle_outliers::Recorder =
-        crate::diagnostics::cycle_outliers::Recorder::new();
-    #[cfg(feature = "bench-hall-phase")]
+    #[cfg(feature = "hall-diagnostics")]
     static mut HALL_PHASE: crate::diagnostics::hall_edges::PhaseRecorder =
         crate::diagnostics::hall_edges::PhaseRecorder::new();
 
-    #[cfg(feature = "bench-netstack-trace")]
-    let trace_adc = crate::diagnostics::trace::is_recording();
-    #[cfg(feature = "bench-netstack-trace")]
-    if trace_adc {
-        // First MMIO observations in this IRQ, before DWT or trace appends.
-        // A turn between CR1 reads makes DIR/CNT phase reconstruction ambiguous.
-        let dir_before = embassy_stm32::pac::TIM1.cr1().read().dir()
-            == embassy_stm32::pac::timer::vals::Dir::Down;
-        let count = embassy_stm32::pac::TIM1.cnt().read().cnt();
-        let dir_after = embassy_stm32::pac::TIM1.cr1().read().dir()
-            == embassy_stm32::pac::timer::vals::Dir::Down;
-        let phase = u32::from(count)
-            | (u32::from(dir_after) << 16)
-            | (u32::from(dir_before != dir_after) << 17);
-        // Timestamp remains the serialized append time, while id is the
-        // earlier entry-phase snapshot: CNT[15:0], DIR16, transition17.
-        crate::diagnostics::trace::record(crate::diagnostics::trace::ADC_ENTRY_PHASE, phase);
-    }
-    #[cfg(feature = "bench-foc-deadline")]
-    crate::diagnostics::pwm_deadline::begin();
     let isr_t0 = isr_timing_now();
-    #[cfg(feature = "bench-foc-work")]
-    isr_work::begin();
-    #[cfg(feature = "bench-cycle-outliers")]
-    let core_before = Snapshot::observe();
-    #[cfg(feature = "bench-executor-trace")]
-    crate::diagnostics::trace::record(8, 0);
-    #[cfg(all(
-        feature = "bench-netstack-trace",
-        not(feature = "bench-executor-trace")
-    ))]
-    if trace_adc {
-        crate::diagnostics::trace::record(8, 0);
-    }
     let last_start = if cfg!(feature = "isr-profiling") {
         ISR_LAST_START.load(Ordering::Relaxed)
     } else {
@@ -655,10 +593,6 @@ fn ADC() {
     // Preserve the 128-cycle thermal sampling cadence. Exact flash lookups
     // replace the two Beta-model logarithms that previously spiked this cycle.
     let convert_temp = *SEQ & 127 == 0;
-    #[cfg(feature = "bench-foc-work")]
-    if convert_temp {
-        isr_work::mark(isr_work::TEMPERATURE);
-    }
 
     // Read ADC1 injected data (phase A current + board temp)
     let mut phase_a = [0; 3];
@@ -716,7 +650,7 @@ fn ADC() {
 
     // Build ADC snapshot
     *SEQ = SEQ.wrapping_add(1);
-    #[cfg(feature = "bench-hall")]
+    #[cfg(feature = "hall-diagnostics")]
     crate::diagnostics::hall_edges::observe_adc(*SEQ);
     // Read the compare/preload registers BEFORE run_foc_cycle can program
     // the next vector. Do not pair ADC measurements with that next command.
@@ -747,12 +681,7 @@ fn ADC() {
     let prof_t2 = isr_prof::now();
 
     // Run FOC control loop (shared cycle logic in core)
-    #[cfg(feature = "isr-timing")]
     let mut time_control_motion = false;
-    #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
-    let mut outlier_active = false;
-    #[cfg(feature = "bench-cycle-outliers")]
-    let mut outlier_velocity = ElectricalAngularVelocity::ZERO;
     // The release flag avoids touching the boot handoff while the task
     // waits for its first VBUS reading. Once taken, DRIVER stays ISR-local.
     if DRIVER.is_none() && FOC_READY.load(Ordering::Acquire) {
@@ -779,64 +708,26 @@ fn ADC() {
         if velocity_debug {
             publish_velocity_debug(driver, *SEQ, now_ticks, hall_snapshot);
         }
-        #[cfg(feature = "bench-hall-phase")]
-        HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
-        #[cfg(feature = "bench-hall-phase")]
-        HALL_PHASE.observe_velocity(*SEQ, || driver.velocity_control_snapshot());
-        #[cfg(feature = "bench-hall-crossover")]
-        if matches!(driver.mode(), ControlMode::VelocityControl { .. }) {
-            HALL_PHASE.observe_crossover(*SEQ, driver.phase());
-        }
-        #[cfg(feature = "bench-hall-phase")]
-        HALL_PHASE.observe_faults(*SEQ, || {
-            use oxifoc_core::foc::phase::{PhaseProvider, RotorVelocityEstimate};
-            driver
-                .phase()
-                .rotor_velocity()
-                .map(RotorVelocityEstimate::velocity)
-        });
-        #[cfg(any(feature = "bench-cycle-outliers", feature = "bench-foc-distribution"))]
+        #[cfg(feature = "hall-diagnostics")]
         {
-            outlier_active = !matches!(driver.mode(), ControlMode::Stopped);
-            #[cfg(feature = "bench-cycle-outliers")]
-            {
-                outlier_velocity =
-                    output.map_or(ElectricalAngularVelocity::ZERO, |sample| sample.velocity);
+            HALL_PHASE.observe(*SEQ, driver.phase(), hall_snapshot);
+            HALL_PHASE.observe_velocity(*SEQ, || driver.velocity_control_snapshot());
+            if matches!(driver.mode(), ControlMode::VelocityControl { .. }) {
+                HALL_PHASE.observe_crossover(*SEQ, driver.phase());
             }
+            HALL_PHASE.observe_faults(*SEQ, || {
+                use oxifoc_core::foc::phase::{PhaseProvider, RotorVelocityEstimate};
+                driver
+                    .phase()
+                    .rotor_velocity()
+                    .map(RotorVelocityEstimate::velocity)
+            });
         }
-        #[cfg(feature = "isr-timing")]
-        {
-            use oxifoc_core::types::ControlMode;
-            time_control_motion = matches!(
-                driver.mode(),
-                ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
-            ) && output
-                .is_some_and(|sample| sample.velocity != ElectricalAngularVelocity::ZERO);
-        }
-        #[cfg(any(
-            feature = "bench-executor-trace",
-            feature = "bench-pwm-commit",
-            feature = "bench-netstack-trace"
-        ))]
-        let trace_active = if !cfg!(feature = "bench-netstack-trace")
-            && cfg!(any(
-                feature = "bench-trace-excitation",
-                feature = "bench-pwm-commit"
-            )) {
-            matches!(driver.mode(), ControlMode::DirectVoltage { .. })
-        } else {
-            !matches!(driver.mode(), ControlMode::Stopped)
-        };
-        #[cfg(any(
-            feature = "bench-executor-trace",
-            feature = "bench-pwm-commit",
-            feature = "bench-netstack-trace"
-        ))]
-        if trace_active {
-            crate::diagnostics::trace::trigger_active();
-        } else {
-            crate::diagnostics::trace::trigger_stopped();
-        }
+        time_control_motion = matches!(
+            driver.mode(),
+            ControlMode::CurrentControl { .. } | ControlMode::VelocityControl { .. }
+        ) && output
+            .is_some_and(|sample| sample.velocity != ElectricalAngularVelocity::ZERO);
         output
     });
 
@@ -861,76 +752,22 @@ fn ADC() {
     isr_prof::add(&ISR_PROF_FOC, prof_t2, prof_t3);
     isr_prof::add(&ISR_PROF_PUB, prof_t3, prof_t4);
 
-    #[cfg(all(
-        feature = "bench-netstack-trace",
-        not(feature = "bench-executor-trace")
-    ))]
-    if trace_adc {
-        crate::diagnostics::trace::record(9, 0);
-    }
     #[cfg(feature = "board-vesc6-mk5")]
     detection_timing::after_sample(DRIVER);
-    #[cfg(feature = "bench-cycle-outliers")]
-    let core_after = Snapshot::observe();
-    // Every recorder uses this same end point. Recorder/statistics work
-    // contributes to entry intervals, beyond the measured control body.
+    // The measured body ends here; the bookkeeping below falls into the next
+    // entry interval.
     let isr_end = isr_timing_now();
-    #[cfg(feature = "bench-cycle-outliers")]
-    {
-        CYCLE_OUTLIERS.observe(
-            outlier_active,
-            *SEQ,
-            isr_t0,
-            DWT_GENERATION.load(Ordering::Relaxed),
-            isr_end.wrapping_sub(isr_t0),
-            ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
-            u32::from(convert_temp) | (u32::from(time_control_motion) << 1),
-            outlier_velocity.to_bits(),
-            [
-                prof_t1.wrapping_sub(isr_t0),
-                prof_t2.wrapping_sub(prof_t1),
-                prof_t3.wrapping_sub(prof_t2),
-                prof_t4.wrapping_sub(prof_t3),
-            ],
-            core_after.increments_since(&core_before),
-        );
-    }
-    #[cfg(feature = "bench-foc-deadline")]
-    crate::diagnostics::foc_distribution::observe_deadline_session(outlier_active);
-    #[cfg(all(
-        feature = "bench-foc-distribution",
-        not(feature = "bench-foc-deadline")
-    ))]
-    DISTRIBUTION.observe(
-        outlier_active,
-        *SEQ,
-        isr_t0,
-        DWT_GENERATION.load(Ordering::Relaxed),
-        isr_end.wrapping_sub(isr_t0),
-        ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
-    );
-    #[cfg(feature = "isr-timing")]
+    let isr_dt = isr_end.wrapping_sub(isr_t0);
     if time_control_motion {
-        motion_timing::record(isr_end.wrapping_sub(isr_t0));
+        motion_timing::record(isr_dt);
     }
-    if cfg!(feature = "isr-timing") {
-        ISR_CYC_SUM.fetch_add(isr_end.wrapping_sub(isr_t0), Ordering::Relaxed);
-    }
+    ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);
     ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
-    if cfg!(feature = "isr-timing") {
-        let isr_dt = isr_end.wrapping_sub(isr_t0);
-        ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
-        // An ISR that ate the whole PWM period leaves no thread time.
-        if isr_dt > ISR_BUDGET_CYCLES.load(Ordering::Relaxed) {
-            ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
-        }
+    ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
+    // An ISR that ate the whole PWM period leaves no thread time.
+    if isr_dt > ISR_BUDGET_CYCLES.load(Ordering::Relaxed) {
+        ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
     }
-    #[cfg(feature = "bench-foc-deadline")]
-    crate::diagnostics::pwm_deadline::end();
-    // Include timing/statistics bookkeeping in the traced ADC context;
-    // ending earlier would charge that higher-priority work to USB.
-    #[cfg(feature = "bench-executor-trace")]
-    crate::diagnostics::trace::record(9, 0);
 }
 
 fn dwt_sample() -> DwtSample {
@@ -982,7 +819,6 @@ struct IsrStatistics {
     cycles: u32,
     max_cycles: u32,
     overruns: u32,
-    #[cfg(feature = "isr-timing")]
     motion: (u32, u32, u32),
     adc: u32,
     snapshot: u32,
@@ -1003,7 +839,6 @@ impl IsrStatistics {
                 cycles: ISR_CYC_SUM.swap(0, Ordering::Relaxed),
                 max_cycles: ISR_CYC_MAX.swap(0, Ordering::Relaxed),
                 overruns: ISR_CYC_OVER.swap(0, Ordering::Relaxed),
-                #[cfg(feature = "isr-timing")]
                 motion: motion_timing::take(),
                 adc: ISR_PROF_ADC.swap(0, Ordering::Relaxed),
                 snapshot: ISR_PROF_SNAP.swap(0, Ordering::Relaxed),
@@ -1030,7 +865,6 @@ pub async fn isr_stats_task() {
     use embassy_time::Ticker;
     // A perpetually backlogged stream yields between batches but stays ready.
     // Profiling must run before that stream so windows do not span states.
-    #[cfg(all(feature = "isr-timing", feature = "task-priority"))]
     embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(2);
@@ -1091,47 +925,6 @@ pub async fn isr_stats_task() {
             continue;
         };
         let cyc_n = sample_count.get();
-        #[cfg(feature = "bench-foc-sections-ram")]
-        {
-            use crate::diagnostics::foc_distribution as distribution;
-            use oxifoc_core::isr_prof::Section as S;
-            if distribution::needs_sections(cortex_m::peripheral::DWT::cycle_count()) {
-                let a = |section| stats.core.average(section, sample_count);
-                distribution::publish_sections([
-                    1,
-                    CPU_HZ,
-                    cyc_n,
-                    stats.cycles / cyc_n,
-                    stats.max_cycles,
-                    stats.overruns,
-                    stats.adc / cyc_n,
-                    stats.snapshot / cyc_n,
-                    stats.control / cyc_n,
-                    stats.publish / cyc_n,
-                    a(S::Command),
-                    a(S::Protection),
-                    a(S::Step),
-                    a(S::Tail),
-                    a(S::Gate),
-                    a(S::Control),
-                    a(S::Trig),
-                    a(S::Post),
-                    a(S::Estimator),
-                    a(S::Observer),
-                    a(S::Startup),
-                    a(S::PhaseOutput),
-                    a(S::SensorSampling),
-                    a(S::PhaseVoltage),
-                    a(S::VelocityRequest),
-                ]);
-            }
-            // Timing counters were already consumed coherently. Avoid all
-            // reporter text I/O during this diagnostic, including through RTT.
-            if cfg!(feature = "bench-foc-sections-ram") {
-                continue;
-            }
-        }
-        #[cfg(feature = "isr-timing")]
         if stats.motion.0 != 0 {
             defmt::info!(
                 "isr-motion/s: n={} avg={} max={}",
@@ -1140,9 +933,7 @@ pub async fn isr_stats_task() {
                 stats.motion.2
             );
         }
-        if cfg!(feature = "isr-timing")
-            && let Some(elapsed_cycles) = elapsed_cycles
-        {
+        if let Some(elapsed_cycles) = elapsed_cycles {
             let cyc_sum = stats.cycles;
             let cyc_max = stats.max_cycles;
             let adc = stats.adc / cyc_n;
@@ -1182,27 +973,15 @@ pub async fn isr_stats_task() {
                     ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
                 );
             }
-        } else if !cfg!(feature = "isr-timing") {
-            defmt::info!("adc/s: n={} profiling=off", cyc_n);
         }
         use oxifoc_core::runtime::streaming::fast_telem_stats as ft;
         let pushed = ft::PUSH_OK.swap(0, Ordering::Relaxed);
         let dropped = ft::PUSH_DROPS.swap(0, Ordering::Relaxed);
         let read = ft::READ_OK.swap(0, Ordering::Relaxed);
-        #[cfg(feature = "bench-hall")]
+        #[cfg(feature = "hall-diagnostics")]
         crate::diagnostics::hall_edges::observe_stream_stats(dropped);
         if pushed != 0 || dropped != 0 || read != 0 {
             defmt::info!("telem/s: push={} drop={} read={}", pushed, dropped, read);
-        }
-        #[cfg(feature = "bench-usb-metrics")]
-        {
-            use crate::protocol::usb_metrics as um;
-            defmt::info!(
-                "usbdiag/s: writes={} max_write_ticks={} long={}",
-                um::WRITES.swap(0, Ordering::Relaxed),
-                um::MAX_WRITE_TICKS.swap(0, Ordering::Relaxed),
-                um::LONG_WRITES.swap(0, Ordering::Relaxed)
-            );
         }
         // Hall diagnostics: raw pin state + edge/overcapture rates. A
         // sensored motor at standstill shows a constant valid state (1-6)

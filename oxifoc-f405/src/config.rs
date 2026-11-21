@@ -153,11 +153,7 @@ pub mod detection_pwm {
 // Start with the old amplitude, but blend through a provisional 1 A per-phase
 // region to avoid a full voltage step at the first tiny current reference.
 // This is a bench setting, not a measured calibration of the inverter.
-pub const DEAD_TIME_COMP_NS: u32 = if cfg!(feature = "bench-no-deadtime-comp") {
-    0
-} else {
-    360
-};
+pub const DEAD_TIME_COMP_NS: u32 = 360;
 pub const DEAD_TIME_COMP_LINEAR_CURRENT: ElectricCurrent = amps(1.0);
 
 // ============================================================================
@@ -249,14 +245,9 @@ const _: () = assert!(CLOCK_PROFILE.apb_hz(CLOCK_PROFILE.apb2_pre) <= 84_000_000
 #[cfg(feature = "transport-usb")]
 pub const USB_OUT_QUEUE_SIZE: usize = 8192;
 
-/// Size of outgoing packet queue for ergot over RTT (COBS stream). A COBS
-/// send reserves a whole encoded MTU, so this holds three of them.
-#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
-pub const RTT_OUT_QUEUE_SIZE: usize = 8192;
-
 /// Maximum packet size for ergot framing, also every interface's TX MTU. A
 /// full raw telemetry block must fit in one frame on every link: the C5
-/// bridge carries 2304-byte SPI frames, and the host's USB, RTT and serial
+/// bridge carries 2304-byte SPI frames, and the host's USB and serial
 /// readers take larger ones.
 pub const MAX_PACKET_SIZE: usize = 2304;
 

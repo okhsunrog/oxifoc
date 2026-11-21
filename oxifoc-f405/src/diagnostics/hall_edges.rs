@@ -5,89 +5,67 @@
 //! sequence is the latest observed loop, not a simultaneous ADC capture.
 
 use core::sync::atomic::{AtomicU32, Ordering};
-#[cfg(feature = "bench-hall-crossover")]
-use oxifoc_core::foc::phase::RotorVelocityEstimate;
-#[cfg(feature = "bench-hall-phase")]
-use oxifoc_core::foc::phase::{HallHealth, PhaseManager, PhaseProvider};
-#[cfg(feature = "bench-hall-phase")]
+use oxifoc_core::foc::phase::{HallHealth, PhaseManager, PhaseProvider, RotorVelocityEstimate};
 use oxifoc_core::foc::sensors::{AngleSensor, HallSnapshot};
-#[cfg(feature = "bench-hall-phase")]
 use oxifoc_core::foc::trig::SinCos;
-#[cfg(feature = "bench-hall-phase")]
 use oxifoc_core::motor::foc_driver::VelocityControlSnapshot;
-#[cfg(feature = "bench-hall-phase")]
 use oxifoc_core::units::{ConstZero, ElectricalAngle, ElectricalAngularVelocity, ToBits};
 
 // Covers a short 120 electrical rad/s velocity/braking capture, including
-// coast. These CPU-only records cost 8 KiB in bench images only.
+// coast. These CPU-only records cost 8 KiB in hall-diagnostics images only.
 const CAPACITY: usize = 512;
 static ADC_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 // ADC-owned, finite evidence of Hall/observer handoffs. No text formatting or
 // transport work in the control interrupt; exported only after Stop.
-#[cfg(feature = "bench-hall-phase")]
 const PHASE_CAPACITY: usize = 64;
-#[cfg(feature = "bench-hall-phase")]
 const PHASE_WORDS: usize = 14;
-#[cfg(feature = "bench-hall-phase")]
 #[unsafe(no_mangle)]
 pub static BENCH_HALL_PHASE_EVENTS: [[AtomicU32; PHASE_WORDS]; PHASE_CAPACITY] =
     [const { [const { AtomicU32::new(0) }; PHASE_WORDS] }; PHASE_CAPACITY];
-#[cfg(feature = "bench-hall-phase")]
 #[unsafe(no_mangle)]
 pub static BENCH_HALL_PHASE_COUNT: AtomicU32 = AtomicU32::new(0);
 
-#[cfg(feature = "bench-hall-phase")]
 #[unsafe(no_mangle)]
 pub static BENCH_VELOCITY_SAMPLES: [[AtomicU32; 8]; 128] =
     [const { [const { AtomicU32::new(0) }; 8] }; 128];
-#[cfg(feature = "bench-hall-phase")]
 #[unsafe(no_mangle)]
 pub static BENCH_VELOCITY_COUNT: AtomicU32 = AtomicU32::new(0);
 
-#[cfg(feature = "bench-hall-crossover")]
 #[unsafe(no_mangle)]
 pub static BENCH_CROSSOVER_SAMPLES: [[AtomicU32; 8]; 320] =
     [const { [const { AtomicU32::new(0) }; 8] }; 320];
-#[cfg(feature = "bench-hall-crossover")]
 #[unsafe(no_mangle)]
 pub static BENCH_CROSSOVER_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Finite registry changes survive a warning that clears before the host polls.
 // Fields: ADC sequence, generation, active category bitmask, rotor speed bits.
-#[cfg(feature = "bench-hall-phase")]
 #[unsafe(no_mangle)]
 pub static BENCH_FAULT_EVENTS: [[AtomicU32; 4]; 16] =
     [const { [const { AtomicU32::new(0) }; 4] }; 16];
-#[cfg(feature = "bench-hall-phase")]
 #[unsafe(no_mangle)]
 pub static BENCH_FAULT_COUNT: AtomicU32 = AtomicU32::new(0);
 
-#[cfg(feature = "bench-hall-phase")]
 pub struct PhaseRecorder {
     previous_health: Option<HallHealth>,
     previous_angle: ElectricalAngle,
     last_velocity_sequence: u32,
-    #[cfg(feature = "bench-hall-crossover")]
     last_crossover_sequence: u32,
     fault_generation: u32,
 }
 
-#[cfg(feature = "bench-hall-phase")]
 impl PhaseRecorder {
     pub const fn new() -> Self {
         Self {
             previous_health: None,
             previous_angle: ElectricalAngle::ZERO,
             last_velocity_sequence: 0,
-            #[cfg(feature = "bench-hall-crossover")]
             last_crossover_sequence: 0,
             fault_generation: 0,
         }
     }
 
     /// Sample the selected phase and physical speed alongside the observer at 40 Hz.
-    #[cfg(feature = "bench-hall-crossover")]
     pub fn observe_crossover<H: AngleSensor, E: AngleSensor, S: SinCos>(
         &mut self,
         sequence: u32,
@@ -233,7 +211,6 @@ impl PhaseRecorder {
 }
 
 /// The capture word of a sample; a missing sample reads back as NaN.
-#[cfg(feature = "bench-hall-phase")]
 fn bits(sample: Option<impl ToBits>) -> u32 {
     sample.map_or(f32::NAN.to_bits(), ToBits::to_bits)
 }

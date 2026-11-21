@@ -29,9 +29,8 @@ bench-probe-pc *ARGS:
 replay-hall *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example replay_hall -- "$@"
 
-mk5_features := "transport-spi,board-vesc6-mk5,task-priority"
-mk5_bench_features := "transport-usb,board-vesc6-mk5,task-priority,bench-calibrated-clock,bench-clock-reference"
-mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
+mk5_features := "transport-spi,board-vesc6-mk5"
+mk5_bench_features := "transport-usb,board-vesc6-mk5,bench-calibrated-clock"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 # Bench hardware selectors come from the environment or a local .env file
 # (see .env.example). Unset, probe-rs uses the only attached probe and the
@@ -43,10 +42,6 @@ c5_probe_arg := if c5_probe == "" { "" } else { "--probe " + c5_probe }
 bridge_serial := env("OXIFOC_BRIDGE_SERIAL", "")
 bridge_serial_arg := if bridge_serial == "" { "" } else { "--serial-path " + bridge_serial }
 c5_project := env("OXIFOC_C5_PROJECT", "")
-mk5_profile_features := mk5_usb_metrics_features + ",bench-trace-excitation,isr-profiling"
-mk5_usb_trace_features := mk5_bench_features + ",bench-hall,bench-executor-trace,isr-timing"
-mk5_pwm_trace_features := mk5_bench_features + ",bench-hall,bench-pwm-commit"
-mk5_netstack_trace_features := mk5_bench_features + ",bench-hall,bench-netstack-trace"
 
 # Finite connector probe; flashing is deliberately a separate action.
 build-mk5-bridge-pins:
@@ -120,6 +115,16 @@ check-device:
     # directories so no ELF path silently changes electrical meaning.
     echo "oxifoc-f405 (vesc6-mk5): build..."
     (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/vesc6-mk5 --no-default-features --features {{ mk5_features }} 2>&1 | filter) || exit 1
+    # Kept diagnostic images must not rot either: lint them and build the
+    # standalone connector probes. Separate target directories keep the
+    # production MK5 ELF untouched.
+    echo "oxifoc-f405 (vesc6-mk5 diagnostics): clippy + build..."
+    for features in {{ mk5_features }},isr-profiling {{ mk5_features }},hall-diagnostics {{ mk5_bench_features }},hall-diagnostics,isr-profiling; do
+        (cd oxifoc-f405 && cargo clippy --release --quiet --target-dir target/diagnostics --no-default-features --features "$features" -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
+    done
+    for probe in bridge-pin-probe:bench-bridge-pins bridge-pin-probe:bench-bridge-pins-rx bridge-spi-probe:bench-bridge-spi bridge-spi-probe:bench-spi-cs-request; do
+        (cd oxifoc-f405 && cargo build --release --quiet --target-dir target/diagnostics --no-default-features --features "board-vesc6-mk5,${probe#*:}" --bin "${probe%%:*}" 2>&1 | filter) || exit 1
+    done
 
 # Format all code (workspace + device crates)
 fmt:
@@ -194,7 +199,7 @@ flash-f405-vesc6-mk5:
     cd oxifoc-f405 && cargo run --release --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ mk5_features }}
 
-# MK5 bench image with the UID-gated clock calibration and priority scheduler.
+# MK5 USB bench image with the UID-gated clock calibration.
 build-mk5-bench:
     cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
         --features {{ mk5_bench_features }}
@@ -204,34 +209,16 @@ flash-mk5-bench: build-mk5-bench
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
-build-mk5-usb-metrics:
+# USB bench image with hall-diagnostics: finite Hall/crossover records for
+# dump-hall-mk5 and a 50-Hz Hall log; profiling=on adds isr-profiling.
+build-mk5-hall profiling="off":
+    @test {{ quote(profiling) }} = off -o {{ quote(profiling) }} = on
     cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ mk5_usb_metrics_features }}
+        --features {{ quote(mk5_bench_features + ",hall-diagnostics" + if profiling == "on" { ",isr-profiling" } else { "" }) }}
 
-flash-mk5-usb-metrics: build-mk5-usb-metrics
+flash-mk5-hall profiling="off": (build-mk5-hall profiling)
     probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx
-
-# Hall bring-up logging at 50 Hz, correlated with the 20-kHz raw ADC stream.
-build-mk5-hall profiling="off" transport="usb":
-    @test {{ quote(profiling) }} = off -o {{ quote(profiling) }} = on -o {{ quote(profiling) }} = timing
-    @test {{ quote(transport) }} = usb -o {{ quote(transport) }} = rtt
-    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "on" { ",isr-profiling" } else if profiling == "timing" { ",isr-timing" } else { "" }) + (if transport == "rtt" { ",transport-rtt" } else { "" })) }}
-
-flash-mk5-hall profiling="off" transport="usb": (build-mk5-hall profiling transport)
-    probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
-    probe-rs reset --chip STM32F405RGTx
-
-# Packed28 sessions over Ergot USB: timing adds its 1-Hz report; hall-phase adds
-# finite RAM events; hall-timing enables both; hall-outliers also records section
-# costs of slow cycles. Use build-mk5-hall for Hall text logs.
-# compensation=off disables only command correction, retaining hardware gate deadtime.
-build-mk5-raw profiling="normal" compensation="on":
-    @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing -o {{ quote(profiling) }} = hall-phase -o {{ quote(profiling) }} = hall-timing -o {{ quote(profiling) }} = hall-outliers
-    @test {{ quote(compensation) }} = on -o {{ quote(compensation) }} = off
-    cd oxifoc-f405 && DEFMT_LOG={{ quote(if profiling == "timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-outliers" { "warn,oxifoc_f405::control::foc=info" } else { "warn" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else if profiling == "hall-timing" { ",bench-hall-phase,isr-timing" } else if profiling == "hall-outliers" { ",bench-hall-phase,isr-timing,bench-cycle-outliers" } else { "" }) + (if compensation == "off" { ",bench-no-deadtime-comp" } else { "" })) }}
 
 # Detect one parameter without applying motor parameters, recording every cycle.
 detect-mk5 step capture *ARGS:
@@ -270,47 +257,19 @@ profile-mk5 output seconds="8":
         --rtt-channel-mode no-block-skip {{ mk5_elf }} flat --line-info --limit 20000 pcsr \
         > {{ quote(output) }} 2>&1
 
-# Same trace instrumentation for both placements; independent of motor PWM.
+# Production SPI image with isr-profiling: the 1-Hz isr/s line plus per-section
+# isrp/isrc/isrd/isre/isrh breakdowns over defmt.
 build-mk5-profile:
-    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_profile_features) }}
+    cd oxifoc-f405 && DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
+        --features {{ quote(mk5_features + ",bench-calibrated-clock,isr-profiling") }}
 
 flash-mk5-profile: build-mk5-profile
-    probe-rs download --verify --chip STM32F405RGTx {{ mk5_elf }}
-    probe-rs reset --chip STM32F405RGTx
-
-# USB IRQ/executor spans and ADC boundaries; no nested DWT section profiling.
-build-mk5-usb-cpu-trace:
-    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_usb_trace_features) }}
-
-# Same velocity workload: minimal timing, section outliers, or finite CPU trace.
-build-mk5-runtime-profile detail="timing" observer_log="off" logging="timing":
-    @test {{ quote(detail) }} = timing -o {{ quote(detail) }} = outliers -o {{ quote(detail) }} = trace
-    @test {{ quote(observer_log) }} = off -o {{ quote(observer_log) }} = on
-    @test {{ quote(logging) }} = timing -o {{ quote(logging) }} = verbose -o {{ quote(logging) }} = quiet
-    cd oxifoc-f405 && DEFMT_LOG={{ quote((if logging == "verbose" { "debug" } else if logging == "quiet" { "warn" } else { "warn,oxifoc_f405::control::foc=info" }) + if observer_log == "on" { ",oxifoc_core::foc::phase::manager::update=info" } else { "" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,isr-timing" + (if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "trace" { ",bench-executor-trace" } else { "" }) + if observer_log == "on" { ",bench-observer-logging" } else { "" }) }}
-
-# Exhaustive temperature conversion check before PWM initialization.
-build-mk5-thermal-check:
-    cd oxifoc-f405 && DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,isr-timing,bench-ntc-check") }}
+    probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{ mk5_elf }}
+    probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
 # Explicit motor excitation, no fast stream; same secured +40 erad/s CPU control.
 test-velocity-no-stream-mk5 elf:
     cargo run --release --locked -p oxifoc-host-lib --example velocity_cpu_control -- --run {{ quote(elf) }}
-
-# Minimal CCR timing probe; no trace work before the PWM writes.
-build-mk5-pwm-trace:
-    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_pwm_trace_features) }}
-
-# Network lock spans and ADC entry phase, without executor/PWM trace hooks.
-build-mk5-netstack-trace mask="basepri":
-    @test {{ quote(mask) }} = basepri -o {{ quote(mask) }} = primask
-    cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_netstack_trace_features + if mask == "primask" { ",bench-netstack-primask" } else { "" }) }}
 
 profile-netstack-mk5 capture mask="basepri" maneuver="maneuvers/mk5-hall-current-check.json":
     #!/usr/bin/env bash
@@ -407,7 +366,7 @@ cli-usb *ARGS:
 cli-rtt *ARGS:
     @just cli --transport rtt --chip STM32F405RGTx --elf {{ mk5_elf }} --wait-secs 8 --json "$@"
 
-# Export bench-hall evidence after Stop; probe attach may briefly halt, but does not reset.
+# Export hall-diagnostics evidence after Stop; probe attach may briefly halt, but does not reset.
 dump-hall-mk5 output elf=mk5_elf cli="":
     uv run python scripts/bench_hall_edges.py {{ quote(output) }} --elf {{ quote(elf) }} {{ if cli == "" { "" } else { "--cli " + quote(cli) } }}
 
@@ -585,26 +544,6 @@ bench-mk5-foc-pc output maneuver="maneuvers/foc-profile-velocity40.json":
 bench-mk5-foc output recovery detail="minimal" repeats="3" cases="hold,current,velocity40,velocity120" logging="quiet" velocity_debug="off":
     uv run --no-project python -B scripts/bench_foc_profile.py {{quote(output)}} --detail {{quote(detail)}} --repeats {{repeats}} --cases {{quote(cases)}} --logging {{quote(logging)}} --recovery-elf {{quote(recovery)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}}
 
-# Current production transport and model; diagnostics differ only by section marks.
-build-mk5-foc-profile detail="minimal" logging="quiet":
-    @test {{quote(detail)}} = minimal -o {{quote(detail)}} = work -o {{quote(detail)}} = outliers -o {{quote(detail)}} = sections -o {{quote(detail)}} = sections-ram -o {{quote(detail)}} = phase-ram -o {{quote(detail)}} = deadline
-    @test {{quote(logging)}} = timing -o {{quote(logging)}} = quiet
-    cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "work" { ",bench-foc-work" } else if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "sections" { ",isr-profiling" } else if detail == "sections-ram" { ",bench-foc-sections-ram,isr-profiling" } else if detail == "phase-ram" { ",bench-foc-phase-ram" } else if detail == "deadline" { ",bench-foc-deadline" } else { "" })}}
-
-flash-mk5-foc-profile detail="minimal" logging="quiet": (build-mk5-foc-profile detail logging)
-    probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
-    probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
-
-# Packed28 sessions through a chosen link.
-build-mk5-link-bench link="spi" detail="timing":
-    @test {{quote(link)}} = spi -o {{quote(link)}} = usb
-    @test {{quote(detail)}} = timing -o {{quote(detail)}} = trace
-    cd oxifoc-f405 && DEFMT_LOG={{quote(if detail == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if detail == "trace" { ",bench-executor-trace" } else { "" }))}}
-
-flash-mk5-link-bench link="spi" detail="timing": (build-mk5-link-bench link detail)
-    probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
-    probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
-
 # Production command route through the C5; never select the ST-Link VCP.
 [positional-arguments]
 cli-bridge *ARGS:
@@ -639,11 +578,11 @@ test-link link capture maneuver velocity_debug="off" phase_source="configured":
 profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" repeats="3":
     uv run --no-project python -B scripts/bench_link_profile.py {{quote(link)}} {{quote(maneuver)}} {{quote(output)}} --repeats {{repeats}}
 
-# Native telemetry plus finite Hall/velocity evidence, without per-cycle timing marks.
-build-mk5-motion crossover="off" spi_priority="off" cogging="off":
-    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-hall-phase" + (if crossover == "on" { ",bench-hall-crossover" } else { "" }) + (if spi_priority == "on" { ",bench-spi-pump-priority" } else { "" }) + (if cogging == "on" { ",bench-cogging-compensation" } else { "" }))}}
+# Production SPI image with hall-diagnostics, for captures through the C5.
+build-mk5-motion:
+    cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,hall-diagnostics")}}
 
-flash-mk5-motion crossover="off" spi_priority="off" cogging="off": (build-mk5-motion crossover spi_priority cogging)
+flash-mk5-motion: build-mk5-motion
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 

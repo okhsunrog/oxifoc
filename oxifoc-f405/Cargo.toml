@@ -28,9 +28,7 @@ bench = false
 [features]
 # Current controller: MK5 with the C5 SPI bridge and fixed telemetry.
 # CF2 and diagnostic transports require an explicit feature selection.
-default = [
-    "transport-spi", "board-vesc6-mk5", "task-priority",
-]
+default = ["transport-spi", "board-vesc6-mk5"]
 # Exactly one board feature must be enabled (compile_error in main.rs).
 # Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
 # amp gain 10 V/V.
@@ -51,71 +49,21 @@ bench-spi-cs-request = ["bench-bridge-spi"]
 # USB bulk endpoints via embassy-usb; defmt over RTT for debugging.
 transport-usb = ["dep:embassy-usb", "ergot/embassy-usb-v0_6-preview", "ergot/nostd-seed-router"]
 transport-spi = ["oxifoc-core/spi-link"]
-# Cooperative task classes: USB workers 3, protocol 2, telemetry/detection 1,
-# remaining tasks 0. Complements the default USB interrupt executor.
-task-priority = ["embassy-executor/scheduler-priority"]
 # Detailed per-section DWT profiling; keep out of normal control images.
-isr-profiling = ["isr-timing", "oxifoc-core/isr-profiling"]
-# Two DWT reads per ISR, without nested section instrumentation.
-isr-timing = []
-# Finite active-body/entry-gap histograms, exported after Stop over SWD.
-bench-foc-distribution = ["isr-timing"]
-bench-foc-work = ["bench-foc-distribution", "oxifoc-core/isr-work-events"]
-bench-foc-deadline = ["bench-foc-distribution"]
-# One complete steady active section window in RAM; no periodic reporter I/O.
-bench-foc-sections-ram = ["bench-foc-distribution"]
-bench-foc-phase-ram = ["bench-foc-sections-ram", "oxifoc-core/isr-profile-phase"]
-# Exhaustive host-table/MCU temperature-model agreement before PWM setup.
-bench-ntc-check = []
-# Finite ADC-owned records of the first and longest over-budget cycles.
-bench-cycle-outliers = ["isr-profiling"]
-# Work classes indexed by PI/command/deadman/derating plus authority-ahead,
-# Hall seam, observer-error wrap and general angle wrap.
-bench-work-class-wraps = ["bench-foc-work"]
-# A/B reproduction of the former periodic observer log inside ADC.
-bench-observer-logging = ["oxifoc-core/observer-logging"]
-# ergot over RTT channel 1 (defmt shares ch0). Diagnostic transport — high-rate
-# telemetry over the debug probe; adds a diagnostic interface alongside USB.
-transport-rtt = ["ergot/rtt", "ergot/nostd-seed-router"]
-# Bench CPU/transport qualification: calculate active FOC but never enable
-# phase outputs. Default-off; do not use for motor measurements.
-bench-no-phase-outputs = []
-# Frequency measurement with motor phase A disconnected: permit only leg A.
-# Use DirectVoltage=0 for 50% PWM; Stop and faults still disable everything.
-bench-only-phase-a = []
-# A/B qualification: disable command-voltage correction, retaining gate deadtime.
-bench-no-deadtime-comp = []
-# RAM-only task/ADC timeline, armed and read over SWD after a capture.
-bench-executor-trace = ["embassy-executor/trace"]
-# Observe CCR commit timing without any pre-commit ADC or executor trace hooks.
-bench-pwm-commit = ["bench-clock-reference"]
-# NetStack selected-policy callback spans and earliest ADC PWM phase, without executor hooks.
-bench-netstack-trace = ["bench-clock-reference"]
-# A/B qualification only: restore the previous all-IRQ NetStack masking policy.
-bench-netstack-primask = ["bench-netstack-trace"]
-# Trigger the finite trace at the first voltage-excitation packet, after lock.
-bench-trace-excitation = ["bench-executor-trace"]
-# Compare an independent free-running APB timer, DWT and received USB SOFs.
-bench-clock-reference = []
-# A/B qualification only: keep all USB handlers on the thread executor.
-bench-usb-thread = []
-# Endpoint-write timing for streaming fault isolation, absent from normal builds.
-bench-usb-metrics = ["transport-usb", "bench-clock-reference"]
-# Low-rate, ADC-sequence-correlated Hall observations during motor bring-up.
-bench-hall = []
-# Finite ADC-side Hall/observer handoff evidence; opt in separately from edges.
-bench-hall-phase = ["bench-hall"]
-bench-hall-crossover = ["bench-hall-phase", "oxifoc-core/bench-phase-observation"]
-bench-cogging-compensation = ["bench-hall-phase", "oxifoc-core/bench-cogging-compensation"]
-bench-spi-pump-priority = ["task-priority"]
-# Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.
-bench-scheduler-deadline = ["embassy-executor/scheduler-deadline", "bench-executor-trace"]
+isr-profiling = ["oxifoc-core/isr-profiling"]
+# Hall crossover tuning evidence: finite Hall edge, Hall/observer handoff,
+# velocity-loop, crossover and fault records read over SWD after Stop
+# (scripts/bench_hall_edges.py), plus a 50-Hz Hall log while driving.
+hall-diagnostics = ["oxifoc-core/hall-diagnostics"]
 # Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.
 bench-calibrated-clock = []
 
 [dependencies]
 # Embassy + Cortex-M
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }
+# scheduler-priority: cooperative task classes. USB workers 3, protocol and
+# ISR stats 2, telemetry/detection 1, remaining tasks 0. Complements the USB
+# interrupt executor.
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "scheduler-priority", "defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }
 embassy-futures = { version = "0.1.2", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }
 embassy-stm32 = { version = "0.6.0", features = ["stm32f405rg", "time-driver-tim2", "unstable-pac", "exti", "defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }
 embassy-sync = { version = "0.8.0", features = ["defmt"], git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }

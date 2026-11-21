@@ -305,7 +305,7 @@ where
     // State
     output: PhaseOutput,
     rotor_velocity: Option<RotorVelocityEstimate>,
-    #[cfg(feature = "bench-phase-observation")]
+    #[cfg(feature = "hall-diagnostics")]
     bench_observer_weight: Option<f32>,
     motion_reference_epoch: super::MotionReferenceEpoch,
     hall_reference_epoch: Option<u32>,

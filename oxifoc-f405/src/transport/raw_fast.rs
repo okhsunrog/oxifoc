@@ -33,7 +33,6 @@ impl SendHeadroom for SpiHeadroom {
 /// executor runnable and starve those servers. USB RX/TX stay on their executor.
 #[embassy_executor::task]
 pub async fn ergot_task(stack: &'static super::Stack) {
-    #[cfg(feature = "task-priority")]
     embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(1);

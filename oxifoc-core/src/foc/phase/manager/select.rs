@@ -58,7 +58,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         observer_was_ready: bool,
     ) -> PhaseOutput {
         self.rotor_velocity = None;
-        #[cfg(feature = "bench-phase-observation")]
+        #[cfg(feature = "hall-diagnostics")]
         {
             self.bench_observer_weight = None;
         }
@@ -368,7 +368,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
                 self.motion_reference_epoch.advance();
             }
             self.rotor_velocity = sensor_velocity;
-            #[cfg(feature = "bench-phase-observation")]
+            #[cfg(feature = "hall-diagnostics")]
             {
                 self.bench_observer_weight = Some(0.0);
             }
@@ -411,7 +411,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
         }
 
         if let (Some(obs_angle), Some(obs_vel)) = (obs_angle, obs_velocity) {
-            #[cfg(feature = "bench-phase-observation")]
+            #[cfg(feature = "hall-diagnostics")]
             {
                 self.bench_observer_weight = Some(blend);
             }
@@ -437,7 +437,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             }
         } else {
             self.rotor_velocity = sensor_velocity;
-            #[cfg(feature = "bench-phase-observation")]
+            #[cfg(feature = "hall-diagnostics")]
             {
                 self.bench_observer_weight = Some(0.0);
             }

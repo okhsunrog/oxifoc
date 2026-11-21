@@ -1,4 +1,4 @@
-//! MK5 SPI DirectEdge and standalone diagnostic USB/RTT router profiles.
+//! MK5 SPI DirectEdge and standalone diagnostic USB router profiles.
 //! defmt diagnostics retain a separate RTT channel (read via probe-rs).
 
 #[cfg(feature = "transport-usb")]
@@ -7,56 +7,41 @@ use embassy_stm32::{bind_interrupts, peripherals, rng};
 use ergot::NetStack;
 use ergot::exports::bbqueue::traits::coordination::cas::AtomicCoord;
 use ergot::exports::maitake_sync::WaitQueue;
-#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
+#[cfg(feature = "transport-usb")]
 use ergot::interface_manager::LivenessConfig;
 #[cfg(feature = "transport-usb")]
 use ergot::interface_manager::interface_impls::embassy_usb::EmbassyInterface;
-#[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
-use ergot::interface_manager::interface_impls::embedded_io::IoInterface;
 #[cfg(feature = "transport-spi")]
 use ergot::interface_manager::profiles::direct_edge::DirectEdge;
 #[cfg(not(feature = "transport-spi"))]
 use ergot::interface_manager::profiles::router::Router;
-#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
+#[cfg(feature = "transport-usb")]
 use ergot::interface_manager::profiles::router::RouterFrameProcessor;
-#[cfg(feature = "transport-rtt")]
-use ergot::interface_manager::utils::cobs_stream;
 use ergot::interface_manager::utils::framed_stream;
 #[cfg(feature = "transport-usb")]
 use ergot::toolkits::embassy_usb_v0_6_preview as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
-#[cfg(feature = "transport-rtt")]
-use ergot::transport::rtt::{RttReader, RttWriter};
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
-#[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
+#[cfg(feature = "transport-usb")]
 use crate::config::MAX_PACKET_SIZE;
-#[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
-use crate::config::RTT_OUT_QUEUE_SIZE;
 #[cfg(feature = "transport-usb")]
 use crate::config::USB_OUT_QUEUE_SIZE;
-#[cfg(feature = "transport-rtt")]
-use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 use oxifoc_core::stm32_rng::ErgotRng;
 
 mod stack_mutex;
 
 pub mod raw_fast;
 
-// A leaf has exactly one upstream. USB/RTT remain standalone diagnostic
+// A leaf has exactly one upstream. USB remains a standalone diagnostic
 // builds, rather than accidentally introducing a second root on the SPI link.
-#[cfg(all(
-    feature = "transport-spi",
-    any(feature = "transport-usb", feature = "transport-rtt")
-))]
-compile_error!("SPI DirectEdge cannot be combined with diagnostic USB/RTT routing");
+#[cfg(all(feature = "transport-spi", feature = "transport-usb"))]
+compile_error!("SPI DirectEdge cannot be combined with diagnostic USB routing");
 
 // ========== Multi-Interface Definition ==========
 #[cfg(feature = "transport-usb")]
 type UsbQ = &'static UsbQueue;
-#[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
-type RttQ = &'static RttQueue;
 
 #[cfg(feature = "transport-spi")]
 pub mod spi;
@@ -73,19 +58,11 @@ ergot::multi_interface! {
     pub enum McSink for McInterface {
         Usb(EmbassyInterface<UsbQ>),
         Spi(SpiInterface),
-        Rtt(IoInterface<RttQ>),
     }
 }
-#[cfg(all(not(feature = "transport-usb"), feature = "transport-rtt"))]
-ergot::multi_interface! {
-    pub enum McSink for McInterface {
-        Spi(SpiInterface),
-        Rtt(IoInterface<RttQ>),
-    }
-}
-// No tagged multi-interface dispatch or dormant RTT interface in SPI-only
-// firmware. The leaf's sink is the SPI framed queue itself.
-#[cfg(not(any(feature = "transport-usb", feature = "transport-rtt")))]
+// No tagged multi-interface dispatch in SPI-only firmware. The leaf's sink
+// is the SPI framed queue itself.
+#[cfg(not(feature = "transport-usb"))]
 pub type McInterface = SpiInterface;
 
 // ========== Type Aliases ==========
@@ -93,8 +70,7 @@ pub type McInterface = SpiInterface;
 pub type Rng = ErgotRng;
 /// Standalone diagnostic router capacity. Production SPI is a single leaf.
 #[cfg(not(feature = "transport-spi"))]
-const INTERFACES: usize =
-    1 + cfg!(feature = "transport-usb") as usize + cfg!(feature = "transport-rtt") as usize;
+const INTERFACES: usize = 1 + cfg!(feature = "transport-usb") as usize;
 #[cfg(not(feature = "transport-spi"))]
 pub type McProfile = Router<McInterface, Rng, INTERFACES, 8>;
 #[cfg(feature = "transport-spi")]
@@ -104,8 +80,6 @@ pub type Stack = NetStack<stack_mutex::StackRawMutex, McProfile>;
 
 #[cfg(feature = "transport-usb")]
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;
-#[cfg(any(feature = "transport-rtt", feature = "transport-usb"))]
-pub type RttQueue = io_kit::Queue<RTT_OUT_QUEUE_SIZE, AtomicCoord>;
 
 #[cfg(feature = "transport-usb")]
 pub type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
@@ -117,12 +91,6 @@ pub type UsbRxWorker = ergot::interface_manager::transports::eusb_0_6_preview::R
     AppDriver,
     RouterFrameProcessor,
 >;
-#[cfg(feature = "transport-rtt")]
-pub type RttRxWorker = ergot::interface_manager::transports::eio::RxWorker<
-    &'static Stack,
-    RttReader,
-    RouterFrameProcessor,
->;
 
 // ========== Static Storage ==========
 
@@ -132,16 +100,9 @@ static STACK_CELL: StaticCell<Stack> = StaticCell::new();
 /// Output queues (one per interface)
 #[cfg(feature = "transport-usb")]
 pub static USB_OUTQ: UsbQueue = usb_kit::Queue::new();
-#[cfg(feature = "transport-rtt")]
-pub static RTT_OUTQ: RttQueue = io_kit::Queue::new();
 
 /// State notification queue — woken on interface state transitions
 pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
-
-#[cfg(feature = "transport-rtt")]
-static RTT_ERGOT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
-#[cfg(feature = "transport-rtt")]
-static RTT_ERGOT_DOWN: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 
 // USB wire storage and EP buffer
 #[cfg(feature = "transport-usb")]
@@ -153,12 +114,7 @@ static EP_OUT_BUF: StaticCell<[u8; 256]> = StaticCell::new();
 
 #[cfg(feature = "transport-usb")]
 bind_interrupts!(struct UsbIrqs {
-    OTG_FS =>
-        #[cfg(feature = "bench-executor-trace")]
-        crate::diagnostics::trace::UsbIrqBegin,
-        usb::InterruptHandler<peripherals::USB_OTG_FS>,
-        #[cfg(feature = "bench-executor-trace")]
-        crate::diagnostics::trace::UsbIrqEnd;
+    OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
 
 bind_interrupts!(pub struct RngIrqs {
@@ -168,8 +124,6 @@ bind_interrupts!(pub struct RngIrqs {
 // ========== Initialization ==========
 
 /// Initialize the RTT-only defmt logger.
-/// Used when `transport-rtt` is disabled.
-#[cfg(not(feature = "transport-rtt"))]
 pub fn init_defmt() {
     let channels = rtt_init! {
         up: {
@@ -179,70 +133,9 @@ pub fn init_defmt() {
     crate::logging::init(channels.up.0);
 }
 
-/// RTT transport handles (ergot over RTT channels; defmt stays on channel 0).
-#[cfg(feature = "transport-rtt")]
-pub struct RttTransport {
-    pub rx_worker: RttRxWorker,
-    pub tx: RttWriter,
-}
-
-/// Initialize the defmt sink on RTT ch0 and an ergot
-/// interface on the ergot up/down channels, registered on the Router. Replaces
-/// `init_defmt` when `transport-rtt` is enabled (one `rtt_init!` owns the
-/// control block, so defmt and ergot channels are declared together). Needs the
-/// stack, so call right after `init_stack`.
-#[cfg(feature = "transport-rtt")]
-pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
-    let channels = rtt_init! {
-        up: {
-            0: { size: 1024, mode: NoBlockSkip, name: "defmt" }
-            // NoBlockTrim, NOT NoBlockSkip (back-ported from the g431 fix,
-            // e1f65b5): the ergot TX path hands multi-KB stream grants to
-            // this channel; Skip refuses partial writes, returns 0 and
-            // re-polls — a hot loop that monopolizes the cooperative
-            // executor and starves the other tasks. Trim always makes
-            // forward progress into whatever space the host has freed.
-            1: { size: 8192, mode: NoBlockTrim, name: "ergot" }
-        }
-        down: {
-            0: { size: 1024, name: "ergot-down" }
-        }
-    };
-    crate::logging::init(channels.up.0);
-
-    let rtt_rx = RttReader::new(RTT_ERGOT_DOWN.init(channels.down.0));
-    let rtt_tx = RttWriter::new(RTT_ERGOT_UP.init(channels.up.1));
-
-    let sink = McSink::Rtt(cobs_stream::Sink::new(
-        RTT_OUTQ.stream_producer(),
-        MAX_PACKET_SIZE as u16,
-    ));
-    let ident = defmt::unwrap!(
-        stack.manage_profile(|router| router.register_interface(sink)),
-        "RTT interface registration failed"
-    );
-    let net_id = defmt::unwrap!(stack.manage_profile(|router| router.net_id_of(ident)));
-
-    let rx_worker = RttRxWorker::new(stack, rtt_rx, RouterFrameProcessor::new(net_id), ident)
-        .with_liveness(LivenessConfig {
-            timeout_ms: LIVENESS_TIMEOUT_MS,
-        })
-        .with_state_notify(&STATE_NOTIFY);
-
-    (
-        RttTransport {
-            rx_worker,
-            tx: rtt_tx,
-        },
-        ident,
-    )
-}
-
 /// Initialize a SPI leaf, or a standalone diagnostic router.
 /// Returns a static reference for use by all tasks.
 pub fn init_stack(hw_rng: Rng) -> &'static Stack {
-    #[cfg(feature = "bench-netstack-trace")]
-    stack_mutex::self_test();
     #[cfg(not(feature = "transport-spi"))]
     let router = McProfile::new(hw_rng);
     #[cfg(feature = "transport-spi")]

@@ -1,4 +1,4 @@
-"""Export the first bench-hall edges over SWD after the bridge has stopped.
+"""Export the first hall-diagnostics edges over SWD after the bridge has stopped.
 
 Uses the exact firmware ELF and USB status. Probe attach may briefly halt the
 CPU, so export is restricted to Stopped. Does not reset or write RAM.
@@ -64,7 +64,7 @@ def symbols_from(text):
                 raise ValueError(f"incompatible symbol layout: {line}")
             symbols[parts[3]] = (address, size)
     if not SIZES.keys() <= symbols.keys():
-        raise ValueError("ELF is missing the bench-hall edge buffer symbols")
+        raise ValueError("ELF is missing the hall-diagnostics edge buffer symbols (build with hall-diagnostics)")
     return symbols
 
 

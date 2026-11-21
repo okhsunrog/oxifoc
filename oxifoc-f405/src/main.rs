@@ -5,10 +5,6 @@
 compile_error!("select exactly one board feature: board-cf2 or board-vesc6-mk5");
 #[cfg(all(feature = "board-cf2", feature = "board-vesc6-mk5"))]
 compile_error!("board-cf2 and board-vesc6-mk5 are mutually exclusive");
-#[cfg(all(feature = "bench-only-phase-a", feature = "bench-no-phase-outputs"))]
-compile_error!("bench-only-phase-a and bench-no-phase-outputs are mutually exclusive");
-#[cfg(all(feature = "bench-clock-reference", not(feature = "transport-usb")))]
-compile_error!("bench-clock-reference requires transport-usb for the SOF reference");
 #[cfg(all(feature = "bench-calibrated-clock", not(feature = "board-vesc6-mk5")))]
 compile_error!("bench-calibrated-clock is an experiment for the measured MK5 device only");
 
@@ -22,31 +18,23 @@ use oxifoc_core::storage::RuntimeConfig;
 // Bind EXTI9_5 interrupt for nFAULT monitoring (PB7/EXTI7)
 bind_interrupts!(struct ExtiIrqs {
     EXTI9_5 =>
-        #[cfg(feature = "bench-executor-trace")]
-        diagnostics::trace::FaultIrqBegin,
         exti::InterruptHandler<embassy_stm32::peripherals::EXTI7>,
         #[cfg(feature = "transport-spi")]
-        exti::InterruptHandler<embassy_stm32::peripherals::EXTI6>,
-        #[cfg(feature = "bench-executor-trace")]
-        diagnostics::trace::FaultIrqEnd;
+        exti::InterruptHandler<embassy_stm32::peripherals::EXTI6>;
 });
 
 // USART1 hardware is unused. Reserve its vector for USB
 // work below ADC, Hall and USB hardware IRQs, above thread-mode batching.
-#[cfg(all(feature = "transport-usb", not(feature = "bench-usb-thread")))]
+#[cfg(feature = "transport-usb")]
 static USB_EXECUTOR: embassy_executor::InterruptExecutor =
     embassy_executor::InterruptExecutor::new();
 
-#[cfg(all(feature = "transport-usb", not(feature = "bench-usb-thread")))]
+#[cfg(feature = "transport-usb")]
 #[embassy_stm32::interrupt]
 unsafe fn USART1() {
-    #[cfg(feature = "bench-executor-trace")]
-    diagnostics::trace::record(diagnostics::trace::USB_EXECUTOR_BEGIN, 0);
     // SAFETY: start() initializes the executor before enabling this vector;
     // this handler is its sole poller and USART1 hardware remains disabled.
     unsafe { USB_EXECUTOR.on_interrupt() };
-    #[cfg(feature = "bench-executor-trace")]
-    diagnostics::trace::record(diagnostics::trace::USB_EXECUTOR_END, 0);
 }
 
 // Module declarations
@@ -54,19 +42,14 @@ mod calibration;
 mod ccm;
 mod config;
 mod control;
+#[cfg(feature = "hall-diagnostics")]
+mod diagnostics;
 pub mod fault;
 mod hardware;
+mod logging;
 mod motor;
 mod protocol;
 // Panic/HardFault handlers (gate kill) + IWDG live here.
-#[cfg(any(
-    feature = "bench-executor-trace",
-    feature = "bench-clock-reference",
-    feature = "bench-foc-distribution",
-    feature = "bench-hall"
-))]
-mod diagnostics;
-mod logging;
 mod safety;
 mod sensors;
 mod storage;
@@ -115,23 +98,6 @@ async fn main(spawner: Spawner) {
     let _comm_tx = embassy_stm32::gpio::Input::new(p.PB10, embassy_stm32::gpio::Pull::None);
     #[cfg(not(feature = "transport-spi"))]
     let _comm_rx = embassy_stm32::gpio::Input::new(p.PB11, embassy_stm32::gpio::Pull::None);
-    #[cfg(all(feature = "bench-clock-reference", not(feature = "bench-foc-deadline")))]
-    spawner.spawn(defmt::unwrap!(diagnostics::clock_reference_task(p.TIM5)));
-    #[cfg(any(
-        all(
-            feature = "bench-executor-trace",
-            not(feature = "bench-clock-reference")
-        ),
-        feature = "bench-foc-deadline"
-    ))]
-    let _trace_clock = diagnostics::start_trace_clock(p.TIM5);
-    #[cfg(feature = "bench-foc-deadline")]
-    defmt::assert!(
-        embassy_stm32::rcc::frequency::<embassy_stm32::peripherals::TIM1>()
-            .0
-            .abs_diff(2 * embassy_stm32::rcc::frequency::<embassy_stm32::peripherals::TIM5>().0)
-            <= 2
-    );
 
     // Comms/housekeeping IRQs sit BELOW the control ISRs. The FOC ADC ISR
     // runs at 0 and the hall capture (TIM3) at 1, but every other vector
@@ -148,8 +114,7 @@ async fn main(spawner: Spawner) {
     }
 
     // ========== STEP 2: Initialize boot epoch + Ergot profile ==========
-    // Stack first (no defmt), then the RTT/defmt sink so an ergot-over-RTT
-    // interface (transport-rtt) can register on it in one rtt_init!.
+    // Stack first (no defmt), then the RTT/defmt sink.
     let mut rng = embassy_stm32::rng::Rng::new(p.RNG, transport::RngIrqs);
     #[cfg(feature = "transport-spi")]
     let spi_epoch = rng.blocking_next_u32();
@@ -158,25 +123,14 @@ async fn main(spawner: Spawner) {
     let stack = transport::init_stack(ErgotRng::new(rng));
 
     // ========== STEP 3: Initialize RTT-only defmt logging ==========
-    #[cfg(not(feature = "transport-rtt"))]
     transport::init_defmt();
-    #[cfg(feature = "transport-rtt")]
-    let (rtt_transport, rtt_ident) = transport::init_rtt(stack);
 
     spawner.spawn(defmt::unwrap!(logging::worker()));
-
-    #[cfg(feature = "bench-ntc-check")]
-    sensors::temperature::verify_on_target();
-
-    #[cfg(feature = "bench-no-phase-outputs")]
-    defmt::warn!("BENCH BUILD: all phase outputs inhibited; FOC/ADC/transport remain active");
-    #[cfg(feature = "bench-only-phase-a")]
-    defmt::warn!("BENCH BUILD: only leg A permitted; motor phase A must be disconnected");
 
     // ========== STEP 4: Initialize LEDs ==========
     let leds = hardware::peripherals::init_status_leds(p.TIM8, p.PB0, p.PB1);
     spawner.spawn(defmt::unwrap!(status_leds(leds)));
-    #[cfg(feature = "bench-hall")]
+    #[cfg(feature = "hall-diagnostics")]
     spawner.spawn(defmt::unwrap!(diagnostics::hall_task()));
 
     // ========== STEP 5: Split Hardware Resources ==========
@@ -198,15 +152,9 @@ async fn main(spawner: Spawner) {
     // ========== STEP 6: Initialize USB transport ==========
     #[cfg(feature = "transport-usb")]
     let usb_ident = {
-        #[cfg(not(feature = "bench-usb-thread"))]
         use embassy_stm32::interrupt::InterruptExt;
-        #[cfg(not(feature = "bench-usb-thread"))]
-        let usb_spawner = {
-            interrupt::USART1.set_priority(config::USB_EXECUTOR_PRIORITY);
-            USB_EXECUTOR.start(interrupt::USART1)
-        };
-        #[cfg(feature = "bench-usb-thread")]
-        let usb_spawner = spawner;
+        interrupt::USART1.set_priority(config::USB_EXECUTOR_PRIORITY);
+        let usb_spawner = USB_EXECUTOR.start(interrupt::USART1);
         usb_spawner.spawn(defmt::unwrap!(protocol::servers::usb_io_task(
             stack,
             p.USB_OTG_FS,
@@ -238,23 +186,9 @@ async fn main(spawner: Spawner) {
     let mut idents: heapless::Vec<transport::InterfaceIdent, 3> = heapless::Vec::new();
     #[cfg(feature = "transport-spi")]
     let _ = idents.push(());
-    #[cfg(feature = "transport-rtt")]
-    let _ = idents.push(rtt_ident);
     #[cfg(feature = "transport-usb")]
     let _ = idents.push(usb_ident);
 
-    // ========== STEP 7: Spawn Transport and Protocol Tasks ==========
-    #[cfg(feature = "transport-rtt")]
-    {
-        spawner.spawn(defmt::unwrap!(protocol::servers::run_rtt_rx(
-            rtt_transport.rx_worker,
-            protocol::RTT_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-            protocol::RTT_SCRATCH_BUF.init_with(|| [0u8; 64]),
-        )));
-        spawner.spawn(defmt::unwrap!(protocol::servers::run_rtt_tx(
-            rtt_transport.tx
-        )));
-    }
     // ========== STEP 8: Initialize Persistent Storage ==========
     let flash = embassy_stm32::flash::Flash::new_blocking(p.FLASH, Default::default());
     let flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);

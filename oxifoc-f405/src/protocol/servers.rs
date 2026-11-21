@@ -47,9 +47,6 @@ use crate::control::foc::measured_vbus_mv;
 #[cfg(feature = "transport-usb")]
 #[embassy_executor::task]
 async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
-    #[cfg(feature = "bench-scheduler-deadline")]
-    crate::diagnostics::deadline::register(0, 125).await;
-    #[cfg(feature = "task-priority")]
     embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(3);
@@ -60,9 +57,6 @@ async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, AppDriver>) {
 #[cfg(feature = "transport-usb")]
 #[embassy_executor::task]
 async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
-    #[cfg(feature = "bench-scheduler-deadline")]
-    crate::diagnostics::deadline::register(1, 125).await;
-    #[cfg(feature = "task-priority")]
     embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(3);
@@ -73,24 +67,13 @@ async fn run_usb_rx(rcvr: UsbRxWorker, recv_buf: &'static mut [u8]) {
 #[cfg(feature = "transport-usb")]
 #[embassy_executor::task]
 async fn run_usb_tx(
-    ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
+    mut ep_in: <AppDriver as embassy_usb::driver::Driver<'static>>::EndpointIn,
     rx: FramedConsumer<&'static UsbQueue>,
 ) {
-    #[cfg(feature = "bench-scheduler-deadline")]
-    crate::diagnostics::deadline::register(2, 125).await;
-    #[cfg(feature = "task-priority")]
     embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(3);
-    #[cfg(feature = "bench-usb-metrics")]
-    let mut ep_in = super::usb_metrics::MeasuredIn(ep_in);
-    #[cfg(not(feature = "bench-usb-metrics"))]
-    let mut ep_in = ep_in;
-    #[cfg(feature = "bench-usb-metrics")]
-    type TxDriver = super::usb_metrics::MeasuredDriver<AppDriver>;
-    #[cfg(not(feature = "bench-usb-metrics"))]
-    type TxDriver = AppDriver;
-    usb_kit::tx_worker::<TxDriver, { USB_OUT_QUEUE_SIZE }, _>(
+    usb_kit::tx_worker::<AppDriver, { USB_OUT_QUEUE_SIZE }, _>(
         &mut ep_in,
         rx,
         usb_kit::DEFAULT_TIMEOUT_MS_PER_FRAME,
@@ -113,7 +96,7 @@ pub async fn usb_io_task(
     defmt::unwrap!(crate::protocol::USB_IDENT.init(ident).map_err(|_| ()));
     // SAFETY: Embassy polls this task with its own task waker. The local
     // spawner and newly constructed non-Send handlers stay on this same
-    // executor (USB_EXECUTOR normally, thread mode in the bench A/B build).
+    // executor (USB_EXECUTOR).
     let spawner = unsafe { Spawner::for_current_executor().await };
     spawner.spawn(defmt::unwrap!(usb_task(transport.usb_dev)));
     spawner.spawn(defmt::unwrap!(run_usb_rx(
@@ -131,9 +114,6 @@ pub async fn usb_io_task(
 /// All protocol servers running concurrently in a single task
 #[embassy_executor::task]
 pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32, boot_epoch: u64) {
-    #[cfg(feature = "bench-scheduler-deadline")]
-    crate::diagnostics::deadline::register(3, 500).await;
-    #[cfg(feature = "task-priority")]
     embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(2);
@@ -148,10 +128,6 @@ pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32, boot_epoc
     #[cfg(feature = "board-vesc6-mk5")]
     let _ = hw.push_str("VESC 6 MK5 (F405)");
     let _ = sw.push_str(concat!("oxifoc-", env!("CARGO_PKG_VERSION")));
-    #[cfg(feature = "bench-no-phase-outputs")]
-    let _ = sw.push_str("+outputs-inhibited");
-    #[cfg(feature = "bench-only-phase-a")]
-    let _ = sw.push_str("+phase-a-only");
     let _ = mcu.push_str("STM32F405RG");
     let _ = uuid.push_str(embassy_stm32::uid::uid_hex());
     let mut device_info = HardwareInfo {
@@ -325,7 +301,6 @@ pub async fn state_monitor(
     reason = "Embassy statically allocates this task including the finite detection packet buffers"
 )]
 pub async fn detect_server(stack: &'static Stack, boot_epoch: u64) {
-    #[cfg(feature = "task-priority")]
     embassy_executor::MetadataRef::for_current_task()
         .await
         .set_priority(1);
@@ -457,32 +432,4 @@ pub fn spawn_servers(
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
     spawner.spawn(defmt::unwrap!(detect_server(stack, detection_boot)));
     spawner.spawn(defmt::unwrap!(network_services_task(stack)));
-}
-
-// ========== RTT Transport workers (feature = "transport-rtt") ==========
-
-/// Worker task for incoming ergot data (RTT down channel)
-#[cfg(feature = "transport-rtt")]
-#[embassy_executor::task]
-pub async fn run_rtt_rx(
-    mut rcvr: crate::transport::RttRxWorker,
-    recv_buf: &'static mut [u8],
-    scratch_buf: &'static mut [u8],
-) {
-    use ergot::interface_manager::InterfaceState;
-    loop {
-        let _ = rcvr
-            .run(InterfaceState::Inactive, recv_buf, scratch_buf)
-            .await;
-    }
-}
-
-/// Worker task for outgoing ergot data (RTT up channel)
-#[cfg(feature = "transport-rtt")]
-#[embassy_executor::task]
-pub async fn run_rtt_tx(mut tx: ergot::transport::rtt::RttWriter) {
-    use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
-    loop {
-        let _ = tx_worker(&mut tx, crate::transport::RTT_OUTQ.stream_consumer()).await;
-    }
 }

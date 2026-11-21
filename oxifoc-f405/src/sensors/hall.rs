@@ -174,7 +174,7 @@ pub fn init_hall(
     let initial_state = read_hall_idr();
     let initial_ticks = now_ticks();
     update_hall_edge(initial_state, initial_ticks);
-    #[cfg(feature = "bench-hall")]
+    #[cfg(feature = "hall-diagnostics")]
     crate::diagnostics::hall_edges::record(initial_ticks, initial_state, false, true);
 
     #[expect(
@@ -229,8 +229,6 @@ pub fn read_hall_state_raw() -> u8 {
 /// timestamp and feed the estimator.
 #[interrupt]
 fn TIM3() {
-    #[cfg(feature = "bench-executor-trace")]
-    crate::diagnostics::trace::record(19, 0);
     let regs = pac::TIM3;
     let sr = regs.sr().read();
 
@@ -248,11 +246,9 @@ fn TIM3() {
             .saturating_sub(u64::from(FILTER_DELAY_TICKS.load(Ordering::Relaxed)));
         let state = read_hall_idr();
         update_hall_edge(state, edge);
-        #[cfg(feature = "bench-hall")]
+        #[cfg(feature = "hall-diagnostics")]
         crate::diagnostics::hall_edges::record(edge, state, sr.ccof(0), false);
     } else if sr.uif() {
         TIMEBASE.overflow(|| clear_flags(true, false));
     }
-    #[cfg(feature = "bench-executor-trace")]
-    crate::diagnostics::trace::record(20, 0);
 }
