@@ -76,6 +76,13 @@ their 32-byte header and in-block tag 3; tags 0–2 (Raw34, Packed26,
 Packed26Delta) and the full-width fallback flag are rejected, and a frame
 Packed28 cannot represent fails the session.
 
+`RawTelemetryRequest::Arm` gains a trailing `max_block_bytes: u16`, the
+largest block the requester's link carries in one Ergot frame. The device
+fills blocks up to the smaller of that, its own link limit and 2208 bytes,
+and rejects values under 60 bytes (a header and one record) as invalid. The
+host asks for 478 bytes over BLE (15 records in a 505-byte notification) and
+2208 bytes elsewhere. Velocity debug sessions need full blocks.
+
 From v24 on, the firmware skips flash keys it does not know and keeps them
 through compaction. v23 and older fail every read once the map holds a v24
 key, so roll back to them only together with their own storage image.

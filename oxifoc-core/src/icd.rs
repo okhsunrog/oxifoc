@@ -104,6 +104,22 @@ ergot::topic!(
     "telemetry/raw_block"
 );
 
+/// Ergot frame bytes around a raw block: the largest Ergot header and the
+/// postcard length prefix of a byte string up to `u16::MAX` bytes.
+pub const RAW_FRAME_OVERHEAD: usize = ergot::wire_frames::MAX_HDR_ENCODED_SIZE + 3;
+
+/// Largest raw block one Ergot frame of `mtu` bytes carries, capped at
+/// [`raw_telemetry::RAW_MAX_BLOCK_BYTES`]. A link whose result is below
+/// [`raw_telemetry::RAW_MIN_BLOCK_BYTES`] cannot carry sessions.
+pub const fn raw_block_limit(mtu: u16) -> u16 {
+    let budget = (mtu as usize).saturating_sub(RAW_FRAME_OVERHEAD);
+    if budget < raw_telemetry::RAW_MAX_BLOCK_BYTES {
+        budget as u16
+    } else {
+        raw_telemetry::RAW_MAX_BLOCK_BYTES as u16
+    }
+}
+
 pub struct RawTelemetryBlockRefTopic<'a>(core::marker::PhantomData<&'a ()>);
 
 impl<'a> ergot::traits::Topic for RawTelemetryBlockRefTopic<'a> {

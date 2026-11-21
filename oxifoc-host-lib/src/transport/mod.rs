@@ -45,6 +45,21 @@ pub enum TransportType {
     Ble,
 }
 
+impl TransportType {
+    /// Largest raw telemetry block one frame of this link carries, the
+    /// `max_block_bytes` of every session Arm. The device lowers it further
+    /// to its own link limit. BLE carries one 505-byte frame per GATT
+    /// notification and nothing fragments a frame on the way, so a session
+    /// through the bridge's radio gets 15-record blocks; every other host
+    /// transport takes full blocks.
+    pub fn raw_block_limit(&self) -> u16 {
+        match self {
+            Self::Ble => oxifoc_core::icd::raw_block_limit(ble::BLE_MTU),
+            _ => oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES as u16,
+        }
+    }
+}
+
 /// Configuration for transport selection.
 #[derive(Debug, Clone)]
 pub enum TransportConfig {
@@ -84,4 +99,25 @@ pub struct CobsStreamTransport {
     /// Optional reader for defmt data (RTT mode only, channel 0).
     /// In serial/TCP mode, defmt is forwarded over ergot network instead.
     pub defmt_reader: Option<Box<dyn AsyncRead + Send + Unpin>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TransportType;
+    use oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES;
+
+    #[test]
+    fn ble_sessions_use_blocks_that_fit_one_notification() {
+        // 505-byte frame: 24-byte Ergot header, 3-byte length prefix, then a
+        // 32-byte block header and 15 Packed28 records (452 bytes).
+        assert_eq!(TransportType::Ble.raw_block_limit(), 478);
+        assert_eq!(
+            usize::from(TransportType::Usb.raw_block_limit()),
+            RAW_MAX_BLOCK_BYTES
+        );
+        assert_eq!(
+            usize::from(TransportType::Tcp.raw_block_limit()),
+            RAW_MAX_BLOCK_BYTES
+        );
+    }
 }

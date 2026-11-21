@@ -56,8 +56,9 @@ preserves older review findings and experimental detail.
 - [ ] Recheck fast capture losses under load using the [MK5 bench baseline](notes/foc-loop-research.md#native-rate-recording-on-mk5).
   Measure the producer queue and command delivery separately. Keep
   pre-trigger RAM capture as a separate feature if needed for faults.
-- [ ] Audit F405/BLE frame size compatibility before enabling fast captures
-  through the radio link.
+- [ ] Bench-test a fast telemetry session through the bridge's BLE link.
+  The host asks for 478-byte blocks (15 samples) there, so each block fits
+  one 505-byte notification; nothing on that path fragments a frame.
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 

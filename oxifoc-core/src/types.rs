@@ -658,6 +658,8 @@ pub struct TelemetryConfigAck {
 /// Raw telemetry sessions carry only Packed28: `RawEncoding` keeps that one
 /// variant (postcard index 0, was 3), the in-block tag stays 3, other tags
 /// and the full-width fallback flag are rejected.
+/// `RawTelemetryRequest::Arm` gains `max_block_bytes`, the largest block the
+/// requester's link carries in one frame.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.

@@ -19,7 +19,7 @@ type WaitQueue = ergot::toolkits::tokio_stream::WaitQueue;
 pub(crate) const SERVICE_UUID: Uuid = Uuid::from_u128(oxifoc_core::ble::SERVICE_UUID);
 const RX_UUID: Uuid = Uuid::from_u128(oxifoc_core::ble::RX_UUID);
 const TX_UUID: Uuid = Uuid::from_u128(oxifoc_core::ble::TX_UUID);
-const BLE_MTU: u16 = 505;
+pub(crate) const BLE_MTU: u16 = 505;
 const OUT_BUFFER_SIZE: usize = 4096;
 const RX_QUEUE_FRAMES: usize = 128;
 

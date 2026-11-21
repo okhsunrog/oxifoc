@@ -264,8 +264,12 @@ pub const MAX_PACKET_SIZE: usize = if cfg!(feature = "fast-telemetry") {
     512
 };
 
+/// Largest raw telemetry block this device's links carry in one frame.
 #[cfg(feature = "fast-telemetry")]
-const _: () = assert!(MAX_PACKET_SIZE >= raw_telemetry::RAW_MAX_BLOCK_BYTES + 30);
+pub const LINK_BLOCK_BYTES: usize =
+    oxifoc_core::icd::raw_block_limit(MAX_PACKET_SIZE as u16) as usize;
+#[cfg(feature = "fast-telemetry")]
+const _: () = assert!(LINK_BLOCK_BYTES == raw_telemetry::RAW_MAX_BLOCK_BYTES);
 
 // This value is also every interface's TX MTU: a full fast-telemetry batch
 // plus wire overhead must fit or full batches silently fail to broadcast.

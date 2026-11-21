@@ -459,6 +459,7 @@ async fn raw_telemetry_server_task(stack: &'static Stack) {
         stack.endpoints(),
         timing.frequency_hz() as u32,
         timing,
+        crate::config::LINK_BLOCK_BYTES,
     );
     #[cfg(feature = "fast-telemetry")]
     embassy_futures::join::join(
@@ -467,6 +468,7 @@ async fn raw_telemetry_server_task(stack: &'static Stack) {
             stack.endpoints(),
             timing.frequency_hz() as u32,
             timing,
+            crate::config::LINK_BLOCK_BYTES,
         ),
     )
     .await;

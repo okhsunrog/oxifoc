@@ -37,6 +37,8 @@ pub const RAW_MAX_BLOCK_BYTES: usize = RAW_HEADER_BYTES
     + COMPANION_RECORDS * VELOCITY_RECORD_BYTES;
 const _: () =
     assert!(RAW_MAX_BLOCK_BYTES >= RAW_HEADER_BYTES + RAW_MAX_RECORDS * VELOCITY_RECORD_BYTES);
+/// Smallest block limit an Arm may request: a header and one record.
+pub const RAW_MIN_BLOCK_BYTES: usize = RAW_HEADER_BYTES + PACKED28_BYTES;
 const VERSION: u8 = 1;
 const PACKED28_TAG: u8 = 3;
 const END: u8 = 1;
@@ -60,6 +62,11 @@ pub enum RawTelemetryRequest {
         previous_session: u64,
         encoding: RawEncoding,
         fast_hz: u16,
+        /// Largest block, in bytes, the requester's link carries in one
+        /// Ergot frame. The device fills blocks up to the smaller of this,
+        /// its own link limit and [`RAW_MAX_BLOCK_BYTES`]; below
+        /// [`RAW_MIN_BLOCK_BYTES`] the Arm is invalid.
+        max_block_bytes: u16,
     },
     Stop {
         session: u64,
@@ -287,6 +294,7 @@ fn unpack28(b: &[u8], header: RawBlockHeader, index: usize) -> FastTelemetry {
 pub struct RawBlockEncoder {
     bytes: [u8; RAW_MAX_BLOCK_BYTES],
     header: RawBlockHeader,
+    max_records: u8,
 }
 impl Default for RawBlockEncoder {
     fn default() -> Self {
@@ -309,7 +317,14 @@ impl RawBlockEncoder {
                 flags: 0,
                 payload_len: 0,
             },
+            max_records: RAW_MAX_RECORDS as u8,
         }
+    }
+    /// Records per block that fit in `max_block_bytes` (at least one, at
+    /// most [`RAW_MAX_RECORDS`]). Applies to the following blocks.
+    pub fn set_block_limit(&mut self, max_block_bytes: usize) {
+        let records = max_block_bytes.saturating_sub(RAW_HEADER_BYTES) / PACKED28_BYTES;
+        self.max_records = records.clamp(1, RAW_MAX_RECORDS) as u8;
     }
     pub fn begin(&mut self, session: u64, block_index: u32, stride: u16) {
         self.header = RawBlockHeader {
@@ -332,7 +347,7 @@ impl RawBlockEncoder {
         self.header.count == 0
     }
     pub const fn is_full(&self) -> bool {
-        self.len() == RAW_MAX_RECORDS
+        self.header.count >= self.max_records
     }
     /// Refuses a frame that does not pack, or that breaks the block's
     /// sequence run or ARR; the caller starts a new block or fails the session.

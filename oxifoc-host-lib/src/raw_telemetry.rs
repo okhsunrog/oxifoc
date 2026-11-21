@@ -3,6 +3,8 @@
 use crate::config::FastSource;
 use anyhow::{Result, anyhow, bail};
 use crossbeam_channel::Sender;
+#[cfg(test)]
+use oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES;
 use oxifoc_core::{
     raw_telemetry::{
         DecodedRawBlock, RAW_HEADER_BYTES, RAW_MAGIC, RawBlockHeader, RawEncoding,
@@ -110,18 +112,21 @@ pub struct RawTelemetryState {
     inner: Mutex<Inner>,
     changed: Condvar,
     velocity_debug: bool,
+    /// The link's block limit, sent with every Arm.
+    max_block_bytes: u16,
 }
 
 impl RawTelemetryState {
     #[cfg(test)]
     pub(crate) fn new(source: FastSource, tx: Sender<FastTelemetry>) -> Arc<Self> {
-        Self::new_with_velocity_debug(source, tx, false)
+        Self::new_with_options(source, tx, false, RAW_MAX_BLOCK_BYTES as u16)
     }
 
-    pub(crate) fn new_with_velocity_debug(
+    pub(crate) fn new_with_options(
         source: FastSource,
         tx: Sender<FastTelemetry>,
         velocity_debug: bool,
+        max_block_bytes: u16,
     ) -> Arc<Self> {
         Arc::new(Self {
             source,
@@ -129,6 +134,7 @@ impl RawTelemetryState {
             inner: Mutex::new(Inner::default()),
             changed: Condvar::new(),
             velocity_debug,
+            max_block_bytes,
         })
     }
 
@@ -559,6 +565,7 @@ where
             previous_session,
             encoding: RawEncoding::Packed28,
             fast_hz,
+            max_block_bytes: state.max_block_bytes,
         }
     };
     let result = if fast_hz != 0 && state.velocity_debug {
@@ -805,7 +812,12 @@ mod tests {
             [(true, 0, true), (false, 0, false), (true, 1, false)]
         {
             let (tx, rx) = bounded(8);
-            let state = RawTelemetryState::new_with_velocity_debug(FastSource::ErgotRaw, tx, true);
+            let state = RawTelemetryState::new_with_options(
+                FastSource::ErgotRaw,
+                tx,
+                true,
+                RAW_MAX_BLOCK_BYTES as u16,
+            );
             state.reader_ready();
             let session = state.arm().unwrap();
             let first = FastTelemetry {

@@ -8,8 +8,9 @@ use super::velocity_debug;
 use crate::{
     icd::{RawTelemetryEndpoint, VelocityDebugArmEndpoint},
     raw_telemetry::{
-        RAW_HEADER_BYTES, RawBlockEncoder, RawBlockHeader, RawEncoding, RawTelemetryAck,
-        RawTelemetryRequest, RawTelemetryStatus, VelocityDebugArm,
+        RAW_HEADER_BYTES, RAW_MAX_BLOCK_BYTES, RAW_MIN_BLOCK_BYTES, RawBlockEncoder,
+        RawBlockHeader, RawEncoding, RawTelemetryAck, RawTelemetryRequest, RawTelemetryStatus,
+        VelocityDebugArm,
     },
     timer::Timer,
     types::{ControlTiming, TelemetryConfigAck},
@@ -58,6 +59,7 @@ struct RawControl {
     session: u64,
     fast_hz: u16,
     period: u32,
+    block_bytes: u16,
     velocity_debug: bool,
     phase: Phase,
     owner: Option<ergot::Address>,
@@ -74,6 +76,7 @@ impl RawControl {
             session: 0,
             fast_hz: 0,
             period: 0,
+            block_bytes: 0,
             velocity_debug: false,
             phase: Phase::Idle,
             owner: None,
@@ -98,12 +101,13 @@ impl RawControl {
         ready: bool,
         flash: bool,
     ) -> (RawTelemetryStatus, Action) {
-        self.request_with_options(request, foc_hz, ready, flash, false)
+        self.request_with_options(request, foc_hz, RAW_MAX_BLOCK_BYTES, ready, flash, false)
     }
     fn request_with_options(
         &mut self,
         request: RawTelemetryRequest,
         foc_hz: u32,
+        link_block_bytes: usize,
         ready: bool,
         flash: bool,
         debug: bool,
@@ -115,15 +119,31 @@ impl RawControl {
                 previous_session,
                 encoding: RawEncoding::Packed28,
                 fast_hz,
+                max_block_bytes,
             } => {
                 if debug && !velocity_debug::available() {
                     return (RawTelemetryStatus::Unavailable, Action::None);
                 }
-                if session == 0 || fast_hz == 0 || foc_hz == 0 {
+                if session == 0
+                    || fast_hz == 0
+                    || foc_hz == 0
+                    || usize::from(max_block_bytes) < RAW_MIN_BLOCK_BYTES
+                {
+                    return (RawTelemetryStatus::Invalid, Action::None);
+                }
+                let block_bytes = usize::from(max_block_bytes)
+                    .min(link_block_bytes)
+                    .min(RAW_MAX_BLOCK_BYTES) as u16;
+                // The velocity companion rides in the slack after a full
+                // native block, so a velocity session needs full blocks.
+                if debug && usize::from(block_bytes) < RAW_MAX_BLOCK_BYTES {
                     return (RawTelemetryStatus::Invalid, Action::None);
                 }
                 if session == self.session {
-                    return if fast_hz == self.fast_hz && debug == self.velocity_debug {
+                    return if fast_hz == self.fast_hz
+                        && block_bytes == self.block_bytes
+                        && debug == self.velocity_debug
+                    {
                         (self.status(), Action::None)
                     } else {
                         (RawTelemetryStatus::Busy, Action::None)
@@ -145,6 +165,7 @@ impl RawControl {
                     session,
                     fast_hz,
                     period,
+                    block_bytes,
                     velocity_debug: debug,
                     phase: Phase::Open,
                     owner: None,
@@ -195,19 +216,21 @@ async fn control_request(
     .await
 }
 
+#[cfg(test)]
 async fn control_request_from_peer(
     request: RawTelemetryRequest,
     foc_hz: u32,
     timing: ControlTiming,
     peer: ergot::Address,
 ) -> RawTelemetryAck {
-    control_request_with_options(request, foc_hz, timing, peer, false).await
+    control_request_with_options(request, foc_hz, timing, RAW_MAX_BLOCK_BYTES, peer, false).await
 }
 
 async fn control_request_with_options(
     request: RawTelemetryRequest,
     foc_hz: u32,
     timing: ControlTiming,
+    link_block_bytes: usize,
     mut peer: ergot::Address,
     debug: bool,
 ) -> RawTelemetryAck {
@@ -231,6 +254,7 @@ async fn control_request_with_options(
         let outcome = control.request_with_options(
             request,
             foc_hz,
+            link_block_bytes,
             READY.load(Ordering::Acquire),
             state::FLASH_OP_PENDING.load(Ordering::SeqCst),
             debug,
@@ -282,10 +306,14 @@ async fn control_request_with_options(
     }
 }
 
+/// Serve [`RawTelemetryEndpoint`]. `link_block_bytes` is the largest block
+/// this device's links carry in one Ergot frame
+/// ([`crate::icd::raw_block_limit`] of the sink MTU).
 pub async fn raw_telemetry_server<NS: NetStackHandle, const N: usize>(
     endpoints: Endpoints<NS>,
     foc_hz: u32,
     timing: ControlTiming,
+    link_block_bytes: usize,
 ) {
     let server = endpoints.bounded_server::<RawTelemetryEndpoint, N>(Some("raw_telemetry"));
     let server = pin!(server);
@@ -294,17 +322,26 @@ pub async fn raw_telemetry_server<NS: NetStackHandle, const N: usize>(
         let _ = handle
             .serve_full(
                 |message: &ergot::socket::HeaderMessage<RawTelemetryRequest>| {
-                    control_request_from_peer(message.t, foc_hz, timing, message.hdr.src)
+                    control_request_with_options(
+                        message.t,
+                        foc_hz,
+                        timing,
+                        link_block_bytes,
+                        message.hdr.src,
+                        false,
+                    )
                 },
             )
             .await;
     }
 }
 
+/// Serve [`VelocityDebugArmEndpoint`]; a velocity session needs full blocks.
 pub async fn velocity_debug_arm_server<NS: NetStackHandle, const N: usize>(
     endpoints: Endpoints<NS>,
     foc_hz: u32,
     timing: ControlTiming,
+    link_block_bytes: usize,
 ) {
     let server = endpoints.bounded_server::<VelocityDebugArmEndpoint, N>(Some("velocity_debug"));
     let server = pin!(server);
@@ -319,9 +356,11 @@ pub async fn velocity_debug_arm_server<NS: NetStackHandle, const N: usize>(
                         previous_session: arm.previous_session,
                         encoding: RawEncoding::Packed28,
                         fast_hz: arm.fast_hz,
+                        max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
                     },
                     foc_hz,
                     timing,
+                    link_block_bytes,
                     message.hdr.src,
                     true,
                 )
@@ -396,6 +435,7 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             total_records = 0;
             debug_total = 0;
             debug_ended = false;
+            encoder.set_block_limit(usize::from(control.block_bytes));
             encoder.begin(session, block_index, control.period as u16);
         }
         let closing = control.phase == Phase::Closing;
@@ -494,6 +534,7 @@ mod tests {
             previous_session: 0,
             encoding: RawEncoding::Packed28,
             fast_hz: 20_000,
+            max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
         };
         assert_eq!(
             state.request(arm, 20_000, false, false),
@@ -514,7 +555,8 @@ mod tests {
                         session: 8,
                         previous_session: 7,
                         encoding: RawEncoding::Packed28,
-                        fast_hz: 5000
+                        fast_hz: 5000,
+                        max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
                     },
                     20_000,
                     true,
@@ -559,7 +601,8 @@ mod tests {
                         session: 8,
                         previous_session: 7,
                         encoding: RawEncoding::Packed28,
-                        fast_hz: 5000
+                        fast_hz: 5000,
+                        max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
                     },
                     20_000,
                     true,
@@ -573,6 +616,7 @@ mod tests {
             previous_session: 7,
             encoding: RawEncoding::Packed28,
             fast_hz: 5000,
+            max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
         };
         assert_eq!(
             state.request(next, 20_000, true, false),
@@ -595,6 +639,52 @@ mod tests {
             RawTelemetryStatus::Stopped
         );
         assert_eq!(state.session, 8);
+    }
+
+    #[test]
+    fn arm_takes_the_smaller_block_limit_and_velocity_needs_full_blocks() {
+        let arm = |session, max_block_bytes| RawTelemetryRequest::Arm {
+            session,
+            previous_session: 0,
+            encoding: RawEncoding::Packed28,
+            fast_hz: 1000,
+            max_block_bytes,
+        };
+        let mut state = RawControl::new();
+        assert_eq!(
+            state
+                .request_with_options(arm(3, 59), 20_000, RAW_MAX_BLOCK_BYTES, true, false, false)
+                .0,
+            RawTelemetryStatus::Invalid
+        );
+        assert_eq!(
+            state
+                .request_with_options(arm(3, 478), 20_000, 997, true, false, false)
+                .0,
+            RawTelemetryStatus::Armed
+        );
+        assert_eq!(state.block_bytes, 478);
+        let mut state = RawControl::new();
+        state.request_with_options(arm(4, u16::MAX), 20_000, 997, true, false, false);
+        assert_eq!(state.block_bytes, 997);
+        let mut state = RawControl::new();
+        state.request_with_options(arm(5, u16::MAX), 20_000, usize::MAX, true, false, false);
+        assert_eq!(usize::from(state.block_bytes), RAW_MAX_BLOCK_BYTES);
+        let full = RawTelemetryRequest::Arm {
+            session: 6,
+            previous_session: 0,
+            encoding: RawEncoding::Packed28,
+            fast_hz: 20_000,
+            max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
+        };
+        velocity_debug::register_producer();
+        let mut state = RawControl::new();
+        assert_eq!(
+            state
+                .request_with_options(full, 20_000, 997, true, false, true)
+                .0,
+            RawTelemetryStatus::Invalid
+        );
     }
 
     struct YieldTimer;
@@ -670,6 +760,7 @@ mod tests {
             previous_session,
             encoding: RawEncoding::Packed28,
             fast_hz: 20_000,
+            max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
         };
         assert_eq!(
             ready(control_request(arm(7, 0), 20_000, timing)).status,
@@ -846,6 +937,7 @@ mod tests {
             previous_session: 0,
             encoding: RawEncoding::Packed28,
             fast_hz: 20_000,
+            max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
         };
         assert_eq!(
             ready(control_request(arm, 20_000, timing)).status,
@@ -900,6 +992,7 @@ mod routed_owner_tests {
             previous_session: 0,
             encoding: RawEncoding::Packed28,
             fast_hz: 20_000,
+            max_block_bytes: RAW_MAX_BLOCK_BYTES as u16,
         };
         let run = |request, peer| {
             embassy_futures::block_on(control_request_from_peer(request, 20_000, timing, peer))
