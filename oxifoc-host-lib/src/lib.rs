@@ -678,7 +678,6 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let raw_telemetry = cfg.fast_source().is_raw().then(|| {
         raw_telemetry::RawTelemetryState::new_with_velocity_debug(
             cfg.fast_source(),
-            cfg.fast_encoding(),
             fast_tx.clone(),
             cfg.velocity_debug,
         )
@@ -738,28 +737,6 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
     }
 
     let transport_config = cfg.transport_config()?;
-    if matches!(cfg.fast_source(), FastSource::UsbRaw) && cfg.transport_type() != TransportType::Usb
-    {
-        if let Some(raw) = &ctx.raw_telemetry {
-            raw.fail("dedicated USB raw telemetry requires USB command transport");
-        }
-        anyhow::bail!("dedicated USB raw telemetry requires USB command transport");
-    }
-
-    #[cfg(feature = "desktop")]
-    let _raw_rtt = if cfg.fast_source() == FastSource::RttRaw {
-        Some(transport::rtt_raw::spawn(
-            &cfg,
-            ctx.raw_telemetry.clone().unwrap(),
-            ctx.cancel.clone(),
-        )?)
-    } else {
-        None
-    };
-    #[cfg(not(feature = "desktop"))]
-    if cfg.fast_source() == FastSource::RttRaw {
-        anyhow::bail!("rtt-raw requires the desktop host feature");
-    }
 
     match transport_config {
         TransportConfig::Tcp { host, port } => {
@@ -821,46 +798,15 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
                 let notify = state_notify.clone();
                 let mut selected_identity = None;
                 let fast_source = cfg.fast_source();
-                let raw = ctx
-                    .raw_telemetry
-                    .clone()
-                    .filter(|raw| raw.source() == FastSource::UsbRaw);
-                let cancel = ctx.cancel.clone();
-                let mut raw_connection: Option<transport::usb::RawUsbConnection> = None;
                 async move || {
-                    if let Some(previous) = raw_connection.take() {
-                        previous.shutdown().await;
-                    }
-                    if let Some(raw) = &raw {
-                        match transport::usb::register_raw(
-                            &stack,
-                            &queue,
-                            Some(notify.clone()),
-                            &mut selected_identity,
-                            raw.clone(),
-                            cancel.clone(),
-                        )
-                        .await
-                        {
-                            Ok(connection) => {
-                                raw_connection = Some(connection);
-                                Ok(())
-                            }
-                            Err(error) => {
-                                raw.fail(&error);
-                                Err(error)
-                            }
-                        }
-                    } else {
-                        transport::usb::register_for(
-                            &stack,
-                            &queue,
-                            Some(notify.clone()),
-                            &mut selected_identity,
-                            fast_source,
-                        )
-                        .await
-                    }
+                    transport::usb::register_for(
+                        &stack,
+                        &queue,
+                        Some(notify.clone()),
+                        &mut selected_identity,
+                        fast_source,
+                    )
+                    .await
                 }
             };
             Box::pin(run_framed_with_reconnect(
@@ -925,9 +871,7 @@ where
             ctx.connected.clone(),
             ctx.cancel.clone(),
         );
-    } else if let Some(raw) = &ctx.raw_telemetry
-        && raw.source() == FastSource::ErgotRaw
-    {
+    } else if let Some(raw) = &ctx.raw_telemetry {
         raw_telemetry::spawn_ergot_subscriber(stack, raw.clone(), ctx.cancel.clone());
     }
     spawn_fault_topic_subscriber(

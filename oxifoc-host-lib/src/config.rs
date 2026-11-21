@@ -3,14 +3,13 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{env, fs, path::PathBuf};
 
-/// Fast samples may bypass the command transport on explicitly selected bench builds.
+/// Where fast samples come from: the legacy broadcast topic, or a Packed28
+/// raw session over the same Ergot link.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum FastSource {
     #[default]
     Ergot,
-    UsbRaw,
-    RttRaw,
     ErgotRaw,
 }
 
@@ -62,7 +61,6 @@ pub struct HostConfig {
     /// Set to 0 to disable fast telemetry streaming.
     pub fast_hz: Option<u16>,
     pub fast_source: Option<FastSource>,
-    pub fast_encoding: Option<oxifoc_core::raw_telemetry::RawEncoding>,
     /// Request velocity-loop observations in the same Ergot raw session.
     #[serde(default)]
     pub velocity_debug: bool,
@@ -148,11 +146,6 @@ impl HostConfig {
         })
     }
 
-    pub fn fast_encoding(&self) -> oxifoc_core::raw_telemetry::RawEncoding {
-        self.fast_encoding
-            .unwrap_or(oxifoc_core::raw_telemetry::RawEncoding::Packed28)
-    }
-
     pub fn transport_config(&self) -> Result<TransportConfig> {
         match self.transport_type() {
             #[cfg(feature = "desktop")]
@@ -222,22 +215,13 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(bridge.fast_source(), FastSource::ErgotRaw);
-            assert_eq!(
-                bridge.fast_encoding(),
-                oxifoc_core::raw_telemetry::RawEncoding::Packed28
-            );
         }
         assert_eq!(default.transport_type(), TransportType::default());
-        for source in ["usb-raw", "rtt-raw", "ergot-raw"] {
-            let cfg: HostConfig =
-                toml::from_str(&format!("fast_source='{source}'\nfast_encoding='Packed26'"))
-                    .unwrap();
-            assert!(cfg.fast_source().is_raw());
-            assert_eq!(cfg.transport_type(), TransportType::Usb);
-            assert_eq!(
-                cfg.fast_encoding(),
-                oxifoc_core::raw_telemetry::RawEncoding::Packed26
-            );
+        let cfg: HostConfig = toml::from_str("fast_source='ergot-raw'").unwrap();
+        assert!(cfg.fast_source().is_raw());
+        assert_eq!(cfg.transport_type(), TransportType::Usb);
+        for removed in ["fast_source='usb-raw'", "fast_source='rtt-raw'"] {
+            assert!(toml::from_str::<HostConfig>(removed).is_err());
         }
     }
 

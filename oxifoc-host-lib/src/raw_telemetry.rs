@@ -45,11 +45,7 @@ pub struct RawCaptureReport {
     pub host_drops: u64,
     pub producer_drops: u32,
     pub blocks_received: u64,
-    pub raw34_blocks: u64,
-    pub packed26_blocks: u64,
     pub packed28_blocks: u64,
-    pub packed26_delta_blocks: u64,
-    pub fallback_blocks: u64,
     pub end_total_records: Option<u64>,
     pub ended: bool,
     pub error: Option<String>,
@@ -110,7 +106,6 @@ struct Inner {
 
 pub struct RawTelemetryState {
     source: FastSource,
-    encoding: RawEncoding,
     tx: Sender<FastTelemetry>,
     inner: Mutex<Inner>,
     changed: Condvar,
@@ -119,23 +114,17 @@ pub struct RawTelemetryState {
 
 impl RawTelemetryState {
     #[cfg(test)]
-    pub(crate) fn new(
-        source: FastSource,
-        encoding: RawEncoding,
-        tx: Sender<FastTelemetry>,
-    ) -> Arc<Self> {
-        Self::new_with_velocity_debug(source, encoding, tx, false)
+    pub(crate) fn new(source: FastSource, tx: Sender<FastTelemetry>) -> Arc<Self> {
+        Self::new_with_velocity_debug(source, tx, false)
     }
 
     pub(crate) fn new_with_velocity_debug(
         source: FastSource,
-        encoding: RawEncoding,
         tx: Sender<FastTelemetry>,
         velocity_debug: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             source,
-            encoding,
             tx,
             inner: Mutex::new(Inner::default()),
             changed: Condvar::new(),
@@ -160,26 +149,11 @@ impl RawTelemetryState {
     pub fn source(&self) -> FastSource {
         self.source
     }
-    pub fn encoding(&self) -> RawEncoding {
-        self.encoding
-    }
-
     pub(crate) fn reader_ready(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.ready = true;
         inner.transport_error = None;
         self.changed.notify_all();
-    }
-
-    pub(crate) fn control_ready(&self) {
-        if self.source == FastSource::ErgotRaw {
-            self.reader_ready();
-        }
-    }
-
-    pub(crate) fn connection_lost(&self, error: impl ToString) {
-        self.fail(error);
-        self.inner.lock().unwrap().ready = false;
     }
 
     pub(crate) fn control_lost(&self) {
@@ -259,18 +233,14 @@ impl RawTelemetryState {
         inner.capture = Some(CaptureState {
             report: RawCaptureReport {
                 source: self.source,
-                encoding: self.encoding,
+                encoding: RawEncoding::Packed28,
                 session,
                 records_received: 0,
                 records_delivered: 0,
                 host_drops: 0,
                 producer_drops: 0,
                 blocks_received: 0,
-                raw34_blocks: 0,
-                packed26_blocks: 0,
                 packed28_blocks: 0,
-                packed26_delta_blocks: 0,
-                fallback_blocks: 0,
                 end_total_records: None,
                 ended: false,
                 error: None,
@@ -388,15 +358,6 @@ impl RawTelemetryState {
                     capture.next_block
                 );
             }
-            if header.encoding != capture.report.encoding
-                && !(matches!(
-                    capture.report.encoding,
-                    RawEncoding::Packed26 | RawEncoding::Packed26Delta
-                ) && header.encoding == RawEncoding::Raw34
-                    && header.is_fallback())
-            {
-                bail!("unexpected raw encoding");
-            }
             capture.next_block = capture.next_block.wrapping_add(1);
             capture.report.blocks_received += 1;
             capture.last_progress = Instant::now();
@@ -472,13 +433,7 @@ impl RawTelemetryState {
                 }
                 capture.report.ended = true;
             } else {
-                match header.encoding {
-                    RawEncoding::Raw34 => capture.report.raw34_blocks += 1,
-                    RawEncoding::Packed26 => capture.report.packed26_blocks += 1,
-                    RawEncoding::Packed28 => capture.report.packed28_blocks += 1,
-                    RawEncoding::Packed26Delta => capture.report.packed26_delta_blocks += 1,
-                }
-                capture.report.fallback_blocks += u64::from(header.is_fallback());
+                capture.report.packed28_blocks += 1;
                 capture.report.records_received += block.samples.len() as u64;
                 for sample in block.samples {
                     if self.tx.try_send(sample).is_ok() {
@@ -602,7 +557,7 @@ where
         RawTelemetryRequest::Arm {
             session,
             previous_session,
-            encoding: state.encoding(),
+            encoding: RawEncoding::Packed28,
             fast_hz,
         }
     };
@@ -641,7 +596,7 @@ where
                 bail!("raw stop rejected: {ack:?}");
             }
         } else if ack.status != RawTelemetryStatus::Armed
-            || ack.encoding != state.encoding()
+            || ack.encoding != RawEncoding::Packed28
             || ack.timing.actual_fast_hz == 0
         {
             bail!("raw arm rejected: {ack:?}");
@@ -727,8 +682,7 @@ pub(crate) fn spawn_ergot_subscriber<NS>(
     tokio::spawn(async move {
         use oxifoc_core::icd::RawTelemetryBlockTopic;
         let ns = stack.stack();
-        // 32 blocks bound the additional decoded-message queue. USB itself
-        // has the same 32×4096-byte receive requests as the direct raw path.
+        // 32 blocks bound the additional decoded-message queue.
         let receiver = ns
             .topics()
             .heap_bounded_receiver::<RawTelemetryBlockTopic>(32, Some("raw_fast"));
@@ -851,19 +805,14 @@ mod tests {
             [(true, 0, true), (false, 0, false), (true, 1, false)]
         {
             let (tx, rx) = bounded(8);
-            let state = RawTelemetryState::new_with_velocity_debug(
-                FastSource::ErgotRaw,
-                RawEncoding::Packed28,
-                tx,
-                true,
-            );
+            let state = RawTelemetryState::new_with_velocity_debug(FastSource::ErgotRaw, tx, true);
             state.reader_ready();
             let session = state.arm().unwrap();
             let first = FastTelemetry {
                 seq: u16::MAX,
                 ..Default::default()
             };
-            let mut bytes = data(session, 0, RawEncoding::Packed28, &[first], 0);
+            let mut bytes = data(session, 0, &[first], 0);
             let mut debug = [0; RAW_HEADER_BYTES + 2 * VELOCITY_RECORD_BYTES];
             RawBlockHeader::velocity(session, 1, 2, 0, None).write(&mut debug);
             let origin = VelocityDebugFrame {
@@ -887,7 +836,7 @@ mod tests {
                 bytes.extend(marker);
                 next += 1;
             }
-            bytes.extend(end(session, next, RawEncoding::Packed28, 1, 0));
+            bytes.extend(end(session, next, 1, 0));
             let mut ingress = RawIngress::new(state.clone());
             let result: Result<()> = bytes.chunks(13).try_for_each(|chunk| ingress.push(chunk));
             assert_eq!(result.is_ok(), expected_ok);
@@ -903,123 +852,117 @@ mod tests {
     #[tokio::test]
     async fn ergot_carrier_preserves_blocks_end_and_missing_block_failure() {
         use oxifoc_core::icd::{RawTelemetryBlock, RawTelemetryBlockTopic};
-        for encoding in [
-            RawEncoding::Raw34,
-            RawEncoding::Packed26,
-            RawEncoding::Packed26Delta,
-            RawEncoding::Packed28,
-        ] {
-            for missing in [false, true] {
-                let stack = ergot::toolkits::null::new_arc_null_stack();
-                let (tx, rx) = bounded(64);
-                let state = RawTelemetryState::new(FastSource::ErgotRaw, encoding, tx);
-                let cancel = tokio_util::sync::CancellationToken::new();
-                spawn_ergot_subscriber(&stack, state.clone(), cancel.clone());
-                state.wait_ready().await.unwrap();
-                let session = state.arm().unwrap();
-                let samples: Vec<_> = (0..64)
-                    .map(|seq| FastTelemetry {
-                        seq,
-                        ia: 2048 + seq,
-                        ib: 2048 - seq,
-                        ic: 2048,
-                        vphase_adc: [1800, 1900, 2000],
-                        pwm_ccr: [1000, 2000, 3000],
-                        pwm_arr: 4195,
-                        ..FastTelemetry::default()
-                    })
-                    .collect();
-                let publish = |bytes: Vec<u8>| {
-                    let mut block = RawTelemetryBlock {
-                        data: Default::default(),
-                    };
-                    block.data.extend_from_slice(&bytes).unwrap();
-                    stack
-                        .topics()
-                        .unicast::<RawTelemetryBlockTopic>(
-                            ergot::Address {
-                                network_id: 0,
-                                node_id: 0,
-                                port_id: 0,
-                            },
-                            &block,
-                        )
-                        .unwrap();
+        for missing in [false, true] {
+            let stack = ergot::toolkits::null::new_arc_null_stack();
+            let (tx, rx) = bounded(64);
+            let state = RawTelemetryState::new(FastSource::ErgotRaw, tx);
+            let cancel = tokio_util::sync::CancellationToken::new();
+            spawn_ergot_subscriber(&stack, state.clone(), cancel.clone());
+            state.wait_ready().await.unwrap();
+            let session = state.arm().unwrap();
+            let samples: Vec<_> = (0..64)
+                .map(|seq| FastTelemetry {
+                    seq,
+                    ia: 2048 + seq,
+                    ib: 2048 - seq,
+                    ic: 2048,
+                    vphase_adc: [1800, 1900, 2000],
+                    pwm_ccr: [1000, 2000, 3000],
+                    pwm_arr: 4195,
+                    ..FastTelemetry::default()
+                })
+                .collect();
+            let publish = |bytes: Vec<u8>| {
+                let mut block = RawTelemetryBlock {
+                    data: Default::default(),
                 };
-                for bytes in [
-                    data(session.wrapping_sub(1), 0, encoding, &samples, 0),
-                    data(session, 0, encoding, &samples, 0),
-                    end(session, if missing { 2 } else { 1 }, encoding, 64, 0),
-                ] {
-                    publish(bytes);
-                }
-                tokio::time::timeout(Duration::from_secs(1), async {
-                    loop {
-                        let report = state.report().unwrap();
-                        if report.ended || report.error.is_some() {
-                            break;
-                        }
-                        tokio::task::yield_now().await;
+                block.data.extend_from_slice(&bytes).unwrap();
+                stack
+                    .topics()
+                    .unicast::<RawTelemetryBlockTopic>(
+                        ergot::Address {
+                            network_id: 0,
+                            node_id: 0,
+                            port_id: 0,
+                        },
+                        &block,
+                    )
+                    .unwrap();
+            };
+            for bytes in [
+                data(session.wrapping_sub(1), 0, &samples, 0),
+                data(session, 0, &samples, 0),
+                end(session, if missing { 2 } else { 1 }, 64, 0),
+            ] {
+                publish(bytes);
+            }
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    let report = state.report().unwrap();
+                    if report.ended || report.error.is_some() {
+                        break;
                     }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let report = state.report().unwrap();
+            assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
+            if missing {
+                assert!(report.error.as_deref().unwrap().contains("block index 2"));
+                assert!(!report.ended);
+                let next = state.arm().unwrap();
+                publish(end(session, 1, 64, 0));
+                publish(data(next, 0, &samples, 0));
+                publish(end(next, 1, 64, 0));
+                let recovered = tokio::task::spawn_blocking({
+                    let state = state.clone();
+                    move || state.wait_end_for(next, Duration::from_secs(1))
                 })
                 .await
+                .unwrap()
                 .unwrap();
-                let report = state.report().unwrap();
+                recovered.validate_export(next, 64).unwrap();
                 assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
-                if missing {
-                    assert!(report.error.as_deref().unwrap().contains("block index 2"));
-                    assert!(!report.ended);
-                    let next = state.arm().unwrap();
-                    publish(end(session, 1, encoding, 64, 0));
-                    publish(data(next, 0, encoding, &samples, 0));
-                    publish(end(next, 1, encoding, 64, 0));
-                    let recovered = tokio::task::spawn_blocking({
-                        let state = state.clone();
-                        move || state.wait_end_for(next, Duration::from_secs(1))
-                    })
-                    .await
-                    .unwrap()
-                    .unwrap();
-                    recovered.validate_export(next, 64).unwrap();
-                    assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
-                } else {
-                    report.validate_export(session, 64).unwrap();
-                    assert_eq!(report.source, FastSource::ErgotRaw);
-                }
-                cancel.cancel();
+            } else {
+                report.validate_export(session, 64).unwrap();
+                assert_eq!(report.source, FastSource::ErgotRaw);
             }
+            cancel.cancel();
         }
     }
 
-    fn ready(
-        capacity: usize,
-        encoding: RawEncoding,
-    ) -> (Arc<RawTelemetryState>, Receiver<FastTelemetry>, u64) {
+    fn ready(capacity: usize) -> (Arc<RawTelemetryState>, Receiver<FastTelemetry>, u64) {
         let (tx, rx) = bounded(capacity);
-        let state = RawTelemetryState::new(FastSource::UsbRaw, encoding, tx);
+        let state = RawTelemetryState::new(FastSource::ErgotRaw, tx);
         state.reader_ready();
         let session = state.arm().unwrap();
         (state, rx, session)
     }
 
-    fn data(
-        session: u64,
-        index: u32,
-        encoding: RawEncoding,
-        samples: &[FastTelemetry],
-        drops: u32,
-    ) -> Vec<u8> {
+    fn data(session: u64, index: u32, samples: &[FastTelemetry], drops: u32) -> Vec<u8> {
         let mut encoder = RawBlockEncoder::new();
-        encoder.begin(session, index, encoding, 1);
+        encoder.begin(session, index, 1);
         for sample in samples {
             assert!(encoder.push(sample));
         }
         encoder.finish(drops).to_vec()
     }
 
-    fn end(session: u64, index: u32, encoding: RawEncoding, total: u64, drops: u32) -> Vec<u8> {
+    /// A Packed28 block holds one contiguous sequence run.
+    fn consecutive(first: FastTelemetry, count: u16) -> Vec<FastTelemetry> {
+        (0..count)
+            .map(|i| FastTelemetry {
+                seq: first.seq.wrapping_add(i),
+                ..first
+            })
+            .collect()
+    }
+
+    fn end(session: u64, index: u32, total: u64, drops: u32) -> Vec<u8> {
         RawBlockEncoder::new()
-            .end(session, index, encoding, total, drops)
+            .end(session, index, total, drops)
             .to_vec()
     }
 
@@ -1036,17 +979,11 @@ mod tests {
             },
         ];
         for chunk in 1..100 {
-            let (state, rx, session) = ready(8, RawEncoding::Packed26);
+            let (state, rx, session) = ready(8);
             let mut stream = b"old truncated endpoint prefix OX".to_vec();
-            stream.extend(data(
-                session.wrapping_sub(1),
-                0,
-                RawEncoding::Raw34,
-                &samples,
-                0,
-            ));
-            stream.extend(data(session, 0, RawEncoding::Packed26, &samples, 0));
-            stream.extend(end(session, 1, RawEncoding::Packed26, 2, 0));
+            stream.extend(data(session.wrapping_sub(1), 0, &samples, 0));
+            stream.extend(data(session, 0, &samples, 0));
+            stream.extend(end(session, 1, 2, 0));
             let mut ingress = RawIngress::new(state.clone());
             for bytes in stream.chunks(chunk) {
                 ingress.push(&[]).unwrap();
@@ -1056,7 +993,7 @@ mod tests {
             assert_eq!(report.records_received, 2);
             assert_eq!(report.records_delivered, 2);
             assert_eq!(report.blocks_received, 2);
-            assert_eq!(report.packed26_blocks, 1);
+            assert_eq!(report.packed28_blocks, 1);
             assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
         }
     }
@@ -1064,11 +1001,10 @@ mod tests {
     #[test]
     fn matching_first_block_requires_index_zero_and_strict_suffix_in_the_same_completion() {
         for wrong_index in [false, true] {
-            let (state, _rx, session) = ready(8, RawEncoding::Raw34);
+            let (state, _rx, session) = ready(8);
             let mut stream = data(
                 session,
                 u32::from(wrong_index),
-                RawEncoding::Raw34,
                 &[FastTelemetry::default()],
                 0,
             );
@@ -1084,34 +1020,24 @@ mod tests {
     #[test]
     fn no_end_mismatched_totals_gaps_and_device_drops_cannot_succeed() {
         for (index, total, drops) in [(1, 2, 0), (2, 1, 0), (1, 1, 3)] {
-            let (state, _rx, session) = ready(8, RawEncoding::Raw34);
+            let (state, _rx, session) = ready(8);
             let mut ingress = RawIngress::new(state.clone());
             ingress
-                .push(&data(
-                    session,
-                    0,
-                    RawEncoding::Raw34,
-                    &[FastTelemetry::default()],
-                    0,
-                ))
+                .push(&data(session, 0, &[FastTelemetry::default()], 0))
                 .unwrap();
             assert!(state.wait_end(Duration::ZERO).is_err());
-            assert!(
-                ingress
-                    .push(&end(session, index, RawEncoding::Raw34, total, drops))
-                    .is_err()
-            );
+            assert!(ingress.push(&end(session, index, total, drops)).is_err());
             assert!(!state.report().unwrap().ended);
         }
     }
 
     #[test]
     fn channel_overflow_is_reported_instead_of_silently_discarded() {
-        let (state, _rx, session) = ready(1, RawEncoding::Raw34);
-        let samples = [FastTelemetry::default(); 2];
+        let (state, _rx, session) = ready(1);
+        let samples = consecutive(FastTelemetry::default(), 2);
         assert!(
             RawIngress::new(state.clone())
-                .push(&data(session, 0, RawEncoding::Raw34, &samples, 0))
+                .push(&data(session, 0, &samples, 0))
                 .is_err()
         );
         let report = state.report().unwrap();
@@ -1122,30 +1048,9 @@ mod tests {
     }
 
     #[test]
-    fn explicit_packed_fallback_retains_invalid_adc_bits_and_provenance() {
-        let (state, rx, session) = ready(8, RawEncoding::Packed26);
-        let sample = FastTelemetry {
-            ia: u16::MAX,
-            ..FastTelemetry::default()
-        };
-        let mut ingress = RawIngress::new(state.clone());
-        ingress
-            .push(&data(session, 0, RawEncoding::Packed26, &[sample], 0))
-            .unwrap();
-        ingress
-            .push(&end(session, 1, RawEncoding::Packed26, 1, 0))
-            .unwrap();
-        assert_eq!(rx.try_recv().unwrap(), sample);
-        let report = state.wait_end(Duration::ZERO).unwrap();
-        assert_eq!(report.raw34_blocks, 1);
-        assert_eq!(report.packed26_blocks, 0);
-        assert_eq!(report.fallback_blocks, 1);
-    }
-
-    #[test]
     fn stalled_or_disconnected_capture_stays_failed_after_reader_reconnect() {
         for fault in 0..3 {
-            let (state, _rx, old) = ready(8, RawEncoding::Raw34);
+            let (state, _rx, old) = ready(8);
             match fault {
                 0 => {
                     state
@@ -1157,7 +1062,7 @@ mod tests {
                         .unwrap()
                         .last_progress = Instant::now() - STALL_LIMIT - Duration::from_millis(1);
                 }
-                1 => state.connection_lost("test disconnect"),
+                1 => state.fail("test disconnect"),
                 _ => state.control_lost(),
             }
             assert!(state.check().is_err());
@@ -1167,68 +1072,62 @@ mod tests {
             let new = state.arm().unwrap();
             assert_ne!(old, new);
             let mut ingress = RawIngress::new(state.clone());
-            ingress
-                .push(&end(old, 0, RawEncoding::Raw34, 0, 0))
-                .unwrap();
+            ingress.push(&end(old, 0, 0, 0)).unwrap();
             assert!(!state.report().unwrap().ended);
-            ingress
-                .push(&end(new, 0, RawEncoding::Raw34, 0, 0))
-                .unwrap();
+            ingress.push(&end(new, 0, 0, 0)).unwrap();
             assert!(state.wait_end(Duration::ZERO).is_ok());
         }
     }
 
     #[test]
     fn completion_wakes_waiter_and_late_disconnect_does_not_revoke_consumed_end() {
-        let (state, _rx, session) = ready(8, RawEncoding::Raw34);
+        let (state, _rx, session) = ready(8);
         let waiting = state.clone();
         let waiter = std::thread::spawn(move || waiting.wait_end(Duration::from_secs(1)));
         RawIngress::new(state.clone())
-            .push(&end(session, 0, RawEncoding::Raw34, 0, 0))
+            .push(&end(session, 0, 0, 0))
             .unwrap();
         assert!(waiter.join().unwrap().unwrap().ended);
-        state.connection_lost("unplug after completion");
+        state.fail("unplug after completion");
         assert!(state.wait_end(Duration::ZERO).unwrap().ended);
         assert!(state.arm().is_err());
     }
 
     #[test]
     fn malformed_prelude_is_resynchronized_but_a_matching_bad_encoding_is_fatal() {
-        let (state, _rx, session) = ready(8, RawEncoding::Raw34);
+        let (state, _rx, session) = ready(8);
         let mut stream = b"OXTR".to_vec();
         stream.extend([255; 28]);
-        stream.extend(data(
-            session,
-            0,
-            RawEncoding::Packed26,
-            &[FastTelemetry::default()],
-            0,
-        ));
+        let mut block = data(session, 0, &[FastTelemetry::default()], 0);
+        // Tag 1 was Packed26; only Packed28 (tag 3) parses.
+        block[5] = 1;
+        stream.extend(block);
         assert!(RawIngress::new(state.clone()).push(&stream).is_err());
-        assert!(state.report().unwrap().error.unwrap().contains("encoding"));
+        assert!(
+            state
+                .report()
+                .unwrap()
+                .error
+                .unwrap()
+                .contains("malformed current raw header")
+        );
     }
 
     #[test]
     fn stale_blocks_junk_and_truncated_payload_cannot_hide_current_block_zero() {
         for chunk in 1..100 {
-            let (state, rx, session) = ready(8, RawEncoding::Raw34);
+            let (state, rx, session) = ready(8);
             let sample = FastTelemetry {
                 seq: 123,
                 ..FastTelemetry::default()
             };
-            let old = data(
-                session.wrapping_sub(1),
-                0,
-                RawEncoding::Raw34,
-                &[sample; 8],
-                0,
-            );
+            let old = data(session.wrapping_sub(1), 0, &consecutive(sample, 8), 0);
             let mut stream = old.clone();
             stream.push(b'x');
             // Also leave a stale valid header with only half its payload.
             stream.extend(&old[..old.len() / 2]);
-            stream.extend(data(session, 0, RawEncoding::Raw34, &[sample], 0));
-            stream.extend(end(session, 1, RawEncoding::Raw34, 1, 0));
+            stream.extend(data(session, 0, &[sample], 0));
+            stream.extend(end(session, 1, 1, 0));
             let mut ingress = RawIngress::new(state.clone());
             for bytes in stream.chunks(chunk) {
                 ingress.push(bytes).unwrap();
@@ -1251,8 +1150,8 @@ mod tests {
         ] {
             assert!(!producer_off(status));
         }
-        let (state, _rx, old) = ready(8, RawEncoding::Raw34);
-        state.connection_lost("sink aborted without END");
+        let (state, _rx, old) = ready(8);
+        state.fail("sink aborted without END");
         state.reader_ready();
         assert!(state.wait_end(Duration::ZERO).is_err());
         assert_ne!(state.arm().unwrap(), old);
@@ -1261,20 +1160,17 @@ mod tests {
 
     #[test]
     fn complete_end_requires_every_exported_row_and_the_same_owned_session() {
-        let (state, _rx, session) = ready(8, RawEncoding::Raw34);
+        let (state, _rx, session) = ready(8);
         let mut ingress = RawIngress::new(state.clone());
         ingress
             .push(&data(
                 session,
                 0,
-                RawEncoding::Raw34,
-                &[FastTelemetry::default(); 2],
+                &consecutive(FastTelemetry::default(), 2),
                 0,
             ))
             .unwrap();
-        ingress
-            .push(&end(session, 1, RawEncoding::Raw34, 2, 0))
-            .unwrap();
+        ingress.push(&end(session, 1, 2, 0)).unwrap();
         let report = state.wait_end_for(session, Duration::ZERO).unwrap();
         assert!(report.validate_export(session, 2).is_ok());
         assert!(report.validate_export(session, 1).is_err()); // contiguous prefix or suffix

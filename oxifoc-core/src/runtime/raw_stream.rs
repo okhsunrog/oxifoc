@@ -56,7 +56,6 @@ enum Phase {
 #[derive(Clone, Copy)]
 struct RawControl {
     session: u64,
-    encoding: RawEncoding,
     fast_hz: u16,
     period: u32,
     velocity_debug: bool,
@@ -73,7 +72,6 @@ impl RawControl {
     const fn new() -> Self {
         Self {
             session: 0,
-            encoding: RawEncoding::Packed28,
             fast_hz: 0,
             period: 0,
             velocity_debug: false,
@@ -115,28 +113,17 @@ impl RawControl {
             RawTelemetryRequest::Arm {
                 session,
                 previous_session,
-                encoding,
+                encoding: RawEncoding::Packed28,
                 fast_hz,
             } => {
-                if debug && encoding != RawEncoding::Packed28 {
-                    return (RawTelemetryStatus::Invalid, Action::None);
-                }
                 if debug && !velocity_debug::available() {
                     return (RawTelemetryStatus::Unavailable, Action::None);
-                }
-                if !cfg!(any(test, feature = "diagnostic-telemetry-codecs"))
-                    && encoding != RawEncoding::Packed28
-                {
-                    return (RawTelemetryStatus::Invalid, Action::None);
                 }
                 if session == 0 || fast_hz == 0 || foc_hz == 0 {
                     return (RawTelemetryStatus::Invalid, Action::None);
                 }
                 if session == self.session {
-                    return if encoding == self.encoding
-                        && fast_hz == self.fast_hz
-                        && debug == self.velocity_debug
-                    {
+                    return if fast_hz == self.fast_hz && debug == self.velocity_debug {
                         (self.status(), Action::None)
                     } else {
                         (RawTelemetryStatus::Busy, Action::None)
@@ -156,7 +143,6 @@ impl RawControl {
                 }
                 *self = Self {
                     session,
-                    encoding,
                     fast_hz,
                     period,
                     velocity_debug: debug,
@@ -279,10 +265,6 @@ async fn control_request_with_options(
         RawTelemetryRequest::Arm { session, .. } | RawTelemetryRequest::Stop { session } => session,
         RawTelemetryRequest::Status => control.session,
     };
-    let encoding = match request {
-        RawTelemetryRequest::Arm { encoding, .. } => encoding,
-        RawTelemetryRequest::Stop { .. } | RawTelemetryRequest::Status => control.encoding,
-    };
     let period = if requested_session == control.session && control.phase == Phase::Open {
         control.period
     } else {
@@ -290,7 +272,7 @@ async fn control_request_with_options(
     };
     RawTelemetryAck {
         session: requested_session,
-        encoding,
+        encoding: RawEncoding::Packed28,
         status,
         timing: TelemetryConfigAck {
             actual_fast_hz: timing.stream_hz(period),
@@ -414,12 +396,7 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             total_records = 0;
             debug_total = 0;
             debug_ended = false;
-            encoder.begin(
-                session,
-                block_index,
-                control.encoding,
-                control.period as u16,
-            );
+            encoder.begin(session, block_index, control.period as u16);
         }
         let closing = control.phase == Phase::Closing;
         let mut refused = false;
@@ -455,7 +432,7 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             velocity_records = records;
             &buffer[..len]
         } else if end {
-            encoder.end(session, block_index, control.encoding, total_records, drops)
+            encoder.end(session, block_index, total_records, drops)
         } else if control.velocity_debug {
             // Native samples always get first claim on the envelope. Append a
             // companion block to the existing buffer, with no extra send/await.
@@ -494,12 +471,7 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             }
             block_index =
                 block_index.wrapping_add(1 + u32::from(!closing_velocity && velocity_records != 0));
-            encoder.begin(
-                session,
-                block_index,
-                control.encoding,
-                control.period as u16,
-            );
+            encoder.begin(session, block_index, control.period as u16);
         }
         embassy_futures::yield_now().await;
     }
@@ -520,7 +492,7 @@ mod tests {
         let arm = RawTelemetryRequest::Arm {
             session: 7,
             previous_session: 0,
-            encoding: RawEncoding::Packed26,
+            encoding: RawEncoding::Packed28,
             fast_hz: 20_000,
         };
         assert_eq!(
@@ -541,7 +513,7 @@ mod tests {
                     RawTelemetryRequest::Arm {
                         session: 8,
                         previous_session: 7,
-                        encoding: RawEncoding::Raw34,
+                        encoding: RawEncoding::Packed28,
                         fast_hz: 5000
                     },
                     20_000,
@@ -586,7 +558,7 @@ mod tests {
                     RawTelemetryRequest::Arm {
                         session: 8,
                         previous_session: 7,
-                        encoding: RawEncoding::Raw34,
+                        encoding: RawEncoding::Packed28,
                         fast_hz: 5000
                     },
                     20_000,
@@ -599,7 +571,7 @@ mod tests {
         let next = RawTelemetryRequest::Arm {
             session: 8,
             previous_session: 7,
-            encoding: RawEncoding::Raw34,
+            encoding: RawEncoding::Packed28,
             fast_hz: 5000,
         };
         assert_eq!(
@@ -696,7 +668,7 @@ mod tests {
         let arm = |session, previous_session| RawTelemetryRequest::Arm {
             session,
             previous_session,
-            encoding: RawEncoding::Packed26,
+            encoding: RawEncoding::Packed28,
             fast_hz: 20_000,
         };
         assert_eq!(
@@ -850,6 +822,61 @@ mod tests {
         FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
         READY.store(false, Ordering::Relaxed);
     }
+
+    #[test]
+    fn unpackable_frame_flushes_the_accepted_prefix_then_fails_without_end() {
+        let _guard = super::super::streaming::FAST_TELEM_TEST_LOCK
+            .lock()
+            .unwrap();
+        *CONTROL.try_lock().unwrap() = RawControl::new();
+        FAST_TELEM_Q.discard();
+        FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
+        let blocks = Arc::new(StdMutex::new(Vec::new()));
+        let mut sink = HeldSink {
+            held: Arc::new(AtomicBool::new(false)),
+            fail: Arc::new(AtomicBool::new(false)),
+            blocks: blocks.clone(),
+        };
+        let mut stream = pin!(raw_telemetry_stream::<_, YieldTimer>(&mut sink));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(stream.as_mut().poll(&mut cx).is_pending());
+        let timing = ControlTiming::from_hz(20_000);
+        let arm = RawTelemetryRequest::Arm {
+            session: 5,
+            previous_session: 0,
+            encoding: RawEncoding::Packed28,
+            fast_hz: 20_000,
+        };
+        assert_eq!(
+            ready(control_request(arm, 20_000, timing)).status,
+            RawTelemetryStatus::Armed
+        );
+        for (seq, ia) in [(1, 100), (2, 4096), (3, 100)] {
+            FAST_TELEM_Q
+                .push(&FastTelemetry {
+                    seq,
+                    ia,
+                    ..FastTelemetry::default()
+                })
+                .unwrap();
+        }
+        for _ in 0..4 {
+            assert!(stream.as_mut().poll(&mut cx).is_pending());
+        }
+        let written = blocks.lock().unwrap();
+        assert_eq!(written.len(), 1, "no fallback block and no END");
+        let data = decode_raw_block(&written[0]).unwrap();
+        assert_eq!(data.samples.iter().map(|f| f.seq).collect::<Vec<_>>(), [1]);
+        drop(written);
+        assert_eq!(
+            ready(control_request(RawTelemetryRequest::Status, 20_000, timing)).status,
+            RawTelemetryStatus::Unavailable
+        );
+        assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Relaxed), 0);
+        *CONTROL.try_lock().unwrap() = RawControl::new();
+        FAST_TELEM_Q.discard();
+        READY.store(false, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -871,7 +898,7 @@ mod routed_owner_tests {
         let arm = RawTelemetryRequest::Arm {
             session: 17,
             previous_session: 0,
-            encoding: RawEncoding::Packed26,
+            encoding: RawEncoding::Packed28,
             fast_hz: 20_000,
         };
         let run = |request, peer| {

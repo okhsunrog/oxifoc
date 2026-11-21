@@ -1,51 +1,52 @@
 //! Versioned, independently decoded telemetry blocks. All packing is lossless.
-//! Production tag3 is fixed Packed28: tag1's 26 bytes plus a two-byte Hall angle
-//! with explicit absence. Tags0..2 retain their historical decoding contract;
-//! they reject new samples containing Hall rather than silently discarding it.
+//! The only native record layout is Packed28 (in-block tag 3): the three phase
+//! currents and the optional phase voltages as 12-bit pairs, an enable byte
+//! whose top bit marks phase voltages present, eight 16-bit words (vbus, FOC
+//! angle, vd, vq, rpm, three CCRs) and a two-byte Hall angle with explicit
+//! absence. Sequence and ARR come from the header, so a block holds one
+//! contiguous, constant-ARR run; a frame that does not pack (an ADC word above
+//! 12 bits, a mixed phase-voltage sentinel, an enable bit above 6) is refused
+//! and the session fails rather than changing format.
 //!
 //! The 32-byte header contains magic/version/encoding/flags/count (8 bytes),
 //! session (u64), block index and cumulative producer drops (u32 each), then
 //! seq/stride/ARR/payload length (u16 each). END replaces the final eight bytes
 //! with total emitted records. Timestamps remain sequence-derived, as in the
 //! original frame; a task-side send timestamp is not an acquisition timestamp.
-//! Encoding tag2 adds byte deltas over tag1's packed layout: a full 26-byte
-//! seed, then tag0+26 full bytes or tag1+u32 changed-byte mask+replacement
-//! bytes in offset order. Only mask bits0..25 are valid. Every block starts
-//! afresh; incompressible frames use full encoding and invalid packed input
-//! uses the existing explicit Raw34 block fallback.
+//! Velocity companion blocks share the header, tagged Packed28 with the
+//! VELOCITY flag, and carry fixed velocity records instead.
 
 use crate::types::{FastTelemetry, HallAngle, TelemetryConfigAck};
+use crate::velocity_telemetry::{VELOCITY_RECORD_BYTES, VelocityDebugFrame};
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 
 pub const RAW_MAGIC: [u8; 4] = *b"OXTR";
 pub const RAW_HEADER_BYTES: usize = 32;
 pub const RAW_MAX_RECORDS: usize = 64;
-pub const RAW_MAX_BLOCK_BYTES: usize = RAW_HEADER_BYTES + RAW_MAX_RECORDS * 34;
+const PACKED28_BYTES: usize = 28;
+/// Velocity records a full native block leaves room for in the same envelope.
+const COMPANION_RECORDS: usize = 11;
+/// One envelope: a full Packed28 block, then a velocity companion block. The
+/// 2208 bytes equal the former full-width (34-byte record) bound, so the
+/// companion keeps the room it had; the largest single block, 64 velocity
+/// records after Stop, also fits.
+pub const RAW_MAX_BLOCK_BYTES: usize = RAW_HEADER_BYTES
+    + RAW_MAX_RECORDS * PACKED28_BYTES
+    + RAW_HEADER_BYTES
+    + COMPANION_RECORDS * VELOCITY_RECORD_BYTES;
+const _: () =
+    assert!(RAW_MAX_BLOCK_BYTES >= RAW_HEADER_BYTES + RAW_MAX_RECORDS * VELOCITY_RECORD_BYTES);
 const VERSION: u8 = 1;
+const PACKED28_TAG: u8 = 3;
 const END: u8 = 1;
-const FALLBACK: u8 = 2;
 const VELOCITY: u8 = 4;
-use crate::velocity_telemetry::{VELOCITY_RECORD_BYTES, VelocityDebugFrame};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RawEncoding {
-    Raw34,
-    Packed26,
-    /// Independent 26-byte seed, then tagged full frames or byte replacements.
-    Packed26Delta,
-    /// Fixed production layout: Packed26 followed by an independent Hall angle.
+    /// Fixed production layout; see the module documentation.
     Packed28,
-}
-impl RawEncoding {
-    const fn bytes(self) -> usize {
-        match self {
-            Self::Raw34 => 34,
-            Self::Packed26 | Self::Packed26Delta => 26,
-            Self::Packed28 => 28,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
@@ -97,7 +98,6 @@ pub struct RawTelemetryAck {
 pub struct RawBlockHeader {
     pub session: u64,
     pub block_index: u32,
-    pub encoding: RawEncoding,
     pub producer_drops: u32,
     pub count: u8,
     pub first_seq: u16,
@@ -115,9 +115,6 @@ impl RawBlockHeader {
     pub const fn is_velocity(&self) -> bool {
         self.flags & VELOCITY != 0
     }
-    pub const fn is_fallback(&self) -> bool {
-        self.flags & FALLBACK != 0
-    }
     pub const fn payload_bytes(&self) -> usize {
         self.payload_len as usize
     }
@@ -126,46 +123,27 @@ impl RawBlockHeader {
         let b = bytes
             .get(..RAW_HEADER_BYTES)
             .ok_or(RawDecodeError::Truncated)?;
-        if b[..4] != RAW_MAGIC || b[4] != VERSION {
+        if b[..4] != RAW_MAGIC || b[4] != VERSION || b[5] != PACKED28_TAG {
             return Err(RawDecodeError::Header);
         }
-        let encoding = match b[5] {
-            0 => RawEncoding::Raw34,
-            1 => RawEncoding::Packed26,
-            2 => RawEncoding::Packed26Delta,
-            3 => RawEncoding::Packed28,
-            _ => return Err(RawDecodeError::Header),
-        };
         let flags = b[6];
         let count = b[7];
-        if flags & !(END | FALLBACK | VELOCITY) != 0
-            || flags & VELOCITY != 0 && (encoding != RawEncoding::Packed28 || flags & FALLBACK != 0)
-            || count as usize > RAW_MAX_RECORDS
-            || flags & FALLBACK != 0 && encoding != RawEncoding::Raw34
-        {
+        if flags & !(END | VELOCITY) != 0 || count as usize > RAW_MAX_RECORDS {
             return Err(RawDecodeError::Header);
         }
         let end = flags & END != 0;
         let payload_len = if end { 0 } else { read16(b, 30) };
         if end {
-            if count != 0 || flags & !VELOCITY != END {
+            if count != 0 {
                 return Err(RawDecodeError::Header);
             }
         } else {
-            if count == 0 {
-                return Err(RawDecodeError::Header);
-            }
-            let length = usize::from(payload_len);
-            let valid = if flags & VELOCITY != 0 {
-                length == count as usize * VELOCITY_RECORD_BYTES
-            } else if encoding == RawEncoding::Packed26Delta {
-                // The seed is fixed; each later frame is a tag+full frame or
-                // a tag+four-byte mask followed by its changed bytes.
-                (26 + (count as usize - 1) * 5..=26 + (count as usize - 1) * 27).contains(&length)
+            let record = if flags & VELOCITY != 0 {
+                VELOCITY_RECORD_BYTES
             } else {
-                length == count as usize * encoding.bytes()
+                PACKED28_BYTES
             };
-            if !valid {
+            if count == 0 || usize::from(payload_len) != count as usize * record {
                 return Err(RawDecodeError::Header);
             }
         }
@@ -173,7 +151,6 @@ impl RawBlockHeader {
             session: read64(b, 8),
             block_index: read32(b, 16),
             producer_drops: read32(b, 20),
-            encoding,
             flags,
             count,
             first_seq: if end { 0 } else { read16(b, 24) },
@@ -199,7 +176,6 @@ impl RawBlockHeader {
         Self {
             session,
             block_index,
-            encoding: RawEncoding::Packed28,
             producer_drops: drops,
             count,
             first_seq: 0,
@@ -214,12 +190,7 @@ impl RawBlockHeader {
     pub fn write(self, b: &mut [u8]) {
         b[..4].copy_from_slice(&RAW_MAGIC);
         b[4] = VERSION;
-        b[5] = match self.encoding {
-            RawEncoding::Raw34 => 0,
-            RawEncoding::Packed26 => 1,
-            RawEncoding::Packed26Delta => 2,
-            RawEncoding::Packed28 => 3,
-        };
+        b[5] = PACKED28_TAG;
         b[6] = self.flags;
         b[7] = self.count;
         b[8..16].copy_from_slice(&self.session.to_le_bytes());
@@ -246,52 +217,13 @@ fn read64(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(core::array::from_fn(|i| b[at + i]))
 }
 
-fn words(f: &FastTelemetry) -> [u16; 17] {
-    [
-        f.ia,
-        f.ib,
-        f.ic,
-        f.vbus,
-        f.angle,
-        f.vd as u16,
-        f.vq as u16,
-        f.rpm as u16,
-        f.seq,
-        f.vphase_adc[0],
-        f.vphase_adc[1],
-        f.vphase_adc[2],
-        f.pwm_ccr[0],
-        f.pwm_ccr[1],
-        f.pwm_ccr[2],
-        f.pwm_arr,
-        f.pwm_enables,
-    ]
-}
-fn frame(w: [u16; 17]) -> FastTelemetry {
-    FastTelemetry {
-        ia: w[0],
-        ib: w[1],
-        ic: w[2],
-        vbus: w[3],
-        angle: w[4],
-        hall_angle: HallAngle::default(),
-        vd: w[5] as i16,
-        vq: w[6] as i16,
-        rpm: w[7] as i16,
-        seq: w[8],
-        vphase_adc: [w[9], w[10], w[11]],
-        pwm_ccr: [w[12], w[13], w[14]],
-        pwm_arr: w[15],
-        pwm_enables: w[16],
-    }
-}
 fn packable(f: &FastTelemetry) -> bool {
     [f.ia, f.ib, f.ic].iter().all(|&v| v <= 4095)
         && (f.vphase_adc == [u16::MAX; 3] || f.vphase_adc.iter().all(|&v| v <= 4095))
         && f.pwm_enables & !127 == 0
 }
 
-fn pack26(f: &FastTelemetry, out: &mut [u8]) {
+fn pack28(f: &FastTelemetry, out: &mut [u8]) {
     let present = f.vphase_adc != [u16::MAX; 3];
     let p = if present { f.vphase_adc } else { [0; 3] };
     for (encoded, (a, b)) in
@@ -313,45 +245,48 @@ fn pack26(f: &FastTelemetry, out: &mut [u8]) {
         f.pwm_ccr[0],
         f.pwm_ccr[1],
         f.pwm_ccr[2],
+        f.hall_angle.encoded(),
     ];
-    for (encoded, value) in out[10..26].as_chunks_mut::<2>().0.iter_mut().zip(words) {
+    for (encoded, value) in out[10..28].as_chunks_mut::<2>().0.iter_mut().zip(words) {
         *encoded = value.to_le_bytes();
     }
 }
 
-fn unpack26(b: &[u8], header: RawBlockHeader, index: usize) -> FastTelemetry {
-    let mut w = [0; 17];
+fn unpack28(b: &[u8], header: RawBlockHeader, index: usize) -> FastTelemetry {
     let mut adc = [0; 6];
     for (i, p) in b[..9].as_chunks::<3>().0.iter().enumerate() {
         adc[i * 2] = u16::from(p[0]) | (u16::from(p[1] & 15) << 8);
         adc[i * 2 + 1] = u16::from(p[1] >> 4) | (u16::from(p[2]) << 4);
     }
-    w[..3].copy_from_slice(&adc[..3]);
-    w[9..12].copy_from_slice(if b[9] & 128 != 0 {
-        &adc[3..]
-    } else {
-        &[u16::MAX; 3]
-    });
-    for (i, value) in w[3..8].iter_mut().enumerate() {
-        *value = read16(b, 10 + i * 2);
+    let word = |i: usize| read16(b, 10 + i * 2);
+    FastTelemetry {
+        ia: adc[0],
+        ib: adc[1],
+        ic: adc[2],
+        vbus: word(0),
+        angle: word(1),
+        hall_angle: HallAngle::from_encoded(word(8)),
+        vd: word(2) as i16,
+        vq: word(3) as i16,
+        rpm: word(4) as i16,
+        seq: header
+            .first_seq
+            .wrapping_add((index as u16).wrapping_mul(header.stride)),
+        vphase_adc: if b[9] & 128 != 0 {
+            [adc[3], adc[4], adc[5]]
+        } else {
+            [u16::MAX; 3]
+        },
+        pwm_ccr: [word(5), word(6), word(7)],
+        pwm_arr: header.pwm_arr,
+        pwm_enables: u16::from(b[9] & 127),
     }
-    for (i, value) in w[12..15].iter_mut().enumerate() {
-        *value = read16(b, 20 + i * 2);
-    }
-    w[8] = header
-        .first_seq
-        .wrapping_add((index as u16).wrapping_mul(header.stride));
-    w[15] = header.pwm_arr;
-    w[16] = u16::from(b[9] & 127);
-    frame(w)
 }
 
 /// Reusable fixed storage. A refused push leaves the complete block unchanged.
 pub struct RawBlockEncoder {
     bytes: [u8; RAW_MAX_BLOCK_BYTES],
     header: RawBlockHeader,
-    requested: RawEncoding,
-    previous: [u8; 26],
 }
 impl Default for RawBlockEncoder {
     fn default() -> Self {
@@ -362,12 +297,9 @@ impl RawBlockEncoder {
     pub const fn new() -> Self {
         Self {
             bytes: [0; RAW_MAX_BLOCK_BYTES],
-            requested: RawEncoding::Raw34,
-            previous: [0; 26],
             header: RawBlockHeader {
                 session: 0,
                 block_index: 0,
-                encoding: RawEncoding::Raw34,
                 producer_drops: 0,
                 count: 0,
                 first_seq: 0,
@@ -379,12 +311,10 @@ impl RawBlockEncoder {
             },
         }
     }
-    pub fn begin(&mut self, session: u64, block_index: u32, encoding: RawEncoding, stride: u16) {
-        self.requested = encoding;
+    pub fn begin(&mut self, session: u64, block_index: u32, stride: u16) {
         self.header = RawBlockHeader {
             session,
             block_index,
-            encoding,
             producer_drops: 0,
             count: 0,
             first_seq: 0,
@@ -404,86 +334,27 @@ impl RawBlockEncoder {
     pub const fn is_full(&self) -> bool {
         self.len() == RAW_MAX_RECORDS
     }
+    /// Refuses a frame that does not pack, or that breaks the block's
+    /// sequence run or ARR; the caller starts a new block or fails the session.
     pub fn push(&mut self, f: &FastTelemetry) -> bool {
-        if self.is_full() || self.header.is_end() {
-            return false;
-        }
-        // Historical formats cannot represent Hall. Never silently drop it,
-        // and never fall back from the production format to a different codec.
-        let fits_packed = self.requested == RawEncoding::Raw34 || packable(f);
-        if (self.requested != RawEncoding::Packed28 && f.hall_angle.encoded() != 0)
-            || (self.requested == RawEncoding::Packed28 && !fits_packed)
-        {
+        if self.is_full() || self.header.is_end() || !packable(f) {
             return false;
         }
         if self.is_empty() {
             self.header.first_seq = f.seq;
             self.header.pwm_arr = f.pwm_arr;
-            if !fits_packed {
-                self.header.encoding = RawEncoding::Raw34;
-                self.header.flags = FALLBACK;
-            }
-        }
-        let packed = self.header.encoding != RawEncoding::Raw34;
-        if packed
-            && (!fits_packed
-                || f.pwm_arr != self.header.pwm_arr
-                || f.seq
-                    != self.header.first_seq.wrapping_add(
-                        u16::from(self.header.count).wrapping_mul(self.header.stride),
-                    ))
+        } else if f.pwm_arr != self.header.pwm_arr
+            || f.seq
+                != self
+                    .header
+                    .first_seq
+                    .wrapping_add(u16::from(self.header.count).wrapping_mul(self.header.stride))
         {
             return false;
         }
         let at = RAW_HEADER_BYTES + self.header.payload_bytes();
-        let length = if self.header.encoding == RawEncoding::Packed26Delta {
-            let mut current = [0_u8; 26];
-            pack26(f, &mut current);
-            let length = if self.is_empty() {
-                self.bytes[at..at + 26].copy_from_slice(&current);
-                26
-            } else {
-                let mut mask = 0_u32;
-                for (i, (&new, &old)) in current.iter().zip(&self.previous).enumerate() {
-                    mask |= u32::from(new != old) << i;
-                }
-                let length = 5 + mask.count_ones() as usize;
-                if length < 27 {
-                    self.bytes[at] = 1;
-                    self.bytes[at + 1..at + 5].copy_from_slice(&mask.to_le_bytes());
-                    let mut to = at + 5;
-                    while mask != 0 {
-                        let i = mask.trailing_zeros() as usize;
-                        self.bytes[to] = current[i];
-                        to += 1;
-                        mask &= mask - 1;
-                    }
-                    length
-                } else {
-                    self.bytes[at] = 0;
-                    self.bytes[at + 1..at + 27].copy_from_slice(&current);
-                    27
-                }
-            };
-            self.previous = current;
-            length
-        } else {
-            let length = self.header.encoding.bytes();
-            let out = &mut self.bytes[at..at + length];
-            if packed {
-                pack26(f, out);
-                if self.header.encoding == RawEncoding::Packed28 {
-                    out[26..28].copy_from_slice(&f.hall_angle.encoded().to_le_bytes());
-                }
-            } else {
-                for (i, value) in words(f).iter().enumerate() {
-                    out[i * 2..i * 2 + 2].copy_from_slice(&value.to_le_bytes());
-                }
-            }
-            length
-        };
-        // At most 26+63*27 bytes for delta, or 64*34 for full fallback.
-        self.header.payload_len += length as u16;
+        pack28(f, &mut self.bytes[at..at + PACKED28_BYTES]);
+        self.header.payload_len += PACKED28_BYTES as u16;
         self.header.count += 1;
         true
     }
@@ -513,11 +384,10 @@ impl RawBlockEncoder {
         &mut self,
         session: u64,
         block_index: u32,
-        encoding: RawEncoding,
         total_records: u64,
         producer_drops: u32,
     ) -> &[u8] {
-        self.begin(session, block_index, encoding, 0);
+        self.begin(session, block_index, 0);
         self.header.flags = END;
         self.header.total_records = total_records;
         self.finish(producer_drops)
@@ -545,84 +415,19 @@ pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError>
     }
     let mut samples = heapless::Vec::new();
     let mut velocity = heapless::Vec::new();
+    let payload = &bytes[RAW_HEADER_BYTES..];
     if header.is_velocity() {
-        for record in bytes[RAW_HEADER_BYTES..]
-            .as_chunks::<VELOCITY_RECORD_BYTES>()
-            .0
-        {
+        for record in payload.as_chunks::<VELOCITY_RECORD_BYTES>().0 {
             velocity
                 .push(VelocityDebugFrame::decode(record).ok_or(RawDecodeError::Length)?)
                 .map_err(|_| RawDecodeError::Length)?;
         }
-        return Ok(DecodedRawBlock {
-            header,
-            samples,
-            velocity,
-        });
-    }
-    if header.encoding == RawEncoding::Packed26Delta && !header.is_end() {
-        let mut data = &bytes[RAW_HEADER_BYTES..];
-        let mut previous = [0_u8; 26];
-        previous.copy_from_slice(data.get(..26).ok_or(RawDecodeError::Truncated)?);
-        data = &data[26..];
-        samples
-            .push(unpack26(&previous, header, 0))
-            .map_err(|_| RawDecodeError::Length)?;
-        for index in 1..header.count as usize {
-            let (&tag, rest) = data.split_first().ok_or(RawDecodeError::Truncated)?;
-            data = rest;
-            match tag {
-                0 => {
-                    previous.copy_from_slice(data.get(..26).ok_or(RawDecodeError::Truncated)?);
-                    data = &data[26..];
-                }
-                1 => {
-                    let bytes = data.get(..4).ok_or(RawDecodeError::Truncated)?;
-                    let mut mask = read32(bytes, 0);
-                    if mask >> 26 != 0 {
-                        return Err(RawDecodeError::Header);
-                    }
-                    data = &data[4..];
-                    while mask != 0 {
-                        let (&replacement, rest) =
-                            data.split_first().ok_or(RawDecodeError::Truncated)?;
-                        previous[mask.trailing_zeros() as usize] = replacement;
-                        data = rest;
-                        mask &= mask - 1;
-                    }
-                }
-                _ => return Err(RawDecodeError::Header),
-            }
+    } else {
+        for (index, record) in payload.as_chunks::<PACKED28_BYTES>().0.iter().enumerate() {
             samples
-                .push(unpack26(&previous, header, index))
+                .push(unpack28(record, header, index))
                 .map_err(|_| RawDecodeError::Length)?;
         }
-        if !data.is_empty() {
-            return Err(RawDecodeError::Length);
-        }
-        return Ok(DecodedRawBlock {
-            header,
-            samples,
-            velocity,
-        });
-    }
-    for (index, b) in bytes[RAW_HEADER_BYTES..]
-        .chunks_exact(header.encoding.bytes())
-        .enumerate()
-    {
-        let mut sample = if header.encoding == RawEncoding::Raw34 {
-            let mut w = [0; 17];
-            for (i, value) in w.iter_mut().enumerate() {
-                *value = read16(b, i * 2);
-            }
-            frame(w)
-        } else {
-            unpack26(b, header, index)
-        };
-        if header.encoding == RawEncoding::Packed28 {
-            sample.hall_angle = HallAngle::from_encoded(read16(b, 26));
-        }
-        samples.push(sample).map_err(|_| RawDecodeError::Length)?;
     }
     Ok(DecodedRawBlock {
         header,

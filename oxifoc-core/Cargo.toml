@@ -146,15 +146,12 @@ pod = ["dep:bytemuck"]
 runtime = ["icd", "algorithms", "pod", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue"]
 
 # Session-bound fixed-block consumer of the ISR queue. Replaces the legacy
-# broadcast publisher; production sessions accept only fixed Packed28.
+# broadcast publisher; sessions carry Packed28 blocks.
 fast-telemetry = ["runtime"]
 # Place the 48-KiB fast telemetry queue in the .ccm.bss.fast_telemetry
 # section. The board crate links that section into CPU-only memory and clears
 # it before the ADC interrupt runs (F405: ccm.x and __pre_init).
 ccm-telemetry = []
-# Historical codec/carrier comparisons only. Production accepts Packed28.
-diagnostic-telemetry-codecs = []
-bench-raw-stream = ["fast-telemetry", "diagnostic-telemetry-codecs"]
 bench-phase-observation = []
 bench-cogging-compensation = []
 

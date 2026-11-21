@@ -310,7 +310,7 @@ where
             let setup = raw_telemetry::prepare_connection(&stack, raw, resolved);
             match tokio::select! { result = setup => result, _ = cancel.cancelled() => break } {
                 Ok(_) => {
-                    raw.control_ready();
+                    raw.reader_ready();
                     true
                 }
                 Err(error) => {

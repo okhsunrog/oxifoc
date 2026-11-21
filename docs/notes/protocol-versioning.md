@@ -69,6 +69,13 @@ and the feedback mode, start from defaults as well. The pre-geometry Hall
 record (key 2) is no longer read. Board calibration and a Hall calibration
 saved on its own (key 14) are kept.
 
+v24 also drops the diagnostic raw telemetry encodings. `RawEncoding` has the
+single variant `Packed28`, so its postcard index in the raw Arm request and
+ACK is 0 instead of 3 and the raw endpoint schema keys change. Blocks keep
+their 32-byte header and in-block tag 3; tags 0–2 (Raw34, Packed26,
+Packed26Delta) and the full-width fallback flag are rejected, and a frame
+Packed28 cannot represent fails the session.
+
 From v24 on, the firmware skips flash keys it does not know and keeps them
 through compaction. v23 and older fail every read once the map holds a v24
 key, so roll back to them only together with their own storage image.

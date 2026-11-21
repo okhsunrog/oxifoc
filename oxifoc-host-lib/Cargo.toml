@@ -41,7 +41,6 @@ bytes = "1.12.1"
 futures = "0.3.34"
 serde_json = "1.0.154"
 object = { version = "0.41.0", default-features = false, features = ["read"] }
-nusb = "0.1"
 blec = { version = "0.20.0", git = "https://github.com/okhsunrog/tauri-plugin-blec", rev = "6c5f1b5b5e55ff79312e9564efb9a560cdc788ba" }
 uuid = "1.29.2"
 

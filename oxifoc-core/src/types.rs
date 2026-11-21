@@ -655,6 +655,9 @@ pub struct TelemetryConfigAck {
 /// off; ramps are `{start, end}` pairs). The telemetry ack's
 /// `decimation_m` is `None` when streaming is off (was `0`). PI gains (stored and the detection override in
 /// `ControlMode::OpenLoop`) are typed Ω and Ω/s.
+/// Raw telemetry sessions carry only Packed28: `RawEncoding` keeps that one
+/// variant (postcard index 0, was 3), the in-block tag stays 3, other tags
+/// and the full-width fallback flag are rejected.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.

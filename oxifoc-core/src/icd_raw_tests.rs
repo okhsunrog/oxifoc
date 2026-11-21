@@ -1,5 +1,9 @@
 use super::*;
-use crate::raw_telemetry::{RAW_MAX_BLOCK_BYTES, RawBlockEncoder, RawEncoding, decode_raw_block};
+use crate::raw_telemetry::{
+    RAW_HEADER_BYTES, RAW_MAX_BLOCK_BYTES, RawBlockEncoder, RawBlockHeader, decode_raw_block,
+};
+use crate::types::HallAngle;
+use crate::velocity_telemetry::VELOCITY_RECORD_BYTES;
 
 fn roundtrip(bytes: &[u8]) {
     let mut wire = [0; 2304];
@@ -18,48 +22,48 @@ fn roundtrip(bytes: &[u8]) {
 }
 
 #[test]
-fn raw_topic_borrowed_wire_matches_owned_and_keeps_all_encodings_and_end() {
+fn raw_topic_borrowed_wire_matches_owned_and_keeps_blocks_end_and_companion() {
     use ergot::traits::Topic;
     assert_eq!(
         RawTelemetryBlockRefTopic::TOPIC_KEY,
         RawTelemetryBlockTopic::TOPIC_KEY
     );
-    for encoding in [
-        RawEncoding::Raw34,
-        RawEncoding::Packed26,
-        RawEncoding::Packed26Delta,
-    ] {
-        let mut encoder = RawBlockEncoder::new();
-        encoder.begin(42, 0, encoding, 1);
-        for seq in 0..64 {
-            let sample = FastTelemetry {
-                seq,
-                ia: 1000 + seq,
-                ib: 2000 - seq,
-                ic: 3000,
-                vphase_adc: [1800, 1900, 2000],
-                vbus: 12000,
-                pwm_ccr: [seq, 1200, 3000],
-                pwm_arr: 4195,
-                ..FastTelemetry::default()
-            };
-            assert!(encoder.push(&sample));
-        }
-        roundtrip(encoder.finish(0));
-        roundtrip(encoder.end(42, 1, encoding, 64, 0));
-
-        // A full-width record must retain the explicit Raw34 fallback bytes.
-        encoder.begin(43, 0, encoding, 1);
-        assert!(encoder.push(&FastTelemetry {
-            ia: u16::MAX,
+    let mut encoder = RawBlockEncoder::new();
+    encoder.begin(42, 0, 1);
+    for seq in 0..64 {
+        let sample = FastTelemetry {
+            seq,
+            ia: 1000 + seq,
+            ib: 2000 - seq,
+            ic: 3000,
+            vphase_adc: [1800, 1900, 2000],
+            vbus: 12000,
+            pwm_ccr: [seq, 1200, 3000],
+            pwm_arr: 4195,
+            hall_angle: HallAngle::from_encoded(0x8000 + seq),
             ..FastTelemetry::default()
-        }));
-        roundtrip(encoder.finish(0));
+        };
+        assert!(encoder.push(&sample));
     }
+    // A full native block, then the largest velocity companion it leaves room for.
+    let mut envelope = encoder.finish(0).to_vec();
+    let companion =
+        (RAW_MAX_BLOCK_BYTES - envelope.len() - RAW_HEADER_BYTES) / VELOCITY_RECORD_BYTES;
+    assert!(companion >= 11);
+    let mut block = vec![0; RAW_HEADER_BYTES + companion * VELOCITY_RECORD_BYTES];
+    RawBlockHeader::velocity(42, 1, companion as u8, 0, None).write(&mut block);
+    envelope.extend(block);
+    roundtrip(encoder.finish(0));
+    roundtrip(encoder.end(42, 2, 64, 0));
+    let mut wire = [0; 2304];
+    let encoded = postcard::to_slice(&RawTelemetryBlockRef { data: &envelope }, &mut wire).unwrap();
+    assert!(encoded.len() + ergot::wire_frames::MAX_HDR_ENCODED_SIZE <= 2304);
+    let decoded: RawTelemetryBlock = postcard::from_bytes(encoded).unwrap();
+    assert_eq!(decoded.data.as_slice(), envelope);
 }
 
 #[test]
-fn raw_topic_capacity_includes_full_width_fallback_and_rejects_oversize() {
+fn raw_topic_capacity_holds_a_full_envelope_and_rejects_oversize() {
     let payload = [0xa5; RAW_MAX_BLOCK_BYTES + 1];
     let mut wire = [0; 2304];
     let encoded = postcard::to_slice(

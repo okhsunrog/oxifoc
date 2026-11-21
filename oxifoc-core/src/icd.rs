@@ -71,9 +71,8 @@ impl ergot::traits::Topic for FastTelemetryTopic {
         ergot::traits::Key::for_path::<FastTelemetryBatch>("telemetry/fast");
 }
 
-/// One complete raw-session block, including its versioned header or END.
-/// This topic changes only the carrier; its bytes use the same parser as the
-/// dedicated USB and RTT sinks.
+/// One raw-session envelope: a block with its versioned header or END, and
+/// in velocity-debug sessions a velocity companion block after it.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, postcard_schema::Schema)]
 pub struct RawTelemetryBlock {
     #[serde(serialize_with = "serialize_raw_block_bytes")]
