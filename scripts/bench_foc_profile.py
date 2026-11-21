@@ -99,7 +99,8 @@ WORK_NAMES = [
     "angle_wrap", "circle_search", "authority_ahead", "authority_fallback",
 ]
 ROOT = Path(__file__).resolve().parents[1]
-PORT = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00"
+# Unset, the host CLI uses the only attached C5 USB Serial/JTAG port.
+PORT = os.environ.get("OXIFOC_BRIDGE_SERIAL") or None
 BASE_FEATURES = "transport-spi,board-vesc6-mk5,task-priority,fast-telemetry,bench-calibrated-clock,bench-foc-distribution"
 DETAIL_FEATURES = {
     "minimal": "", "work": "bench-foc-work", "sections": "isr-profiling",
@@ -409,7 +410,7 @@ def main():
 
     def cli(elf, *command):
         return [str(ROOT / "target/release/oxifoc-host-cli"), "--transport", "usb-serial-jtag",
-                "--serial-path", args.serial_path, "--elf", str(elf), "--wait-secs", "12", "--json", *map(str, command)]
+                *(["--serial-path", args.serial_path] if args.serial_path else []), "--elf", str(elf), "--wait-secs", "12", "--json", *map(str, command)]
 
     def call(elf, *command):
         return json.loads(probe.run(cli(elf, *command), timeout=22).stdout)
@@ -485,6 +486,7 @@ def main():
                     sampler = None
                     if args.pc_sampler:
                         duration = max(event["t"] for event in plan["timeline"]) + 30
+                        assert probe.PROBE, "set OXIFOC_MK5_PROBE: the PC sampler needs the probe serial"
                         sampler = subprocess.Popen([str(args.pc_sampler), probe.PROBE.rsplit(":", 1)[-1],
                             str(duration), "64", str(args.output / f"{name}.pcs.bin"), "24000", "controlled"],
                             stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

@@ -1,3 +1,5 @@
+set dotenv-load
+
 # oxifoc — FOC motor controller monorepo
 
 # Device firmware crates (excluded from workspace, different toolchain)
@@ -31,7 +33,16 @@ mk5_features := "transport-spi,board-vesc6-mk5,task-priority,fast-telemetry"
 mk5_bench_features := "transport-usb,board-vesc6-mk5,task-priority,bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
-mk5_probe := "0483:3754:002300203234511537333934"
+# Bench hardware selectors come from the environment or a local .env file
+# (see .env.example). Unset, probe-rs uses the only attached probe and the
+# host CLI the only attached C5 USB Serial/JTAG port.
+mk5_probe := env("OXIFOC_MK5_PROBE", "")
+mk5_probe_arg := if mk5_probe == "" { "" } else { "--probe " + mk5_probe }
+c5_probe := env("OXIFOC_C5_PROBE", "")
+c5_probe_arg := if c5_probe == "" { "" } else { "--probe " + c5_probe }
+bridge_serial := env("OXIFOC_BRIDGE_SERIAL", "")
+bridge_serial_arg := if bridge_serial == "" { "" } else { "--serial-path " + bridge_serial }
+c5_project := env("OXIFOC_C5_PROJECT", "")
 mk5_profile_features := mk5_usb_metrics_features + ",bench-trace-excitation,isr-profiling"
 mk5_usb_trace_features := mk5_bench_features + ",bench-hall,bench-executor-trace,isr-timing"
 mk5_pwm_trace_features := mk5_bench_features + ",bench-hall,bench-pwm-commit"
@@ -47,7 +58,8 @@ build-mk5-bridge-pins-rx:
 build-mk5-bridge-spi:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features board-vesc6-mk5,bench-bridge-spi --bin bridge-spi-probe
 
-bench-mk5-bridge-spi output c5_project="/home/okhsunrog/code/rust/c5-hello-world": build-mk5-bridge-spi
+bench-mk5-bridge-spi output c5_project=c5_project: build-mk5-bridge-spi
+    @test -n {{quote(c5_project)}} || { echo "set OXIFOC_C5_PROJECT or pass c5_project" >&2; exit 1; }
     uv run --no-project python scripts/bench-bridge-spi.py --output {{quote(output)}} --c5-project {{quote(c5_project)}}
 
 bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
@@ -57,8 +69,8 @@ build-mk5-spi:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + ",bench-calibrated-clock")}} --bin oxifoc-f405
 
 flash-mk5-spi: build-mk5-spi
-    probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
-    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
+    probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
+    probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
@@ -189,8 +201,8 @@ build-mk5-bench:
 
 # Build and flash the MK5 bench image; leaves the target running.
 flash-mk5-bench: build-mk5-bench
-    probe-rs download --verify --chip STM32F405RGTx --probe {{ mk5_probe }} {{ mk5_elf }}
-    probe-rs reset --chip STM32F405RGTx --probe {{ mk5_probe }}
+    probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{ mk5_elf }}
+    probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
 build-mk5-usb-metrics:
     cd oxifoc-f405 && DEFMT_LOG=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
@@ -355,7 +367,7 @@ test-stop-mk5 capture resistance:
 
 # Addressed cancellation, duplicate/retired requests, native Packed28 through C5.
 test-stop-bridge capture resistance:
-    OXIFOC_HARDWARE_SERIAL=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 just test-stop-mk5 {{quote(capture)}} {{quote(resistance)}}
+    OXIFOC_HARDWARE_SERIAL={{quote(bridge_serial)}} just test-stop-mk5 {{quote(capture)}} {{quote(resistance)}}
 
 # After a device reset, verify the saved operation cannot be revived.
 test-replay-bridge capture resistance request:
@@ -369,8 +381,8 @@ build-bridge features="":
 # --restore-unwritten keeps the NVS partition (BLE bonds); probe-rs otherwise
 # erases it together with the bootloader block.
 flash-bridge features="": (build-bridge features)
-    probe-rs download --verify --restore-unwritten --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10 oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge
-    probe-rs reset --chip esp32c5 --probe 303a:1001:3C:DC:75:8A:FF:10
+    probe-rs download --verify --restore-unwritten --chip esp32c5 {{c5_probe_arg}} oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge
+    probe-rs reset --chip esp32c5 {{c5_probe_arg}}
 
 # Build nRF52840 remote firmware.
 build-remote:
@@ -549,7 +561,8 @@ build-mk5-spi-cs-probe:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features board-vesc6-mk5,bench-spi-cs-request --bin bridge-spi-probe
 
 bench-mk5-spi-cs-request output: build-mk5-spi-cs-probe
-    uv run --no-project python scripts/bench-bridge-spi.py --cs-request --output {{quote(output)}} --c5-project /home/okhsunrog/code/rust/c5-hello-world
+    @test -n {{quote(c5_project)}} || { echo "set OXIFOC_C5_PROJECT or pass c5_project" >&2; exit 1; }
+    uv run --no-project python scripts/bench-bridge-spi.py --cs-request --output {{quote(output)}} --c5-project {{quote(c5_project)}}
 
 # No motor excitation: telemetry plus acknowledged Stop commands on one connection.
 bench-bridge-handshake port seconds="30" hz="20000":
@@ -561,7 +574,7 @@ bench-mk5-foc-pc output maneuver="maneuvers/foc-profile-velocity40.json":
     set -euo pipefail
     mkdir -p {{quote(output)}}
     trap 'just cli-bridge stop >/dev/null 2>&1' EXIT
-    probe-rs profile --chip STM32F405RGTx --probe {{mk5_probe}} --duration 8 --rtt-channel-mode no-block-skip {{mk5_elf}} flat --line-info --limit 20000 pcsr > {{quote(output + "/pc.txt")}} 2>&1 &
+    probe-rs profile --chip STM32F405RGTx {{mk5_probe_arg}} --duration 8 --rtt-channel-mode no-block-skip {{mk5_elf}} flat --line-info --limit 20000 pcsr > {{quote(output + "/pc.txt")}} 2>&1 &
     profiler=$!
     sleep 1
     status=0
@@ -579,8 +592,8 @@ build-mk5-foc-profile detail="minimal" logging="quiet":
     cd oxifoc-f405 && DEFMT_LOG={{quote(if logging == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-foc-distribution" + if detail == "work" { ",bench-foc-work" } else if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "sections" { ",isr-profiling" } else if detail == "sections-ram" { ",bench-foc-sections-ram,isr-profiling" } else if detail == "phase-ram" { ",bench-foc-phase-ram" } else if detail == "deadline" { ",bench-foc-deadline" } else { "" })}}
 
 flash-mk5-foc-profile detail="minimal" logging="quiet": (build-mk5-foc-profile detail logging)
-    probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
-    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
+    probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
+    probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
 # Fixed-format telemetry through a chosen link; legacy remains an explicit baseline.
 build-mk5-link-bench link="spi" source="ergot" detail="timing":
@@ -590,13 +603,13 @@ build-mk5-link-bench link="spi" source="ergot" detail="timing":
     cd oxifoc-f405 && DEFMT_LOG={{quote(if detail == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if source == "ergot" { ",fast-telemetry" } else { "" }) + (if detail == "trace" { ",bench-executor-trace" } else { "" }))}}
 
 flash-mk5-link-bench link="spi" source="ergot" detail="timing": (build-mk5-link-bench link source detail)
-    probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
-    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
+    probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
+    probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
 # Production command route through the C5; never select the ST-Link VCP.
 [positional-arguments]
 cli-bridge *ARGS:
-    @target/release/oxifoc-host-cli --transport usb-serial-jtag --serial-path /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00 --elf {{mk5_elf}} --wait-secs 12 --json "$@"
+    @target/release/oxifoc-host-cli --transport usb-serial-jtag {{bridge_serial_arg}} --elf {{mk5_elf}} --wait-secs 12 --json "$@"
 
 # Full motor commissioning, one native-rate Parquet capture per stage.
 [positional-arguments]
@@ -632,8 +645,8 @@ build-mk5-motion crossover="off" spi_priority="off" cogging="off":
     cd oxifoc-f405 && DEFMT_LOG=warn cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote(mk5_features + ",bench-calibrated-clock,bench-hall-phase" + (if crossover == "on" { ",bench-hall-crossover" } else { "" }) + (if spi_priority == "on" { ",bench-spi-pump-priority" } else { "" }) + (if cogging == "on" { ",bench-cogging-compensation" } else { "" }))}}
 
 flash-mk5-motion crossover="off" spi_priority="off" cogging="off": (build-mk5-motion crossover spi_priority cogging)
-    probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
-    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
+    probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
+    probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
 dump-hall-bridge output elf=mk5_elf:
     uv run --no-project python -B scripts/bench_hall_edges.py {{quote(output)}} --elf {{quote(elf)}} --bridge

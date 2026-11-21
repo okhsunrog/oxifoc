@@ -36,7 +36,7 @@ selects `embassy-010` and patches its executor dependency to the pinned revision
 `scripts/bench_embedded_f405.py --features DEPENDENCY/FEATURE` selects a
 compiler variant while retaining its features in the measurement manifest.
 
-Place artifacts under `/home/okhsunrog/tmp_zfs/codex_tmp/<task>/`. Recovery
+Place artifacts in a directory outside the repository. Recovery
 must be a known working image for the connected bench. The runner verifies
 Stopped, supply and temperature, builds without running in the usual target
 directory, and saves the exact ELF/SHA256, tool versions, build log, raw logs

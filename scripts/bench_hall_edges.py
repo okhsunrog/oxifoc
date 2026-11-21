@@ -72,7 +72,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path, help='JSON output; binary sidecars use this prefix')
     parser.add_argument('--elf', type=Path, required=True, help='Exact running firmware ELF')
-    parser.add_argument('--probe', default='0483:3754:002300203234511537333934')
+    parser.add_argument('--probe', default=os.environ.get('OXIFOC_MK5_PROBE'), help='probe-rs selector; default OXIFOC_MK5_PROBE or the only probe')
     parser.add_argument('--cli', type=Path, help='Already built host CLI; avoids rebuilding for the status check')
     parser.add_argument('--bridge', action='store_true', help='Use the C5 SPI bridge instead of controller USB')
     args = parser.parse_args()
@@ -102,7 +102,7 @@ def main():
         address, size = symbols[name]
         path = Path(str(out) + suffix)
         subprocess.check_output([
-            'probe-rs', 'read', '--chip', 'STM32F405RGTx', '--probe', args.probe,
+            'probe-rs', 'read', '--chip', 'STM32F405RGTx', *(['--probe', args.probe] if args.probe else []),
             '--non-interactive', 'b32', hex(address), str(size // 4),
             '--output', str(path), '--format', 'binary'], env=env)
         data = path.read_bytes()

@@ -1,12 +1,19 @@
 """Shared MK5 probe-rs helpers: RCC/TIM1/ADC clock readback and capture checks."""
+import os
 from pathlib import Path
 import subprocess
 import time
 
-PROBE = "0483:3754:002300203234511537333934"
+# probe-rs selector (VID:PID:serial) of the MK5 debug probe; unset, probe-rs
+# uses the only attached probe.
+PROBE = os.environ.get("OXIFOC_MK5_PROBE") or None
 ELF = Path("oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405")
 def device(command, *args):
-    return ["probe-rs", command, "--chip", "STM32F405RGTx", "--probe", PROBE, *args]
+    return ["probe-rs", command, "--chip", "STM32F405RGTx", *probe_args(), *args]
+
+
+def probe_args():
+    return ["--probe", PROBE] if PROBE else []
 
 
 def run(args, timeout=30):

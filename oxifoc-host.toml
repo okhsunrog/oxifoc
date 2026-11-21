@@ -4,8 +4,9 @@ chip = "STM32F405RGTx"
 elf = "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 
 # Current MK5 bench: commands and fixed telemetry through the C5 bridge.
+# Without serial_path the host uses the only attached C5 USB Serial/JTAG port;
+# set it here or pass --serial-path when several are attached.
 transport = "usb-serial-jtag"
-serial_path = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00"
 
 # Toggle streaming
 stream_defmt = true

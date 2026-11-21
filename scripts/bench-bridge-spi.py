@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import signal
@@ -10,8 +11,9 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-STM_PROBE = "0483:3754:002300203234511537333934"
-C5_PROBE = "303a:1001:3C:DC:75:8A:FF:10"
+# probe-rs selectors; with both boards attached both must be set (.env.example).
+STM_PROBE = ["--probe", os.environ["OXIFOC_MK5_PROBE"]] if os.environ.get("OXIFOC_MK5_PROBE") else []
+C5_PROBE = ["--probe", os.environ["OXIFOC_C5_PROBE"]] if os.environ.get("OXIFOC_C5_PROBE") else []
 STM_ELF = ROOT / "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/bridge-spi-probe"
 
 
@@ -20,7 +22,7 @@ def command(*args, **kwargs):
 
 
 def read_words(address, count, output):
-    command("probe-rs", "read", "--chip", "STM32F405RGTx", "--probe", STM_PROBE,
+    command("probe-rs", "read", "--chip", "STM32F405RGTx", *STM_PROBE,
             "b32", hex(address), str(count), "--format", "binary", "--output", str(output),
             capture_output=True)
     return struct.unpack(f"<{count}I", output.read_bytes())
@@ -41,16 +43,16 @@ def main():
         fields = line.split()
         if len(fields) == 3 and fields[2].startswith("SPI_BENCH_"):
             symbols[fields[2]] = int(fields[0], 16)
-    command("probe-rs", "download", "--chip", "STM32F405RGTx", "--probe", STM_PROBE,
+    command("probe-rs", "download", "--chip", "STM32F405RGTx", *STM_PROBE,
             "--verify", str(STM_ELF))
     results = []
     for run in range(args.runs):
         prefix = args.output / f"run-{run + 1}"
-        command("probe-rs", "reset", "--chip", "STM32F405RGTx", "--probe", STM_PROBE)
+        command("probe-rs", "reset", "--chip", "STM32F405RGTx", *STM_PROBE)
         log_path = prefix.with_suffix(".c5.log")
         with log_path.open("w") as log:
             process = subprocess.Popen([
-                "probe-rs", "run", "--chip", "esp32c5", "--probe", C5_PROBE,
+                "probe-rs", "run", "--chip", "esp32c5", *C5_PROBE,
                 "--preverify", "--no-location", "--no-timestamps",
                 "--rtt-channel-mode", "no-block-skip", str(c5_elf)
             ], cwd=args.c5_project, stdout=log, stderr=subprocess.STDOUT)

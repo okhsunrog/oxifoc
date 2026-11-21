@@ -7,6 +7,7 @@ the RAM trace is finite, not a continuous production recording.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -23,7 +24,7 @@ p.add_argument('--timer-hz', type=int, required=True, help='Actual declared TIM5
 p.add_argument('--elf', type=Path, help='Exact firmware ELF, hashed into the read sidecar')
 p.add_argument('--capture', help='Matching telemetry recording artifact')
 p.add_argument('--schema', choices=['finite-trace-v1', 'finite-trace-v2', 'netstack-v1'], default='finite-trace-v1')
-p.add_argument('--probe', default='0483:3754:002300203234511537333934')
+p.add_argument('--probe', default=os.environ.get('OXIFOC_MK5_PROBE'), help='probe-rs selector; default OXIFOC_MK5_PROBE or the only probe')
 a = p.parse_args()
 if a.timer_hz <= 0 or a.active_delay_ms < 0:
     p.error('timer clock must be positive and delay nonnegative')
@@ -36,7 +37,7 @@ for line in Path(a.symbols).read_text().splitlines():
         addr, size, name = match.groups()
         symbols[name] = (int(addr,16),int(size,16))
 control = symbols['BENCH_TRACE_CONTROL'][0]
-base = ['probe-rs','--chip','STM32F405RGTx','--probe',a.probe]
+base = ['probe-rs','--chip','STM32F405RGTx', *(['--probe', a.probe] if a.probe else [])]
 def invoke(command, *args):
     return subprocess.check_output([base[0],command,*base[1:],*map(str,args)],text=True)
 if a.action == 'arm':

@@ -526,11 +526,13 @@ mod hardware_tests {
     fn hardware_stop_cancels_inductance_at_20khz() -> Result<()> {
         anyhow::ensure!(std::env::var("OXIFOC_HARDWARE_TEST").as_deref() == Ok("1"));
         let out = std::env::var("OXIFOC_HARDWARE_CAPTURE")?;
-        let serial_path = std::env::var("OXIFOC_HARDWARE_SERIAL").ok();
+        // Set (even empty) selects the C5 bridge; empty auto-selects its port.
+        let bridge = std::env::var("OXIFOC_HARDWARE_SERIAL").ok();
+        let serial_path = bridge.clone().filter(|path| !path.is_empty());
         let resistance = std::env::var("OXIFOC_HARDWARE_RESISTANCE")?.parse::<f32>()?;
         anyhow::ensure!(resistance.is_finite() && resistance > 0.0);
         let runtime = start_host(HostConfig {
-            transport: Some(if serial_path.is_some() {
+            transport: Some(if bridge.is_some() {
                 TransportType::UsbSerialJtag
             } else {
                 TransportType::Usb

@@ -94,8 +94,9 @@ PA7 output also read correctly through PB10.
 The finite probes keep the gate driver and all phase outputs disabled:
 `just build-mk5-bridge-pins` drives connector patterns while C5 `pin_probe`
 only reads. `just build-mk5-bridge-pins-rx` leaves STM32 connector pins as
-inputs for C5 `pin_drive`. C5 sources and its build/run recipes live in
-`/home/okhsunrog/code/rust/c5-hello-world`.
+inputs for C5 `pin_drive`. The C5 probe firmware and its build/run recipes
+live in a separate checkout; point `OXIFOC_C5_PROJECT` at it (see
+`.env.example`).
 
 SPI DMA qualification uses `just bench-mk5-bridge-spi OUTPUT_DIR`. The standalone
 STM32 master uses SPI1 (DMA2 streams 3 TX / 0 RX); C5 uses SPI2 with DMA_CH0,
@@ -113,8 +114,6 @@ preparation and byte verification. No padding was required for the tested
 137-byte transfers. This qualifies the quiet electrical/DMA path, not FOC
 coexistence, Wi-Fi forwarding, arbitrary-length receive buffers, cancellation
 or production transport recovery. Both ends know each test's length in advance.
-Raw logs and per-run JSON are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-c5-spi-2026-11-10/qualified/`.
 
 The separate `just bench-mk5-spi-cs-request OUTPUT_DIR` test alternates master
 requests (CS low before C5 arms DMA, with 0/50/500-us preparation delays) and
@@ -167,8 +166,7 @@ delta telemetry, not a raw session. Ten STM32 and ten C5 resets all reconnected
 within 4.022 s. The opt-in bridge `bench-delayed-upstream` feature delays route
 setup by 3 s; the corrected host reconnect/discovery path passed in 4.737 s.
 Normal bridge builds do not enable this injection. Idle traffic was 8 slots/s
-for Ergot's upstream ping/reply, not continuous empty polling. Evidence is in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-c5-spi-2026-11-10/handshake-summary.json`.
+for Ergot's upstream ping/reply, not continuous empty polling.
 
 ## CCM placement
 

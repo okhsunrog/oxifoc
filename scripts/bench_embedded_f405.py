@@ -13,7 +13,8 @@ import mk5_probe as probe
 
 ROOT = Path(__file__).resolve().parents[1]
 CRATE = ROOT / "tests/stm32f405"
-PORT = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_3C:DC:75:8A:FF:10-if00"
+# Unset, the host CLI uses the only attached C5 USB Serial/JTAG port.
+PORT = os.environ.get("OXIFOC_BRIDGE_SERIAL") or None
 ROW = re.compile(r"BENCHV1 name=(.*?) calls=(\d+) rounds=(\d+) min=(\d+) max=(\d+) total=(\d+)")
 CONTEXT = re.compile(r"SCHEDULEV1 fraction_q32=(\d+) irq_masked=true seed=(\d+)")
 
@@ -96,7 +97,7 @@ def main():
 
     def status():
         data = json.loads(probe.run([str(ROOT / "target/release/oxifoc-host-cli"), "--transport",
-            "usb-serial-jtag", "--serial-path", args.serial_path, "--elf", str(recovery),
+            "usb-serial-jtag", *(["--serial-path", args.serial_path] if args.serial_path else []), "--elf", str(recovery),
             "--wait-secs", "12", "--json", "status"], timeout=22).stdout)
         assert data["motor_state"] == "Stopped" and data["fault_count"] == 0, data
         assert 23000 <= data["vbus_mv"] <= 25000 and data["fet_temp_c_x10"] < 500, data

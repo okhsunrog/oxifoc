@@ -68,11 +68,11 @@ part of the bench setup.
 ## Standard commands
 
 Run from the repository root in its development shell, for example through
-`direnv exec .`. Place experiment artifacts under the dedicated disk-backed root.
+`direnv exec .`. Keep experiment artifacts outside the repository.
 Use a new output directory for each invocation.
 
 ```sh
-bench_root=/home/okhsunrog/tmp_zfs/codex_tmp/EXPERIMENT
+bench_root=/absolute/path/to/artifacts/EXPERIMENT
 recovery_elf=/absolute/path/to/verified/firmware.elf
 
 # Build and inspect without touching the controller.
