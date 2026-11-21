@@ -1,0 +1,29 @@
+# Cargo configuration for the bench-overclock image only (just build-mk5-overclock).
+# Every Embassy crate comes from the fork branch oxifoc/f4-overclock-bench, which is
+# the pinned upstream revision plus a WS7 flash-latency clamp for unchecked-overclocking.
+# A separate lock file keeps the production Cargo.lock untouched.
+[patch."https://github.com/embassy-rs/embassy.git"]
+embassy-crypto = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-embedded-hal = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-executor = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-executor-macros = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-executor-timer-queue = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-futures = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-hal-internal = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-ptp-driver = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-stm32 = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-sync = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-time = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-time-driver = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-time-queue-utils = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-usb = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-usb-driver = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+embassy-usb-synopsys-otg = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+
+# ergot takes embassy-time from crates.io, patched to the upstream git source
+# in Cargo.toml; point that patch at the fork as well.
+[patch.crates-io]
+embassy-time = { git = "https://github.com/okhsunrog/embassy.git", rev = "03d42b2d52f96f1f261f9c4d027b47966da573c4" }
+
+[resolver]
+lockfile-path = "oxifoc-f405/overclock/Cargo.lock"
