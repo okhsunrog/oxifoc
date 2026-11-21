@@ -1,0 +1,11 @@
+{
+  "name": "isr-timing",
+  "description": "ISR cycle comparison: 5 s stopped, 20 s at +120 and 20 s at +450 electrical rad/s, Stop. 1 kHz capture so a slow host keeps up.",
+  "capture": { "fast_hz": 1000, "tail_s": 0.4 },
+  "terminal": "stop",
+  "timeline": [
+    { "t": 5.0, "cmd": { "velocity": { "rad_s": 120 } } },
+    { "t": 25.0, "cmd": { "velocity": { "rad_s": 450 } } },
+    { "t": 45.0, "cmd": { "stop": {} } }
+  ]
+}

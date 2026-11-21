@@ -116,6 +116,11 @@ Caveats:
   each run.
 - `spin-punch-15-2k.json`, `prof-openloop-ramp960.json`, `endurance-20s.json`
   and `velocity-step.json` — the sensorless scenarios of `scripts/benchsuite.py`.
+- `isr-timing.json` — control ISR cycle comparison: 5 s stopped, 20 s at
+  +120 and 20 s at +450 electrical rad/s, then Stop, with a 1 kHz capture so
+  a slow bench host keeps up. Run it with `scripts/isr_bench.sh` while RTT is
+  read and summarise with `scripts/isr_rtt.py`; see
+  [ISR performance](../docs/performance.md#running-a-comparison-on-the-bench).
 
 Choose analysis by the measurement question. For stationary resistance, first
 inspect settling, zero-current offsets, signed V/I plateaus and repeat drift.

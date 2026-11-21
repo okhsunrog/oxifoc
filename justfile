@@ -254,6 +254,21 @@ flash-mk5-profile: build-mk5-profile
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
+# ISR placement (docs/performance.md): build the MK5 timing image and capture
+# its link in DIR (DIR/build.elf, DIR/link/) for scripts/isr_placement.py relink.
+isr-capture dir:
+    uv run --no-project python -B scripts/isr_placement.py build {{quote(dir)}}
+
+# Pinned foc-hot.x residues and the ISR's statics vs SRAM2 of one or more images.
+[positional-arguments]
+isr-residues +elfs:
+    uv run --no-project python -B scripts/isr_placement.py residues "$@"
+
+# Code vs placement: hot-path code differences, then residues that differ.
+isr-compare a b:
+    uv run --no-project python -B scripts/isr_placement.py diff --hot {{quote(a)}} {{quote(b)}}
+    uv run --no-project python -B scripts/isr_placement.py callgraph {{quote(a)}} {{quote(b)}}
+
 # Hardware: energizes the secured MK5 motor, records at 20 kHz, then tests Stop.
 test-stop-mk5 capture resistance:
     OXIFOC_HARDWARE_TEST=1 OXIFOC_HARDWARE_CAPTURE={{ quote(capture) }} OXIFOC_HARDWARE_RESISTANCE={{quote(resistance)}} \

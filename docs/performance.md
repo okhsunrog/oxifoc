@@ -106,8 +106,9 @@ section goes missing.
 
 With these pinned, shuffling the rest of `.text` moves the ISR by at most
 about 5 cycles. The residues were swept one function at a time at 15 kHz;
-re-measure them when one of these functions changes substantially or when
-switching the reference rate to 20 kHz.
+re-measure them ([residue sweep](#re-measuring-a-pinned-residue)) when one of
+these functions changes substantially or when switching the reference rate to
+20 kHz.
 
 ### RAM placement
 
@@ -122,9 +123,10 @@ of the ISR's block. Two link-time checks guard this:
 - `.uninit` must stay empty: cortex-m-rt places it after `.bss`, above the
   filler.
 
-Check the result after RAM changes with
-`rust-nm -n <elf> | grep -E 'bss_cold|FOC_DRIVER'`: SRAM2 starts at
-`0x2001C000`.
+Check the result after RAM changes with `just isr-residues <elf>`, which lists
+every RAM static the ADC path references with its block and fails if one
+reaches SRAM2 (`0x2001C000`), or by hand with
+`rust-nm -n <elf> | grep -E 'bss_cold|FOC_DRIVER'`.
 
 ### Statics the ISR touches
 
@@ -195,32 +197,75 @@ placement. Use it to locate cost, not to compare commits.
 | Isolated Cortex-M4 code cost | `just bench-embedded-f405 OUTPUT RECOVERY FILTER`, see [`tests/stm32f405`](../tests/stm32f405/README.md) |
 | Commands and physical motion | Host CLI maneuvers, Packed28 capture, `scripts/capreport.py` |
 | Hall/observer handoff | `hall-diagnostics` (`just build-mk5-motion`), `scripts/bench_hall_edges.py` |
-| Linked code and placement | `rust-nm -n`, `rust-objdump -d`, `rust-size -A` |
+| Linked code and placement | `scripts/isr_placement.py` (below); `rust-nm -n`, `rust-objdump -d`, `rust-size -A` |
 | Sampled execution | `probe-rs profile` (`just profile-mk5`, `just bench-mk5-foc-pc`); needs a fast host |
+
+### Placement tools
+
+`scripts/isr_placement.py` (run inside `nix develop`; `--help` for details)
+relinks one set of compiled objects with controlled placement and reports what
+the ADC path looks like in an image:
+
+| Command | Does |
+|---|---|
+| `build DIR` (`just isr-capture DIR`) | Builds the MK5 image (`transport-spi,board-vesc6-mk5`, `DEFMT_LOG=warn,oxifoc_f405::control::foc=info` so `isr/s` is printed) in `oxifoc-f405/target/isr-capture` and captures its final link with `--reproduce`: `DIR/build.elf`, `DIR/build.txt` (commit, features, toolchain, hashes), `DIR/link/` |
+| `relink DIR NAME [options]` | Re-runs the toolchain's `rust-lld` on the captured objects and writes `DIR/NAME.elf`; without options the result is byte-identical to `build.elf` (it says so) |
+| `residues ELF...` (`just isr-residues`) | Address and residue of every `foc-hot.x` section, and the RAM statics the ADC path references, by block |
+| `callgraph ELF...` | Functions reachable from `ADC` by direct calls: instructions, entry residue, call sites; with several ELFs only the rows that differ |
+| `diff A B [--hot] [--function NAME]` | Per-function disassembly comparison with addresses and literal values normalised away; `--function` prints the instruction hunks |
+
+`just isr-compare A B` runs `diff --hot` and `callgraph` for two images.
+
+Relink options (`R` is a hex residue, repeatable where it makes sense):
+
+| Option | Placement |
+|---|---|
+| `--pin LABEL=R` | Moves the `foc-hot.x` stanza `__foc_LABEL_start` (`cycle`, `phase`, `adc`, `svpwm`, …) to residue R |
+| `--add-pin LABEL:GLOB@R` | Pins further input sections (e.g. `'wrap:*wrap_angle_general*@2'`) in `.foc_hot` |
+| `--foc-hot FILE` | Uses an edited `foc-hot.x` instead of the captured one |
+| `--res REGEX@R` | Places `.text` input sections whose name or first symbol matches at residue R; every other section keeps its residue (with `--shuffle`: natural packing) |
+| `--resfrom DIR2` | Gives each `.text` section the residue of the same-named function in DIR2's link (code-vs-placement comparison); the `foc-hot.x` sections are pinned already |
+| `--shuffle SEED` | Seeded random order of the unpinned `.text` sections, natural packing |
+| `--allres R` | Every unpinned `.text` section at residue R |
+
+An explicit `.text` layout is checked against the linker map after the link.
+Captures, relinks and target directories live under `target/` and are not
+committed.
 
 ### Running a comparison on the bench
 
 1. Build every image from the same checkout directory. Absolute source paths
    end up in the image; the same commit built in another directory changes
    unrelated function sizes and shifts unpinned code (a 10-cycle difference
-   was traced to this).
+   was traced to this). `isr_placement.py build` also always uses the same
+   target directory.
 2. Record the ELF SHA-256, features, toolchain, PWM rate, phase source and
-   supply. Flash with an explicit `--probe`; after a failed flash, retry at
-   `--speed 1000` before anything else.
-3. Use one maneuver for every image, for example 5 s stopped, 20 s at +120
-   and 20 s at +450 electrical rad/s, then Stop. Keep the fast-telemetry rate
-   identical; a slow host (Raspberry Pi 3) cannot keep up with native-rate
-   capture, so use 1 kHz when only ISR timing is needed.
-4. Read the RTT log during the run. Discard the first windows after attach:
-   the attach halts the core for 50–80 ms, which shows as `n < 14997` and
-   `short=1` in `isri/s`. Wait 1.3 s after the last SWD setup access before
-   timing; a probe disconnect can disable DWT until the firmware rearms it.
-5. Repeat each image and interleave control and candidate. Repeats of one ELF
+   supply (`build.txt` has the first three). Flash with an explicit `--probe`;
+   after a failed flash, retry at `--speed 1000` before anything else.
+3. Use one maneuver for every image: `maneuvers/isr-timing.json` is 5 s
+   stopped, 20 s at +120 and 20 s at +450 electrical rad/s, then Stop. Keep
+   the fast-telemetry rate identical; a slow host (Raspberry Pi 3) cannot keep
+   up with native-rate capture, so the maneuver captures at 1 kHz.
+4. Read the RTT log during the run. `scripts/isr_bench.sh ELF MANEUVER OUT`
+   does steps 2–4 on the bench host: it flashes with `OXIFOC_MK5_PROBE`
+   (retrying at `--speed 1000`), resets, attaches `probe-rs attach` and runs
+   the maneuver with the host CLI (`OXIFOC_HOST_CLI`, default
+   `oxifoc-host-cli` on `PATH`; `OXIFOC_BRIDGE_SERIAL` selects the bridge),
+   leaving `OUT.rtt.log`, `OUT.json` and the capture. It needs only probe-rs,
+   the CLI and the two files, so it can run on a separate host. The attach
+   halts the core for 50–80 ms, which shows as `n < 14997` and `short=1` in
+   `isri/s`. Timing is valid from 1.3 s after the last SWD setup access (a
+   probe disconnect can disable DWT until the firmware rearms it); the script
+   attaches 3 s before the maneuver starts.
+5. Summarise with `uv run --no-project python -B scripts/isr_rtt.py OUT.rtt.log...`.
+   It drops the halted windows and reports, per log, the stopped average
+   (idle and while telemetry streams) and each motion phase (a run of windows
+   at one Hall edge rate, without its first and last window): mean of the
+   per-second averages, their spread, the largest maximum. `--json` for
+   scripts.
+6. Repeat each image and interleave control and candidate. Repeats of one ELF
    agree within ±2 cycles; a difference between two images is meaningful only
    when it exceeds the placement noise of the code you changed.
-6. To separate code from placement, relink identical objects with equalized
-   residues for the hot functions, then compare. A control relink must be
-   byte-identical.
 7. Restore a verified production image (`just build-mk5-spi`) and confirm
    `status` reports Stopped with no faults.
 
@@ -233,12 +278,55 @@ motor, supply and PWM/clock settings, scenario and limits, every command ACK
 and the terminal Stop, complete stream END totals with zero gaps and drops,
 unchanged `fault_generation`, and the `isr/s` lines for the run.
 
+### Separating code from placement
+
+When two commits differ in ISR time, find out whether the code or only its
+addresses changed:
+
+```sh
+just isr-capture target/isr/a          # at the control commit
+just isr-capture target/isr/b          # candidate, checked out in the same directory
+just isr-compare target/isr/a/build.elf target/isr/b/build.elf
+uv run --no-project python -B scripts/isr_placement.py relink target/isr/b eq --resfrom target/isr/a
+just isr-compare target/isr/a/build.elf target/isr/b/eq.elf
+```
+
+The first comparison lists the hot functions whose code changed and the
+residues that moved. `eq.elf` is the candidate's code with the control's
+`.text` residues; the second comparison should show only the code changes.
+Bench `a/build.elf`, `b/build.elf` and `b/eq.elf`: the part of the difference
+that `eq.elf` keeps is code, the rest placement. A control relink
+(`relink DIR ctl0` without options) must report "identical to build.elf".
+
+### Re-measuring a pinned residue
+
+Sweep one pinned function at a time over the residues its alignment allows
+(0, 4, 8, c for 4-byte alignment; even values for 2-byte), with everything
+else fixed:
+
+```sh
+just isr-capture target/isr/sweep
+for r in 0 4 8 c; do
+    uv run --no-project python -B scripts/isr_placement.py relink target/isr/sweep svpwm-$r --pin svpwm=$r
+done
+just isr-residues target/isr/sweep/svpwm-*.elf     # check the moved entry
+```
+
+Run each image with `isr_bench.sh` (interleaved, at least two repeats) and
+compare the motion-phase averages; a candidate function that is not pinned yet
+can be swept the same way with `--add-pin`, then given a `link_section` and a
+stanza in `oxifoc-f405/foc-hot.x`. Moving a pinned function changes the start
+of the stanzas after it, which keep their residues; check with
+`isr-residues` that the others did not move off theirs. Write the new residue
+into `foc-hot.x` and record the measurement in the commit message.
+
 ## Rules for changing the hot path
 
 - Compare disassembly of `ADC`, `run_foc_cycle` and the pinned functions
   against the parent (instruction count, stack accesses, FP operations, calls)
-  and say what moved in the commit message, as AGENTS.md requires. Treat the
-  counts as a hint and confirm a timing claim on the bench.
+  and say what moved in the commit message, as AGENTS.md requires
+  (`just isr-compare`, then `isr_placement.py diff --function NAME`). Treat
+  the counts as a hint and confirm a timing claim on the bench.
 - Do not log in the ISR. A defmt message costs about 15 µs there; record an
   event in shared state and log it from a task. Five such messages on the
   failsafe path once produced a 91 µs body.
@@ -260,8 +348,6 @@ unchanged `fault_generation`, and the `isr/s` lines for the run.
 - The pinned residues were measured at 15 kHz in velocity control only.
 - The ISR has no complete worst-case bound: observed maxima belong to the
   exercised scenarios, and rare paths are not all covered.
-- The relink and residue-sweep tooling used for the placement diagnosis is not
-  in the repository yet.
 - The CF2 has no pinned layout (`compact-foc` is MK5-only).
 - `ISR_TIMING` still updates its counters with `fetch_add`/`fetch_max`; plain
   load/store would be cheaper (unmeasured).
