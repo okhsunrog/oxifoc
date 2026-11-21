@@ -184,8 +184,10 @@ fn configure_registers(spi: &mut DrvSpiBus, cs: &mut Output<'static>) -> Result<
 
     defmt::info!("Configuring DRV8301...");
 
-    // DRV8301 needs time after EN_GATE goes high (tWAKE ≈ 1ms)
-    cortex_m::asm::delay(crate::config::CPU_HZ / 1000 * 2); // ~2 ms
+    // SPI answers after tWAKE (about 1 ms), but the gate-drive supply is still
+    // ramping then: a status read 2 ms after EN_GATE latched GVDD_UV on every
+    // MK5 boot (103 of 103) and forced a driver reset. 12 ms is past that.
+    cortex_m::asm::delay(crate::config::CPU_HZ / 1000 * 12);
 
     // Read device ID to verify communication
     match drv.get_device_id() {
