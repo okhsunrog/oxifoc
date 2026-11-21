@@ -93,7 +93,7 @@ were restored without persistence. Their 20-kHz recordings lost 277/295
 samples. A separate 10-s stopped recording lost 560 samples: complete USB
 capture remains unresolved, independently of HFI excitation. Raw captures,
 failed development runs and RTT logs are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-adaptive-inductance-2026-11-09/`.
+`oxifoc-adaptive-inductance-2026-11-09`.
 
 USB follow-up: `80fb65b` replaces the encoder's two scans and variable u64
 shifts with one byte-mask pass, preserving wire bytes. Instrumented active
@@ -117,13 +117,13 @@ explicit depth of 64 each retained 360120 native 20-kHz samples; depth 64
 also retained 90048 samples at 5 kHz. Each idle run included 5/15/30/50-ms
 host pauses, with no sequence gaps or duplicates. OxiFOC retains the default
 32; the temporary 64-request call, captures and `verification.json` are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/ergot-nusb-config-2026-11-09/`.
+`ergot-nusb-config-2026-11-09`.
 
 A prior 30-s 5-kHz control retained 150048 samples
 without gaps. TIM5 endpoint timing is opt-in (`bench-usb-metrics`); wall-clock
 drain/encode/broadcast counters survive DWT stopping on debugger detach.
 Captures, host logs, pause timings and the comparison plot are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-usb-stream-2026-11-09/`.
+`oxifoc-usb-stream-2026-11-09`.
 
 The first new-estimator pilot at 1.046 A returned 18.239/28.296 uH. It retained
 86094 samples with zero gaps/losses and final Stopped/faults 0. A second build
@@ -161,7 +161,7 @@ test-headroom selection, not a change to motor resistance or board rating.
 `vesc-bench/analysis/analyze_oxifoc_inductance_model.py` performs legacy replay,
 independent fits, held-out prediction and plotting. Its model tests cover
 exact plants, quarter-rate bias and noisy observations. The raw campaign root
-is `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-inductance-model-2026-11-09/`.
+is `oxifoc-inductance-model-2026-11-09`.
 Existing captures are read from the previous campaign without modifying them.
 
 Phase-voltage ADC offsets remain uncalibrated. The earlier approximately

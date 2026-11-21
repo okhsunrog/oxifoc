@@ -25,7 +25,7 @@ Install a matching CLI separately from any existing 0.7 CLI. From the repository
 root, choose a persistent tools directory for `DX_ROOT`:
 
 ```sh
-export DX_ROOT="$HOME/tmp_zfs/codex_tmp/oxifoc-blec/dx"
+export DX_ROOT="$HOME/.local/share/oxifoc-blec/dx"
 nix develop -c cargo install dioxus-cli \
   --git https://github.com/DioxusLabs/dioxus \
   --rev 97adf7915e1adfef4e2da436c9bd0b6add0dfa39 --locked --root "$DX_ROOT"

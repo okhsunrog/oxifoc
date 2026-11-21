@@ -175,8 +175,8 @@ passed offline maneuver validation; the analyzer processed both real captures.
 ## Artifacts
 
 ```text
-/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-transport-comp-fix-2026-11-08/
-/home/okhsunrog/motor_control/vesc-bench/analysis/analyze_oxifoc_signed_plateaus.py
+oxifoc-transport-comp-fix-2026-11-08
+vesc-bench analysis/analyze_oxifoc_signed_plateaus.py
 ```
 
 The artifact directory retains successful/failed captures, exact ELF SHA-256

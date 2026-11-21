@@ -174,7 +174,7 @@ the scheduler study or the fairness fix as validating the rejected L01 result.
 Raw captures, exact ELFs/symbols, source diffs, configurations, RTT, kernel log,
 command errors and analysis results:
 
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-scheduler-study-2026-11-09/`
+`oxifoc-scheduler-study-2026-11-09`
 
 `provenance.json` hashes 118 ELFs, hardware trace buffers and parquet captures.
 `run-summaries.json` covers all 62 profiles; `final-statuses.json` confirms every

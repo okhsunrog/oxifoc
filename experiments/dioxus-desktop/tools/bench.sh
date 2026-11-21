@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 experiment=$(cd -- "$(dirname -- "$0")/.." && pwd)
-task=/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-dioxus
+task=${OXIFOC_DIOXUS_TMP:-${TMPDIR:-/tmp}/oxifoc-dioxus}
+mkdir -p "$task"
+native=${DIOXUS_NATIVE_TEST:?set DIOXUS_NATIVE_TEST to the dioxus_native_test checkout}
 export TMPDIR="$task"
 measure="$experiment/tools/measure.py"
 output="$experiment/docs/measurements.jsonl"
@@ -13,7 +15,7 @@ run_case() {
   if [[ "$mode" == desktop ]]; then
     PLOT_BENCH=1 PLOT_VISIBLE="$visible" nix develop "$experiment" -c "$experiment/target/release/oxifoc-desktop-plot-probe" >"$logfile" 2>&1 &
   else
-    RELAY_PLOT_ONLY=1 RELAY_WIDTH=802 RELAY_HEIGHT=400 RELAY_VISIBLE="$visible" PLOT_STATS=1 nix develop /home/okhsunrog/code/rust/dioxus_native_test -c /home/okhsunrog/code/rust/dioxus_native_test/target/release/dioxus_native_test >"$logfile" 2>&1 &
+    RELAY_PLOT_ONLY=1 RELAY_WIDTH=802 RELAY_HEIGHT=400 RELAY_VISIBLE="$visible" PLOT_STATS=1 nix develop "$native" -c "$native/target/release/dioxus_native_test" >"$logfile" 2>&1 &
   fi
   app_pid=$!
   for attempt in {1..200}; do

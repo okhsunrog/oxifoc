@@ -11,8 +11,8 @@ sessions; use the current firmware and commissioning guide for new runs.
 
 Artifacts:
 
-- `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-low-speed-2026-11-11/`
-- `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-current-2026-11-09/`
+- `oxifoc-low-speed-2026-11-11`
+- `oxifoc-current-2026-11-09`
 
 ## Transport qualification, 10 November
 
@@ -282,7 +282,7 @@ and `EVIDENCE.md` with exact A/B, raw data and source entry points.
 
 ### Hall-to-observer crossover at 320 electrical rad/s
 
-Artifacts are in `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-crossover-2026-11-11/`.
+Artifacts are in `oxifoc-hall-crossover-2026-11-11`.
 The long maneuver drives for 7.6 s, commands 320 for 5.8 s, then commands 40
 for 1.8 s before Stop. The test replays the measured Hall geometry in RAM and
 uses the default `hall-fallback` blend band of 150–300 electrical rad/s.
@@ -309,7 +309,7 @@ unqualified. `half-rate/analysis.json` and the PNGs contain the aligned data.
 
 ### Low-speed cogging and velocity PI
 
-Artifacts are in `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-cogging-2026-11-11/`.
+Artifacts are in `oxifoc-cogging-2026-11-11`.
 `sim_trace` replayed the measured Hall geometry and motor model with the
 firmware controller, dry friction and a fitted 0.0174 N·m second electrical
 harmonic peaking at 137°. At +20, the 200-ms travel speed P5–P95 widened from
@@ -350,7 +350,7 @@ The experiment preserves the zero-regeneration and zero-dissipation limits.
 
 ### Motor acknowledgements under 20-kHz capture load
 
-Evidence is in `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-stream-reliability-2026-11-11/`.
+Evidence is in `oxifoc-stream-reliability-2026-11-11`.
 With the measured Hall geometry, the normal STM32 build reproduced 2,150
 producer drops and missed the 40-rad/s step and terminal ACK in the 320→40
 Hall-to-observer maneuver. Pure Hall at 20 kHz and the same hybrid maneuver
@@ -386,7 +386,7 @@ On the same motor and Hall geometry, built the normal SPI release from
 `efa7e8f` with the 4, 8, and 16 KiB ISR telemetry queues. Only that capacity
 changed. Three repeats per capacity alternated build order and used the
 same 320→40 Hall/observer maneuver. Evidence, exact build patches and the
-gap plot are in `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11/`.
+gap plot are in `oxifoc-queue-sizing-2026-11-11`.
 
 | Queue | Missing samples in the three runs | Median | Max timeline ACK |
 | --- | ---: | ---: | ---: |
@@ -412,7 +412,7 @@ a maximum timeline ACK of 21.7 ms. SPI errors, host drops, local ACK send
 failures and active faults were zero. The 32 KiB image used 93.2 KiB of main
 SRAM for static data, leaving 34.8 KiB for stack and margin. Default capacity
 and the restored bench firmware remain unchanged. Artifacts are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-32k/`.
+`oxifoc-queue-sizing-2026-11-11-32k`.
 
 With 48 KiB in main SRAM and the same release settings, three full
 320→40 runs recorded 512,082 samples without gaps. The second attempt aborted
@@ -424,7 +424,7 @@ One completed run recorded a Hall stale-edge warning after deceleration.
 The image used 109.2 KiB of main SRAM for static data, leaving 18.8 KiB for
 stack and margin. The previous bench firmware was restored and verified
 stopped, with zero active faults. Artifacts are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-48k/`.
+`oxifoc-queue-sizing-2026-11-11-48k`.
 
 The 48 KiB CCM follow-up moved only the queue to `0x10000000`, using the
 existing CCM startup copy. ELF symbols confirmed that the FOC driver,
@@ -435,7 +435,7 @@ acknowledged, with a 35.2 ms maximum on the timed Stop command. There
 were zero SPI errors and one Hall stale-edge warning after deceleration.
 The previous 4 KiB firmware was restored and verified stopped with zero
 active faults. Artifacts are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-queue-sizing-2026-11-11-48k-ccm/`.
+`oxifoc-queue-sizing-2026-11-11-48k-ccm`.
 
 MK5 SPI releases now keep the 48 KiB queue in `.ccm_bss` (`NOLOAD`).
 Startup enables CCM and clears it in place. The previous initialized CCM
@@ -447,7 +447,7 @@ Three full 320→40 runs recorded 512,013 samples at 20 kHz without loss,
 with nine timeline ACKs, three terminal Stops, maximum ACK 30.8 ms, and
 zero faults or SPI errors. The new release is installed and stopped in
 Hall mode. Artifacts are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-ccm-bss-2026-11-11/`.
+`oxifoc-ccm-bss-2026-11-11`.
 
 ### MK5 PWM frequency at boot
 
@@ -461,7 +461,7 @@ On the same SPI release image, TIM1 read back 15,001.416 Hz (ARR 5594) and
 PWM period within the SWD timing uncertainty. Stopped native-rate
 captures held 30,288 and 40,485 samples without gaps or producer drops.
 The MK5 was left stopped at 20 kHz. Raw evidence is under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-pwm-config/`.
+`oxifoc-mk5-pwm-config`.
 
 ### MK5 15/20 kHz drive comparison
 
@@ -478,7 +478,7 @@ closely at the higher speeds. The residual oscillation and short current peaks
 near +40 occur at both rates. The recorded FOC–Hall angle difference gives
 an indirect view of the handover.
 `manifest.json`, `comparison.json` and both overlays are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-pwm-ab/`.
+`oxifoc-mk5-pwm-ab`.
 
 ### Independent timing for detection
 
@@ -495,7 +495,7 @@ measured model was 63.49 mΩ, 31.97/51.39 µH and 3.993 mWb, with all six Hall
 states valid. The cancel test interrupted L while running, returned to 15 kHz
 within the 18.65 ms measured cancellation round trip, and recorded 17,340 rows
 without gaps. Both tests ran in diagnostic mode without `--apply`.
-Artifacts are under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-detection-pwm/`.
+Artifacts are under `oxifoc-detection-pwm`.
 
 The R sweep varied only the R-stage carrier. Two runs per frequency at
 2.4 and 12.0 A Id, with 15 kHz drive and the same 5 A / 0 A source limits.
@@ -529,7 +529,7 @@ were acknowledged. The motor ended stopped with zero faults at the original
 20 kHz setting. Loaded comparison is pending a reproducible load fixture.
 
 Captures, overlays and `loss-and-ack.json` are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-native-rate-ab/`.
+`oxifoc-mk5-native-rate-ab`.
 
 First light-load pilot on the H5055 at 15 kHz PWM and capture, +160
 electrical rad/s, Hall fallback. The hold ran for 20.0 s with 333,453
@@ -539,7 +539,7 @@ Iq from about 0.23 A unloaded to a maximum of 0.96 A. Hall travel over
 and extremes of 150.8 and 184.8 during load transitions. The bus stayed
 near 24 V. The controller finished stopped, with zero faults, at 15 kHz.
 The applied torque was unmeasured. Plot and capture are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-15k-load/`.
+`oxifoc-mk5-15k-load`.
 
 The 20 s repeat at +350 electrical rad/s recorded 333,457 samples without
 loss. At low load it held near +350. Late in the run, 100 ms mean Iq
@@ -569,7 +569,7 @@ percentile of plateau Iq averaged over 5 ms narrowed from 0.01–0.88 A to
 steady-state current pulsing. The initial overshoot remained. Both captures
 were lossless and the original derating config was restored after each run.
 See `speed-cut-comparison.png` and `comparison.json` under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-mk5-speed-cut/`.
+`oxifoc-mk5-speed-cut`.
 
 The configuration v20 follow-up recorded native Packed28 at 15,001.4 Hz
 and current grants every 16 cycles on the Flipsky bench. Two unloaded
@@ -580,7 +580,7 @@ speed peaks were 705 and 696 electrical rad/s, with steady medians of
 runs. On the 3–5 s plateau, its 5th–95th percentile narrowed from
 0.21–0.31 A to 0.24–0.27 A. The current trace flagged only speed limiting.
 See `current-speed-taper.png` and `current-speed-taper.json` under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-config-v20/`.
+`oxifoc-config-v20`.
 
 The same directory contains the post-reboot Hall-to-observer run at
 150/300 electrical rad/s blend thresholds. The 320→40 maneuver recorded
@@ -620,7 +620,7 @@ dropout for separate tests. Keep the present lock check, recovery policy,
 and thresholds pending those measurements.
 
 Plots, native captures, register readback, and the injection patch are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-policy.tbY1Ec/`.
+`oxifoc-hall-policy.tbY1Ec`.
 The production SPI image was restored and reported Stopped with zero faults.
 
 ## Earlier Hall and velocity experiments, 10 November
@@ -639,7 +639,7 @@ The proposed measured-sector/observer-angle stale guard was **not accepted**:
 Observer phase was already about 0.85 rad ahead of Hall re-entry, so it cannot
 yet serve as an independent position witness in this regime. The candidate
 was removed from the working tree; its patch and all failed evidence remain
-under `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-speed-2026-11-10/`.
+under `oxifoc-hall-speed-2026-11-10`.
 
 ### Hall repeatability and sweep current (2026-11-10)
 
@@ -665,7 +665,7 @@ no synchronized audio or causal A/B has established its source yet.
 Original Hall table, model, limits and board calibration were restored and
 read back; Stopped, zero faults, no NVM writes. Velocity stability remains
 unqualified. Detailed results, source comparison and plots:
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-repeat-2026-11-10/report.md`.
+`oxifoc-hall-repeat-2026-11-10/report.md`.
 
 ### Command deadtime correction A/B (2026-11-10)
 
@@ -688,7 +688,7 @@ remain diagnostic targets; stable velocity control is not established.
 
 Both firmware variants build. Restored compensation-on firmware and original
 runtime configuration, Stopped; no NVM writes. Report and inspected plots:
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hall-ab-2026-11-10/report.md`.
+`oxifoc-hall-ab-2026-11-10/report.md`.
 
 ### Velocity PI with unavailable braking (2026-11-10)
 
@@ -704,8 +704,8 @@ The same gains after the fix gave 5.74-erad/s full-revolution speed RMSE,
 4.05-A dq peak and no faults, but reverse edges and ripple remain. A new
 200-erad/s safety ceiling starts derating at 180; sampled feedback stayed below
 101 in that run. This is not qualification of smooth velocity control.
-Captures, exact ELFs and Hall replay: `oxifoc-hall-motion-2026-11-10` under
-`/home/okhsunrog/tmp_zfs/codex_tmp/`. All captures so far have complete USB records.
+Captures, exact ELFs and Hall replay: artifact set
+`oxifoc-hall-motion-2026-11-10`. All captures so far have complete USB records.
 
 Voltage limits now install through the stopped ISR transaction, with the same
 prepared thresholds used by fault integration, UV recovery and failsafe braking.
@@ -713,7 +713,7 @@ Boot uses that validation path; writes cannot exceed the board range. Hardware
 checks with PWM stopped produced OV/UV faults at deliberately crossed thresholds,
 rejected 58 V, and verified persistence/reboot of the 8–26 V bench range.
 668 core tests and 11 doctests pass. Evidence and exact ELF:
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-voltage-brake-2026-11-10/`.
+`oxifoc-voltage-brake-2026-11-10`.
 
 Hall timeout now additionally requires independent observer angular travel
 since the captured edge, cancelling a constant observer phase offset. Inferred

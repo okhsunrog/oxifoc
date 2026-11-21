@@ -334,7 +334,7 @@ pause then passed END/count/continuity checks with zero admission/CRC errors.
 This is a finite jitter budget, not unlimited buffering. No STM32 SRAM was added.
 
 Artifacts, including failures, exact trace ELFs/symbols, Parquet, plots and JSON:
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-c5-spi-2026-11-10/`.
+`oxifoc-c5-spi-2026-11-10`.
 Repeat with `just test-bridge CAPTURE MANEUVER` and, after flashing its matching
 trace image, `just profile-link-mk5 bridge OUTPUT MANEUVER`.
 
@@ -365,5 +365,5 @@ counters remained zero. Control pulsations
 remain visible in the normal captures; moving routing does not fix them.
 BLE was build-checked, not exercised over radio.
 
-Evidence: `/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-edge-2026-11-10/`
+Evidence: `oxifoc-edge-2026-11-10`
 (`sizes.json`, `captures.json`, `resets.json`, trace manifests and Parquet).

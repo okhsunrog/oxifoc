@@ -148,8 +148,8 @@ merely to make the current model fit.
 Artifacts and reproducible analysis scripts:
 
 ```text
-/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-cadence-voltage-2026-11-08/
-/home/okhsunrog/motor_control/vesc-bench/analysis/analyze_oxifoc_signed_plateaus.py
+oxifoc-cadence-voltage-2026-11-08
+vesc-bench analysis/analyze_oxifoc_signed_plateaus.py
 ```
 
 The artifact root contains raw successful/failed captures, RTT, exact ELF hashes,

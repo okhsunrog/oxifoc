@@ -118,7 +118,7 @@ commit; recipe/documentation edits do not change its compiled code.
 Raw captures, exact ELFs/symbols, configuration, source diffs, RTT, failed
 profiles, analysis scripts and plots are under:
 
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-usb-priority-2026-11-09/`
+`oxifoc-usb-priority-2026-11-09`
 
 `summary.json` covers all 13 profiles; `decision-summary.json` includes the
 prior plain-default control and background counts. `provenance.json` hashes

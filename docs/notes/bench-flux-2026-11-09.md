@@ -13,7 +13,7 @@ now reaches the live Hall estimator in RAM without a reboot or flash write.
 the control/capture interrupts do not log.
 
 Raw captures, exact configuration and analysis are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-flux-2026-11-09/`.
+`oxifoc-flux-2026-11-09`.
 
 ## Native coast measurement
 
@@ -35,7 +35,7 @@ measurement. Driven fallback remains available when coast is too short.
 | 6000 repeat | 3.173070 | -1.31% |
 
 Reference: VESC 7.00 full wizard readback, 3.215180 mWb, in
-`/home/okhsunrog/tmp_zfs/codex_tmp/vesc-bench-bringup/full-detection-01/comparison.json`.
+`vesc-bench-bringup/full-detection-01/comparison.json`.
 That wizard's waveform capture was incomplete; only its parameter readback
 is used here. No scale correction was fitted to that result.
 
@@ -67,7 +67,7 @@ Hall calibration and R = 0.030860864 ohm, Ld = 18.300083 uH,
 Lq = 27.557062 uH, lambda = 3.19 mWb, seven pole pairs were subsequently
 saved and verified after reset. Current limits remain unchanged. Captures,
 configuration readbacks and logs are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-current-2026-11-09/`.
+`oxifoc-current-2026-11-09`.
 
 The Hall current checks track 0.6-A Id and Iq steps up to 1.2 A without
 faults, but full-model boot still overflows the MCU raw telemetry queue.

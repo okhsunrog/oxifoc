@@ -171,7 +171,7 @@ No setup Save was issued. Legacy Hall installation still changes RAM, and
 boot current-offset calibration also refreshes RAM.
 
 Artifacts and plots:
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-commissioning-20261111/`.
+`oxifoc-commissioning-20261111`.
 Regression: `just test-stop-bridge <capture.parquet> <measured_R_ohm>`.
 
 At that milestone, explicit session plans and atomic Save were still pending.
@@ -217,7 +217,7 @@ requests, cancellation before Start, result retirement and session replacement.
 interval only. Terminal cancellation was observed after 61.67 ms, including host
 polling and cleanup (not an ISR stop-latency measurement). After reset, old
 Start/Status/Cancel were all rejected with WrongSession. Artifacts:
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-operation-contracts-20261111/`.
+`oxifoc-operation-contracts-20261111`.
 Regression recipes: `test-stop-bridge`, then after reset `test-replay-bridge`
 with the generated `.request.json` file.
 
@@ -259,7 +259,7 @@ No Apply or Persist was sent. The waveform and source-page previews were viewed.
 
 Artifacts: `oxifoc-operation-contracts-20261111/wizard-session*`,
 `wizard-config-{before,after}.json`, `wizard-analysis.json`, `wizard-source.png`
-under `/home/okhsunrog/tmp_zfs/codex_tmp/`. Core: 720 passed, 2 ignored;
+in the artifact sets. Core: 720 passed, 2 ignored;
 minimal core and CLI/GUI/virtual checks pass; 41 host-lib tests pass; MK5 release flashed and verified.
 Addressed cancellation/retry regression adds 22,414 lossless records; terminal
 cancellation observed in 30.29 ms. A fresh configuration can use explicit session
@@ -334,7 +334,7 @@ They used the Advanced 10 A measurement ceiling. Earlier runs aborted on
 protection nor the inverter trip was relaxed.
 
 Artifacts live under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-operation-contracts-20261111/`
+`oxifoc-operation-contracts-20261111`
 (`atomic-*` and `setup-review.png`). The GUI was compiled and its review
 screen rendered. The actual device Save path was exercised through the CLI.
 TCP simulation additionally checked exact Save replay, changed-payload
@@ -360,7 +360,7 @@ the applied d-axis modulation projects negative power at zero regen.
 The temporary instrumentation recorded the last 256 source checks in CCM
 and was read over SWD after Stop. The usual stream and limit logic were used.
 Captures, exact trace, comparison plots and the diagnostic patch are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-commissioning-source/`
+`oxifoc-commissioning-source`
 (`hall-CyegD0`, `hall-BeR0j1`). The normal image was restored and verified.
 The saved configuration matched after boot offset recalibration, with Hall
 selected, motor stopped and zero faults.
@@ -378,7 +378,7 @@ has no equivalent milliampere trip on the signed inverter estimate.
 R/L and Hall were complete at native 5 and 15 kHz. The run lost 29,871 of
 465,478 samples overall, including 23,105 during 20 kHz flux excitation.
 The comparative plots and raw data are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/vesc-h5055-source-limit/run-ErHWfO/`.
+`vesc-h5055-source-limit/run-ErHWfO/`.
 The OxiFOC image and saved configuration were verified after restoration.
 
 The shared L/Hall release now lowers the stationary current with a cubic
@@ -394,4 +394,4 @@ and λ 3.997–4.012 mWb. VESC measured 62.68 mΩ, 35.13 µH, 59.62 µH and
 4.052 mWb. Positive Hall order was 4→5→1→3→2→6 on both firmwares, with
 centers within 2.01 electrical degrees. OxiFOC also measured entry
 boundaries. Captures, release plots and per-sector results are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-stationary-release/`.
+`oxifoc-stationary-release`.

@@ -24,7 +24,7 @@ controller powered. Controller output colors are different from motor colors:
 
 This supersedes the previously unverified controller-to-color mapping. The
 LCR measurement aliases remain yellow=A, blue=B, black=C. Raw LCR results:
-`/home/okhsunrog/motor_control/vesc-bench/docs/motor-lcr-2026-11-08.md`.
+`docs/motor-lcr-2026-11-08.md` in the vesc-bench repository.
 At 1 kHz the latest between-lead maxima are 52.9/52.5/52.9 µH; at 10 kHz,
 51.2/50.7/51.1 µH. The 100 Hz increase remains unexplained. AC ESR is not DC R.
 

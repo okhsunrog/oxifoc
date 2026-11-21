@@ -4,7 +4,7 @@ Continues [the independent clock study](bench-executor-clock-2026-11-09.md).
 Raw files, exact ELFs, build/test logs and provenance are retained under:
 
 ```text
-/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-timing-bringup-2026-11-09/
+oxifoc-timing-bringup-2026-11-09
 ```
 
 The user removed the scope and reconnected the motor. Mapping stays A/controller
@@ -143,4 +143,4 @@ the subsequent fault/cancellation, synchronized excitation and live recording
 fixes. L01 remains rejected evidence; later fixes do not rehabilitate its L.
 
 Raw data, exact ELFs, RTT, configs and result JSONs for this section are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-timing-bringup-2026-11-09/`.
+`oxifoc-timing-bringup-2026-11-09`.

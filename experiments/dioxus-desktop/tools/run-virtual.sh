@@ -2,7 +2,8 @@
 set -euo pipefail
 experiment=$(cd -- "$(dirname -- "$0")/.." && pwd)
 workspace=$(cd -- "$experiment/../.." && pwd)
-task=/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-dioxus
+task=${OXIFOC_DIOXUS_TMP:-${TMPDIR:-/tmp}/oxifoc-dioxus}
+mkdir -p "$task"
 export TMPDIR="$task"
 export OXIFOC_TCP_PORT=${OXIFOC_TCP_PORT:-25266}
 nix develop "$workspace" -c "$workspace/target/debug/oxifoc-virtual" --transport tcp --port "$OXIFOC_TCP_PORT" >"$task/desktop-virtual.log" 2>&1 &

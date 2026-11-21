@@ -4,7 +4,7 @@ Continues [the resistance-source study](bench-resistance-source-2026-11-09.md).
 All artifacts, including failed captures, are retained under:
 
 ```text
-/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-executor-clock-2026-11-09/
+oxifoc-executor-clock-2026-11-09
 ```
 
 ## Resistance comparison and frequency definitions

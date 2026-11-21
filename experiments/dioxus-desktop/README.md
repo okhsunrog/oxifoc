@@ -57,7 +57,7 @@ See [RESULTS.md](RESULTS.md) for observed capabilities and measured results.
 `tools/measure.py` measures CPU and summed RSS/PSS for the entire application
 process tree, including WebKit children. `tools/bench.sh` runs alternating
 Desktop/Native cases in the current Wayland session. It uses the existing
-Native harness at `/home/okhsunrog/code/rust/dioxus_native_test`.
+Native harness from a `dioxus_native_test` checkout named by `DIOXUS_NATIVE_TEST`.
 
 The integrated launcher `bash tools/run-virtual.sh` starts a fresh virtual
 controller and the Desktop app, and stops the controller when the app closes.

@@ -40,6 +40,7 @@
 
 Keep user-facing commands in the guides and API details near the code that
 defines them. For bench results, record the firmware revision, setup, test
-conditions, result and artifact location. A local path is useful for
-reproducing work on the bench machine; include the decisive numbers or a plot
-in the repository so the conclusion survives cleanup of local captures.
+conditions, result and artifact set. An artifact set is a directory of raw
+bench data (captures, logs, images) kept outside the repository; notes name it
+(`oxifoc-flux-2026-11-09`), never by a local path. Put the decisive numbers or
+a plot in the repository so the conclusion survives without the raw data.

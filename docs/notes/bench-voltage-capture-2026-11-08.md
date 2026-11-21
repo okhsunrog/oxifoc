@@ -15,7 +15,7 @@ Later host-only changes required no reflash.
 Captures, decoded logs, status/config snapshots, numerical reports and figures:
 
 ```text
-/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-rich-bringup-2026-11-08/
+oxifoc-rich-bringup-2026-11-08
 ```
 
 `provenance.json` records per-run host commits, firmware artifact, current CLI

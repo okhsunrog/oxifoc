@@ -265,7 +265,7 @@ cleanup; they are not measurements of every subsequent rebuild.
 copies came from rare model/config application. Command enum/FIFO layout and
 copying were not reduced in this series.
 
-VESC reference: local `/home/okhsunrog/motor_control/bldc`, `1ad6eab3` (7.00).
+VESC reference: [vedderb/bldc](https://github.com/vedderb/bldc) at `1ad6eab3` (7.00).
 Speed/position PID defaults to about 1 kHz in a thread with actual dt;
 thermal/soft-limit and supervisor threads sleep 1 ms. Current control,
 Hall/observer and fast electrical trips remain ADC-rate. This supports dividing
@@ -285,7 +285,7 @@ work by cadence, not decimating every protection check.
 | Executed code | ARM disassembly and PC sampler against the exact ELF/SHA; attach/detach only while Stopped |
 
 Run from the direnv/Nix shell, using `uv run` for Python. `OUTPUT` is a new
-directory under `/home/okhsunrog/tmp_zfs/codex_tmp/`; `RECOVERY` is a verified
+artifact-set directory outside the repository; `RECOVERY` is a verified
 working image. Normal builds retain their ordinary target/cache paths.
 The isolated benchmark masks interrupts and lacks ADC, motion and real command/PI
 collisions. Its whole-window cost includes loop/black_box/DWT overhead; it is
@@ -303,13 +303,9 @@ terminal Stop still rejects the run. Missing/unreadable counters fail the check.
 
 ## Artifacts and remaining work
 
-Local artifact root:
+Artifact sets (kept outside the repository, see [docs](../README.md)):
 
-```text
-/home/okhsunrog/tmp_zfs/codex_tmp/
-```
-
-| Directory under the root | Evidence |
+| Artifact set | Evidence |
 |---|---|
 | `oxifoc-adc-opt-2026-11-10/` | Initial math/NTC batches, exact ELF, raw captures, report |
 | `oxifoc-foc-research-2026-11-11/` | Early body/gap/PWM work, rejected Hall/cruise variants |
@@ -462,7 +458,7 @@ relaxed multiply-add permits one or two.
 [Rust floating-point contracts](https://doc.rust-lang.org/nightly/core/primitive.f32.html#algebraic-operators)
 
 Artifacts are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-arithmetic-2026-11-15/`.
+`oxifoc-arithmetic-2026-11-15`.
 `timing-summary.csv`, `pc-summary.json`, per-image `build.json` and raw captures
 identify source revisions, ELF hashes, flags and rejected attempts. MCU kernels
 live in `tests/stm32f405/tests/support/arithmetic.rs`; prescribed observer traces
@@ -1153,7 +1149,7 @@ report zero logger losses. The board is restored to the committed image at
 
 The F405 firmware uses this deferred RTT backend. Artifacts, exact image
 hashes and assembly audits are in
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-deferred-logging-2026-11-16/`.
+`oxifoc-deferred-logging-2026-11-16`.
 
 ### Dissipative authority follow-up, November 16
 
@@ -1235,7 +1231,7 @@ zero dissipation, Stopped, zero faults and phase enables off. Its final
 two-second velocity/Stop capture is lossless.
 Exact ELFs, linked assembly, source hashes, raw attempts, PC samples and
 acceptance receipts are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-brake-authority-2026-11-16/`.
+`oxifoc-brake-authority-2026-11-16`.
 
 ### Work-combination attribution and shared tooling, November 17
 
@@ -1301,7 +1297,7 @@ probe 4.445 us, sensor sampling 7.245 us and protection 3.533 us. These nested
 diagnostic values retain their own instrumentation scope.
 
 Artifacts are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-isr-workflow-2026-11-17/`, including
+`oxifoc-isr-workflow-2026-11-17`, including
 `attribution.json`, fixed images, manifests and the allocated-section audit.
 
 ### Service slots, wrap fallbacks and pipelined authority bounds, November 17
@@ -1608,7 +1604,7 @@ checks both PWM rates and counter wrap.
 
 Artifacts, exact images, link inputs, address maps, job lists, logs and the
 rejected capture are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-slot-wrap-2026-11-17/`; its
+`oxifoc-slot-wrap-2026-11-17`; its
 `analysis/README.md` explains the directory names. That series ended on the
 recovery image at 15 kHz, Stopped, zero faults and phase enables off.
 
@@ -1656,7 +1652,7 @@ exceedances. Measurements use the unloaded HallToObserver bench.
 
 `oxifoc-f405/foc-hot.x` selects residues 8/4/0. Exact images, shuffled job order,
 source-equivalence checks, relocation audit and recovery receipts are under
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-hot-joint-2026-11-17/`.
+`oxifoc-hot-joint-2026-11-17`.
 The final normal image completes a two-second +120-rad/s capture with complete
 telemetry and acknowledged Stop. It remains on the board at the saved 15-kHz
 PWM setting, Stopped, zero active faults and phase enables off. Its exact build

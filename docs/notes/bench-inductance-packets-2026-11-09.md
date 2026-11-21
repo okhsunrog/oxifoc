@@ -124,7 +124,7 @@ incomplete streams and selects a real packet from RTT. FFT plots use 128 real
 samples with a Hann window; zero padding does not add frequency resolution.
 
 Raw campaign root:
-`/home/okhsunrog/tmp_zfs/codex_tmp/oxifoc-sync-inductance-2026-11-09/`.
+`oxifoc-sync-inductance-2026-11-09`.
 The final source/amplitude qualification, provenance hashes and endpoint
 readback follow.
 
