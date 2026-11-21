@@ -79,6 +79,18 @@ where
     Phase: PhaseProvider,
     S: SinCos,
 {
+    /// Hard overcurrent trip: float the bridge, drop the PI state and stop.
+    /// Out of line so the trip never weighs on the native-rate paths.
+    #[cold]
+    #[inline(never)]
+    fn trip_overcurrent(&mut self) -> StepError {
+        self.pwm.disable();
+        self.pwm_off = true;
+        self.controller.reset();
+        self.mode = ControlMode::Stopped;
+        StepError::Overcurrent
+    }
+
     /// Parking brake, VESC-style (its `CURRENT_BRAKE` mode shorts the
     /// phases around zero and current-brakes above).
     ///
@@ -143,9 +155,7 @@ where
         // αβ magnitude equals the dq magnitude (Park preserves it). The
         // hard trip stays the backstop (a limit left unset).
         if self.current_limits.is_overcurrent(i_alpha, i_beta) {
-            self.pwm.disable();
-            self.mode = ControlMode::Stopped;
-            return Err(StepError::Overcurrent);
+            return Err(self.trip_overcurrent());
         }
         let i_mag = (i_alpha * i_alpha + i_beta * i_beta).sqrt_with(sqrtf);
         if limit.is_positive() && i_mag > limit {
@@ -611,10 +621,7 @@ where
 
         // Layer 2: Check measured current against hard overcurrent limit
         if self.current_limits.is_overcurrent(out.id, out.iq) {
-            self.pwm.disable();
-            self.controller.reset();
-            self.mode = ControlMode::Stopped;
-            return Err(StepError::Overcurrent);
+            return Err(self.trip_overcurrent());
         }
 
         // Track the q-axis modulation for the bus-limit clamp (next cycle).
@@ -730,10 +737,7 @@ where
 
         // Check measured overcurrent
         if self.current_limits.is_overcurrent(out.id, out.iq) {
-            self.pwm.disable();
-            self.controller.reset();
-            self.mode = ControlMode::Stopped;
-            return Err(StepError::Overcurrent);
+            return Err(self.trip_overcurrent());
         }
 
         self.pwm.set_duties(out.duties);
@@ -806,10 +810,7 @@ where
             // is applied verbatim — so the measured check is the only
             // software protection this mode has.
             if self.current_limits.is_overcurrent(out.id, out.iq) {
-                self.pwm.disable();
-                self.controller.reset();
-                self.mode = ControlMode::Stopped;
-                return Err(StepError::Overcurrent);
+                return Err(self.trip_overcurrent());
             }
         }
 
