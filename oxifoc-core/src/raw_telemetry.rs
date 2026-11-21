@@ -379,7 +379,7 @@ impl RawBlockEncoder {
         &self.bytes[..RAW_HEADER_BYTES + self.header.payload_bytes()]
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "runtime")]
     pub(crate) fn finish_with_suffix(
         &mut self,
         producer_drops: u32,
@@ -390,7 +390,7 @@ impl RawBlockEncoder {
         &self.bytes[..len + added]
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "runtime")]
     pub(crate) fn empty_scratch(&mut self) -> &mut [u8] {
         debug_assert!(self.is_empty());
         &mut self.bytes

@@ -62,7 +62,6 @@ impl Model {
             ble_address,
             tcp_host: Some(host),
             tcp_port: Some(port),
-            fast_hz: Some(1000),
             stream_defmt: Some(false),
             ..Default::default()
         });

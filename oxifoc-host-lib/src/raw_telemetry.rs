@@ -1,6 +1,5 @@
 //! Connection-scoped raw ingress and capture integrity, independent of motor commands.
 
-use crate::config::FastSource;
 use anyhow::{Result, anyhow, bail};
 use crossbeam_channel::Sender;
 #[cfg(test)]
@@ -39,7 +38,6 @@ fn validate_stop_cookie(owned: Option<u64>, actual: u64) -> Result<()> {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RawCaptureReport {
-    pub source: FastSource,
     pub encoding: RawEncoding,
     pub session: u64,
     pub records_received: u64,
@@ -107,7 +105,6 @@ struct Inner {
 }
 
 pub struct RawTelemetryState {
-    source: FastSource,
     tx: Sender<FastTelemetry>,
     inner: Mutex<Inner>,
     changed: Condvar,
@@ -118,18 +115,16 @@ pub struct RawTelemetryState {
 
 impl RawTelemetryState {
     #[cfg(test)]
-    pub(crate) fn new(source: FastSource, tx: Sender<FastTelemetry>) -> Arc<Self> {
-        Self::new_with_options(source, tx, false, RAW_MAX_BLOCK_BYTES as u16)
+    pub(crate) fn new(tx: Sender<FastTelemetry>) -> Arc<Self> {
+        Self::new_with_options(tx, false, RAW_MAX_BLOCK_BYTES as u16)
     }
 
     pub(crate) fn new_with_options(
-        source: FastSource,
         tx: Sender<FastTelemetry>,
         velocity_debug: bool,
         max_block_bytes: u16,
     ) -> Arc<Self> {
         Arc::new(Self {
-            source,
             tx,
             inner: Mutex::new(Inner::default()),
             changed: Condvar::new(),
@@ -152,9 +147,6 @@ impl RawTelemetryState {
             .map(|_| capture.velocity_frames.clone()))
     }
 
-    pub fn source(&self) -> FastSource {
-        self.source
-    }
     pub(crate) fn reader_ready(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.ready = true;
@@ -238,7 +230,6 @@ impl RawTelemetryState {
         }
         inner.capture = Some(CaptureState {
             report: RawCaptureReport {
-                source: self.source,
                 encoding: RawEncoding::Packed28,
                 session,
                 records_received: 0,
@@ -812,12 +803,7 @@ mod tests {
             [(true, 0, true), (false, 0, false), (true, 1, false)]
         {
             let (tx, rx) = bounded(8);
-            let state = RawTelemetryState::new_with_options(
-                FastSource::ErgotRaw,
-                tx,
-                true,
-                RAW_MAX_BLOCK_BYTES as u16,
-            );
+            let state = RawTelemetryState::new_with_options(tx, true, RAW_MAX_BLOCK_BYTES as u16);
             state.reader_ready();
             let session = state.arm().unwrap();
             let first = FastTelemetry {
@@ -867,7 +853,7 @@ mod tests {
         for missing in [false, true] {
             let stack = ergot::toolkits::null::new_arc_null_stack();
             let (tx, rx) = bounded(64);
-            let state = RawTelemetryState::new(FastSource::ErgotRaw, tx);
+            let state = RawTelemetryState::new(tx);
             let cancel = tokio_util::sync::CancellationToken::new();
             spawn_ergot_subscriber(&stack, state.clone(), cancel.clone());
             state.wait_ready().await.unwrap();
@@ -939,7 +925,6 @@ mod tests {
                 assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
             } else {
                 report.validate_export(session, 64).unwrap();
-                assert_eq!(report.source, FastSource::ErgotRaw);
             }
             cancel.cancel();
         }
@@ -947,7 +932,7 @@ mod tests {
 
     fn ready(capacity: usize) -> (Arc<RawTelemetryState>, Receiver<FastTelemetry>, u64) {
         let (tx, rx) = bounded(capacity);
-        let state = RawTelemetryState::new(FastSource::ErgotRaw, tx);
+        let state = RawTelemetryState::new(tx);
         state.reader_ready();
         let session = state.arm().unwrap();
         (state, rx, session)

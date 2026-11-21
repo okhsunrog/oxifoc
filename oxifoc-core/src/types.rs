@@ -397,13 +397,14 @@ pub struct MotorStatus {
 /// data. Frame/field rationale: docs/notes/rtt-telemetry-throughput.md §6.
 ///
 /// `#[repr(C)]`, 18×u16/i16 = **36 bytes**, align 2, no padding → `Pod` clean.
-/// This is the canonical RAM frame and the legacy Pod-batch layout.
-/// Production Packed28 explicitly packs its fields and shares seq/stride/ARR
-/// within each block. Change this contract together with the host and ICD.
+/// This is the canonical RAM frame of the ISR queue and of the host's
+/// decoded samples. Packed28 explicitly packs its fields on the wire and
+/// shares seq/stride/ARR within each block. Change this contract together
+/// with the host and ICD.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[cfg_attr(feature = "pod", derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(feature = "runtime", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct FastTelemetry {
     /// Phase A current — raw ADC counts (uncalibrated). Host reconstructs amps
     /// via `BoardConfig` (vref/counts/amp_gain/shunt) and the per-phase
@@ -455,7 +456,7 @@ pub struct FastTelemetry {
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[cfg_attr(feature = "pod", derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[cfg_attr(feature = "runtime", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct HallAngle(u16);
 
 impl HallAngle {
@@ -467,60 +468,6 @@ impl HallAngle {
         self.0
     }
 }
-
-/// Maximum samples in a losslessly encoded batch. The independent byte cap
-/// below can stop the encoder earlier for incompressible input; neither
-/// sample values nor compression ratio can make a batch exceed the MTU.
-pub const FAST_BATCH_SAMPLES: usize = 24;
-
-/// Encoded byte capacity, independent of compression ratio/sample count.
-pub const FAST_BATCH_BYTES: usize = 480;
-
-/// Worst-case wire bytes around an encoded batch topic frame: ergot's
-/// `MAX_HDR_ENCODED_SIZE` (28, includes the broadcast key appendix) + the
-/// postcard varint length prefix (2 for lengths ≤ 16383) + slack.
-pub const FAST_BATCH_WIRE_OVERHEAD: usize = 32;
-
-/// Batch of fast telemetry samples for efficient network transmission.
-///
-/// ICD v8 lossless byte-delta encoding. Each batch starts independently with
-/// a full Pod frame (tag 0). Following frames are either full frames
-/// or sparse replacements (tag 1, five-byte little-endian changed-byte mask,
-/// then changed bytes in offset order). No state crosses a batch boundary.
-/// Arbitrary frames fall back to full encoding; payload capacity always fits
-/// the MTU, regardless of values or compression ratio. ADC/PWM bits are exact.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, Schema)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct FastTelemetryBatch {
-    /// Encoded frames, at most FAST_BATCH_SAMPLES, bounded by byte capacity.
-    #[serde(serialize_with = "serialize_telemetry_bytes")]
-    pub data: Vec<u8, FAST_BATCH_BYTES>,
-}
-
-// Postcard encodes bytes and a u8 sequence identically, but the bytes API
-// lets its flavor copy the complete payload instead of serializing each byte.
-fn serialize_telemetry_bytes<S: serde::Serializer>(
-    bytes: &[u8],
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_bytes(bytes)
-}
-
-impl FastTelemetryBatch {
-    pub const fn new() -> Self {
-        Self { data: Vec::new() }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-}
-
-#[cfg(feature = "pod")]
-#[path = "fast_telemetry_codec.rs"]
-mod fast_telemetry_codec;
-#[cfg(feature = "pod")]
-pub use fast_telemetry_codec::{FastBatchDecodeError, FastTelemetryBatchEncoder};
 
 /// Low-frequency system telemetry (streamed at configurable rate, default 10Hz)
 ///
@@ -567,11 +514,10 @@ pub struct SlowTelemetry {
 // Will include: amp_hours, amp_hours_charged, watt_hours, watt_hours_charged,
 // tachometer (electrical revolutions). Streamed at ~1 Hz.
 
-/// Telemetry rate configuration
-///
-/// Host sends this to start/stop fast telemetry streaming.
-/// Device does not stream until host explicitly requests it.
-/// Slow telemetry is poll-based (host controls the rate).
+/// Requested fast telemetry rate, a host command. The host arms a Packed28
+/// session at this rate (`RawTelemetryRequest::Arm`) or stops it with 0; the
+/// device does not stream until a session is armed. Slow telemetry is
+/// poll-based (host controls the rate).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TelemetryConfig {
@@ -621,7 +567,7 @@ impl ControlTiming {
     }
 }
 
-/// Acknowledgment for telemetry config change (ICD v9).
+/// Applied fast telemetry timing, carried by every raw session ACK (ICD v9).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TelemetryConfigAck {
@@ -660,6 +606,8 @@ pub struct TelemetryConfigAck {
 /// and the full-width fallback flag are rejected.
 /// `RawTelemetryRequest::Arm` gains `max_block_bytes`, the largest block the
 /// requester's link carries in one frame.
+/// Sessions are the only fast telemetry: the `telemetry/fast` broadcast
+/// (`FastTelemetryBatch`) and `TelemetryConfigEndpoint` are removed.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.
@@ -1441,70 +1389,6 @@ mod tests {
                 ..info
             });
             assert_eq!(hw.phase_voltage_info(), None);
-        }
-    }
-
-    /// Raw-Pod batch: push → postcard wire → decode must reproduce the exact
-    /// samples, and the wire size must be value-independent (the whole point
-    /// of raw-Pod vs per-field varints).
-    #[cfg(feature = "pod")]
-    #[test]
-    fn batch_roundtrip() {
-        let samples: Vec<FastTelemetry, FAST_BATCH_SAMPLES> = (0..FAST_BATCH_SAMPLES)
-            .map(|i| FastTelemetry {
-                ia: 2500 + i as u16,
-                ib: 40_000,
-                ic: 3,
-                vbus: 6000,
-                angle: (i as u16).wrapping_mul(2048),
-                hall_angle: HallAngle::from_encoded(1000 + i as u16),
-                vd: -1200,
-                vq: 32000,
-                rpm: -15000,
-                seq: 65_500 + i as u16, // wraps
-                vphase_adc: [10, 2048, 4095],
-                pwm_ccr: [100, 2100, 3900],
-                pwm_arr: 4200,
-                pwm_enables: 0x7f,
-            })
-            .collect();
-
-        let mut batch = FastTelemetryBatchEncoder::new();
-        assert_eq!(size_of::<FastTelemetry>(), 36);
-        const { assert!(FAST_BATCH_BYTES + FAST_BATCH_WIRE_OVERHEAD <= 512) };
-        for s in &samples {
-            assert!(batch.push(s));
-        }
-        assert!(batch.is_full());
-        assert!(!batch.push(&FastTelemetry::default()));
-        assert_eq!(batch.len(), FAST_BATCH_SAMPLES);
-
-        let mut buf = [0u8; FAST_BATCH_BYTES + 8];
-        let wire = postcard::to_slice(batch.batch(), &mut buf).unwrap();
-        assert_eq!(wire.len(), 2 + batch.batch().data.len());
-
-        let decoded: FastTelemetryBatch = postcard::from_bytes(wire).unwrap();
-        let out = decoded.samples().unwrap();
-        assert_eq!(out, samples);
-    }
-
-    #[test]
-    fn byte_payload_keeps_the_existing_postcard_wire_format() {
-        #[derive(Serialize)]
-        struct SequencePayload<'a> {
-            data: &'a Vec<u8, FAST_BATCH_BYTES>,
-        }
-        for len in [0, 1, 127, 128, FAST_BATCH_BYTES] {
-            let data = (0..len).map(|i| i.wrapping_mul(73) as u8).collect();
-            let batch = FastTelemetryBatch { data };
-            let old = SequencePayload { data: &batch.data };
-            let mut old_buffer = [0; FAST_BATCH_BYTES + 8];
-            let mut new_buffer = [0; FAST_BATCH_BYTES + 8];
-            let expected = postcard::to_slice(&old, &mut old_buffer).unwrap();
-            let actual = postcard::to_slice(&batch, &mut new_buffer).unwrap();
-            assert_eq!(actual, expected);
-            let decoded: FastTelemetryBatch = postcard::from_bytes(actual).unwrap();
-            assert_eq!(decoded.data, batch.data);
         }
     }
 }

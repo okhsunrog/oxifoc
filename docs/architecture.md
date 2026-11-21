@@ -20,8 +20,13 @@ setup. The control loop, estimators and protection logic live in
    The estimator receives voltage aligned to the current sample. See
    [observer voltage input][voltage] for the measured/reconstructed paths.
 3. The fast telemetry producer enqueues samples at the requested decimation.
-   The async streaming task batches and sends them. The control interrupt
-   does not wait for the receiver.
+   Fast telemetry is a session the host arms (`RawTelemetryEndpoint`): an
+   async task packs the queue into Packed28 blocks with session, block index
+   and drop counts, sends them to the host that armed it, and ends with an
+   END block carrying the record total. Each block fits one frame of the
+   slowest link: full 64-sample blocks over USB, SPI, RTT, serial, TCP and
+   UDP, 15 samples over BLE. The control interrupt does not wait for the
+   receiver.
 
 | Mode | Control behavior |
 |---|---|

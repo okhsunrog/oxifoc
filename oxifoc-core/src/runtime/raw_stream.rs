@@ -6,7 +6,10 @@ use super::streaming::{
 };
 use super::velocity_debug;
 use crate::{
-    icd::{RawTelemetryEndpoint, VelocityDebugArmEndpoint},
+    icd::{
+        RawTelemetryBlockRef, RawTelemetryBlockRefTopic, RawTelemetryEndpoint,
+        VelocityDebugArmEndpoint,
+    },
     raw_telemetry::{
         RAW_HEADER_BYTES, RAW_MAX_BLOCK_BYTES, RAW_MIN_BLOCK_BYTES, RawBlockEncoder,
         RawBlockHeader, RawEncoding, RawTelemetryAck, RawTelemetryRequest, RawTelemetryStatus,
@@ -18,10 +21,12 @@ use crate::{
 };
 use crate::{raw_telemetry, state};
 use core::{
+    marker::PhantomData,
     num::NonZeroU32,
     pin::pin,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
+use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
@@ -44,6 +49,75 @@ pub trait RawTelemetrySink {
         destination: ergot::Address,
         bytes: &[u8],
     ) -> Result<(), RawSinkError>;
+}
+
+/// Bounds a disconnected or unconsumed block. The stream never holds the
+/// producer gate while a block waits.
+const BLOCK_TIMEOUT_MS: u64 = 250;
+
+/// Platform wait before each send attempt, for a transmit path that needs
+/// room beyond the block itself (the MK5 SPI link keeps a reply MTU free).
+#[allow(async_fn_in_trait)]
+pub trait SendHeadroom {
+    async fn wait(&mut self);
+}
+
+/// No wait: the stack's own queue admission is enough.
+impl SendHeadroom for () {
+    async fn wait(&mut self) {}
+}
+
+/// Unicasts each block to the node that armed the session over the stack's
+/// routes, retrying a full queue every 100 us until [`BLOCK_TIMEOUT_MS`].
+pub struct ErgotRawSink<NS, T, H = ()> {
+    stack: NS,
+    headroom: H,
+    timer: PhantomData<T>,
+}
+
+impl<NS, T, H> ErgotRawSink<NS, T, H> {
+    pub const fn new(stack: NS, headroom: H) -> Self {
+        Self {
+            stack,
+            headroom,
+            timer: PhantomData,
+        }
+    }
+}
+
+impl<NS: NetStackHandle, T: Timer, H: SendHeadroom> RawTelemetrySink for ErgotRawSink<NS, T, H> {
+    async fn write_block(
+        &mut self,
+        destination: ergot::Address,
+        bytes: &[u8],
+    ) -> Result<(), RawSinkError> {
+        let send = async {
+            loop {
+                self.headroom.wait().await;
+                // Never retry a partially successful broadcast: a unicast
+                // either queues the whole frame or nothing.
+                if self
+                    .stack
+                    .stack()
+                    .topics()
+                    .unicast_borrowed::<RawTelemetryBlockRefTopic<'_>>(
+                        destination,
+                        &RawTelemetryBlockRef { data: bytes },
+                    )
+                    .is_ok()
+                {
+                    // Queue acceptance, not host receipt: the host still
+                    // requires the matching END and exact record totals.
+                    return;
+                }
+                T::after_micros(100).await;
+            }
+        };
+        match select(send, T::after_millis(BLOCK_TIMEOUT_MS)).await {
+            Either::First(()) => Ok(()),
+            Either::Second(()) => Err(RawSinkError::Unavailable),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -367,6 +441,20 @@ pub async fn velocity_debug_arm_server<NS: NetStackHandle, const N: usize>(
             })
             .await;
     }
+}
+
+/// Both session control servers, for platforms that run them in one task.
+pub async fn raw_session_servers<NS: NetStackHandle + Clone, const N: usize>(
+    endpoints: Endpoints<NS>,
+    foc_hz: u32,
+    timing: ControlTiming,
+    link_block_bytes: usize,
+) {
+    embassy_futures::join::join(
+        raw_telemetry_server::<NS, N>(endpoints.clone(), foc_hz, timing, link_block_bytes),
+        velocity_debug_arm_server::<NS, N>(endpoints, foc_hz, timing, link_block_bytes),
+    )
+    .await;
 }
 
 async fn fail_session(session: u64) {
@@ -798,10 +886,6 @@ mod tests {
             ))
             .status,
             RawTelemetryStatus::Stopping
-        );
-        assert_eq!(
-            ready(super::super::streaming::set_fast_telemetry_period(1)),
-            0
         );
         assert!(blocks.lock().unwrap().is_empty());
         held.store(false, Ordering::Relaxed);

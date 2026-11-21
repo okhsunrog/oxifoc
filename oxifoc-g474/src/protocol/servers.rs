@@ -7,16 +7,17 @@ use ergot::{
     toolkits::embassy_usb_v0_6_preview as usb_kit,
 };
 use heapless::String;
-#[cfg(feature = "transport-rtt")]
-use oxifoc_core::runtime;
+use oxifoc_core::runtime::raw_stream::{self, ErgotRawSink};
+use oxifoc_core::runtime::run_all_servers_with_config;
 use oxifoc_core::runtime::streaming::fault_topic_stream;
-use oxifoc_core::runtime::{run_all_servers_with_config, streaming};
 use oxifoc_core::timer::EmbassyTimer;
 use oxifoc_core::types;
 use oxifoc_core::types::{ControlTiming, HardwareInfo};
 
 use crate::RUNTIME_CONFIG;
-use crate::config::{BOARD, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE};
+use crate::config::{
+    BOARD, LINK_BLOCK_BYTES, MAX_PACKET_SIZE, PWM_CONFIG, UART_BAUD, USB_OUT_QUEUE_SIZE,
+};
 use crate::transport::UART_OUTQ;
 
 use crate::transport::{AppDriver, Stack, UartRxWorkerType, UartWriter, UsbQueue, UsbRxWorkerType};
@@ -26,8 +27,6 @@ use crate::{FAULT_REGISTRY, STATE};
 use {
     crate::transport::{RTT_OUTQ, RttRxWorkerType},
     ergot::transport::rtt::RttWriter,
-    oxifoc_core::types::FastTelemetry,
-    runtime::streaming::{FAST_TELEM_PERIOD, fast_telemetry_stream, push_fast_telemetry},
 };
 
 // ========== Worker Tasks ==========
@@ -149,48 +148,16 @@ pub async fn run_rtt_tx(mut tx: RttWriter) {
     }
 }
 
-/// Fast-telemetry broadcaster — drains the bbqueue and broadcasts batches of the
-/// 18-byte raw frame. Batch 48 (864 B) stays under the 1 KB MTU.
-#[cfg(feature = "transport-rtt")]
+/// Packed28 session stream: the only consumer of the FOC ISR's fast
+/// telemetry queue, sending blocks to the node that armed the session.
 #[embassy_executor::task]
-pub async fn fast_telemetry_task(stack: &'static Stack) {
-    fast_telemetry_stream::<_, EmbassyTimer>(stack, 400_000).await;
-}
-
-/// Synthetic telemetry generator (this board has no FOC ISR producing samples).
-/// Saturates the telemetry bbqueue so the RTT path is the only bottleneck — the
-/// host-measured samples/s is then the achievable throughput. Idle until the
-/// host enables streaming via `TelemetryConfig`. Bench/diagnostic only.
-#[cfg(feature = "transport-rtt")]
-#[embassy_executor::task]
-pub async fn fake_telemetry_gen() {
-    use core::sync::atomic::Ordering;
-    let mut seq: u32 = 0;
-    loop {
-        if FAST_TELEM_PERIOD.load(Ordering::Relaxed) == 0 {
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
-            continue;
-        }
-        for _ in 0..32 {
-            seq = seq.wrapping_add(1);
-            let s = seq as u16;
-            let t = FastTelemetry {
-                ia: 2048u16.wrapping_add(s & 0x3FF),
-                ib: 2048u16.wrapping_sub(s & 0x3FF),
-                ic: 2048u16.wrapping_add(s & 0x1FF),
-                vbus: 6_000,
-                angle: s,
-                vd: (s & 0x3FF) as i16,
-                vq: (s & 0x1FF) as i16,
-                rpm: (s & 0x7FF) as i16,
-                seq: s,
-                vphase_adc: [u16::MAX; 3],
-                ..FastTelemetry::default()
-            };
-            push_fast_telemetry(&t);
-        }
-        embassy_futures::yield_now().await;
-    }
+pub async fn raw_telemetry_task(stack: &'static Stack) {
+    let mut sink = ErgotRawSink::<_, EmbassyTimer, _>::new(stack, ());
+    #[expect(
+        clippy::large_futures,
+        reason = "the fixed raw block belongs to this statically allocated Embassy task"
+    )]
+    raw_stream::raw_telemetry_stream::<_, EmbassyTimer>(&mut sink).await;
 }
 
 // ========== Protocol Servers ==========
@@ -238,6 +205,7 @@ pub async fn protocol_servers(stack: &'static Stack, boot_epoch: u64) {
         boot_epoch,
         true,
         None,
+        LINK_BLOCK_BYTES,
     )
     .await;
 }
@@ -281,11 +249,11 @@ pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) 
             set_device_state(DeviceState::Linked);
             any_was_active = true;
         } else if !any_active && any_was_active {
-            defmt::info!("All interfaces down — stopping motor + telemetry, waiting for link");
+            defmt::info!("All interfaces down — stopping motor, waiting for link");
             // Fail-safe: drop link_active so the FOC loop forces ControlMode::Stopped.
+            // A raw session stops on its own: its blocks time out unconsumed
+            // and the stream fails the session.
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
-            // Stop streaming telemetry into a dead link (host re-enables on reconnect).
-            streaming::set_fast_telemetry_period(0).await;
             set_device_state(DeviceState::WaitingLink);
             any_was_active = false;
         }
@@ -325,10 +293,5 @@ pub fn spawn_servers(
     spawner.spawn(defmt::unwrap!(fault_topic_task(stack)));
     spawner.spawn(defmt::unwrap!(well_known_services_task(stack)));
     spawner.spawn(defmt::unwrap!(state_monitor(stack, idents.clone())));
-    // RTT bench: broadcaster + synthetic generator (no FOC ISR on this board).
-    #[cfg(feature = "transport-rtt")]
-    {
-        spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
-        spawner.spawn(defmt::unwrap!(fake_telemetry_gen()));
-    }
+    spawner.spawn(defmt::unwrap!(raw_telemetry_task(stack)));
 }

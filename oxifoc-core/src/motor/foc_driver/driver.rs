@@ -16,7 +16,7 @@ use crate::foc::velocity::{PreparedVelocityConfig, VelocityLoop, VelocityLoopCon
 use crate::isr_prof;
 use crate::motor::failsafe::{FailsafeConfig, FailsafeController};
 use crate::types::ControlTiming;
-#[cfg(feature = "fast-telemetry")]
+#[cfg(feature = "velocity-debug")]
 use crate::velocity_telemetry::VelocityDebugFrame;
 
 use crate::units::{
@@ -78,13 +78,13 @@ where
             velocity_loop: VelocityLoop::new(VelocityLoopConfig::default()),
             velocity_feedback_available: false,
             velocity_schedule: Default::default(),
-            #[cfg(feature = "fast-telemetry")]
+            #[cfg(feature = "velocity-debug")]
             last_velocity_update: None,
-            #[cfg(feature = "fast-telemetry")]
+            #[cfg(feature = "velocity-debug")]
             record_velocity_updates: false,
-            #[cfg(feature = "fast-telemetry")]
+            #[cfg(feature = "velocity-debug")]
             current_debug_due: false,
-            #[cfg(feature = "fast-telemetry")]
+            #[cfg(feature = "velocity-debug")]
             last_current_debug: None,
             last_granted_iq: ElectricCurrent::ZERO,
             last_granted_id: ElectricCurrent::ZERO,
@@ -312,7 +312,7 @@ where
         })
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     pub fn arm_current_debug(&mut self, due: bool) {
         self.current_debug_due = due;
         if due {
@@ -320,7 +320,7 @@ where
         }
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     pub fn current_debug_sample(&self) -> Option<VelocityDebugFrame> {
         if self.current_debug_due {
             self.last_current_debug
@@ -329,18 +329,18 @@ where
         }
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     pub fn record_velocity_updates(&mut self, enabled: bool) {
         self.record_velocity_updates = enabled;
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     pub fn velocity_update_at(&self, tick_us: u64) -> Option<super::VelocityUpdate> {
         self.last_velocity_update
             .filter(|update| update.tick_us == tick_us)
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     pub fn velocity_integral(&self) -> ElectricCurrent {
         self.velocity_loop.integral()
     }

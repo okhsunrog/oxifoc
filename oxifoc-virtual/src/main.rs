@@ -7,6 +7,15 @@ mod udp_server;
 
 pub struct TokioTimer;
 
+/// The Packed28 session stream: the one consumer of the simulator's fast
+/// telemetry queue, for the life of the process. Sessions are armed through
+/// the persistent servers; a session whose host goes away fails when its
+/// blocks time out.
+async fn raw_telemetry_stream<NS: NetStackHandle>(stack: NS) {
+    let mut sink = ErgotRawSink::<_, TokioTimer, _>::new(stack, ());
+    Box::pin(raw_stream::raw_telemetry_stream::<_, TokioTimer>(&mut sink)).await;
+}
+
 impl Timer for TokioTimer {
     async fn after_millis(ms: u64) {
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
@@ -18,6 +27,8 @@ impl Timer for TokioTimer {
 }
 
 use clap::Parser;
+use ergot::net_stack::NetStackHandle;
+use oxifoc_core::runtime::raw_stream::{self, ErgotRawSink};
 use oxifoc_core::storage::{CONFIG_LOADED, MotorParamsConfig, RuntimeConfig};
 use oxifoc_core::timer::Timer;
 use oxifoc_core::units::{amps, ohms};

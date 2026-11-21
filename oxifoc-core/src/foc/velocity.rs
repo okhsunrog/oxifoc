@@ -355,7 +355,7 @@ impl VelocityLoop {
         self.ramp.value()
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     pub(crate) fn integral(&self) -> ElectricCurrent {
         self.pi.get_integral()
     }

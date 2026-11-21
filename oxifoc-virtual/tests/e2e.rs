@@ -114,6 +114,13 @@ fn spawn_device(transport_arg: &str, port: u16) -> ChildGuard {
 
 /// Spawn the virtual device and drive handshake + Motor + Detect over the given
 /// transport, asserting each step. Shared by the TCP and UDP tests below.
+/// Arm a fast telemetry session; samples then arrive on `fast_rx`.
+fn arm_fast_telemetry(rt: &oxifoc_host_lib::HostRuntime, hz: u16) {
+    let ack = oxifoc_host_lib::ops::telemetry::configure(&rt.cmd_tx, hz)
+        .expect("arm fast telemetry session");
+    assert!(ack.actual_fast_hz > 0);
+}
+
 fn run_e2e(transport: TransportType) {
     if std::env::var_os("OXIFOC_E2E_LOG_DIR").is_some() {
         oxifoc_host_lib::init_tracing();
@@ -137,7 +144,6 @@ fn run_e2e(transport: TransportType) {
         udp_port: Some(port),
         stream_defmt: Some(false),
         stream_ergot: Some(true),
-        fast_hz: Some(500),
         reconnect: Some(ReconnectPolicy::Limited(20)),
         ..Default::default()
     };
@@ -175,6 +181,7 @@ fn run_e2e(transport: TransportType) {
     };
     let enrich = oxifoc_host_lib::build_enrich_ctx(&rt.cmd_tx, Some(&hw))
         .expect("virtual device should provide enrichment context");
+    arm_fast_telemetry(&rt, 500);
 
     // A config ACK must have a physical effect on the common control path.
     // The bare-controller implementation ignored this command and delivered
@@ -534,6 +541,21 @@ fn run_e2e(transport: TransportType) {
         ))
         .unwrap();
     rx.blocking_recv().unwrap().expect("drive before link loss");
+    // Stopping the session drains it: END carries the exact number of
+    // records the host decoded, with no producer or host loss.
+    assert_eq!(
+        oxifoc_host_lib::ops::telemetry::configure(&rt.cmd_tx, 0)
+            .unwrap()
+            .actual_fast_hz,
+        0
+    );
+    let report = rt
+        .raw_telemetry
+        .wait_end(Duration::from_secs(3))
+        .expect("session must end with END");
+    assert!(report.ended && report.records_received > 0);
+    assert_eq!(report.end_total_records, Some(report.records_received));
+    assert_eq!((report.producer_drops, report.host_drops), (0, 0));
     rt.shutdown();
     // TCP EOF is immediate; UDP also exercises the one-second liveness bound.
     std::thread::sleep(Duration::from_millis(1500));
@@ -602,10 +624,12 @@ fn run_e2e(transport: TransportType) {
         .recv_timeout(Duration::from_secs(20))
         .expect("reconnect must perform a fresh HardwareInfo handshake");
     assert!(replacement.wait_for_connection(Duration::from_secs(3)));
+    // A session belongs to one connection: the new one arms its own.
+    arm_fast_telemetry(&replacement, 500);
     replacement
         .fast_rx
         .recv_timeout(Duration::from_secs(3))
-        .expect("reconnect must restore telemetry streaming");
+        .expect("a session armed after reconnect must stream");
     let (tx, rx) = fault_channel();
     replacement
         .cmd_tx
@@ -637,11 +661,11 @@ fn drive_config_applies_to_the_throttle_command() {
         transport: Some(TransportType::Tcp),
         tcp_host: Some("127.0.0.1".into()),
         tcp_port: Some(port),
-        fast_hz: Some(500),
         stream_defmt: Some(false),
         ..Default::default()
     });
     assert!(rt.wait_for_connection(Duration::from_secs(15)));
+    arm_fast_telemetry(&rt, 500);
     let drive = DriveConfig {
         invert_direction: true,
     };
@@ -879,7 +903,6 @@ fn board_calibration_e2e_tcp() {
         transport: Some(TransportType::Tcp),
         tcp_host: Some("127.0.0.1".into()),
         tcp_port: Some(port),
-        fast_hz: Some(0),
         stream_defmt: Some(false),
         reconnect: Some(ReconnectPolicy::Limited(20)),
         ..Default::default()
@@ -1019,7 +1042,6 @@ fn drive_setup_save_replays_exact_request_and_commits_all_groups() {
         transport: Some(TransportType::Tcp),
         tcp_host: Some("127.0.0.1".into()),
         tcp_port: Some(port),
-        fast_hz: Some(0),
         stream_defmt: Some(false),
         reconnect: Some(ReconnectPolicy::Limited(20)),
         ..Default::default()

@@ -454,7 +454,7 @@ where
         let iq_target = self
             .velocity_loop
             .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt);
-        #[cfg(feature = "fast-telemetry")]
+        #[cfg(feature = "velocity-debug")]
         if self.record_velocity_updates {
             use crate::units::amps;
             use crate::velocity_telemetry as trace;
@@ -490,7 +490,7 @@ where
         );
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     #[inline(never)]
     fn record_current_debug(
         &mut self,
@@ -548,11 +548,11 @@ where
             return Err(StepError::NotCalibrated);
         }
 
-        #[cfg(feature = "fast-telemetry")]
+        #[cfg(feature = "velocity-debug")]
         let requested_iq = iq_target;
         // Layer 1: Clamp current targets (prevents absurd commands)
         let (id_target, iq_target) = self.current_limits.clamp_targets(id_target, iq_target);
-        #[cfg(feature = "fast-telemetry")]
+        #[cfg(feature = "velocity-debug")]
         let clamped_iq = iq_target;
 
         // Startup capture floor (see STARTUP_MIN_DRIVE): while the
@@ -599,7 +599,7 @@ where
 
         let omega = self.torque_speed();
         let (id_target, granted_iq) = self.grant_torque(id_target, iq_target, omega);
-        #[cfg(feature = "fast-telemetry")]
+        #[cfg(feature = "velocity-debug")]
         if self.current_debug_due && matches!(self.mode, ControlMode::CurrentControl { .. }) {
             self.record_current_debug(
                 requested_iq,

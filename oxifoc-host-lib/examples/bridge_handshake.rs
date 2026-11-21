@@ -21,7 +21,6 @@ fn main() -> Result<()> {
     let runtime = start_host(HostConfig {
         transport: Some(TransportType::UsbSerialJtag),
         serial_path: Some(args[0].clone()),
-        fast_hz: Some(0),
         ..HostConfig::default()
     });
     ensure!(

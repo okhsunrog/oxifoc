@@ -265,17 +265,14 @@ pub static BENCH_HALL_EDGE_COUNT: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub static BENCH_HALL_EDGE_DROPPED: AtomicU32 = AtomicU32::new(0);
 
-/// Wrapping totals latched by the 1-Hz stats task: windows, producer drops,
-/// malformed queue frames, broadcast failures. Retained when log lines drop.
-/// This adds no control-cycle work; the current partial window is excluded.
+/// Wrapping totals latched by the 1-Hz stats task: windows and producer
+/// drops. Retained when log lines drop. This adds no control-cycle work; the
+/// current partial window is excluded.
 #[unsafe(no_mangle)]
-pub static BENCH_HALL_STREAM_LOSSES: [AtomicU32; 4] = [const { AtomicU32::new(0) }; 4];
+pub static BENCH_HALL_STREAM_LOSSES: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
 
-pub fn observe_stream_stats(producer: u32, malformed: u32, broadcast: u32) {
-    for (counter, delta) in BENCH_HALL_STREAM_LOSSES
-        .iter()
-        .zip([1, producer, malformed, broadcast])
-    {
+pub fn observe_stream_stats(producer: u32) {
+    for (counter, delta) in BENCH_HALL_STREAM_LOSSES.iter().zip([1, producer]) {
         counter.fetch_add(delta, Ordering::Relaxed);
     }
 }

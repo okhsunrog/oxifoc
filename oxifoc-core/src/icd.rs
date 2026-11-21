@@ -12,7 +12,7 @@
 //!
 //! | Topic | Message | Description |
 //! |-------|---------|-------------|
-//! | `FastTelemetryTopic` | `FastTelemetryBatch` | High-frequency motor data (default 1kHz) |
+//! | `RawTelemetryBlockTopic` | `RawTelemetryBlock` | Packed28 fast telemetry blocks, unicast to the session owner |
 //! | `FaultTopic` | `FaultSnapshot` | Revisioned snapshot pushed on every registry change |
 //! | `PairingEventTopic` | `PairingEvent` | Pairing progress and bond changes (bridge) |
 //!
@@ -23,7 +23,7 @@
 //! | `HardwareInfoEndpoint` | `()` | `HardwareInfo` | Hardware information query |
 //! | `MotorEndpoint` | `MotorRequest` | `MotorStatus` | Setpoint, affirmation, stop, and phase-source selection |
 //! | `SlowTelemetryEndpoint` | `()` | `SlowTelemetry` | System health poll (~10 Hz, doubles as heartbeat) |
-//! | `TelemetryConfigEndpoint` | `TelemetryConfig` | `TelemetryConfigAck` | Configure streaming rates |
+//! | `RawTelemetryEndpoint` | `RawTelemetryRequest` | `RawTelemetryAck` | Arm, stop and query a fast telemetry session |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
 //! | `DetectEndpoint` | `MeasurementRequest` | `MeasurementReply` | Motor detection |
 //! | `ConfigEndpoint` | `ConfigRequest` | `ConfigResponse` | Revisioned config apply/persist (`storage` feature) |
@@ -55,21 +55,6 @@ pub const LIVENESS_TIMEOUT_MS: u64 = 1000;
 // ============================================================================
 // Topic Definitions (push-based streaming)
 // ============================================================================
-
-// Fast telemetry topic (device → host)
-// Firmware pushes batched motor control data at configurable rate.
-// Host must send TelemetryConfig to enable streaming.
-// The batch is raw-Pod encoded with a fixed capacity — see FastTelemetryBatch.
-pub struct FastTelemetryTopic {
-    _priv: core::marker::PhantomData<()>,
-}
-
-impl ergot::traits::Topic for FastTelemetryTopic {
-    type Message = FastTelemetryBatch;
-    const PATH: &'static str = "telemetry/fast";
-    const TOPIC_KEY: ergot::traits::Key =
-        ergot::traits::Key::for_path::<FastTelemetryBatch>("telemetry/fast");
-}
 
 /// One raw-session envelope: a block with its versioned header or END, and
 /// in velocity-debug sessions a velocity companion block after it.
@@ -129,7 +114,7 @@ impl<'a> ergot::traits::Topic for RawTelemetryBlockRefTopic<'a> {
         <RawTelemetryBlockTopic as ergot::traits::Topic>::TOPIC_KEY;
 }
 
-#[cfg(all(test, feature = "pod"))]
+#[cfg(test)]
 #[path = "icd_raw_tests.rs"]
 mod raw_block_tests;
 
@@ -166,15 +151,6 @@ endpoint!(HardwareInfoEndpoint, (), HardwareInfo, "req/hardware_info");
 // Motor control endpoint (host → device). Safe modes and EmergencyStop are
 // universal; active setpoints are source-owned and sequence checked.
 endpoint!(MotorEndpoint, MotorRequest, MotorStatus, "cmd/motor");
-
-// Telemetry rate configuration endpoint (host → device)
-// Host configures fast/slow telemetry streaming rates.
-endpoint!(
-    TelemetryConfigEndpoint,
-    TelemetryConfig,
-    TelemetryConfigAck,
-    "cmd/telemetry_config"
-);
 
 endpoint!(
     RawTelemetryEndpoint,
@@ -245,9 +221,6 @@ mod delivery_classes {
     impl Command for MotorEndpoint {
         // Retrying an unconfirmed setpoint could acquire ownership later.
         type Delivery = AtMostOnce;
-    }
-    impl Command for TelemetryConfigEndpoint {
-        type Delivery = Idempotent;
     }
     impl Command for RawTelemetryEndpoint {
         type Delivery = Idempotent;

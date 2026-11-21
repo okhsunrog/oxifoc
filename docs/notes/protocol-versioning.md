@@ -83,6 +83,12 @@ and rejects values under 60 bytes (a header and one record) as invalid. The
 host asks for 478 bytes over BLE (15 records in a 505-byte notification) and
 2208 bytes elsewhere. Velocity debug sessions need full blocks.
 
+v24 makes those sessions the only fast telemetry. The `telemetry/fast`
+broadcast topic with its byte-delta `FastTelemetryBatch` and the
+`cmd/telemetry_config` endpoint are removed; every device serves
+`RawTelemetryEndpoint`. The G474 caps its blocks at 997 bytes (34 records)
+for its 1024-byte MTU.
+
 From v24 on, the firmware skips flash keys it does not know and keeps them
 through compaction. v23 and older fail every read once the map holds a v24
 key, so roll back to them only together with their own storage image.

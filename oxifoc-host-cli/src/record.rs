@@ -81,7 +81,6 @@ pub struct RecordSummary {
     pub gaps: usize,
     /// Total samples missing across all gaps.
     pub samples_lost: u64,
-    pub fast_source: oxifoc_host_lib::FastSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_telemetry: Option<oxifoc_host_lib::raw_telemetry::RawCaptureReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -168,6 +167,8 @@ pub struct Capture {
     /// Host-side raw→engineering context (device `BoardCalib` + `dc_offsets` +
     /// `pole_pairs`). `None` only when no handshake info was available.
     pub enrich: Option<EnrichCtx>,
+    /// The runtime's session state; `None` only for captures built by hand
+    /// in unit tests.
     pub raw_telemetry: Option<Arc<oxifoc_host_lib::raw_telemetry::RawTelemetryState>>,
     pub raw_session: Option<u64>,
 }
@@ -193,9 +194,7 @@ impl Capture {
         // old poll of `runtime.fast_hz` accepted any nonzero value, so a
         // rate already active before the capture produced a silently wrong
         // decimation_m (and with it a wrong time axis and loss accounting).
-        if runtime.raw_telemetry.is_some() {
-            while runtime.fast_rx.try_recv().is_ok() {}
-        }
+        while runtime.fast_rx.try_recv().is_ok() {}
         let ack = oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, fast_hz)?;
         let fast_hz_actual = ack.actual_fast_hz;
         let Some(decimation_m) = ack.decimation_m.filter(|m| {
@@ -218,25 +217,11 @@ impl Capture {
         };
         let control_timing = ack.control_timing;
 
-        // Warm-up: the enable transient (queue wrap before the device stream
-        // task wakes) produces a guaranteed gap at the head of the stream.
-        // Let it pass, then drain everything stale so the capture starts on
-        // steady-state data only.
-        let samples = if let Some(raw) = &runtime.raw_telemetry {
-            // The raw arm owns a freshly cleared device queue and token. Keep
-            // its prefix: sleeping here needlessly fills the finite host FIFO.
-            raw.check()?;
-            runtime.fast_rx.try_iter().collect()
-        } else {
-            std::thread::sleep(Duration::from_millis(150));
-            while runtime.fast_rx.try_recv().is_ok() {}
-            Vec::new()
-        };
-        let raw_session = runtime
-            .raw_telemetry
-            .as_ref()
-            .and_then(|raw| raw.report())
-            .map(|report| report.session);
+        // The session Arm owns a freshly cleared device queue and token. Keep
+        // its prefix: sleeping here needlessly fills the finite host FIFO.
+        runtime.raw_telemetry.check()?;
+        let samples = runtime.fast_rx.try_iter().collect();
+        let raw_session = runtime.raw_telemetry.report().map(|report| report.session);
 
         Ok(Self {
             board_calibration,
@@ -248,7 +233,7 @@ impl Capture {
             samples,
             started: Instant::now(),
             enrich,
-            raw_telemetry: runtime.raw_telemetry.clone(),
+            raw_telemetry: Some(runtime.raw_telemetry.clone()),
             raw_session,
         })
     }
@@ -392,13 +377,6 @@ impl Capture {
             .as_ref()
             .and_then(|report| report.velocity_debug.as_ref())
             .map(|_| format!("{out_path}.velocity.csv"));
-        let fast_source = raw_report
-            .as_ref()
-            .map_or(oxifoc_host_lib::FastSource::Ergot, |raw| raw.source);
-        metadata.push((
-            "oxifoc.fast_source".into(),
-            serde_json::to_string(&fast_source)?,
-        ));
         if let Some(raw) = &raw_report {
             metadata.push(("oxifoc.raw_telemetry".into(), serde_json::to_string(raw)?));
         }
@@ -469,7 +447,6 @@ impl Capture {
             duration_s: self.started.elapsed().as_secs_f64(),
             gaps,
             samples_lost,
-            fast_source,
             raw_telemetry: raw_report,
             velocity_debug_path,
         };

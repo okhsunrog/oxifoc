@@ -107,12 +107,6 @@ enum Transport {
     Ble,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum FastSourceArg {
-    Ergot,
-    ErgotRaw,
-}
-
 #[derive(Debug, clap::Subcommand)]
 enum MeasurementAction {
     /// Read the current device boot/session identity.
@@ -217,10 +211,6 @@ struct Cli {
     /// Transport type (serial or rtt). If not specified, uses config file.
     #[arg(short, long, value_enum)]
     transport: Option<Transport>,
-    /// Fast data source: legacy Ergot broadcast (default) or a Packed28 raw
-    /// session over Ergot, which defaults the command transport to USB.
-    #[arg(long, value_enum, global = true)]
-    fast_source: Option<FastSourceArg>,
     /// Record native velocity-loop observations alongside Ergot Packed28.
     #[arg(long, global = true)]
     velocity_debug: bool,
@@ -669,15 +659,7 @@ fn main() -> Result<()> {
     }
 
     // Build config from CLI args or load from file
-    let mut cfg = build_config(&cli)?;
-
-    // Set fast_hz in config so backend enables telemetry at connect time
-    if let Command::Monitor { fast_hz, .. } = &cli.command
-        && *fast_hz > 0
-    {
-        cfg.fast_hz = Some(*fast_hz);
-    }
-
+    let cfg = build_config(&cli)?;
     let runtime = start_host(cfg);
 
     let wait = Duration::from_secs(cli.wait_secs);
@@ -687,16 +669,13 @@ fn main() -> Result<()> {
     if pairing && cli.wait_secs > 0 {
         oxifoc_host_lib::ops::pairing::wait_for_bridge(&runtime.cmd_tx, wait)?;
     } else if cli.wait_secs > 0 && !runtime.wait_for_connection(wait) {
-        if let Some(raw) = &runtime.raw_telemetry {
-            raw.check()?;
-        }
+        runtime.raw_telemetry.check()?;
         bail!(
             "device did not complete the protocol/identity handshake within {}s",
             cli.wait_secs,
         );
     }
-    if runtime.raw_telemetry.is_some()
-        && let Command::Monitor { fast_hz, .. } = &cli.command
+    if let Command::Monitor { fast_hz, .. } = &cli.command
         && *fast_hz > 0
     {
         oxifoc_host_lib::ops::telemetry::configure(&runtime.cmd_tx, *fast_hz)?;
@@ -1272,12 +1251,6 @@ fn main() -> Result<()> {
 fn build_config(cli: &Cli) -> Result<HostConfig> {
     // Start with defaults from config file
     let mut cfg = HostConfig::load_default()?.unwrap_or_default();
-    if let Some(source) = cli.fast_source {
-        cfg.fast_source = Some(match source {
-            FastSourceArg::Ergot => oxifoc_host_lib::FastSource::Ergot,
-            FastSourceArg::ErgotRaw => oxifoc_host_lib::FastSource::ErgotRaw,
-        });
-    }
 
     // Override with CLI arguments
     if let Some(transport) = cli.transport {
@@ -1367,9 +1340,6 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
     }
 
     cfg.velocity_debug |= cli.velocity_debug;
-    if cfg.velocity_debug && cfg.fast_source() != oxifoc_host_lib::FastSource::ErgotRaw {
-        bail!("velocity debug requires Ergot raw Packed28 telemetry");
-    }
     Ok(cfg)
 }
 
@@ -1450,18 +1420,11 @@ mod tests {
     use super::SourceArg;
 
     #[test]
-    fn raw_capture_flags_are_explicit_and_legacy_default_is_retained() {
-        let default = super::Cli::try_parse_from(["oxifoc", "status"]).unwrap();
-        assert!(default.fast_source.is_none());
-        let cli =
-            super::Cli::try_parse_from(["oxifoc", "--fast-source", "ergot-raw", "status"]).unwrap();
-        assert!(matches!(
-            cli.fast_source,
-            Some(super::FastSourceArg::ErgotRaw)
-        ));
+    fn removed_fast_telemetry_selectors_are_rejected() {
+        assert!(super::Cli::try_parse_from(["oxifoc", "status"]).is_ok());
         for removed in [
-            ["--fast-source", "usb-raw"],
-            ["--fast-source", "rtt-raw"],
+            ["--fast-source", "ergot"],
+            ["--fast-source", "ergot-raw"],
             ["--fast-encoding", "packed28"],
         ] {
             let args = ["oxifoc", removed[0], removed[1], "status"];

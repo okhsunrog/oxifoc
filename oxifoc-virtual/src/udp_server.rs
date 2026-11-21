@@ -44,20 +44,19 @@ use tracing::{info, warn};
 
 use oxifoc_core::foc::fault::FaultRegistry;
 use oxifoc_core::icd::HardwareInfo;
+use oxifoc_core::icd::raw_block_limit;
+use oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES;
 use oxifoc_core::runtime::servers::run_all_servers_with_config;
-use oxifoc_core::runtime::streaming::fast_telemetry_stream;
 use oxifoc_core::state::MotorControlState;
 use oxifoc_core::storage::RuntimeConfig;
 
 use oxifoc_core::foc::fault::StandardFault;
 use oxifoc_core::units::amps;
 
-const ERGOT_MTU: u16 = 2048;
-
-const _: () = assert!(
-    ERGOT_MTU as usize
-        >= oxifoc_core::types::FAST_BATCH_BYTES + oxifoc_core::types::FAST_BATCH_WIRE_OVERHEAD
-);
+/// The firmware's MTU: one frame carries a full raw telemetry block.
+const ERGOT_MTU: u16 = 2304;
+const LINK_BLOCK_BYTES: usize = raw_block_limit(ERGOT_MTU) as usize;
+const _: () = assert!(LINK_BLOCK_BYTES == RAW_MAX_BLOCK_BYTES);
 
 /// Router sizing for the persistent stack: sessions are strictly sequential
 /// (rebind waits for full teardown), so one live interface at a time — a few
@@ -131,10 +130,12 @@ pub async fn run(
                 rand::random::<u64>(),
                 true,
                 None,
+                LINK_BLOCK_BYTES,
             ))
             .await;
         }
     });
+    tokio::spawn(crate::raw_telemetry_stream(stack.clone()));
     tokio::spawn({
         let endpoints = stack.endpoints();
         async move {
@@ -174,8 +175,8 @@ pub async fn run(
         };
         info!("Waiting for host...");
 
-        // Stop the previous session's telemetry tasks before attaching the new
-        // interface (single-consumer fast-telemetry bbqueue — see TCP server).
+        // Stop the previous session's fault broadcasts before attaching the
+        // new interface.
         if let Some(prev) = prev_conn_token.take() {
             prev.cancel();
         }
@@ -200,16 +201,15 @@ pub async fn run(
         let conn_token = CancellationToken::new();
         prev_conn_token = Some(conn_token.clone());
 
-        // Fast telemetry streaming. Broadcasts are gated by the host enabling
-        // streaming; until the Router has learned the peer, frames simply queue
-        // in the tx worker, so no Active-state wait is needed.
+        // Fault broadcasts. Until the Router has learned the peer, frames
+        // simply queue in the tx worker, so no Active-state wait is needed.
+        // Fast telemetry is a session sent by the persistent raw stream.
         tokio::spawn({
             let stack = stack.clone();
             let token = conn_token.clone();
             async move {
                 tokio::select! {
                     _ = token.cancelled() => {}
-                    _ = fast_telemetry_stream::<_, crate::TokioTimer>(stack.clone(), foc_freq_hz) => {}
                     _ = fault_topic_stream::<_, _, crate::TokioTimer>(stack, fault_registry) => {}
                 }
             }

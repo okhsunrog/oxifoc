@@ -1,23 +1,7 @@
 use crate::transport::{TransportConfig, TransportType};
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{env, fs, path::PathBuf};
-
-/// Where fast samples come from: the legacy broadcast topic, or a Packed28
-/// raw session over the same Ergot link.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum FastSource {
-    #[default]
-    Ergot,
-    ErgotRaw,
-}
-
-impl FastSource {
-    pub fn is_raw(self) -> bool {
-        self != Self::Ergot
-    }
-}
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct HostConfig {
@@ -57,10 +41,6 @@ pub struct HostConfig {
     /// None = use default (infinite retries)
     pub reconnect: Option<ReconnectPolicy>,
 
-    /// Desired fast telemetry rate in Hz (default 1000).
-    /// Set to 0 to disable fast telemetry streaming.
-    pub fast_hz: Option<u16>,
-    pub fast_source: Option<FastSource>,
     /// Request velocity-loop observations in the same Ergot raw session.
     #[serde(default)]
     pub velocity_debug: bool,
@@ -110,10 +90,6 @@ impl HostConfig {
     pub fn stream_ergot(&self) -> bool {
         self.stream_ergot.unwrap_or(true)
     }
-    pub fn fast_hz(&self) -> u16 {
-        self.fast_hz.unwrap_or(0)
-    }
-
     #[cfg(feature = "desktop")]
     pub fn serial_path(&self) -> String {
         self.serial_path
@@ -127,23 +103,7 @@ impl HostConfig {
     }
 
     pub fn transport_type(&self) -> TransportType {
-        self.transport.clone().unwrap_or_else(|| {
-            if self.fast_source().is_raw() {
-                TransportType::Usb
-            } else {
-                TransportType::default()
-            }
-        })
-    }
-
-    pub fn fast_source(&self) -> FastSource {
-        self.fast_source.unwrap_or_else(|| {
-            #[cfg(feature = "desktop")]
-            if self.transport == Some(TransportType::UsbSerialJtag) {
-                return FastSource::ErgotRaw;
-            }
-            FastSource::default()
-        })
+        self.transport.clone().unwrap_or_default()
     }
 
     pub fn transport_config(&self) -> Result<TransportConfig> {
@@ -203,27 +163,6 @@ impl HostConfig {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn raw_sources_select_usb_commands_without_changing_legacy_defaults() {
-        let default = HostConfig::default();
-        assert_eq!(default.fast_source(), FastSource::Ergot);
-        #[cfg(feature = "desktop")]
-        {
-            let bridge = HostConfig {
-                transport: Some(TransportType::UsbSerialJtag),
-                ..Default::default()
-            };
-            assert_eq!(bridge.fast_source(), FastSource::ErgotRaw);
-        }
-        assert_eq!(default.transport_type(), TransportType::default());
-        let cfg: HostConfig = toml::from_str("fast_source='ergot-raw'").unwrap();
-        assert!(cfg.fast_source().is_raw());
-        assert_eq!(cfg.transport_type(), TransportType::Usb);
-        for removed in ["fast_source='usb-raw'", "fast_source='rtt-raw'"] {
-            assert!(toml::from_str::<HostConfig>(removed).is_err());
-        }
-    }
 
     fn temp_config_path(name: &str) -> PathBuf {
         let nonce = SystemTime::now()

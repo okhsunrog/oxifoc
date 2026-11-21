@@ -14,8 +14,8 @@ bench = false
 [features]
 # ergot transports. USB + UART are the production interfaces (both default-on,
 # run simultaneously). transport-rtt adds an ergot-over-RTT interface (defmt
-# shares RTT channel 0) for throughput diagnostics — it pulls in the ergot `rtt`
-# feature and the synthetic telemetry generator (this board has no FOC ISR).
+# shares RTT channel 0) for throughput diagnostics; it pulls in the ergot `rtt`
+# feature.
 default = ["transport-usb", "transport-uart"]
 transport-usb = []
 transport-uart = []

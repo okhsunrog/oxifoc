@@ -29,7 +29,7 @@ bench = false
 # Current controller: MK5 with the C5 SPI bridge and fixed telemetry.
 # CF2 and diagnostic transports require an explicit feature selection.
 default = [
-    "transport-spi", "board-vesc6-mk5", "fast-telemetry",
+    "transport-spi", "board-vesc6-mk5", "task-priority",
 ]
 # Exactly one board feature must be enabled (compile_error in main.rs).
 # Cheap FOCer 2 / Simple FOCer 2: DRV8301 on hardware SPI3, low-side shunts,
@@ -39,7 +39,10 @@ board-cf2 = []
 # (SCK PC10 / MOSI PB4 / MISO PB3), in-line phase shunts, amp gain 20 V/V,
 # shutdown latch PC5, current/phase filter enables PD2/PC13.
 # See docs/hw/vesc6-mk5.md.
-board-vesc6-mk5 = ["dep:bitbang-hal-ng", "oxifoc-core/compact-foc", "oxifoc-core/atan2-fma"]
+board-vesc6-mk5 = ["dep:bitbang-hal-ng", "oxifoc-core/compact-foc", "oxifoc-core/atan2-fma", "velocity-debug"]
+# Velocity-loop debug records from the ADC ISR into raw sessions
+# (VelocityDebugArmEndpoint). Part of every MK5 image; CF2 omits it.
+velocity-debug = ["oxifoc-core/velocity-debug"]
 # Standalone connector continuity probe: no FOC, gate disabled.
 bench-bridge-pins = []
 bench-bridge-pins-rx = ["bench-bridge-pins"]
@@ -105,8 +108,6 @@ bench-hall-phase = ["bench-hall"]
 bench-hall-crossover = ["bench-hall-phase", "oxifoc-core/bench-phase-observation"]
 bench-cogging-compensation = ["bench-hall-phase", "oxifoc-core/bench-cogging-compensation"]
 bench-spi-pump-priority = ["task-priority"]
-# Production fixed Packed28 sessions over the selected Ergot interface.
-fast-telemetry = ["task-priority", "oxifoc-core/fast-telemetry"]
 # Bench EDF policy: fresh relative deadlines on actual ready/enqueue events.
 bench-scheduler-deadline = ["embassy-executor/scheduler-deadline", "bench-executor-trace"]
 # Temporary calibration for UUID 2B002C001047343031363330 only; never a board default.

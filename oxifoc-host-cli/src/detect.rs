@@ -538,7 +538,6 @@ mod hardware_tests {
                 TransportType::Usb
             }),
             serial_path,
-            fast_hz: Some(0),
             stream_defmt: Some(false),
             ..Default::default()
         });

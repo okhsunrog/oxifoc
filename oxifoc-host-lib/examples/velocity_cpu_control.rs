@@ -35,7 +35,6 @@ fn main() -> Result<()> {
     let runtime = start_host(HostConfig {
         transport: Some(TransportType::Usb),
         elf: Some(args[1].clone()),
-        fast_hz: Some(0),
         ..HostConfig::default()
     });
     ensure!(

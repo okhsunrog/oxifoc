@@ -21,7 +21,7 @@ use embassy_time::{Duration, Timer};
 use oxifoc_core::foc::controller::FocController;
 use oxifoc_core::foc::current_offset::CurrentOffsetRequest;
 use oxifoc_core::foc::phase::{PhaseManager, PhaseSource};
-#[cfg(feature = "fast-telemetry")]
+#[cfg(feature = "velocity-debug")]
 use oxifoc_core::foc::sensors::HallSnapshot;
 use oxifoc_core::foc::sensors::{AdcSnapshot, NoSensor, PwmSnapshot, TempSensorId};
 use oxifoc_core::foc::trig::FastSinCos;
@@ -32,7 +32,7 @@ use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
 use oxifoc_core::motor::foc_driver::PreparedMotorModel;
 use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
-#[cfg(feature = "fast-telemetry")]
+#[cfg(feature = "velocity-debug")]
 use oxifoc_core::runtime::velocity_debug;
 use oxifoc_core::state::model;
 use oxifoc_core::state::{
@@ -65,7 +65,7 @@ use crate::{FAULT_REGISTRY, STATE};
 pub(crate) mod profiling_window;
 #[cfg(feature = "bench-cycle-outliers")]
 use oxifoc_core::units::ToBits;
-#[cfg(feature = "fast-telemetry")]
+#[cfg(feature = "velocity-debug")]
 use oxifoc_core::units::amps;
 #[cfg(any(feature = "bench-cycle-outliers", feature = "isr-timing"))]
 use oxifoc_core::units::{ConstZero, ElectricalAngularVelocity};
@@ -188,7 +188,7 @@ static ADC_HANDOFF: CriticalSectionMutex<RefCell<Option<AdcHandles>>> =
 type PhaseManagerType = PhaseManager<HallAngleProxy, NoSensor, FastSinCos>;
 type FocDriverType = FocDriver<MotorPwm<'static>, F405CurrentSensor, PhaseManagerType, FastSinCos>;
 
-#[cfg(feature = "fast-telemetry")]
+#[cfg(feature = "velocity-debug")]
 #[inline(never)]
 fn publish_velocity_debug(
     driver: &FocDriverType,
@@ -388,7 +388,7 @@ pub async fn init(
     adc_handles: AdcHandles,
     config: &RuntimeConfig,
 ) {
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     velocity_debug::register_producer();
     // Ensure PWM outputs are off initially
     motor_pwm.emergency_stop();
@@ -759,9 +759,9 @@ fn ADC() {
         *DRIVER = FOC_HANDOFF.lock(RefCell::take);
     }
     let foc_telem = DRIVER.as_deref_mut().and_then(|driver| {
-        #[cfg(feature = "fast-telemetry")]
+        #[cfg(feature = "velocity-debug")]
         let velocity_debug = velocity_debug::enabled();
-        #[cfg(feature = "fast-telemetry")]
+        #[cfg(feature = "velocity-debug")]
         {
             driver.record_velocity_updates(velocity_debug);
             // Sample the current grant once per 16 native cycles (~938 Hz at 15 kHz).
@@ -775,7 +775,7 @@ fn ADC() {
             now_ticks,
             protection_board,
         );
-        #[cfg(feature = "fast-telemetry")]
+        #[cfg(feature = "velocity-debug")]
         if velocity_debug {
             publish_velocity_debug(driver, *SEQ, now_ticks, hall_snapshot);
         }
@@ -1189,50 +1189,10 @@ pub async fn isr_stats_task() {
         let pushed = ft::PUSH_OK.swap(0, Ordering::Relaxed);
         let dropped = ft::PUSH_DROPS.swap(0, Ordering::Relaxed);
         let read = ft::READ_OK.swap(0, Ordering::Relaxed);
-        let badlen = ft::READ_BADLEN.swap(0, Ordering::Relaxed);
-        let batches = ft::BCAST_OK.swap(0, Ordering::Relaxed);
-        let payload_bytes = ft::BCAST_BYTES.swap(0, Ordering::Relaxed);
-        let failed = ft::BCAST_FAILS.swap(0, Ordering::Relaxed);
         #[cfg(feature = "bench-hall")]
-        crate::diagnostics::hall_edges::observe_stream_stats(dropped, badlen, failed);
-        let full = ft::BCAST_FULL.swap(0, Ordering::Relaxed);
-        let busy = ft::BCAST_BUSY.swap(0, Ordering::Relaxed);
-        let unrouted = ft::BCAST_UNROUTED.swap(0, Ordering::Relaxed);
-        let other = ft::BCAST_OTHER.swap(0, Ordering::Relaxed);
-        let drain_gap = ft::MAX_DRAIN_GAP_US.swap(0, Ordering::Relaxed);
-        let batch_cost = ft::MAX_BATCH_US.swap(0, Ordering::Relaxed);
-        if pushed != 0 || dropped != 0 || read != 0 || failed != 0 {
-            defmt::info!(
-                "telem/s: push={} drop={} read={} badlen={} batches={} failed={} payload_bytes={}",
-                pushed,
-                dropped,
-                read,
-                badlen,
-                batches,
-                failed,
-                payload_bytes
-            );
-            if cfg!(feature = "isr-profiling") {
-                defmt::info!(
-                    "streamdiag/s: full={} busy={} unrouted={} other={} drain_gap_us={} batch_us={} encode_us={} broadcast_us={}",
-                    full,
-                    busy,
-                    unrouted,
-                    other,
-                    drain_gap,
-                    batch_cost,
-                    ft::ENCODE_US.swap(0, Ordering::Relaxed),
-                    ft::BROADCAST_US.swap(0, Ordering::Relaxed)
-                );
-            } else {
-                defmt::info!(
-                    "streamdiag/s: full={} busy={} unrouted={} other={} profiling=off",
-                    full,
-                    busy,
-                    unrouted,
-                    other,
-                );
-            }
+        crate::diagnostics::hall_edges::observe_stream_stats(dropped);
+        if pushed != 0 || dropped != 0 || read != 0 {
+            defmt::info!("telem/s: push={} drop={} read={}", pushed, dropped, read);
         }
         #[cfg(feature = "bench-usb-metrics")]
         {

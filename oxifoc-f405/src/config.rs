@@ -4,11 +4,10 @@ use embassy_stm32::rcc::{APBPrescaler, Pll, PllMul, PllPDiv, PllPreDiv, PllQDiv}
 use embassy_sync::once_lock::OnceLock;
 use oxifoc_core::foc::config::{BoardConfig, PhaseSense};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
+use oxifoc_core::icd;
 use oxifoc_core::motor::foc_driver::PreparedBoardConfig;
-#[cfg(feature = "fast-telemetry")]
 use oxifoc_core::raw_telemetry;
 use oxifoc_core::storage::PwmConfigLimits;
-use oxifoc_core::types;
 #[cfg(any(feature = "board-cf2", feature = "board-vesc6-mk5"))]
 use oxifoc_core::types::CurrentSenseTopology;
 use oxifoc_core::types::{BoardCalib, ControlTiming};
@@ -245,32 +244,22 @@ const _: () = assert!(CLOCK_PROFILE.apb_hz(CLOCK_PROFILE.apb2_pre) <= 84_000_000
 // Protocol Configuration
 // ============================================================================
 
-/// Size of outgoing packet queue for ergot over USB (framed)
+/// Size of outgoing packet queue for ergot over USB (framed): room for
+/// three full raw blocks.
 #[cfg(feature = "transport-usb")]
-pub const USB_OUT_QUEUE_SIZE: usize = if cfg!(feature = "fast-telemetry") {
-    8192
-} else {
-    4096
-};
+pub const USB_OUT_QUEUE_SIZE: usize = 8192;
 
-/// Size of outgoing packet queue for ergot over RTT (COBS stream)
+/// Size of outgoing packet queue for ergot over RTT (COBS stream). A COBS
+/// send reserves a whole encoded MTU, so this holds three of them.
 #[cfg(any(feature = "transport-usb", feature = "transport-rtt"))]
-pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
+pub const RTT_OUT_QUEUE_SIZE: usize = 8192;
 
-/// Maximum packet size for ergot framing
-pub const MAX_PACKET_SIZE: usize = if cfg!(feature = "fast-telemetry") {
-    2304
-} else {
-    512
-};
+/// Maximum packet size for ergot framing, also every interface's TX MTU. A
+/// full raw telemetry block must fit in one frame on every link: the C5
+/// bridge carries 2304-byte SPI frames, and the host's USB, RTT and serial
+/// readers take larger ones.
+pub const MAX_PACKET_SIZE: usize = 2304;
 
 /// Largest raw telemetry block this device's links carry in one frame.
-#[cfg(feature = "fast-telemetry")]
-pub const LINK_BLOCK_BYTES: usize =
-    oxifoc_core::icd::raw_block_limit(MAX_PACKET_SIZE as u16) as usize;
-#[cfg(feature = "fast-telemetry")]
+pub const LINK_BLOCK_BYTES: usize = icd::raw_block_limit(MAX_PACKET_SIZE as u16) as usize;
 const _: () = assert!(LINK_BLOCK_BYTES == raw_telemetry::RAW_MAX_BLOCK_BYTES);
-
-// This value is also every interface's TX MTU: a full fast-telemetry batch
-// plus wire overhead must fit or full batches silently fail to broadcast.
-const _: () = assert!(MAX_PACKET_SIZE >= types::FAST_BATCH_BYTES + types::FAST_BATCH_WIRE_OVERHEAD);

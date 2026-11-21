@@ -16,9 +16,7 @@ fn roundtrip(bytes: &[u8]) {
     let original = decode_raw_block(bytes).expect("encoder emits a valid raw block");
     let received = decode_raw_block(&decoded.data).expect("Ergot preserves the raw block bytes");
     assert_eq!(original.header, received.header);
-    for (original, received) in original.samples.iter().zip(&received.samples) {
-        assert_eq!(bytemuck::bytes_of(original), bytemuck::bytes_of(received));
-    }
+    assert_eq!(original.samples, received.samples);
 }
 
 #[test]

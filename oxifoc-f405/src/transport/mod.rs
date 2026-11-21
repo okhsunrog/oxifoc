@@ -42,10 +42,6 @@ use oxifoc_core::stm32_rng::ErgotRng;
 
 mod stack_mutex;
 
-#[cfg(all(feature = "fast-telemetry", feature = "transport-rtt"))]
-compile_error!("raw telemetry benchmarks use Ergot USB control, not transport-rtt");
-
-#[cfg(feature = "fast-telemetry")]
 pub mod raw_fast;
 
 // A leaf has exactly one upstream. USB/RTT remain standalone diagnostic

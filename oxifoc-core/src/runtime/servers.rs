@@ -19,12 +19,14 @@
 //!         device_info,
 //!         &STATE,
 //!         &FAULT_REGISTRY,
+//!         foc_freq_hz,
+//!         control_timing,
+//!         link_block_bytes,
 //!     ).await
 //! }
 //! ```
 
 use core::cell::RefCell;
-use core::num::NonZeroU32;
 use core::pin::pin;
 
 use critical_section::Mutex as CriticalSectionMutex;
@@ -37,6 +39,8 @@ use crate::state::model::{CONFIG_COORDINATOR, CachedConfigAck, ModelApplyGuard};
 #[cfg(feature = "storage")]
 use crate::state::{DriverOperation, FlashPendingGuard};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
+
+use super::raw_stream::raw_session_servers;
 
 #[cfg(feature = "storage")]
 use crate::foc::config::BoardConfig;
@@ -53,8 +57,7 @@ use crate::foc::trig::LibmSinCos;
 use crate::icd::{ConfigEndpoint, ConfigRequest, ConfigResponse};
 use crate::icd::{
     FaultEndpoint, FaultRequest, FaultResponse, HardwareInfo, HardwareInfoEndpoint, MotorEndpoint,
-    MotorRequest, MotorStatus, SlowTelemetry, SlowTelemetryEndpoint, TelemetryConfig,
-    TelemetryConfigAck, TelemetryConfigEndpoint,
+    MotorRequest, MotorStatus, SlowTelemetry, SlowTelemetryEndpoint,
 };
 #[cfg(feature = "storage")]
 use crate::motor::foc_driver::{CurrentLimits, PreparedMotorModel};
@@ -1094,63 +1097,6 @@ async fn save_drive_setup<T: Timer>(
     }
 }
 
-/// Telemetry config server
-/// Telemetry config server - handles rate change requests from host
-///
-/// Telemetry config server — host sends `TelemetryConfig { fast_hz }` to start/stop streaming.
-///
-/// Computes decimation period from FOC frequency and stores in `FAST_TELEM_PERIOD`.
-pub async fn telemetry_config_server<NS, const N: usize>(
-    endpoints: Endpoints<NS>,
-    foc_freq_hz: u32,
-    control_timing: ControlTiming,
-) where
-    NS: NetStackHandle,
-{
-    use super::streaming::set_fast_telemetry_period;
-
-    let server = endpoints.bounded_server::<TelemetryConfigEndpoint, N>(Some("telemetry_config"));
-    let server = pin!(server);
-    let mut h = server.attach();
-
-    loop {
-        let _ = h
-            .serve(|cfg: &TelemetryConfig| {
-                let requested_fast_hz = cfg.fast_hz;
-                let period = if requested_fast_hz > 0 {
-                    (foc_freq_hz / u32::from(requested_fast_hz)).max(1)
-                } else {
-                    0 // disabled
-                };
-
-                async move {
-                    let period = set_fast_telemetry_period(period).await;
-                    let actual_fast_hz = control_timing.stream_hz(period);
-
-                    #[cfg(feature = "defmt")]
-                    defmt::info!(
-                        "TelemetryConfig rx: fast_hz={}, period={}, actual={}Hz",
-                        requested_fast_hz,
-                        period,
-                        actual_fast_hz
-                    );
-
-                    #[cfg(feature = "log")]
-                    log::info!(
-                        "Telemetry config: fast_hz={requested_fast_hz}, period={period}, actual={actual_fast_hz}Hz"
-                    );
-
-                    TelemetryConfigAck {
-                        actual_fast_hz,
-                        decimation_m: NonZeroU32::new(period),
-                        control_timing,
-                    }
-                }
-            })
-            .await;
-    }
-}
-
 /// Slow telemetry server — responds to host poll requests
 ///
 /// Returns current system health data (vbus, temperatures, motor state, faults).
@@ -1249,10 +1195,16 @@ pub async fn slow_telemetry_server<NS, F, const N: usize>(
 ///         HardwareInfo { hw, sw, ..Default::default() },
 ///         &STATE,
 ///         &FAULT_REGISTRY,
+///         foc_freq_hz,
+///         control_timing,
+///         link_block_bytes,
 ///     ).await
 /// }
 /// ```
-/// Run all protocol servers concurrently (without config server).
+/// Run all protocol servers concurrently (without config server), including
+/// the fast telemetry session servers. `link_block_bytes` is the largest raw
+/// block the device's links carry in one frame
+/// ([`crate::icd::raw_block_limit`] of the sink MTU).
 ///
 /// Use [`run_all_servers_with_config`] when the `storage` feature is enabled
 /// to include the configuration endpoint.
@@ -1263,6 +1215,7 @@ pub async fn run_all_servers<NS, F, T>(
     fault_registry: &'static FaultRegistry<F>,
     foc_freq_hz: u32,
     control_timing: ControlTiming,
+    link_block_bytes: usize,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
@@ -1276,13 +1229,14 @@ pub async fn run_all_servers<NS, F, T>(
         ),
         join(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
-            telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz, control_timing),
+            raw_session_servers::<NS, 2>(endpoints, foc_freq_hz, control_timing, link_block_bytes),
         ),
     )
     .await;
 }
 
-/// Run all protocol servers including config endpoint.
+/// Run all protocol servers including config endpoint and the fast
+/// telemetry session servers (see [`run_all_servers`]).
 #[cfg(feature = "storage")]
 #[allow(clippy::too_many_arguments)] // flat board-init facade; a struct would just move the names
 pub async fn run_all_servers_with_config<NS, F, T>(
@@ -1297,6 +1251,7 @@ pub async fn run_all_servers_with_config<NS, F, T>(
     boot_epoch: u64,
     persist: bool,
     pwm_limits: Option<PwmConfigLimits>,
+    link_block_bytes: usize,
 ) where
     NS: NetStackHandle + Clone,
     F: PlatformFault,
@@ -1309,21 +1264,19 @@ pub async fn run_all_servers_with_config<NS, F, T>(
             motor_command_server::<NS, F, T, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
-        join(
+        join3(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
-            join(
-                config_server::<NS, T, 2>(
-                    endpoints.clone(),
-                    runtime_config,
-                    state_mutex,
-                    board,
-                    boot_epoch,
-                    drive_pwm_hz,
-                    persist,
-                    pwm_limits,
-                ),
-                telemetry_config_server::<NS, 2>(endpoints, foc_freq_hz, control_timing),
+            config_server::<NS, T, 2>(
+                endpoints.clone(),
+                runtime_config,
+                state_mutex,
+                board,
+                boot_epoch,
+                drive_pwm_hz,
+                persist,
+                pwm_limits,
             ),
+            raw_session_servers::<NS, 2>(endpoints, foc_freq_hz, control_timing, link_block_bytes),
         ),
     )
     .await;

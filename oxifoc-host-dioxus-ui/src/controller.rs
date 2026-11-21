@@ -100,7 +100,6 @@ impl Controller {
 fn config(form: &ConnectionForm, capabilities: Capabilities) -> Result<HostConfig, String> {
     form.validate(capabilities)?;
     let mut config = HostConfig {
-        fast_hz: Some(100),
         stream_defmt: Some(false),
         ..Default::default()
     };

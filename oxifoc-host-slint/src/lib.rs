@@ -934,12 +934,7 @@ pub fn main() {
                 _ => return,
             };
 
-            // Set fast_hz so the backend enables telemetry at connect time
             let hz = ops::stream_rate_hz(app.get_stream_rate_index() as usize);
-            let config = HostConfig {
-                fast_hz: Some(hz),
-                ..config
-            };
 
             app.set_error_text("".into());
 
@@ -962,6 +957,7 @@ pub fn main() {
             let fault_rx = host_runtime.fault_rx.clone();
             let connected = host_runtime.connected.clone();
             let runtime_fast_hz = host_runtime.fast_hz.clone();
+            let cmd_tx = host_runtime.cmd_tx.clone();
             *rt.lock().unwrap() = Some(host_runtime);
 
             // Store receivers for BeforeRendering to drain into PlotBuffers
@@ -979,8 +975,20 @@ pub fn main() {
             let fhz_dst = fhz.clone();
             let stop2 = stop.clone();
             thread::spawn(move || {
+                // Arm a fast telemetry session at the selected rate once the
+                // first handshake completes. A session belongs to one
+                // connection; after a reconnect, Start arms a new one.
+                let mut armed = hz == 0;
                 while !stop2.load(Ordering::Relaxed) {
-                    conn_dst.store(conn_src.load(Ordering::Relaxed), Ordering::Relaxed);
+                    let connected = conn_src.load(Ordering::Relaxed);
+                    if connected && !armed {
+                        armed = true;
+                        let _ = cmd_tx.send(HostCommand::SetTelemetryConfig(
+                            oxifoc_core::icd::TelemetryConfig { fast_hz: hz },
+                            None,
+                        ));
+                    }
+                    conn_dst.store(connected, Ordering::Relaxed);
                     fhz_dst.store(fhz_src.load(Ordering::Relaxed), Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(100));
                 }

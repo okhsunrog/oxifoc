@@ -101,7 +101,7 @@ WORK_NAMES = [
 ROOT = Path(__file__).resolve().parents[1]
 # Unset, the host CLI uses the only attached C5 USB Serial/JTAG port.
 PORT = os.environ.get("OXIFOC_BRIDGE_SERIAL") or None
-BASE_FEATURES = "transport-spi,board-vesc6-mk5,task-priority,fast-telemetry,bench-calibrated-clock,bench-foc-distribution"
+BASE_FEATURES = "transport-spi,board-vesc6-mk5,task-priority,bench-calibrated-clock,bench-foc-distribution"
 DETAIL_FEATURES = {
     "minimal": "", "work": "bench-foc-work", "sections": "isr-profiling",
     "sections-ram": "bench-foc-sections-ram,isr-profiling",
@@ -497,7 +497,7 @@ def main():
                         time.sleep(1.3)
                     capture_path = args.output / f"{name}.parquet"
                     command = cli(image, *(["--velocity-debug"] if args.velocity_debug else []),
-                        "--fast-source", "ergot-raw", "maneuver", "run", plan_path, "--out", capture_path)
+                        "maneuver", "run", plan_path, "--out", capture_path)
                     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                         env={**os.environ, "TOKIO_WORKER_THREADS": "6", "RUST_LOG": "warn,device=info"})
                     try:

@@ -56,7 +56,8 @@ To use BLE with the C5 bridge, flash it with `just flash-bridge ble`.
 The host uses the same controller commands over Ergot on the OxiFOC GATT
 service (NUS-shaped, own UUIDs), for example
 `just cli --transport ble --ble-name "Oxifoc Bridge" --wait-secs 12 status`.
-For slow telemetry use `monitor --fast-hz 0`. Use USB Serial/JTAG for
+For slow telemetry use `monitor --fast-hz 0`. Fast telemetry over BLE uses
+15-sample blocks that each fit one notification; use USB Serial/JTAG for
 native-rate captures. The bridge accepts two BLE centrals at once, for
 example the remote and a laptop. Only bonded devices reach the controller
 over BLE. Pair a new device through a window opened from a trusted

@@ -16,7 +16,7 @@ import subprocess
 CAPACITY = 512
 SIZES = {"BENCH_HALL_EDGES": CAPACITY * 16,
          "BENCH_HALL_EDGE_COUNT": 4, "BENCH_HALL_EDGE_DROPPED": 4}
-OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 16,
+OPTIONAL_SIZES = {"BENCH_HALL_STREAM_LOSSES": 8,
                   "BENCH_HALL_PHASE_EVENTS": 64 * 14 * 4,
                   "BENCH_HALL_PHASE_COUNT": 4,
                   "BENCH_VELOCITY_SAMPLES": 128 * 8 * 4,
@@ -120,9 +120,8 @@ def main():
     dropped_after = scalar('BENCH_HALL_EDGE_DROPPED', '.dropped-after.bin')
     stream_losses = None
     if 'BENCH_HALL_STREAM_LOSSES' in symbols:
-        values = struct.unpack('<4I', read('BENCH_HALL_STREAM_LOSSES', '.stream-losses.bin'))
-        stream_losses = dict(zip(('stats_windows', 'producer_drops', 'malformed_frames',
-                                  'broadcast_failures'), values))
+        values = struct.unpack('<2I', read('BENCH_HALL_STREAM_LOSSES', '.stream-losses.bin'))
+        stream_losses = dict(zip(('stats_windows', 'producer_drops'), values))
         stream_losses['semantics'] = ('Wrapping cumulative totals independently latched at1Hz; '
                                       'current partial window excluded; not an atomic group snapshot')
     capacity = symbols['BENCH_HALL_EDGES'][1] // 16

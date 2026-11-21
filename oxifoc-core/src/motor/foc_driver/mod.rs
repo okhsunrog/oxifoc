@@ -9,7 +9,7 @@
 
 mod actuation;
 mod commissioning;
-#[cfg(feature = "fast-telemetry")]
+#[cfg(feature = "velocity-debug")]
 use crate::velocity_telemetry::VelocityDebugFrame;
 pub use commissioning::{CommissioningError, PreparedCommissioning};
 mod calibration;
@@ -121,7 +121,7 @@ pub struct VelocityControlSnapshot {
 }
 
 /// Inputs and limits of an actual outer-loop update, in its own clock domain.
-#[cfg(feature = "fast-telemetry")]
+#[cfg(feature = "velocity-debug")]
 #[derive(Clone, Copy)]
 pub struct VelocityUpdate {
     pub tick_us: u64,
@@ -292,14 +292,14 @@ where
     velocity_feedback_available: bool,
     /// Native-rate sample-and-hold around the scheduled cruise controller.
     velocity_schedule: VelocitySchedule,
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     last_velocity_update: Option<VelocityUpdate>,
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     record_velocity_updates: bool,
     /// Last final q-current grant, after all target/trust/torque clamps.
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     current_debug_due: bool,
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     last_current_debug: Option<VelocityDebugFrame>,
     last_granted_iq: ElectricCurrent,
     last_granted_id: ElectricCurrent,

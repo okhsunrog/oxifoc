@@ -263,7 +263,6 @@ fn main() -> Result<()> {
     cfg.transport = Some(TransportType::Usb);
     cfg.elf = Some(elf.to_string_lossy().into_owned());
     cfg.reconnect = Some(ReconnectPolicy::None);
-    cfg.fast_hz = Some(0);
     let runtime = start_host(cfg);
     ensure!(
         runtime.wait_for_connection(Duration::from_secs(8)),

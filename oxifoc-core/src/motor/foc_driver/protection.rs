@@ -206,9 +206,9 @@ pub(super) struct ProtectionMonitor {
     #[cfg(feature = "storage")]
     drive_config_valid: bool,
     environment_drive: f32,
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     temperature_drive: f32,
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     bus_voltage_drive: f32,
     duty_utilization: f32,
     scales: DeratingScales,
@@ -248,9 +248,9 @@ impl ProtectionMonitor {
             #[cfg(feature = "storage")]
             drive_config_valid: true,
             environment_drive: 1.0,
-            #[cfg(feature = "fast-telemetry")]
+            #[cfg(feature = "velocity-debug")]
             temperature_drive: 1.0,
-            #[cfg(feature = "fast-telemetry")]
+            #[cfg(feature = "velocity-debug")]
             bus_voltage_drive: 1.0,
             duty_utilization: 0.0,
             scales: DeratingScales::default(),
@@ -395,7 +395,7 @@ impl ProtectionMonitor {
             let temperature = self.config.thermal_scales(fet_c, motor_c);
             let bus_voltage = self.config.bus_voltage_scales(sample.vbus);
             self.environment_drive = temperature.drive.min(bus_voltage.drive);
-            #[cfg(feature = "fast-telemetry")]
+            #[cfg(feature = "velocity-debug")]
             {
                 self.temperature_drive = temperature.drive;
                 self.bus_voltage_drive = bus_voltage.drive;
@@ -664,7 +664,7 @@ where
         self.grant_dissipative_brake(id_target, iq_target, omega, brake, model, None)
     }
 
-    #[cfg(feature = "fast-telemetry")]
+    #[cfg(feature = "velocity-debug")]
     #[inline(never)]
     pub(super) fn current_limit_flags(
         &self,

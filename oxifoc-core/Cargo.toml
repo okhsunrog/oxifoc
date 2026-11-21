@@ -137,17 +137,15 @@ delivery = ["icd", "dep:embassy-futures"]
 # This is the core motor control math, no extra dependencies
 algorithms = []
 
-# Pod (bytemuck) views of the wire types — FastTelemetry raw-byte batches.
-# Host crates that only decode telemetry want this without the whole runtime.
-pod = ["dep:bytemuck"]
-
-# Async runtime with state management and protocol servers
-# Requires icd for endpoints and algorithms for control logic
-runtime = ["icd", "algorithms", "pod", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue"]
-
-# Session-bound fixed-block consumer of the ISR queue. Replaces the legacy
-# broadcast publisher; sessions carry Packed28 blocks.
-fast-telemetry = ["runtime"]
+# Async runtime with state management, protocol servers and the Packed28
+# fast telemetry session (ISR queue, session server and block stream).
+# Requires icd for endpoints and algorithms for control logic; bytemuck views
+# the ISR queue's fixed records as `FastTelemetry`.
+runtime = ["icd", "algorithms", "dep:bytemuck", "dep:embassy-sync", "dep:embassy-futures", "dep:critical-section", "dep:bbqueue"]
+# FocDriver records velocity-loop updates and current grants for the raw
+# session's velocity companion blocks (`runtime::velocity_debug`). Boards
+# that register that producer enable it; others keep the ISR without it.
+velocity-debug = []
 # Place the 48-KiB fast telemetry queue in the .ccm.bss.fast_telemetry
 # section. The board crate links that section into CPU-only memory and clears
 # it before the ADC interrupt runs (F405: ccm.x and __pre_init).

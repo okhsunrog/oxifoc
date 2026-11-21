@@ -108,7 +108,6 @@ where
 {
     let connected = ctx.connected.clone();
     let fast_hz_flag = ctx.fast_hz.clone();
-    let requested_fast_hz = ctx.requested_fast_hz.clone();
     let device_addr = ctx.device_addr.clone();
     let cancel = ctx.cancel.clone();
     let info_tx = ctx.info_tx.clone();
@@ -304,27 +303,19 @@ where
             }
         }
 
-        let configured = if let Some(raw) = &raw {
-            // A reconnect establishes control only. A failed capture's cookie
-            // and requested rate are never resumed by a new connection.
-            let setup = raw_telemetry::prepare_connection(&stack, raw, resolved);
-            match tokio::select! { result = setup => result, _ = cancel.cancelled() => break } {
-                Ok(_) => {
-                    raw.reader_ready();
-                    true
-                }
-                Err(error) => {
-                    raw.fail(&error);
-                    tracing::error!("raw setup failed: {error:#}");
-                    false
-                }
+        // A reconnect establishes control only. A failed capture's cookie
+        // and requested rate are never resumed by a new connection.
+        let setup = raw_telemetry::prepare_connection(&stack, &raw, resolved);
+        let configured = match tokio::select! { result = setup => result, _ = cancel.cancelled() => break }
+        {
+            Ok(()) => {
+                raw.reader_ready();
+                true
             }
-        } else {
-            tokio::select! {
-                result = enable_fast_telemetry(
-                    &stack, requested_fast_hz.load(Ordering::Relaxed), &fast_hz_flag, resolved,
-                ) => result,
-                _ = cancel.cancelled() => break,
+            Err(error) => {
+                raw.fail(&error);
+                tracing::error!("raw setup failed: {error:#}");
+                false
             }
         };
         if !configured {
@@ -363,9 +354,7 @@ where
         if link == LinkOutcome::Cancelled {
             break;
         }
-        if let Some(raw) = &raw {
-            raw.control_lost();
-        }
+        raw.control_lost();
         verified_peer = None;
         if link == LinkOutcome::Recovered {
             // The link came back, but whoever answers now (a restarted
@@ -404,21 +393,7 @@ where
     // transport is still alive, rather than enqueueing a best-effort command
     // that runtime teardown could discard. Never target an unverified peer.
     if let Some(peer) = verified_peer {
-        let stop = async {
-            if let Some(raw) = &raw {
-                return raw_telemetry::configure(&stack, raw, 0, peer).await;
-            }
-            let client = stack.clone().reliable::<TokioTimer>();
-            client
-                .at_least_once::<TelemetryConfigEndpoint>(
-                    peer,
-                    &TelemetryConfig { fast_hz: 0 },
-                    Some("telemetry_config"),
-                    &SETPOINT_POLICY,
-                )
-                .await
-                .map_err(|error| anyhow!("{error:?}"))
-        };
+        let stop = raw_telemetry::configure(&stack, &raw, 0, peer);
         match tokio::time::timeout(Duration::from_millis(500), stop).await {
             Ok(Ok(ack)) if ack.actual_fast_hz == 0 => {
                 fast_hz_flag.store(0, Ordering::Relaxed);
@@ -823,46 +798,6 @@ where
 
 pub(super) fn protocol_is_compatible(device_version: u16) -> bool {
     device_version == oxifoc_core::types::ICD_PROTO_VERSION
-}
-
-/// Send TelemetryConfig to enable fast telemetry streaming.
-async fn enable_fast_telemetry<NS>(
-    stack: &NS,
-    fast_hz: u16,
-    fast_hz_flag: &Arc<AtomicU16>,
-    device_addr: Address,
-) -> bool
-where
-    NS: NetStackHandle + Clone + Send + Sync + 'static,
-{
-    let telem_cfg = TelemetryConfig { fast_hz };
-    let client = stack.clone().reliable::<TokioTimer>();
-    match client
-        .at_least_once::<TelemetryConfigEndpoint>(
-            device_addr,
-            &telem_cfg,
-            Some("telemetry_config"),
-            &SETPOINT_POLICY,
-        )
-        .await
-    {
-        Ok(ack) => {
-            if (fast_hz == 0) != (ack.actual_fast_hz == 0) {
-                tracing::warn!("Telemetry acknowledgement does not match the stream state");
-                return false;
-            }
-            info!(
-                "Telemetry configured: requested={}Hz, actual={}Hz",
-                fast_hz, ack.actual_fast_hz
-            );
-            fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
-            true
-        }
-        Err(e) => {
-            tracing::warn!("Telemetry config failed: {:?}", e);
-            false
-        }
-    }
 }
 
 // ── Protocol tasks ───────────────────────────────────────────────────────────

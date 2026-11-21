@@ -10,8 +10,6 @@ use heapless::String;
 use oxifoc_core::foc::current_offset::{
     CurrentOffsetError, CurrentOffsetReport, CurrentOffsetRequest,
 };
-#[cfg(feature = "fast-telemetry")]
-use oxifoc_core::runtime::raw_stream;
 use oxifoc_core::types::PhaseVoltageInfo;
 #[cfg(feature = "board-vesc6-mk5")]
 use oxifoc_core::types::{DetectError, DetectRequest};
@@ -27,8 +25,6 @@ use oxifoc_core::foc::detection::DetectionError;
 use oxifoc_core::foc::detection::types::{FluxLinkageParams, InductanceParams, ResistanceParams};
 use oxifoc_core::foc::hall_calibration::{HallCalibrationParams, HallCalibrationResult};
 use oxifoc_core::foc::trig::FastSinCos;
-#[cfg(not(feature = "fast-telemetry"))]
-use oxifoc_core::runtime::streaming::fast_telemetry_stream;
 use oxifoc_core::runtime::streaming::fault_topic_stream;
 use oxifoc_core::runtime::{DetectionBackend, run_all_servers_with_config};
 use oxifoc_core::timer::EmbassyTimer;
@@ -40,7 +36,7 @@ use crate::RUNTIME_CONFIG;
 use crate::calibration::{
     calibrate_hall_ez, measure_flux_linkage_ez, measure_inductance_ez, measure_resistance_ez,
 };
-use crate::config::{BOARD, PWM_CONFIG_LIMITS, measured_board};
+use crate::config::{BOARD, LINK_BLOCK_BYTES, PWM_CONFIG_LIMITS, measured_board};
 #[cfg(feature = "transport-usb")]
 use crate::config::{MAX_PACKET_SIZE, USB_OUT_QUEUE_SIZE};
 use crate::control::foc::measured_vbus_mv;
@@ -199,6 +195,7 @@ pub async fn protocol_servers(stack: &'static Stack, foc_freq_hz: u32, boot_epoc
         boot_epoch,
         true,
         PWM_CONFIG_LIMITS,
+        LINK_BLOCK_BYTES,
     )
     .await;
 }
@@ -266,7 +263,6 @@ pub async fn state_monitor(
 ) {
     use crate::transport::STATE_NOTIFY;
     use ergot::interface_manager::{InterfaceState, Profile};
-    use oxifoc_core::runtime::streaming::set_fast_telemetry_period;
 
     let mut any_was_active = false;
 
@@ -294,7 +290,7 @@ pub async fn state_monitor(
             any_was_active = true;
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_active());
         } else if !any_active && any_was_active {
-            defmt::info!("All interfaces down — failsafe via link gate, disabling telemetry");
+            defmt::info!("All interfaces down — failsafe via link gate");
             any_was_active = false;
 
             // Drop link_active — the ISR link gate routes a running motor
@@ -304,9 +300,9 @@ pub async fn state_monitor(
             // failsafe brake (and clears the re-arm latch) — turning the
             // ControlledStop into a coast one liveness-timeout after the
             // deadman armed it.
+            // A raw session stops on its own: its blocks time out
+            // unconsumed and the stream fails the session.
             critical_section::with(|cs| STATE.borrow(cs).borrow_mut().set_link_inactive());
-
-            set_fast_telemetry_period(0).await;
 
             // Yield to let TX workers drain
             for _ in 0..64 {
@@ -431,51 +427,6 @@ impl DetectionBackend for F405Backend {
     }
 }
 
-/// Fast telemetry streaming task — drains bbqueue and broadcasts batches.
-#[cfg(not(feature = "fast-telemetry"))]
-#[embassy_executor::task]
-pub async fn fast_telemetry_task(stack: &'static Stack) {
-    #[cfg(feature = "bench-scheduler-deadline")]
-    crate::diagnostics::deadline::register(4, 1000).await;
-    #[cfg(feature = "task-priority")]
-    embassy_executor::MetadataRef::for_current_task()
-        .await
-        .set_priority(1);
-    let hz = crate::config::CONTROL_TIMING.get().await.frequency_hz() as u32;
-    fast_telemetry_stream::<_, EmbassyTimer>(stack, hz).await;
-}
-
-/// Session control stays on Ergot while the sole consumer owns the fast queue.
-/// Normal MK5 images use the same routed Ergot/SPI path for control and data.
-#[cfg(feature = "fast-telemetry")]
-#[embassy_executor::task]
-async fn raw_telemetry_server_task(stack: &'static Stack) {
-    #[cfg(feature = "task-priority")]
-    embassy_executor::MetadataRef::for_current_task()
-        .await
-        .set_priority(2);
-    let timing = *crate::config::CONTROL_TIMING.get().await;
-    let raw = raw_stream::raw_telemetry_server::<_, 2>(
-        stack.endpoints(),
-        timing.frequency_hz() as u32,
-        timing,
-        crate::config::LINK_BLOCK_BYTES,
-    );
-    #[cfg(feature = "fast-telemetry")]
-    embassy_futures::join::join(
-        raw,
-        raw_stream::velocity_debug_arm_server::<_, 2>(
-            stack.endpoints(),
-            timing.frequency_hz() as u32,
-            timing,
-            crate::config::LINK_BLOCK_BYTES,
-        ),
-    )
-    .await;
-    #[cfg(not(feature = "fast-telemetry"))]
-    raw.await;
-}
-
 /// Fault topic publisher — pushes the full fault snapshot on every
 /// registry change (the remote's vibration/UI path; FaultEndpoint stays
 /// the pull/clear side).
@@ -499,11 +450,6 @@ pub fn spawn_servers(
         foc_freq_hz,
         detection_boot
     )));
-    #[cfg(not(feature = "fast-telemetry"))]
-    spawner.spawn(defmt::unwrap!(fast_telemetry_task(stack)));
-    #[cfg(feature = "fast-telemetry")]
-    spawner.spawn(defmt::unwrap!(raw_telemetry_server_task(stack)));
-    #[cfg(feature = "fast-telemetry")]
     spawner.spawn(defmt::unwrap!(crate::transport::raw_fast::ergot_task(
         stack
     )));

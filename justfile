@@ -29,7 +29,7 @@ bench-probe-pc *ARGS:
 replay-hall *ARGS:
     cargo run --release --locked -p oxifoc-host-lib --example replay_hall -- "$@"
 
-mk5_features := "transport-spi,board-vesc6-mk5,task-priority,fast-telemetry"
+mk5_features := "transport-spi,board-vesc6-mk5,task-priority"
 mk5_bench_features := "transport-usb,board-vesc6-mk5,task-priority,bench-calibrated-clock,bench-clock-reference"
 mk5_usb_metrics_features := mk5_bench_features + ",bench-usb-metrics"
 mk5_elf := "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
@@ -231,11 +231,11 @@ build-mk5-raw profiling="normal" compensation="on":
     @test {{ quote(profiling) }} = normal -o {{ quote(profiling) }} = timing -o {{ quote(profiling) }} = hall-phase -o {{ quote(profiling) }} = hall-timing -o {{ quote(profiling) }} = hall-outliers
     @test {{ quote(compensation) }} = on -o {{ quote(compensation) }} = off
     cd oxifoc-f405 && DEFMT_LOG={{ quote(if profiling == "timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-timing" { "warn,oxifoc_f405::control::foc=info" } else if profiling == "hall-outliers" { "warn,oxifoc_f405::control::foc=info" } else { "warn" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,fast-telemetry" + (if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else if profiling == "hall-timing" { ",bench-hall-phase,isr-timing" } else if profiling == "hall-outliers" { ",bench-hall-phase,isr-timing,bench-cycle-outliers" } else { "" }) + (if compensation == "off" { ",bench-no-deadtime-comp" } else { "" })) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall" + (if profiling == "timing" { ",isr-timing" } else if profiling == "hall-phase" { ",bench-hall-phase" } else if profiling == "hall-timing" { ",bench-hall-phase,isr-timing" } else if profiling == "hall-outliers" { ",bench-hall-phase,isr-timing,bench-cycle-outliers" } else { "" }) + (if compensation == "off" { ",bench-no-deadtime-comp" } else { "" })) }}
 
 # Detect one parameter without applying motor parameters, recording every cycle.
 detect-mk5 step capture *ARGS:
-    RUST_LOG=warn,device=info,fast_rx=debug just cli-usb --elf {{ mk5_elf }} detect {{ quote(step) }} \
+    RUST_LOG=warn,device=info just cli-usb --elf {{ mk5_elf }} detect {{ quote(step) }} \
         --record-hz 20000 --record {{ quote(capture) }} {{ ARGS }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
@@ -290,12 +290,12 @@ build-mk5-runtime-profile detail="timing" observer_log="off" logging="timing":
     @test {{ quote(observer_log) }} = off -o {{ quote(observer_log) }} = on
     @test {{ quote(logging) }} = timing -o {{ quote(logging) }} = verbose -o {{ quote(logging) }} = quiet
     cd oxifoc-f405 && DEFMT_LOG={{ quote((if logging == "verbose" { "debug" } else if logging == "quiet" { "warn" } else { "warn,oxifoc_f405::control::foc=info" }) + if observer_log == "on" { ",oxifoc_core::foc::phase::manager::update=info" } else { "" }) }} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,fast-telemetry,isr-timing" + (if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "trace" { ",bench-executor-trace" } else { "" }) + if observer_log == "on" { ",bench-observer-logging" } else { "" }) }}
+        --features {{ quote(mk5_bench_features + ",bench-hall,isr-timing" + (if detail == "outliers" { ",bench-cycle-outliers" } else if detail == "trace" { ",bench-executor-trace" } else { "" }) + if observer_log == "on" { ",bench-observer-logging" } else { "" }) }}
 
 # Exhaustive temperature conversion check before PWM initialization.
 build-mk5-thermal-check:
     cd oxifoc-f405 && DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features \
-        --features {{ quote(mk5_bench_features + ",bench-hall,fast-telemetry,isr-timing,bench-ntc-check") }}
+        --features {{ quote(mk5_bench_features + ",bench-hall,isr-timing,bench-ntc-check") }}
 
 # Explicit motor excitation, no fast stream; same secured +40 erad/s CPU control.
 test-velocity-no-stream-mk5 elf:
@@ -335,7 +335,7 @@ profile-pwm-l-mk5 capture resistance:
     rust-nm -n -S -C {{ mk5_elf }} > "$symbols"
     uv run python scripts/bench_executor_trace.py arm --symbols "$symbols" --on-active --timer-hz 83917920
     capture_status=0
-    RUST_LOG=warn,device=info,fast_rx=debug just cli-usb --elf {{ mk5_elf }} detect inductance \
+    RUST_LOG=warn,device=info just cli-usb --elf {{ mk5_elf }} detect inductance \
         --resistance {{ quote(resistance) }} --motor-class medium-outrunner --advanced --current-limit-a 3 --record-hz 20000 --record {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }} || capture_status=$?
     uv run python scripts/bench_executor_trace.py read --symbols "$symbols" --out {{ quote(capture + ".trace.bin") }} --timer-hz 83917920
@@ -434,7 +434,7 @@ test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transp
     fi
     trap '"${cli[@]}" stop >/dev/null' EXIT
     "${cli[@]}" source hall > {{ quote(capture + ".source.json") }}
-    RUST_LOG="${RUST_LOG:-warn,device=info,fast_rx=debug,oxifoc_host_lib::transport::rtt=info}" "${cli[@]}" maneuver run \
+    RUST_LOG="${RUST_LOG:-warn,device=info,oxifoc_host_lib::transport::rtt=info}" "${cli[@]}" maneuver run \
         {{ quote(maneuver) }} --out {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
@@ -493,7 +493,7 @@ set-hall-usb angles valid storage="ram" geometry="null":
         {{ if storage == "ram" { "--volatile" } else { "" } }}
 
 # USB recording with matching JSON result and host timing log beside the parquet.
-record-usb capture seconds="30" rate="20000" logs="warn,device=info,fast_rx=debug":
+record-usb capture seconds="30" rate="20000" logs="warn,device=info":
     RUST_LOG={{ quote(logs) }} just cli-usb record --out {{ quote(capture) }} \
         --seconds {{ quote(seconds) }} --fast-hz {{ quote(rate) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
@@ -501,7 +501,7 @@ record-usb capture seconds="30" rate="20000" logs="warn,device=info,fast_rx=debu
 # Also timestamp nusb frame handling and Linux URB submission/completion.
 record-usb-trace capture seconds="10" rate="20000":
     @just record-usb {{ quote(capture) }} {{ quote(seconds) }} {{ quote(rate) }} \
-        "warn,device=info,fast_rx=debug,ergot::interface_manager::transports::nusb=trace,nusb::platform::linux_usbfs=debug"
+        "warn,device=info,ergot::interface_manager::transports::nusb=trace,nusb::platform::linux_usbfs=debug"
 
 # Linux idle-only qualification. Propagates capture loss as a failing exit status.
 test-usb-pause capture pauses_ms="5,15,30" rate="20000": build-cli
@@ -509,7 +509,7 @@ test-usb-pause capture pauses_ms="5,15,30" rate="20000": build-cli
         --pauses-ms {{ quote(pauses_ms) }} --rate {{ quote(rate) }}
 
 # Measure L without applying it; preserve native HFI samples at the default rate.
-detect-l-usb capture resistance rate="20000" logs="warn,device=info,fast_rx=debug":
+detect-l-usb capture resistance rate="20000" logs="warn,device=info":
     RUST_LOG={{ quote(logs) }} just cli-usb detect inductance \
         --resistance {{ quote(resistance) }} --record-hz {{ quote(rate) }} --record {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
@@ -595,14 +595,13 @@ flash-mk5-foc-profile detail="minimal" logging="quiet": (build-mk5-foc-profile d
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
-# Fixed-format telemetry through a chosen link; legacy remains an explicit baseline.
-build-mk5-link-bench link="spi" source="ergot" detail="timing":
+# Packed28 sessions through a chosen link.
+build-mk5-link-bench link="spi" detail="timing":
     @test {{quote(link)}} = spi -o {{quote(link)}} = usb
-    @test {{quote(source)}} = ergot -o {{quote(source)}} = legacy-ergot
     @test {{quote(detail)}} = timing -o {{quote(detail)}} = trace
-    cd oxifoc-f405 && DEFMT_LOG={{quote(if detail == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if source == "ergot" { ",fast-telemetry" } else { "" }) + (if detail == "trace" { ",bench-executor-trace" } else { "" }))}}
+    cd oxifoc-f405 && DEFMT_LOG={{quote(if detail == "timing" { "warn,oxifoc_f405::control::foc=info" } else { "warn" })}} cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --bin oxifoc-f405 --features {{quote("board-vesc6-mk5,task-priority,bench-calibrated-clock,isr-timing,transport-" + link + (if detail == "trace" { ",bench-executor-trace" } else { "" }))}}
 
-flash-mk5-link-bench link="spi" source="ergot" detail="timing": (build-mk5-link-bench link source detail)
+flash-mk5-link-bench link="spi" detail="timing": (build-mk5-link-bench link detail)
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
@@ -614,14 +613,14 @@ cli-bridge *ARGS:
 # Full motor commissioning, one native-rate Parquet capture per stage.
 [positional-arguments]
 detect-bridge output motor_class *ARGS:
-    @shift 2 && just cli-bridge --fast-source ergot-raw detect all --motor-class {{quote(motor_class)}} --record {{quote(output)}} "$@"
+    @shift 2 && just cli-bridge detect all --motor-class {{quote(motor_class)}} --record {{quote(output)}} "$@"
 
 # Finite maneuver, full native-rate stream, terminal Stop on success or failure.
-test-bridge capture maneuver source="ergot-raw" velocity_debug="off" phase_source="configured":
-    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(source)}} {{quote(velocity_debug)}} {{quote(phase_source)}}
+test-bridge capture maneuver velocity_debug="off" phase_source="configured":
+    @just test-link bridge {{quote(capture)}} {{quote(maneuver)}} {{quote(velocity_debug)}} {{quote(phase_source)}}
 
 # USB is a temporary A/B reference; bridge is the production route.
-test-link link capture maneuver source="ergot-raw" velocity_debug="off" phase_source="configured":
+test-link link capture maneuver velocity_debug="off" phase_source="configured":
     #!/usr/bin/env bash
     set -euo pipefail
     test {{quote(link)}} = bridge -o {{quote(link)}} = usb
@@ -634,7 +633,7 @@ test-link link capture maneuver source="ergot-raw" velocity_debug="off" phase_so
     else
         "${cli[@]}" source {{quote(phase_source)}} > {{quote(capture + ".source.json")}}
     fi
-    "${cli[@]}" --fast-source {{quote(source)}} {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
+    "${cli[@]}" {{if velocity_debug == "on" { "--velocity-debug" } else { "" }}} maneuver run {{quote(maneuver)}} --out {{quote(capture)}} > {{quote(capture + ".json")}} 2> {{quote(capture + ".log")}}
 
 # Matching bench-executor-trace firmware must already be flashed.
 profile-link-mk5 link output maneuver="maneuvers/mk5-hall-current-check.json" repeats="3":
@@ -681,7 +680,7 @@ bench-mk5-crossover output recovery hall_config repeats="1" phase_source="hall" 
     uv run --no-project python -B scripts/bench_motion_profile.py {{quote(output)}} --recovery-elf {{quote(recovery)}} --repeats {{repeats}} --hall-config {{quote(hall_config)}} --phase-source {{quote(phase_source)}} --cases {{quote(cases)}} {{if spi_priority == "on" { "--spi-priority" } else { "" }}} --capture-hz {{hz}}
 
 test-velocity-debug:
-    cargo test --locked -p oxifoc-core --lib --features {{quote(core_embassy_features + ",fast-telemetry")}}
+    cargo test --locked -p oxifoc-core --lib --features {{quote(core_embassy_features + ",velocity-debug")}}
     cargo test --locked -p oxifoc-host-lib --lib raw_telemetry
     cargo test --locked -p oxifoc-host-cli --bin oxifoc-host-cli maneuver
 

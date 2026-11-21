@@ -23,8 +23,8 @@ use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::delivery::{ReliableExt, RetryPolicy};
 use oxifoc_core::foc::phase::PhaseSource;
 use oxifoc_core::icd::{
-    ConfigEndpoint, DetectEndpoint, FastTelemetryTopic, FaultTopic, MotorEndpoint,
-    SlowTelemetryEndpoint, TelemetryConfig, TelemetryConfigEndpoint,
+    ConfigEndpoint, DetectEndpoint, FaultTopic, MotorEndpoint, SlowTelemetryEndpoint,
+    TelemetryConfig,
 };
 use oxifoc_core::icd::{FaultEndpoint, HardwareInfoEndpoint, LIVENESS_TIMEOUT_MS};
 use oxifoc_core::timer::Timer;
@@ -50,7 +50,7 @@ use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-pub use config::{FastSource, HostConfig, ReconnectPolicy};
+pub use config::{HostConfig, ReconnectPolicy};
 pub use discovery::{
     BleDeviceInfo, initialize_ble, scan_ble_devices, scan_ble_devices_blocking,
     try_scan_ble_devices,
@@ -462,8 +462,8 @@ pub struct HostRuntime {
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<HostCommand>,
     pub connected: Arc<AtomicBool>,
     pub fast_hz: Arc<AtomicU16>,
-    /// Raw capture integrity, absent for the ordinary Ergot subscriber.
-    pub raw_telemetry: Option<Arc<raw_telemetry::RawTelemetryState>>,
+    /// Fast telemetry session state: capture integrity and END/totals.
+    pub raw_telemetry: Arc<raw_telemetry::RawTelemetryState>,
     device_addr: Arc<AtomicU32>,
     cancel_token: CancellationToken,
     /// Backend thread handle — joined (bounded) on shutdown so the process
@@ -590,7 +590,6 @@ impl Drop for HostRuntime {
 
 /// Shared state passed through the backend instead of many individual arguments.
 struct BackendCtx {
-    fast_tx: Sender<FastTelemetry>,
     slow_tx: Sender<SlowTelemetry>,
     fault_sink: FaultSnapshotSink,
     pairing_tx: Sender<oxifoc_core::types::pairing::PairingEvent>,
@@ -598,16 +597,13 @@ struct BackendCtx {
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HostCommand>,
     connected: Arc<AtomicBool>,
     fast_hz: Arc<AtomicU16>,
-    /// The last fast rate the application asked for (config default until a
-    /// SetTelemetryConfig arrives) — what a reconnect re-applies.
-    requested_fast_hz: Arc<AtomicU16>,
     /// Packed [`Address`] of the resolved motor controller (see
     /// [`pack_addr`]). Starts as the link-local peer; each connection
     /// generation overwrites it with the SocketQuery resolution result
     /// before `connected` is published.
     device_addr: Arc<AtomicU32>,
     cancel: CancellationToken,
-    raw_telemetry: Option<Arc<raw_telemetry::RawTelemetryState>>,
+    raw_telemetry: Arc<raw_telemetry::RawTelemetryState>,
 }
 
 /// Ordered, loss-aware handoff from protocol tasks to synchronous consumers.
@@ -675,17 +671,13 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let fast_hz = Arc::new(AtomicU16::new(0));
     let device_addr = Arc::new(AtomicU32::new(pack_addr(LINK_LOCAL_PEER)));
     let cancel_token = CancellationToken::new();
-    let raw_telemetry = cfg.fast_source().is_raw().then(|| {
-        raw_telemetry::RawTelemetryState::new_with_options(
-            cfg.fast_source(),
-            fast_tx.clone(),
-            cfg.velocity_debug,
-            cfg.transport_type().raw_block_limit(),
-        )
-    });
+    let raw_telemetry = raw_telemetry::RawTelemetryState::new_with_options(
+        fast_tx,
+        cfg.velocity_debug,
+        cfg.transport_type().raw_block_limit(),
+    );
 
     let ctx = BackendCtx {
-        fast_tx,
         slow_tx,
         fault_sink: FaultSnapshotSink::new(fault_tx),
         pairing_tx,
@@ -693,7 +685,6 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
         cmd_rx,
         connected: connected.clone(),
         fast_hz: fast_hz.clone(),
-        requested_fast_hz: Arc::new(AtomicU16::new(cfg.fast_hz())),
         device_addr: device_addr.clone(),
         cancel: cancel_token.clone(),
         raw_telemetry: raw_telemetry.clone(),
@@ -703,9 +694,7 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
     let backend_thread = thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create tokio runtime");
         if let Err(e) = rt.block_on(backend_main(cfg, ctx)) {
-            if let Some(raw) = backend_error {
-                raw.fail(&e);
-            }
+            backend_error.fail(&e);
             error!("backend_main error: {:?}", e);
         }
     });
@@ -793,19 +782,17 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         }
         TransportConfig::Usb => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let (stack, queue) = transport::usb::new_stack_for(cfg.fast_source());
+            let (stack, queue) = transport::usb::new_stack();
             let register_fn = {
                 let stack = stack.clone();
                 let notify = state_notify.clone();
                 let mut selected_identity = None;
-                let fast_source = cfg.fast_source();
                 async move || {
-                    transport::usb::register_for(
+                    transport::usb::register(
                         &stack,
                         &queue,
                         Some(notify.clone()),
                         &mut selected_identity,
-                        fast_source,
                     )
                     .await
                 }
@@ -865,16 +852,7 @@ where
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
-    if ctx.raw_telemetry.is_none() {
-        spawn_fast_telemetry_subscriber(
-            stack,
-            ctx.fast_tx,
-            ctx.connected.clone(),
-            ctx.cancel.clone(),
-        );
-    } else if let Some(raw) = &ctx.raw_telemetry {
-        raw_telemetry::spawn_ergot_subscriber(stack, raw.clone(), ctx.cancel.clone());
-    }
+    raw_telemetry::spawn_ergot_subscriber(stack, ctx.raw_telemetry.clone(), ctx.cancel.clone());
     spawn_fault_topic_subscriber(
         stack,
         ctx.fault_sink.clone(),
@@ -911,7 +889,6 @@ where
     tokio::spawn({
         let stack = stack.clone();
         let fast_hz_flag = ctx.fast_hz;
-        let requested_fast_hz = ctx.requested_fast_hz;
         let device_addr = ctx.device_addr.clone();
         let connected = ctx.connected.clone();
         let cancel = ctx.cancel.clone();
@@ -950,12 +927,11 @@ where
                             &stack,
                             cmd,
                             &fast_hz_flag,
-                            &requested_fast_hz,
                             unpack_addr(device_addr.load(Ordering::Relaxed)),
                             &active_setpoint,
                             drive_session,
                             &mut motor_seq,
-                            raw_telemetry.as_ref(),
+                            &raw_telemetry,
                         ).await;
                     }
                     _ = ticker.tick() => {
@@ -998,88 +974,6 @@ where
             }
         }
     })
-}
-
-fn spawn_fast_telemetry_subscriber<NS>(
-    stack: &NS,
-    fast_tx: Sender<FastTelemetry>,
-    connected: Arc<AtomicBool>,
-    cancel: CancellationToken,
-) where
-    NS: NetStackHandle + Clone + Send + Sync + 'static,
-    NS::Mutex: Send + Sync,
-    NS::Profile: Send,
-    NS::Target: Send,
-{
-    tokio::spawn({
-        let stack = stack.clone();
-        async move {
-            let ns = stack.stack();
-            let receiver = ns
-                .topics()
-                // Encoded batches have one fixed byte capacity shared by both
-                // ends; decoded samples retain the exact ISR frame bits.
-                .heap_bounded_receiver::<FastTelemetryTopic>(128, Some("fast_telem"));
-            let mut pinned = pin!(receiver);
-            let mut hdl = pinned.as_mut().subscribe();
-            info!("Fast telemetry subscriber started");
-            // 1 Hz pipeline diagnostics: batches/samples that reached this
-            // subscriber vs samples dropped on a full fast_tx. Attributes
-            // capture loss to "above the socket" (batches missing here) or
-            // "below" (channel drops) without a debugger.
-            use std::time::{Duration, Instant};
-            let mut batches: u64 = 0;
-            let mut samples_ok: u64 = 0;
-            let mut dropped: u64 = 0;
-            let mut last_report = Instant::now();
-            let timing = tracing::enabled!(target: "fast_rx", tracing::Level::DEBUG);
-            let mut previous_batch = Instant::now();
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    msg = hdl.recv() => {
-                        if !connected.load(Ordering::Relaxed) {
-                            continue;
-                        }
-                        batches += 1;
-                        if timing {
-                            let gap_us = previous_batch.elapsed().as_micros();
-                            previous_batch = Instant::now();
-                            if gap_us > 2000 {
-                                tracing::debug!(target: "fast_rx", gap_us, "Fast subscriber pause");
-                            }
-                        }
-                        let samples = match msg.t.samples() {
-                            Ok(samples) => samples,
-                            Err(error) => {
-                                tracing::warn!(?error, "invalid fast telemetry batch");
-                                continue;
-                            }
-                        };
-                        for sample in samples {
-                            // try_send: drop-on-full is the right semantics
-                            // for telemetry. A blocking send would park this
-                            // tokio worker whenever the UI stops draining
-                            // (e.g. minimized window stops the render loop).
-                            match fast_tx.try_send(sample) {
-                                Ok(()) => samples_ok += 1,
-                                Err(_) => dropped += 1,
-                            }
-                        }
-                        if last_report.elapsed() >= Duration::from_secs(1) {
-                            info!(
-                                "fast_telem/s: batches={batches} samples={samples_ok} chan_drops={dropped}"
-                            );
-                            batches = 0;
-                            samples_ok = 0;
-                            dropped = 0;
-                            last_report = Instant::now();
-                        }
-                    }
-                }
-            }
-        }
-    });
 }
 
 /// Forward the bridge's pairing events. Pairing does not depend on the motor
@@ -1364,12 +1258,11 @@ async fn handle_command<NS>(
     ns: &NS,
     cmd: HostCommand,
     fast_hz_flag: &Arc<AtomicU16>,
-    requested_fast_hz: &Arc<AtomicU16>,
     device_addr: Address,
     active_setpoint: &Arc<Mutex<Option<Setpoint>>>,
     drive_session: u64,
     motor_seq: &mut u32,
-    raw: Option<&Arc<raw_telemetry::RawTelemetryState>>,
+    raw: &Arc<raw_telemetry::RawTelemetryState>,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
@@ -1382,8 +1275,7 @@ async fn handle_command<NS>(
         HostCommand::EmergencyStop(reply) => (MotorCommand::EmergencyStop, Some(reply)),
         HostCommand::SetPhaseSource(source, reply) => (MotorCommand::SetPhaseSource(source), reply),
         cmd => {
-            handle_non_motor_command(ns, cmd, fast_hz_flag, requested_fast_hz, device_addr, raw)
-                .await;
+            handle_non_motor_command(ns, cmd, fast_hz_flag, device_addr, raw).await;
             return;
         }
     };
@@ -1441,9 +1333,8 @@ async fn handle_non_motor_command<NS>(
     ns: &NS,
     cmd: HostCommand,
     fast_hz_flag: &Arc<AtomicU16>,
-    requested_fast_hz: &Arc<AtomicU16>,
     device_addr: Address,
-    raw: Option<&Arc<raw_telemetry::RawTelemetryState>>,
+    raw: &Arc<raw_telemetry::RawTelemetryState>,
 ) where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
@@ -1457,49 +1348,17 @@ async fn handle_non_motor_command<NS>(
         | HostCommand::EmergencyStop(_)
         | HostCommand::SetPhaseSource(..) => unreachable!("motor command dispatched separately"),
         HostCommand::SetTelemetryConfig(cfg, reply) => {
-            if let Some(raw) = raw {
-                // Only the control exchange is awaited here. END is consumed
-                // by the raw reader and awaited by Capture on its own thread.
-                // Motor Stop never waits for raw I/O to drain.
-                let result = raw_telemetry::configure(ns, raw, cfg.fast_hz, device_addr).await;
-                fast_hz_flag.store(
-                    result.as_ref().map_or(0, |ack| ack.actual_fast_hz),
-                    Ordering::Relaxed,
-                );
-                requested_fast_hz.store(0, Ordering::Relaxed); // no capture auto-resume
-                if let Some(reply) = reply {
-                    let _ = reply.send(result);
-                }
-                return;
-            }
-            tracing::info!("Setting telemetry config: {}", ops::json_text(&cfg));
-            // Remember the *requested* rate as the reconnect intent — the
-            // reconnect path re-applies it instead of the static config
-            // value (which used to silently kill a capture's stream after
-            // a mid-capture reconnect).
-            requested_fast_hz.store(cfg.fast_hz, Ordering::Relaxed);
-            match client
-                .at_least_once::<TelemetryConfigEndpoint>(
-                    device_addr,
-                    &cfg,
-                    Some("telemetry_config"),
-                    &SETPOINT_POLICY,
-                )
-                .await
-            {
-                Ok(ack) => {
-                    tracing::info!("Telemetry config ack: fast={}Hz", ack.actual_fast_hz);
-                    fast_hz_flag.store(ack.actual_fast_hz, Ordering::Relaxed);
-                    if let Some(reply) = reply {
-                        let _ = reply.send(Ok(ack));
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Telemetry config failed: {:?}", e);
-                    if let Some(reply) = reply {
-                        let _ = reply.send(Err(anyhow!("{e:?}")));
-                    }
-                }
+            // Only the control exchange is awaited here. END is consumed by
+            // the raw reader and awaited by Capture on its own thread. Motor
+            // Stop never waits for raw I/O to drain. A reconnect does not
+            // re-arm: a session belongs to one connection.
+            let result = raw_telemetry::configure(ns, raw, cfg.fast_hz, device_addr).await;
+            fast_hz_flag.store(
+                result.as_ref().map_or(0, |ack| ack.actual_fast_hz),
+                Ordering::Relaxed,
+            );
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
             }
         }
         HostCommand::ConfigRead(group_id, reply_tx) => {

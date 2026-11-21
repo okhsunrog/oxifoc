@@ -4,7 +4,7 @@
 
 use oxifoc_core::foc::config::{BoardConfig, NtcConfig, NtcTopology};
 use oxifoc_core::foc::pwm::MotorPwmConfig;
-use oxifoc_core::types;
+use oxifoc_core::icd;
 use oxifoc_core::types::{BoardCalib, CurrentSenseTopology};
 use oxifoc_core::units::{amps, ohms};
 
@@ -85,12 +85,13 @@ pub const PWM_CONFIG: MotorPwmConfig = MotorPwmConfig::new();
 // Protocol Configuration
 // ============================================================================
 
-/// Maximum size of a single packet
+/// Maximum size of a single packet, also every interface's TX MTU.
 pub const MAX_PACKET_SIZE: usize = 1024;
 
-// This value is also every interface's TX MTU: a full fast-telemetry batch
-// plus wire overhead must fit or full batches silently fail to broadcast.
-const _: () = assert!(MAX_PACKET_SIZE >= types::FAST_BATCH_BYTES + types::FAST_BATCH_WIRE_OVERHEAD);
+/// Largest raw telemetry block one frame carries: 34 Packed28 records rather
+/// than a full 64-record block, which keeps the 2048-byte queues and the
+/// 1024-byte receive buffers.
+pub const LINK_BLOCK_BYTES: usize = icd::raw_block_limit(MAX_PACKET_SIZE as u16) as usize;
 
 /// USB liveness timeout (ms): mark the USB interface Down if no frame arrives
 /// within this window. Shorter than the UART/ICD timeout for faster reaction.
