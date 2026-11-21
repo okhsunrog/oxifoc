@@ -53,7 +53,9 @@ use super::constants::{FRAC_1_SQRT_3 as ONE_BY_SQRT3, FRAC_2_SQRT_3 as TWO_BY_SQ
 pub fn space_vector_pwm(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3] {
     let sector = get_sector(alpha, beta);
 
-    // Calculate PWM timings per sector
+    // Calculate PWM timings per sector. The float-to-int casts saturate;
+    // the sums do too, so an input far outside the voltage circle clamps to
+    // full or zero duty below instead of overflowing (a panic in debug).
     let pwm_full = i32::from(max_duty);
     let (ta, tb, tc) = match sector {
         1 => {
@@ -61,49 +63,49 @@ pub fn space_vector_pwm(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3] {
             let t1 = ((alpha - ONE_BY_SQRT3 * beta) * pwm_full as f32) as i32;
             let t2 = (TWO_BY_SQRT3 * beta * pwm_full as f32) as i32;
             // PWM timings with symmetrical centering
-            let ta = (pwm_full + t1 + t2) / 2;
-            let tb = ta - t1;
-            let tc = tb - t2;
+            let ta = pwm_full.saturating_add(t1).saturating_add(t2) / 2;
+            let tb = ta.saturating_sub(t1);
+            let tc = tb.saturating_sub(t2);
             (ta, tb, tc)
         }
         2 => {
             let t2 = ((alpha + ONE_BY_SQRT3 * beta) * pwm_full as f32) as i32;
             let t3 = ((-alpha + ONE_BY_SQRT3 * beta) * pwm_full as f32) as i32;
-            let tb = (pwm_full + t2 + t3) / 2;
-            let ta = tb - t3;
-            let tc = ta - t2;
+            let tb = pwm_full.saturating_add(t2).saturating_add(t3) / 2;
+            let ta = tb.saturating_sub(t3);
+            let tc = ta.saturating_sub(t2);
             (ta, tb, tc)
         }
         3 => {
             let t3 = (TWO_BY_SQRT3 * beta * pwm_full as f32) as i32;
             let t4 = ((-alpha - ONE_BY_SQRT3 * beta) * pwm_full as f32) as i32;
-            let tb = (pwm_full + t3 + t4) / 2;
-            let tc = tb - t3;
-            let ta = tc - t4;
+            let tb = pwm_full.saturating_add(t3).saturating_add(t4) / 2;
+            let tc = tb.saturating_sub(t3);
+            let ta = tc.saturating_sub(t4);
             (ta, tb, tc)
         }
         4 => {
             let t4 = ((-alpha + ONE_BY_SQRT3 * beta) * pwm_full as f32) as i32;
             let t5 = (-TWO_BY_SQRT3 * beta * pwm_full as f32) as i32;
-            let tc = (pwm_full + t4 + t5) / 2;
-            let tb = tc - t5;
-            let ta = tb - t4;
+            let tc = pwm_full.saturating_add(t4).saturating_add(t5) / 2;
+            let tb = tc.saturating_sub(t5);
+            let ta = tb.saturating_sub(t4);
             (ta, tb, tc)
         }
         5 => {
             let t5 = ((-alpha - ONE_BY_SQRT3 * beta) * pwm_full as f32) as i32;
             let t6 = ((alpha - ONE_BY_SQRT3 * beta) * pwm_full as f32) as i32;
-            let tc = (pwm_full + t5 + t6) / 2;
-            let ta = tc - t5;
-            let tb = ta - t6;
+            let tc = pwm_full.saturating_add(t5).saturating_add(t6) / 2;
+            let ta = tc.saturating_sub(t5);
+            let tb = ta.saturating_sub(t6);
             (ta, tb, tc)
         }
         6 => {
             let t6 = (-TWO_BY_SQRT3 * beta * pwm_full as f32) as i32;
             let t1 = ((alpha + ONE_BY_SQRT3 * beta) * pwm_full as f32) as i32;
-            let ta = (pwm_full + t6 + t1) / 2;
-            let tc = ta - t1;
-            let tb = tc - t6;
+            let ta = pwm_full.saturating_add(t6).saturating_add(t1) / 2;
+            let tc = ta.saturating_sub(t1);
+            let tb = tc.saturating_sub(t6);
             (ta, tb, tc)
         }
         _ => unreachable!("Invalid sector"),
@@ -157,6 +159,30 @@ mod tests {
                 (i32::from(duty) - i32::from(expected)).abs() <= 1,
                 "Zero voltage duty should be ~{expected}, got {duty}"
             );
+        }
+    }
+
+    /// Inputs far outside the voltage circle (or not finite) saturate to a
+    /// valid duty instead of overflowing the timing sums.
+    #[test]
+    fn extreme_inputs_stay_within_duty_range() {
+        let values = [
+            f32::MAX,
+            -f32::MAX,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            1.0e9,
+            -1.0e9,
+            0.0,
+        ];
+        for alpha in values {
+            for beta in values {
+                let duties = space_vector_pwm(alpha, beta, MAX_DUTY);
+                assert!(
+                    duties.iter().all(|&d| d <= MAX_DUTY),
+                    "{alpha} {beta}: {duties:?}"
+                );
+            }
         }
     }
 
