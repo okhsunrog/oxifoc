@@ -127,7 +127,7 @@ pub async fn calibrate_hall_default(
 
 use crate::STATE;
 use crate::config::measured_board;
-use crate::control::foc::{IA_SAMPLE, IB_SAMPLE, IC_SAMPLE};
+use crate::control::foc::ADC_SHARED;
 
 /// Measure resistance using platform statics.
 pub async fn measure_resistance_ez(
@@ -136,9 +136,9 @@ pub async fn measure_resistance_ez(
     measure_resistance(
         params,
         &STATE,
-        &IA_SAMPLE,
-        &IB_SAMPLE,
-        &IC_SAMPLE,
+        &ADC_SHARED.ia,
+        &ADC_SHARED.ib,
+        &ADC_SHARED.ic,
         measured_board(),
     )
     .await
@@ -153,9 +153,9 @@ pub async fn measure_inductance_ez<S: SinCos>(
         params,
         pwm_freq,
         &STATE,
-        &IA_SAMPLE,
-        &IB_SAMPLE,
-        &IC_SAMPLE,
+        &ADC_SHARED.ia,
+        &ADC_SHARED.ib,
+        &ADC_SHARED.ic,
         measured_board(),
     )
     .await
@@ -168,9 +168,9 @@ pub async fn measure_flux_linkage_ez(
     measure_flux_linkage(
         params,
         &STATE,
-        &IA_SAMPLE,
-        &IB_SAMPLE,
-        &IC_SAMPLE,
+        &ADC_SHARED.ia,
+        &ADC_SHARED.ib,
+        &ADC_SHARED.ic,
         measured_board(),
     )
     .await
@@ -185,9 +185,9 @@ pub async fn calibrate_hall_ez(
     calibrate_hall(
         params,
         &STATE,
-        &IA_SAMPLE,
-        &IB_SAMPLE,
-        &IC_SAMPLE,
+        &ADC_SHARED.ia,
+        &ADC_SHARED.ib,
+        &ADC_SHARED.ic,
         measured_board(),
     )
     .await

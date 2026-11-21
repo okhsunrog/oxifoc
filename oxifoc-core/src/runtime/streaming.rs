@@ -37,34 +37,42 @@ pub(super) static FAST_TELEM_Q: FastTelemetryQueue<4096> = FastTelemetryQueue::n
 #[unsafe(link_section = ".ccm.bss.fast_telemetry")]
 pub(super) static FAST_TELEM_Q: FastTelemetryQueue<{ 48 * 1024 }> = FastTelemetryQueue::new();
 
-/// Decimation period: ISR writes to bbqueue every `period` FOC cycles.
-/// 0 = streaming disabled. Set by the raw session server on Arm and cleared
-/// on Stop or failure.
-pub static FAST_TELEM_PERIOD: AtomicU32 = AtomicU32::new(0);
+/// Telemetry producer state shared by the control ISR and the session
+/// tasks. One static, so the ISR reaches every field from one base address
+/// (see [`crate::state::IsrFlags`]).
+pub struct FastProducer {
+    /// Decimation period: the ISR queues a sample every `period` FOC cycles.
+    /// 0 = streaming disabled. Set by the raw session server on Arm and
+    /// cleared on Stop or failure.
+    pub period: AtomicU32,
+    /// Modulo counter selecting every `period`-th cycle. The frame is
+    /// unfiltered raw ADC data; the host does any anti-alias decimation.
+    pub(super) decimation: AtomicU32,
+    /// Samples the ISR could not queue in the current session (queue full).
+    pub(super) producer_drops: AtomicU32,
+    /// Loss attribution, reported and reset by a board's 1-Hz stats task:
+    /// successful ISR queue commits,
+    pub push_ok: AtomicU32,
+    /// ISR grant failures (queue full),
+    pub push_drops: AtomicU32,
+    /// and frames the session stream read from the queue.
+    pub read_ok: AtomicU32,
+}
+
+pub static FAST_PRODUCER: FastProducer = FastProducer {
+    period: AtomicU32::new(0),
+    decimation: AtomicU32::new(0),
+    producer_drops: AtomicU32::new(0),
+    push_ok: AtomicU32::new(0),
+    push_drops: AtomicU32::new(0),
+    read_ok: AtomicU32::new(0),
+};
 
 // Serializes session control with the task-side block stream, without
 // blocking the FOC interrupt.
 pub(super) static FAST_TELEM_GATE: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
 #[cfg(test)]
 pub(super) static FAST_TELEM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Decimation counter for the raw diagnostic stream: emit one sample every
-/// `period`-th FOC cycle. The raw-ADC frame is unfiltered (the host does any
-/// anti-alias/decimation), so a plain modulo counter replaces the old CIC.
-pub(super) static FAST_DECIM_CTR: AtomicU32 = AtomicU32::new(0);
-
-/// Diagnostic counters for the fast-telemetry pipeline. Each loss point
-/// increments its counter; a board task can report + reset them (e.g. a 1 Hz
-/// defmt line) to attribute stream loss to a stage without a debugger.
-pub mod fast_telem_stats {
-    use core::sync::atomic::AtomicU32;
-    /// ISR-side `push_fast_telemetry` successful queue commits.
-    pub static PUSH_OK: AtomicU32 = AtomicU32::new(0);
-    /// ISR-side `push_fast_telemetry` grant failures (FAST_TELEM_Q full).
-    pub static PUSH_DROPS: AtomicU32 = AtomicU32::new(0);
-    /// Session-stream frames read from the queue.
-    pub static READ_OK: AtomicU32 = AtomicU32::new(0);
-}
 
 /// Command-path counters (host→device direction), 1 Hz-reported by the
 /// device stats task. Bracket the RX pipeline: requests that reached the
@@ -204,14 +212,15 @@ pub fn publish_cycle_telemetry(
 ) {
     let pole_pairs = update_telemetry(state_mutex, adc, hall, foc);
 
-    let period = FAST_TELEM_PERIOD.load(Ordering::Relaxed);
+    let period = FAST_PRODUCER.period.load(Ordering::Relaxed);
     if period == 0 {
         return;
     }
     // Raw diagnostic frame: emit one sample every `period`-th FOC cycle. No CIC
     // anti-alias — the currents ship as raw ADC counts and the host applies
     // calibration/decimation downstream, so there is nothing to filter here.
-    if FAST_DECIM_CTR
+    if FAST_PRODUCER
+        .decimation
         .fetch_add(1, Ordering::Relaxed)
         .is_multiple_of(period)
     {
@@ -274,10 +283,10 @@ pub fn build_fast_telemetry(
 /// If the queue is full, the sample is silently dropped (correct for real-time).
 pub fn push_fast_telemetry(telem: &FastTelemetry) {
     if FAST_TELEM_Q.push(telem).is_ok() {
-        fast_telem_stats::PUSH_OK.fetch_add(1, Ordering::Relaxed);
+        FAST_PRODUCER.push_ok.fetch_add(1, Ordering::Relaxed);
     } else {
-        fast_telem_stats::PUSH_DROPS.fetch_add(1, Ordering::Relaxed);
-        super::raw_stream::PRODUCER_DROPS.fetch_add(1, Ordering::Relaxed);
+        FAST_PRODUCER.push_drops.fetch_add(1, Ordering::Relaxed);
+        FAST_PRODUCER.producer_drops.fetch_add(1, Ordering::Relaxed);
     }
 }
 

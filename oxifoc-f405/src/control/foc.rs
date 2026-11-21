@@ -29,7 +29,7 @@ use oxifoc_core::isr_prof::Snapshot;
 use oxifoc_core::motor::FocDriver;
 use oxifoc_core::motor::failsafe::FailsafeConfig;
 use oxifoc_core::motor::foc_driver::PreparedMotorModel;
-use oxifoc_core::runtime::streaming::publish_cycle_telemetry;
+use oxifoc_core::runtime::streaming::{FAST_PRODUCER, publish_cycle_telemetry};
 #[cfg(feature = "velocity-debug")]
 use oxifoc_core::runtime::velocity_debug;
 use oxifoc_core::state::model;
@@ -58,97 +58,90 @@ use oxifoc_core::units::{
 };
 use profiling_window::{DwtSample, DwtWindow};
 
-// ========== ADC Sample Storage (Global Atomics) ==========
+// ========== Values shared with the ADC interrupt ==========
 
-/// Latest phase current samples (from ADC1/ADC2/ADC3 injected sequences).
-pub static IA_SAMPLE: AtomicU16 = AtomicU16::new(0);
-pub static IB_SAMPLE: AtomicU16 = AtomicU16::new(0);
-pub static IC_SAMPLE: AtomicU16 = AtomicU16::new(0);
+// The ADC interrupt reaches each group below from one base address. As
+// separate small statics they were grouped by LLVM's global merging, and the
+// interrupt's code then changed whenever an unrelated static was added or
+// removed elsewhere (see `oxifoc_core::state::IsrFlags`).
 
 // The bounded ADC conversion cannot produce this sentinel.
 const NO_VBUS_SAMPLE: u32 = u32::MAX;
-static VBUS_MV: AtomicU32 = AtomicU32::new(NO_VBUS_SAMPLE);
+
+/// Samples and derived values the ADC interrupt publishes for tasks.
+pub struct AdcShared {
+    /// Latest phase current samples (ADC1/ADC2/ADC3 injected sequences).
+    pub ia: AtomicU16,
+    pub ib: AtomicU16,
+    pub ic: AtomicU16,
+    /// Calibrated bus voltage in millivolts, or [`NO_VBUS_SAMPLE`].
+    vbus_mv: AtomicU32,
+    /// Board temperature in 0.1 °C, refreshed every 128 cycles.
+    board_temp_c_x10: AtomicI16,
+    /// Motor temperature in 0.1 °C, refreshed every 128 cycles.
+    motor_temp_c_x10: AtomicI16,
+    /// The boot task installed the driver in [`FOC_HANDOFF`].
+    foc_ready: AtomicBool,
+}
+
+pub static ADC_SHARED: AdcShared = AdcShared {
+    ia: AtomicU16::new(0),
+    ib: AtomicU16::new(0),
+    ic: AtomicU16::new(0),
+    vbus_mv: AtomicU32::new(NO_VBUS_SAMPLE),
+    board_temp_c_x10: AtomicI16::new(0),
+    motor_temp_c_x10: AtomicI16::new(0),
+    foc_ready: AtomicBool::new(false),
+};
 
 /// Latest calibrated bus voltage in millivolts, once the ADC has sampled it.
 pub(crate) fn measured_vbus_mv() -> Option<u32> {
-    let mv = VBUS_MV.load(Ordering::Relaxed);
+    let mv = ADC_SHARED.vbus_mv.load(Ordering::Relaxed);
     (mv != NO_VBUS_SAMPLE).then_some(mv)
 }
 
-/// Latest board temperature in 0.1°C units (updated in ADC interrupt).
-pub static BOARD_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
-/// Latest motor temperature in 0.1°C units (updated in ADC interrupt).
-pub static MOTOR_TEMP_C_X10: AtomicI16 = AtomicI16::new(0);
-
-/// DIAG TEMP: raw motor-NTC ADC counts (PC4) for the hall-connector hunt.
-pub static MOTOR_TEMP_RAW: AtomicU16 = AtomicU16::new(0);
-
-/// DIAG TEMP: per-port IDR activity masks (bits that changed since the
-/// previous FOC cycle, OR-accumulated per stats window) — pin-hunting for
-/// the hall inputs. Ports A, B, C, D.
-pub static PIN_ACT: [AtomicU32; 4] = [
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-];
-static PIN_PREV: [AtomicU32; 4] = [
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-];
-
 // ========== ISR cost instrumentation (DWT cycle counter) ==========
-// Ported from the g431 (same layout so the isr/s log lines and the
-// bench-suite parser stay identical across boards).
 
-/// Sum of ADC ISR durations in CPU cycles since last stats swap.
-pub static ISR_CYC_SUM: AtomicU32 = AtomicU32::new(0);
-/// Per-section DWT cycle sums (reset each 1 Hz report; avg = sum / N).
-/// adc = all three injected reads + NTC/vbus conversions, snap = snapshot
-/// + hall sampling, foc = run_foc_cycle, pub = telemetry publish.
+/// ADC interrupt cost counters, swapped out by the 1-Hz stats task.
+struct IsrTiming {
+    /// Sum, maximum and count of ISR durations in CPU cycles.
+    cycles: AtomicU32,
+    max_cycles: AtomicU32,
+    samples: AtomicU32,
+    /// Executions that exceeded `budget_cycles`.
+    overruns: AtomicU32,
+    /// One PWM period of core cycles (168 MHz / 20 kHz = 8400).
+    budget_cycles: AtomicU32,
+    /// Active current/velocity loops with a nonzero control-speed estimate,
+    /// split from stationary holds. This selects a computational path, not
+    /// physical rotation evidence.
+    motion_samples: AtomicU32,
+    motion_cycles: AtomicU32,
+    motion_max_cycles: AtomicU32,
+}
+
+static ISR_TIMING: IsrTiming = IsrTiming {
+    cycles: AtomicU32::new(0),
+    max_cycles: AtomicU32::new(0),
+    samples: AtomicU32::new(0),
+    overruns: AtomicU32::new(0),
+    budget_cycles: AtomicU32::new(0),
+    motion_samples: AtomicU32::new(0),
+    motion_cycles: AtomicU32::new(0),
+    motion_max_cycles: AtomicU32::new(0),
+};
+
+/// isr-profiling only: per-section DWT sums (reset each 1 Hz report;
+/// avg = sum / N). adc = all three injected reads + NTC/vbus conversions,
+/// snap = snapshot + hall sampling, foc = run_foc_cycle, pub = telemetry.
 pub static ISR_PROF_ADC: AtomicU32 = AtomicU32::new(0);
 pub static ISR_PROF_SNAP: AtomicU32 = AtomicU32::new(0);
 pub static ISR_PROF_FOC: AtomicU32 = AtomicU32::new(0);
 pub static ISR_PROF_PUB: AtomicU32 = AtomicU32::new(0);
-/// Max single ISR duration in CPU cycles since last stats swap.
-pub static ISR_CYC_MAX: AtomicU32 = AtomicU32::new(0);
-/// ISR executions that exceeded [`ISR_BUDGET_CYCLES`].
-pub static ISR_CYC_OVER: AtomicU32 = AtomicU32::new(0);
-/// Per-ISR cycle budget: one full PWM period of core cycles
-/// (168 MHz / 20 kHz = 8400).
-static ISR_BUDGET_CYCLES: AtomicU32 = AtomicU32::new(0);
-/// Number of ADC ISR executions since last stats swap.
-pub static ISR_CYC_N: AtomicU32 = AtomicU32::new(0);
-// Split active current/velocity loops with a nonzero control-speed estimate
-// from stationary holds. This selects a computational path, not physical
-// rotation evidence. Bookkeeping follows the ISR end timestamp.
-mod motion_timing {
-    use super::*;
-    static N: AtomicU32 = AtomicU32::new(0);
-    static SUM: AtomicU32 = AtomicU32::new(0);
-    static MAX: AtomicU32 = AtomicU32::new(0);
-
-    pub fn record(cycles: u32) {
-        N.fetch_add(1, Ordering::Relaxed);
-        SUM.fetch_add(cycles, Ordering::Relaxed);
-        MAX.fetch_max(cycles, Ordering::Relaxed);
-    }
-
-    // Called in the same existing stats CS as the whole-ISR counters.
-    pub fn take() -> (u32, u32, u32) {
-        (
-            N.swap(0, Ordering::Relaxed),
-            SUM.swap(0, Ordering::Relaxed),
-            MAX.swap(0, Ordering::Relaxed),
-        )
-    }
-}
-// Entry-to-entry timing is independent of the software FOC sequence counter.
-// Execution duration alone cannot expose an interrupt that started late or a
-// conversion whose interrupt was never serviced. These counters diagnose that
-// distinction; a long interval is not by itself a proven missed ADC trigger.
+// isr-profiling only: entry-to-entry timing, independent of the software FOC
+// sequence counter. Execution duration alone cannot expose an interrupt that
+// started late or a conversion whose interrupt was never serviced; a long
+// interval is not by itself a proven missed ADC trigger.
 static ISR_INTERVAL_SUM: AtomicU32 = AtomicU32::new(0);
 static ISR_INTERVAL_MIN: AtomicU32 = AtomicU32::new(u32::MAX);
 static ISR_INTERVAL_MAX: AtomicU32 = AtomicU32::new(0);
@@ -227,13 +220,12 @@ fn publish_velocity_debug(
 static FOC_DRIVER: static_cell::StaticCell<FocDriverType> = static_cell::StaticCell::new();
 static FOC_HANDOFF: CriticalSectionMutex<RefCell<Option<&'static mut FocDriverType>>> =
     CriticalSectionMutex::new(RefCell::new(None));
-static FOC_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "board-vesc6-mk5")]
 mod detection_timing {
     use super::{
-        AtomicU32, CPU_HZ, ControlTiming, Duration, FocDriverType, ISR_BUDGET_CYCLES,
-        ISR_LAST_START, MotorPwm, Ordering, Timer, interrupt,
+        AtomicU32, CPU_HZ, ControlTiming, Duration, FocDriverType, ISR_LAST_START, ISR_TIMING,
+        MotorPwm, Ordering, Timer, interrupt,
     };
     use embassy_stm32::{interrupt::typelevel::Interrupt, pac};
     use oxifoc_core::state;
@@ -336,7 +328,7 @@ mod detection_timing {
         interrupt::typelevel::ADC::unpend();
         let budget = (u64::from(CPU_HZ) * u64::from(timing.period_ticks)
             / u64::from(timing.clock_hz)) as u32;
-        ISR_BUDGET_CYCLES.store(budget, Ordering::Relaxed);
+        ISR_TIMING.budget_cycles.store(budget, Ordering::Relaxed);
         ISR_LAST_START.store(0, Ordering::Relaxed);
         REQUEST.store(AWAITING_SAMPLE, Ordering::Release);
         MotorPwm::resume_control_timer();
@@ -380,7 +372,7 @@ pub async fn init(
     let timing = motor_pwm.control_timing();
     let budget =
         (u64::from(CPU_HZ) * u64::from(timing.period_ticks) / u64::from(timing.clock_hz)) as u32;
-    ISR_BUDGET_CYCLES.store(budget, Ordering::Relaxed);
+    ISR_TIMING.budget_cycles.store(budget, Ordering::Relaxed);
 
     // Publish the initialized handles before enabling the ADC interrupt.
     ADC_HANDOFF.lock(|cell| cell.replace(Some(adc_handles)));
@@ -410,7 +402,7 @@ pub async fn init(
     // touches NVIC priority registers nothing else owns at this point.
     unsafe {
         use embassy_stm32::interrupt::typelevel::Interrupt;
-        // DWT cycle counter for ISR-cost stats (ISR_CYC_* atomics).
+        // DWT cycle counter for the ISR cost stats (ISR_TIMING).
         let mut cp = cortex_m::Peripherals::steal();
         cp.DCB.enable_trace();
         cp.DWT.enable_cycle_counter();
@@ -422,8 +414,12 @@ pub async fn init(
     motor_pwm.enable_adc_trigger();
 
     // Build current sensor and phase manager
-    let current_sensor =
-        F405CurrentSensor::from_board(measured_board(), &IA_SAMPLE, &IB_SAMPLE, &IC_SAMPLE);
+    let current_sensor = F405CurrentSensor::from_board(
+        measured_board(),
+        &ADC_SHARED.ia,
+        &ADC_SHARED.ib,
+        &ADC_SHARED.ic,
+    );
     hall::apply_stored_config(config);
     let hall_proxy = HallAngleProxy::new();
     let initial_vbus_v = first_vbus_v().await;
@@ -499,7 +495,7 @@ pub async fn init(
     // Install FOC driver for ISR-only access; it now advances calibration.
     let driver = FOC_DRIVER.init(foc_driver);
     FOC_HANDOFF.lock(|cell| cell.replace(Some(driver)));
-    FOC_READY.store(true, Ordering::Release);
+    ADC_SHARED.foc_ready.store(true, Ordering::Release);
 
     if calibration_started {
         match CURRENT_OFFSET_DONE.wait().await {
@@ -570,10 +566,10 @@ fn ADC() {
         ISR_INTERVAL_MIN.fetch_min(interval, Ordering::Relaxed);
         ISR_INTERVAL_MAX.fetch_max(interval, Ordering::Relaxed);
         ISR_INTERVAL_N.fetch_add(1, Ordering::Relaxed);
-        if interval > ISR_BUDGET_CYCLES.load(Ordering::Relaxed) * 3 / 2 {
+        if interval > ISR_TIMING.budget_cycles.load(Ordering::Relaxed) * 3 / 2 {
             ISR_INTERVAL_LONG.fetch_add(1, Ordering::Relaxed);
         }
-        if interval < ISR_BUDGET_CYCLES.load(Ordering::Relaxed) / 2 {
+        if interval < ISR_TIMING.budget_cycles.load(Ordering::Relaxed) / 2 {
             ISR_INTERVAL_SHORT.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -598,31 +594,30 @@ fn ADC() {
     let mut phase_a = [0; 3];
     adcs.adc1.read_latest(&mut phase_a);
     let [ia_raw, board_temp_raw, va_raw] = phase_a;
-    IA_SAMPLE.store(ia_raw, Ordering::Relaxed);
+    ADC_SHARED.ia.store(ia_raw, Ordering::Relaxed);
 
     // Convert board temperature raw ADC to 0.1°C units
     let board_temp_c_x10 = if convert_temp {
         let t = temperature::board_c_x10(board_temp_raw);
-        BOARD_TEMP_C_X10.store(t, Ordering::Relaxed);
+        ADC_SHARED.board_temp_c_x10.store(t, Ordering::Relaxed);
         t
     } else {
-        BOARD_TEMP_C_X10.load(Ordering::Relaxed)
+        ADC_SHARED.board_temp_c_x10.load(Ordering::Relaxed)
     };
 
     // Read ADC2 injected data (phase B current + motor temp)
     let mut phase_b = [0; 3];
     adcs.adc2.read_latest(&mut phase_b);
     let [ib_raw, motor_temp_raw, vb_raw] = phase_b;
-    IB_SAMPLE.store(ib_raw, Ordering::Relaxed);
+    ADC_SHARED.ib.store(ib_raw, Ordering::Relaxed);
 
-    MOTOR_TEMP_RAW.store(motor_temp_raw, Ordering::Relaxed);
     let motor_temp_c_x10 = state::motor_temperature_input_enabled().then(|| {
         if convert_temp {
             let t = temperature::motor_c_x10(motor_temp_raw);
-            MOTOR_TEMP_C_X10.store(t, Ordering::Relaxed);
+            ADC_SHARED.motor_temp_c_x10.store(t, Ordering::Relaxed);
             t
         } else {
-            MOTOR_TEMP_C_X10.load(Ordering::Relaxed)
+            ADC_SHARED.motor_temp_c_x10.load(Ordering::Relaxed)
         }
     });
 
@@ -630,11 +625,11 @@ fn ADC() {
     let mut phase_c = [0; 3];
     adcs.adc3.read_latest(&mut phase_c);
     let [ic_raw, vbus_raw, vc_raw] = phase_c;
-    IC_SAMPLE.store(ic_raw, Ordering::Relaxed);
+    ADC_SHARED.ic.store(ic_raw, Ordering::Relaxed);
 
     // Convert VBUS raw ADC to millivolts
     let vbus_mv = state::calibrated_vbus_mv(&STATE, board.vbus_mv_from_adc(vbus_raw));
-    VBUS_MV.store(vbus_mv, Ordering::Relaxed);
+    ADC_SHARED.vbus_mv.store(vbus_mv, Ordering::Relaxed);
 
     let prof_t1 = isr_prof::now();
 
@@ -684,7 +679,7 @@ fn ADC() {
     let mut time_control_motion = false;
     // The release flag avoids touching the boot handoff while the task
     // waits for its first VBUS reading. Once taken, DRIVER stays ISR-local.
-    if DRIVER.is_none() && FOC_READY.load(Ordering::Acquire) {
+    if DRIVER.is_none() && ADC_SHARED.foc_ready.load(Ordering::Acquire) {
         *DRIVER = FOC_HANDOFF.lock(RefCell::take);
     }
     let foc_telem = DRIVER.as_deref_mut().and_then(|driver| {
@@ -759,14 +754,20 @@ fn ADC() {
     let isr_end = isr_timing_now();
     let isr_dt = isr_end.wrapping_sub(isr_t0);
     if time_control_motion {
-        motion_timing::record(isr_dt);
+        ISR_TIMING.motion_samples.fetch_add(1, Ordering::Relaxed);
+        ISR_TIMING
+            .motion_cycles
+            .fetch_add(isr_dt, Ordering::Relaxed);
+        ISR_TIMING
+            .motion_max_cycles
+            .fetch_max(isr_dt, Ordering::Relaxed);
     }
-    ISR_CYC_SUM.fetch_add(isr_dt, Ordering::Relaxed);
-    ISR_CYC_N.fetch_add(1, Ordering::Relaxed);
-    ISR_CYC_MAX.fetch_max(isr_dt, Ordering::Relaxed);
+    ISR_TIMING.cycles.fetch_add(isr_dt, Ordering::Relaxed);
+    ISR_TIMING.samples.fetch_add(1, Ordering::Relaxed);
+    ISR_TIMING.max_cycles.fetch_max(isr_dt, Ordering::Relaxed);
     // An ISR that ate the whole PWM period leaves no thread time.
-    if isr_dt > ISR_BUDGET_CYCLES.load(Ordering::Relaxed) {
-        ISR_CYC_OVER.fetch_add(1, Ordering::Relaxed);
+    if isr_dt > ISR_TIMING.budget_cycles.load(Ordering::Relaxed) {
+        ISR_TIMING.overruns.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -835,11 +836,15 @@ impl IsrStatistics {
         critical_section::with(|cs| {
             let rearmed = rearm_dwt(cs);
             Self {
-                samples: ISR_CYC_N.swap(0, Ordering::Relaxed),
-                cycles: ISR_CYC_SUM.swap(0, Ordering::Relaxed),
-                max_cycles: ISR_CYC_MAX.swap(0, Ordering::Relaxed),
-                overruns: ISR_CYC_OVER.swap(0, Ordering::Relaxed),
-                motion: motion_timing::take(),
+                samples: ISR_TIMING.samples.swap(0, Ordering::Relaxed),
+                cycles: ISR_TIMING.cycles.swap(0, Ordering::Relaxed),
+                max_cycles: ISR_TIMING.max_cycles.swap(0, Ordering::Relaxed),
+                overruns: ISR_TIMING.overruns.swap(0, Ordering::Relaxed),
+                motion: (
+                    ISR_TIMING.motion_samples.swap(0, Ordering::Relaxed),
+                    ISR_TIMING.motion_cycles.swap(0, Ordering::Relaxed),
+                    ISR_TIMING.motion_max_cycles.swap(0, Ordering::Relaxed),
+                ),
                 adc: ISR_PROF_ADC.swap(0, Ordering::Relaxed),
                 snapshot: ISR_PROF_SNAP.swap(0, Ordering::Relaxed),
                 control: ISR_PROF_FOC.swap(0, Ordering::Relaxed),
@@ -970,14 +975,13 @@ pub async fn isr_stats_task() {
                     interval_max,
                     long,
                     short,
-                    ISR_BUDGET_CYCLES.load(Ordering::Relaxed),
+                    ISR_TIMING.budget_cycles.load(Ordering::Relaxed),
                 );
             }
         }
-        use oxifoc_core::runtime::streaming::fast_telem_stats as ft;
-        let pushed = ft::PUSH_OK.swap(0, Ordering::Relaxed);
-        let dropped = ft::PUSH_DROPS.swap(0, Ordering::Relaxed);
-        let read = ft::READ_OK.swap(0, Ordering::Relaxed);
+        let pushed = FAST_PRODUCER.push_ok.swap(0, Ordering::Relaxed);
+        let dropped = FAST_PRODUCER.push_drops.swap(0, Ordering::Relaxed);
+        let read = FAST_PRODUCER.read_ok.swap(0, Ordering::Relaxed);
         #[cfg(feature = "hall-diagnostics")]
         crate::diagnostics::hall_edges::observe_stream_stats(dropped);
         if pushed != 0 || dropped != 0 || read != 0 {
@@ -985,19 +989,13 @@ pub async fn isr_stats_task() {
         }
         // Hall diagnostics: raw pin state + edge/overcapture rates. A
         // sensored motor at standstill shows a constant valid state (1-6)
-        // and 0 edges; 0b111/0b000 = unpowered/disconnected sensors.
-        // Hall + motor-NTC diagnostics (raw GPIO/ADC — the honest bottom
-        // of the stack). A sensored motor at standstill shows a constant
-        // VALID state (1-6) and 0 edges; 0b111 = unpowered/disconnected
-        // sensors; t_raw 4095 = open TEMP line. Flaky hall wiring shows as
-        // state flips + edge bursts synchronized with cable movement
-        // (Flipsky connector hunt, 2026-07-08).
+        // and 0 edges; 0b111/0b000 = unpowered/disconnected sensors. Flaky
+        // wiring shows as state flips and edge bursts with cable movement.
         defmt::info!(
-            "hall/s: state={=u8:b} edges={} overcap={} t_raw={}",
+            "hall/s: state={=u8:b} edges={} overcap={}",
             hall::read_hall_state_raw(),
             hall::EDGES.swap(0, Ordering::Relaxed),
             hall::OVERCAPTURES.swap(0, Ordering::Relaxed),
-            MOTOR_TEMP_RAW.load(Ordering::Relaxed),
         );
         // run_foc_cycle internals (core isr_prof buckets) — same lines as
         // the g431 protocol stats task.

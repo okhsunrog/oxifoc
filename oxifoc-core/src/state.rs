@@ -661,7 +661,7 @@ impl MotorControlState {
             && !current_offset_request_pending()
             && !model_apply_pending()
             && !ISR_FLAGS.detection_active.load(Ordering::Acquire)
-            && streaming::FAST_TELEM_PERIOD.load(Ordering::Acquire) == 0
+            && streaming::FAST_PRODUCER.period.load(Ordering::Acquire) == 0
     }
 
     /// Set motor to stopped state.

@@ -1,9 +1,7 @@
 //! Exclusive session-bound consumer of the canonical fixed-record ISR queue.
 //! A stop ACK disables the producer; only the session-bound END proves drain.
 
-use super::streaming::{
-    FAST_DECIM_CTR, FAST_TELEM_GATE, FAST_TELEM_PERIOD, FAST_TELEM_Q, fast_telem_stats,
-};
+use super::streaming::{FAST_PRODUCER, FAST_TELEM_GATE, FAST_TELEM_Q};
 use super::velocity_debug;
 use crate::{
     icd::{
@@ -24,13 +22,12 @@ use core::{
     marker::PhantomData,
     num::NonZeroU32,
     pin::pin,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use ergot::net_stack::{NetStackHandle, endpoints::Endpoints};
 
-pub(super) static PRODUCER_DROPS: AtomicU32 = AtomicU32::new(0);
 static READY: AtomicBool = AtomicBool::new(false);
 static CONTROL: Mutex<CriticalSectionRawMutex, RawControl> = Mutex::new(RawControl::new());
 
@@ -334,7 +331,7 @@ async fn control_request_with_options(
             debug,
         );
         if !matches!(outcome.1, Action::None) {
-            FAST_TELEM_PERIOD.store(0, Ordering::Release);
+            FAST_PRODUCER.period.store(0, Ordering::Release);
             velocity_debug::disable();
         }
         outcome
@@ -345,8 +342,8 @@ async fn control_request_with_options(
         // mask the FOC interrupt while discarding an old queue's whole prefix.
         FAST_TELEM_Q.discard();
         velocity_debug::discard();
-        PRODUCER_DROPS.store(0, Ordering::Relaxed);
-        FAST_DECIM_CTR.store(0, Ordering::Relaxed);
+        FAST_PRODUCER.producer_drops.store(0, Ordering::Relaxed);
+        FAST_PRODUCER.decimation.store(0, Ordering::Relaxed);
         critical_section::with(|_| {
             if state::ISR_FLAGS.flash_op_pending.load(Ordering::SeqCst) {
                 control.phase = Phase::Failed;
@@ -355,7 +352,7 @@ async fn control_request_with_options(
                 if control.velocity_debug {
                     velocity_debug::enable();
                 }
-                FAST_TELEM_PERIOD.store(period, Ordering::Release);
+                FAST_PRODUCER.period.store(period, Ordering::Release);
             }
         });
     }
@@ -462,7 +459,7 @@ async fn fail_session(session: u64) {
     let mut control = CONTROL.lock().await;
     if control.session == session {
         critical_section::with(|_| {
-            FAST_TELEM_PERIOD.store(0, Ordering::Release);
+            FAST_PRODUCER.period.store(0, Ordering::Release);
             velocity_debug::disable();
         });
         control.phase = Phase::Failed;
@@ -534,7 +531,7 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
             accepted
         });
         if read != 0 {
-            fast_telem_stats::READ_OK.fetch_add(read, Ordering::Relaxed);
+            FAST_PRODUCER.read_ok.fetch_add(read, Ordering::Relaxed);
         }
         if !encoder.is_full() && !refused && !closing {
             drop(gate);
@@ -551,7 +548,7 @@ pub async fn raw_telemetry_stream<S: RawTelemetrySink, T: Timer>(sink: &mut S) {
         }
         let closing_velocity = count == 0 && closing && control.velocity_debug && !debug_ended;
         let end = count == 0 && closing && !closing_velocity;
-        let drops = PRODUCER_DROPS.load(Ordering::Acquire);
+        let drops = FAST_PRODUCER.producer_drops.load(Ordering::Acquire);
         let mut velocity_records = 0;
         let bytes = if closing_velocity {
             let buffer = encoder.empty_scratch();
@@ -827,7 +824,7 @@ mod tests {
             .unwrap();
         *CONTROL.try_lock().unwrap() = RawControl::new();
         FAST_TELEM_Q.discard();
-        FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
+        FAST_PRODUCER.period.store(0, Ordering::Relaxed);
         let held = Arc::new(AtomicBool::new(true));
         let fail = Arc::new(AtomicBool::new(false));
         let blocks = Arc::new(StdMutex::new(Vec::new()));
@@ -872,7 +869,7 @@ mod tests {
             .status,
             RawTelemetryStatus::Stopping
         );
-        assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Relaxed), 0);
+        assert_eq!(FAST_PRODUCER.period.load(Ordering::Relaxed), 0);
         assert!(stream.as_mut().poll(&mut cx).is_pending(), "sink is held");
         assert_eq!(
             ready(control_request(arm(8, 7), 20_000, timing)).status,
@@ -968,7 +965,7 @@ mod tests {
             ready(control_request(RawTelemetryRequest::Status, 20_000, timing)).status,
             RawTelemetryStatus::Unavailable
         );
-        assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Relaxed), 0);
+        assert_eq!(FAST_PRODUCER.period.load(Ordering::Relaxed), 0);
         assert_eq!(
             ready(control_request(arm(9, 8), 20_000, timing)).status,
             RawTelemetryStatus::Unavailable
@@ -994,7 +991,7 @@ mod tests {
         assert_eq!(end.header.total_records, 0);
         drop(written);
         *CONTROL.try_lock().unwrap() = RawControl::new();
-        FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
+        FAST_PRODUCER.period.store(0, Ordering::Relaxed);
         READY.store(false, Ordering::Relaxed);
     }
 
@@ -1005,7 +1002,7 @@ mod tests {
             .unwrap();
         *CONTROL.try_lock().unwrap() = RawControl::new();
         FAST_TELEM_Q.discard();
-        FAST_TELEM_PERIOD.store(0, Ordering::Relaxed);
+        FAST_PRODUCER.period.store(0, Ordering::Relaxed);
         let blocks = Arc::new(StdMutex::new(Vec::new()));
         let mut sink = HeldSink {
             held: Arc::new(AtomicBool::new(false)),
@@ -1048,7 +1045,7 @@ mod tests {
             ready(control_request(RawTelemetryRequest::Status, 20_000, timing)).status,
             RawTelemetryStatus::Unavailable
         );
-        assert_eq!(FAST_TELEM_PERIOD.load(Ordering::Relaxed), 0);
+        assert_eq!(FAST_PRODUCER.period.load(Ordering::Relaxed), 0);
         *CONTROL.try_lock().unwrap() = RawControl::new();
         FAST_TELEM_Q.discard();
         READY.store(false, Ordering::Relaxed);
@@ -1112,7 +1109,7 @@ mod routed_owner_tests {
             RawTelemetryStatus::Stopping
         );
         *CONTROL.try_lock().unwrap() = RawControl::new();
-        FAST_TELEM_PERIOD.store(0, Ordering::Release);
+        FAST_PRODUCER.period.store(0, Ordering::Release);
         FAST_TELEM_Q.discard();
         READY.store(false, Ordering::Release);
     }
