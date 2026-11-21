@@ -1,6 +1,5 @@
 # MK5 + C5 bench profile, loaded from the current directory.
 # The STM32 ELF supplies its defmt decoding table.
-chip = "STM32F405RGTx"
 elf = "oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405"
 
 # Current MK5 bench: commands and fixed telemetry through the C5 bridge.

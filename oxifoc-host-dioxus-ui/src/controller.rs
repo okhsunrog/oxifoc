@@ -127,14 +127,11 @@ fn config(form: &ConnectionForm, capabilities: Capabilities) -> Result<HostConfi
             config.serial_path = Some(form.device.clone());
             config.serial_baud = form.baud.parse().ok();
         }
-        #[cfg(feature = "desktop")]
         Transport::Rtt => {
-            config.transport = Some(TransportType::Rtt);
-            config.probe = Some(form.device.clone());
-            config.chip = Some(form.chip.trim().into());
+            return Err("The RTT transport was removed from the host library.".into());
         }
         #[cfg(not(feature = "desktop"))]
-        Transport::Serial | Transport::Rtt => {
+        Transport::Serial => {
             return Err("This transport is not included in this build.".into());
         }
     }

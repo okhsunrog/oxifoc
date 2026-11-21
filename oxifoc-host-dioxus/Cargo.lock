@@ -5278,15 +5278,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "object"
-version = "0.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11dbdb66876026054e4ffc8d757d862bdf5df5aebd5c0b95a41f17832a94f7d2"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5382,7 +5373,6 @@ dependencies = [
 name = "oxifoc-core"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "critical-section",
  "embassy-futures 0.1.2 (git+https://github.com/embassy-rs/embassy.git?rev=72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8)",
  "embedded-storage-async",
@@ -5438,9 +5428,6 @@ dependencies = [
  "defmt-decoder",
  "defmt-parser",
  "ergot",
- "futures",
- "nusb 0.1.14",
- "object 0.41.0",
  "oxifoc-core",
  "probe-rs",
  "serde",

@@ -45,7 +45,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tokio::io::AsyncRead;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -746,21 +745,6 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
                 move || {
                     let path = path.clone();
                     async move { transport::serial::connect(&path, baud) }
-                },
-                &cfg,
-                ctx,
-            )
-            .await
-        }
-        #[cfg(feature = "desktop")]
-        TransportConfig::Rtt { probe, chip } => {
-            let elf = resolve_elf_path(&cfg)?;
-            run_cobs_stream_with_reconnect(
-                move || {
-                    let probe = probe.clone();
-                    let chip = chip.clone();
-                    let elf = elf.clone();
-                    async move { transport::rtt::connect(probe.as_deref(), &chip, Some(&elf)) }
                 },
                 &cfg,
                 ctx,
@@ -1518,16 +1502,9 @@ async fn handle_non_motor_command<NS>(
 
 // ── Defmt decoding ───────────────────────────────────────────────────────────
 
-#[inline]
-fn should_start_defmt(enabled: bool, already_started: bool, transport_scoped: bool) -> bool {
-    enabled && (!already_started || transport_scoped)
-}
-
-fn start_defmt_decoder<NS>(
-    cfg: &HostConfig,
-    stack: &NS,
-    defmt_reader: Option<Box<dyn AsyncRead + Send + Unpin>>,
-) -> Result<()>
+/// Decode the defmt frames the device forwards over the Ergot network. The
+/// subscription belongs to the persistent stack, so it is started once.
+fn start_defmt_decoder<NS>(cfg: &HostConfig, stack: &NS) -> Result<()>
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
@@ -1541,88 +1518,39 @@ where
         .context("Parsing defmt table from ELF failed")?
         .ok_or_else(|| anyhow::anyhow!("No .defmt section in ELF; build device with defmt"))?;
 
-    if let Some(mut defmt_rx) = defmt_reader {
-        // RTT mode: read defmt frames directly from RTT channel 0
-        info!("Starting defmt decoder (RTT mode - channel 0)");
-        let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(64);
-
-        thread::spawn(move || {
-            let mut stream = table.new_stream_decoder();
-            while let Ok(data) = rx.recv() {
-                stream.received(&data);
-                loop {
-                    match stream.decode() {
-                        Ok(frame) => {
-                            log_defmt_frame(frame.level(), &frame.display(false));
-                        }
-                        Err(DecodeError::UnexpectedEof) => break,
-                        Err(DecodeError::Malformed) => {
-                            error!("Malformed defmt frame");
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt;
-            let mut buf = vec![0u8; 1024];
+    info!("Starting defmt decoder (ergot network mode)");
+    tokio::spawn({
+        let stack = stack.clone();
+        async move {
+            let ns = stack.stack();
+            let sub = ns
+                .topics()
+                .heap_bounded_receiver::<ErgotDefmtRxOwnedTopic>(32, Some("defmt"));
+            let sub = pin!(sub);
+            let mut hdl = sub.subscribe();
             loop {
-                match defmt_rx.read(&mut buf).await {
-                    Ok(0) => {
-                        error!("Defmt RTT channel closed");
-                        break;
+                let msg = hdl.recv().await;
+                // Each network message is one COMPLETE encoder frame
+                // (accumulated between defmt acquire/release on the
+                // device, terminator included). `Table::decode` expects
+                // an UNENCODED frame and reports rzcobs frames — the
+                // default firmware encoding — as Malformed; only the
+                // stream decoder honors the table's encoding. A fresh
+                // per-message decoder is correct because frames never
+                // split across messages (and it must not live across
+                // the await: it borrows `table`).
+                let mut stream = table.new_stream_decoder();
+                stream.received(&msg.t.frame);
+                match stream.decode() {
+                    Ok(frame) => {
+                        log_defmt_frame(frame.level(), &frame.display(false));
                     }
-                    Ok(count) => {
-                        if tx.send(buf[..count].to_vec()).is_err() {
-                            error!("Defmt decoder thread terminated");
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Defmt RTT read error: {:?}", e);
-                        break;
-                    }
+                    Err(DecodeError::UnexpectedEof) => error!("Unexpected EOF decoding defmt"),
+                    Err(DecodeError::Malformed) => error!("Malformed defmt frame"),
                 }
             }
-        });
-    } else {
-        // Non-RTT mode: defmt frames forwarded over ergot network
-        info!("Starting defmt decoder (ergot network mode)");
-        tokio::spawn({
-            let stack = stack.clone();
-            async move {
-                let ns = stack.stack();
-                let sub = ns
-                    .topics()
-                    .heap_bounded_receiver::<ErgotDefmtRxOwnedTopic>(32, Some("defmt"));
-                let sub = pin!(sub);
-                let mut hdl = sub.subscribe();
-                loop {
-                    let msg = hdl.recv().await;
-                    // Each network message is one COMPLETE encoder frame
-                    // (accumulated between defmt acquire/release on the
-                    // device, terminator included). `Table::decode` expects
-                    // an UNENCODED frame and reports rzcobs frames — the
-                    // default firmware encoding — as Malformed; only the
-                    // stream decoder honors the table's encoding. A fresh
-                    // per-message decoder is correct because frames never
-                    // split across messages (and it must not live across
-                    // the await: it borrows `table`).
-                    let mut stream = table.new_stream_decoder();
-                    stream.received(&msg.t.frame);
-                    match stream.decode() {
-                        Ok(frame) => {
-                            log_defmt_frame(frame.level(), &frame.display(false));
-                        }
-                        Err(DecodeError::UnexpectedEof) => error!("Unexpected EOF decoding defmt"),
-                        Err(DecodeError::Malformed) => error!("Malformed defmt frame"),
-                    }
-                }
-            }
-        });
-    }
+        }
+    });
 
     Ok(())
 }
@@ -1642,7 +1570,7 @@ fn log_defmt_frame(level: Option<DefmtLevel>, msg: &impl std::fmt::Display) {
 mod tests {
     use super::{
         FaultSnapshotSink, generation_is_newer, may_retry, protocol_is_compatible,
-        reject_unverified_command, should_start_defmt,
+        reject_unverified_command,
     };
     use crate::ReconnectPolicy;
     use oxifoc_core::types::FaultSnapshot;
@@ -1663,14 +1591,6 @@ mod tests {
             Setpoint::observe(&mut active, 12, Ok(MotorStatus::default()), false);
             assert_eq!(active, None);
         }
-    }
-
-    #[test]
-    fn transport_scoped_defmt_restarts_but_network_decoder_does_not() {
-        assert!(!should_start_defmt(false, false, true));
-        assert!(should_start_defmt(true, false, false));
-        assert!(!should_start_defmt(true, true, false));
-        assert!(should_start_defmt(true, true, true));
     }
 
     #[test]

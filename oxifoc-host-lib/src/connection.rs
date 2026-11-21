@@ -2,13 +2,10 @@
 
 use super::*;
 
-type DefmtReader = Option<Box<dyn AsyncRead + Send + Unpin>>;
-
-/// Packet transports only attach an interface; defmt uses the persistent
-/// network subscription rather than a connection-local reader.
+/// Packet transports only attach an interface.
 pub(super) async fn run_framed_with_reconnect<NS, I>(
     stack: NS,
-    mut register_fn: impl AsyncFnMut() -> Result<()>,
+    register_fn: impl AsyncFnMut() -> Result<()>,
     state_notify: Arc<ergot::toolkits::tokio_stream::WaitQueue>,
     cfg: &HostConfig,
     ctx: BackendCtx,
@@ -24,14 +21,7 @@ where
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
-    run_connection_loop(
-        stack,
-        async || register_fn().await.map(|()| None),
-        state_notify,
-        cfg,
-        ctx,
-    )
-    .await
+    run_connection_loop(stack, register_fn, state_notify, cfg, ctx).await
 }
 
 /// Stream transports build the stack once and attach fresh I/O on each
@@ -79,7 +69,7 @@ where
             )
             .await
             .map_err(|e| anyhow!("Stream registration failed: {e:?}"))?;
-            Ok(transport.defmt_reader)
+            Ok(())
         }
     };
     run_connection_loop(stack, register_fn, state_notify, cfg, ctx).await
@@ -87,7 +77,7 @@ where
 
 async fn run_connection_loop<NS, I>(
     stack: NS,
-    mut register_fn: impl AsyncFnMut() -> Result<DefmtReader>,
+    mut register_fn: impl AsyncFnMut() -> Result<()>,
     state_notify: Arc<ergot::toolkits::tokio_stream::WaitQueue>,
     cfg: &HostConfig,
     ctx: BackendCtx,
@@ -132,7 +122,6 @@ where
     // reopening it: after the link recovered, or while a bridge waits for its
     // controller.
     let mut reuse_link = false;
-    let mut defmt_reader: DefmtReader = None;
     let mut waiting_for_controller = false;
 
     loop {
@@ -142,31 +131,28 @@ where
                 _ = cancel.cancelled() => break,
             };
 
-            defmt_reader = match reg_result {
-                Ok(reader) => reader,
-                Err(e) => {
-                    connected.store(false, Ordering::Relaxed);
-                    stack
-                        .stack()
-                        .manage_profile(ergot::prelude::DirectEdge::teardown);
-                    tokio::task::yield_now().await;
-                    let retry = may_retry(policy, &mut connect_attempts);
-                    tracing::warn!(
-                        "Transport registration failed (attempt {}): {:?}",
-                        connect_attempts,
-                        e
-                    );
-                    if !retry {
-                        info!("Reconnect policy exhausted — giving up");
-                        break;
-                    }
-
-                    tokio::select! {
-                        _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
-                        _ = cancel.cancelled() => break,
-                    }
+            if let Err(e) = reg_result {
+                connected.store(false, Ordering::Relaxed);
+                stack
+                    .stack()
+                    .manage_profile(ergot::prelude::DirectEdge::teardown);
+                tokio::task::yield_now().await;
+                let retry = may_retry(policy, &mut connect_attempts);
+                tracing::warn!(
+                    "Transport registration failed (attempt {}): {:?}",
+                    connect_attempts,
+                    e
+                );
+                if !retry {
+                    info!("Reconnect policy exhausted — giving up");
+                    break;
                 }
-            };
+
+                tokio::select! {
+                    _ = tokio::time::sleep(RECONNECT_DELAY) => continue,
+                    _ = cancel.cancelled() => break,
+                }
+            }
             // Wait for the interface to become Active — bounded like the
             // recovery path: a half-open link that registered but never goes
             // Active would otherwise pin the connect path until cancel.
@@ -336,11 +322,9 @@ where
         // first rate change against a late connect-time fast_hz=0 request.
         connected.store(true, Ordering::Relaxed);
 
-        // RTT readers belong to one connection; network subscriptions belong
-        // to the persistent stack and must be started only once.
-        let transport_scoped_defmt = defmt_reader.is_some();
-        if should_start_defmt(cfg.stream_defmt(), defmt_started, transport_scoped_defmt) {
-            match start_defmt_decoder(cfg, &stack, defmt_reader.take()) {
+        // The defmt subscription belongs to the persistent stack.
+        if cfg.stream_defmt() && !defmt_started {
+            match start_defmt_decoder(cfg, &stack) {
                 Ok(()) => defmt_started = true,
                 Err(e) => {
                     tracing::warn!("defmt decoder unavailable, continuing without it: {e:#}");
@@ -406,17 +390,11 @@ where
     }
 
     // Always release the interface, including cancellation and exhausted
-    // retry budgets. RTT I/O exits when its interface reader is dropped;
-    // only then is it safe to join the blocking probe thread.
+    // retry budgets.
     connected.store(false, Ordering::Relaxed);
     stack
         .stack()
         .manage_profile(ergot::prelude::DirectEdge::teardown);
-    #[cfg(feature = "desktop")]
-    {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        transport::rtt::join_rtt_io_thread(Duration::from_secs(2));
-    }
 
     info!("Host backend shutdown complete");
     Ok(())

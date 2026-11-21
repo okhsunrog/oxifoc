@@ -19,6 +19,5 @@ pub async fn connect(host: &str, port: u16) -> Result<CobsStreamTransport> {
     Ok(CobsStreamTransport {
         reader: Box::new(reader),
         writer: Box::new(writer),
-        defmt_reader: None,
     })
 }

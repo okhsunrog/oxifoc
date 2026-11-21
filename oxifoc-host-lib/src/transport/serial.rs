@@ -25,6 +25,5 @@ pub fn connect(path: &str, baud: u32) -> Result<CobsStreamTransport> {
     Ok(CobsStreamTransport {
         reader: Box::new(reader),
         writer: Box::new(writer),
-        defmt_reader: None,
     })
 }

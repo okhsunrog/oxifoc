@@ -70,7 +70,7 @@ Lucide Slint is MIT/Apache-2.0 with ISC icon data; see the dependencies' notices
 Linux and Android use the same blec transport in `oxifoc-host-lib`. Android
 passes its NativeActivity explicitly to the embedded Kotlin bridge so Scan can
 request Nearby devices. The Android connection page starts with BLE and offers
-only BLE, TCP and UDP. Serial, RTT and USB remain desktop-only.
+only BLE, TCP and UDP. Serial and USB remain desktop-only.
 
 Install the packaging fix for `usesPermissionFlags`, then build from the root
 with Android SDK/NDK and Java available:

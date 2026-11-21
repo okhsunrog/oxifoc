@@ -48,7 +48,7 @@ use oxifoc_host_lib::{
     start_host, try_scan_ble_devices,
 };
 #[cfg(feature = "desktop")]
-use oxifoc_host_lib::{ProbeInfo, SerialPortInfo, list_probes, list_serial_ports};
+use oxifoc_host_lib::{SerialPortInfo, list_serial_ports};
 use slint::wgpu_30::WGPUConfiguration;
 use slint::{
     GraphicsAPI, Image, ModelRc, RenderingState, SharedString, StandardListViewItem, VecModel,
@@ -225,9 +225,6 @@ pub fn main() {
     #[cfg(feature = "desktop")]
     let ports_list: Arc<std::sync::Mutex<Vec<SerialPortInfo>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
-    #[cfg(feature = "desktop")]
-    let probes_list: Arc<std::sync::Mutex<Vec<ProbeInfo>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
     let ble_devices_list: Arc<std::sync::Mutex<Vec<BleDeviceInfo>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let runtime: Arc<std::sync::Mutex<Option<HostRuntime>>> = Arc::new(std::sync::Mutex::new(None));
@@ -264,8 +261,6 @@ pub fn main() {
 
     #[cfg(feature = "desktop")]
     refresh_serial_ports(&app, &ports_list);
-    #[cfg(feature = "desktop")]
-    refresh_probes(&app, &probes_list);
 
     // ── Rendering notifier: creates PlotRenderers on setup, renders on every frame ──
     {
@@ -742,16 +737,6 @@ pub fn main() {
         });
     }
 
-    // ── Refresh probes ────────────────────────────────────────────────────────
-    #[cfg(feature = "desktop")]
-    {
-        let weak = app.as_weak();
-        let probes = probes_list.clone();
-        app.on_refresh_probes(move || {
-            refresh_probes(&weak.unwrap(), &probes);
-        });
-    }
-
     // ── Scan BLE ─────────────────────────────────────────────────────────────
     {
         let weak = app.as_weak();
@@ -802,8 +787,6 @@ pub fn main() {
         let weak = app.as_weak();
         #[cfg(feature = "desktop")]
         let ports = ports_list.clone();
-        #[cfg(feature = "desktop")]
-        let probes = probes_list.clone();
         let ble_devs = ble_devices_list.clone();
         let rt = runtime.clone();
         let stop = stop_adc.clone();
@@ -835,30 +818,6 @@ pub fn main() {
                         transport: Some(TransportType::Serial),
                         serial_path: Some(port.path.clone()),
                         serial_baud: Some(baud),
-                        stream_defmt: Some(true),
-                        stream_ergot: Some(true),
-                        ..Default::default()
-                    }
-                }
-                #[cfg(feature = "desktop")]
-                1 => {
-                    // RTT
-                    let idx = app.get_selected_probe();
-                    let guard = probes.lock().unwrap();
-                    if idx < 0 || idx as usize >= guard.len() {
-                        app.set_error_text("No probe selected".into());
-                        return;
-                    }
-                    let probe = &guard[idx as usize];
-                    let chip = app.get_chip_name().to_string();
-                    if chip.is_empty() {
-                        app.set_error_text("Chip name required".into());
-                        return;
-                    }
-                    HostConfig {
-                        transport: Some(TransportType::Rtt),
-                        probe: Some(probe.identifier.clone()),
-                        chip: Some(chip),
                         stream_defmt: Some(true),
                         stream_ergot: Some(true),
                         ..Default::default()
@@ -939,7 +898,7 @@ pub fn main() {
             app.set_error_text("".into());
 
             // Shut down any previous backend first (and drop it, releasing
-            // the port/probe) before the new transport claims the device —
+            // the port) before the new transport claims the device —
             // previously the old runtime was silently overwritten and leaked
             // its tokio runtime + thread, still holding the port.
             if let Some(old) = rt.lock().unwrap().take() {
@@ -1169,18 +1128,6 @@ fn refresh_serial_ports(app: &App, ports: &Arc<std::sync::Mutex<Vec<SerialPortIn
     *ports.lock().unwrap() = filtered;
     app.set_serial_ports(ModelRc::new(VecModel::from(items)));
     app.set_selected_serial(-1);
-}
-
-#[cfg(feature = "desktop")]
-fn refresh_probes(app: &App, probes: &Arc<std::sync::Mutex<Vec<ProbeInfo>>>) {
-    let all_probes = list_probes();
-    let items: Vec<StandardListViewItem> = all_probes
-        .iter()
-        .map(|p| SharedString::from(p.to_string()).into())
-        .collect();
-    *probes.lock().unwrap() = all_probes;
-    app.set_probes(ModelRc::new(VecModel::from(items)));
-    app.set_selected_probe(-1);
 }
 
 #[cfg(test)]

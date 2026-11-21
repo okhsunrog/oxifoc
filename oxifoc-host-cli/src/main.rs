@@ -98,7 +98,6 @@ enum Transport {
     Serial,
     /// Espressif USB Serial/JTAG; auto-selects the port when exactly one is present.
     UsbSerialJtag,
-    Rtt,
     Tcp,
     Udp,
     Usb,
@@ -208,7 +207,7 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Transport type (serial or rtt). If not specified, uses config file.
+    /// Transport type. If not specified, uses config file.
     #[arg(short, long, value_enum)]
     transport: Option<Transport>,
     /// Record native velocity-loop observations alongside Ergot Packed28.
@@ -233,19 +232,10 @@ struct Cli {
     #[arg(long, conflicts_with = "ble_name")]
     ble_address: Option<String>,
 
-    /// Debug probe identifier (VID:PID or VID:PID:SERIAL). Required for RTT transport if not in config.
-    #[arg(long)]
-    probe: Option<String>,
-
-    /// Target chip name (e.g., STM32F405RGTx). Required for RTT transport.
-    #[arg(long)]
-    chip: Option<String>,
-
-    /// Path to the running firmware ELF (with `.defmt`). Used for defmt decoding
-    /// AND for pinning the RTT control block to its `_SEGGER_RTT` symbol. No
-    /// built-in default: required for the RTT transport (a wrong/missing ELF
-    /// pins the wrong address and the link never routes). May also come from
-    /// the `elf` key in oxifoc-host.toml (cwd) — mind which board that names.
+    /// Path to the running firmware ELF (with `.defmt`), used to decode the
+    /// device log frames forwarded over Ergot. No built-in default; may also
+    /// come from the `elf` key in oxifoc-host.toml (cwd) — mind which board
+    /// that names.
     #[arg(long)]
     elf: Option<String>,
 
@@ -1257,7 +1247,6 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         cfg.transport = Some(match transport {
             Transport::Serial => TransportType::Serial,
             Transport::UsbSerialJtag => TransportType::UsbSerialJtag,
-            Transport::Rtt => TransportType::Rtt,
             Transport::Tcp => TransportType::Tcp,
             Transport::Udp => TransportType::Udp,
             Transport::Usb => TransportType::Usb,
@@ -1309,14 +1298,6 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
     // host-lib accessor falls back to 921600 when neither is set.
     if let Some(baud) = cli.baud {
         cfg.serial_baud = Some(baud);
-    }
-
-    if let Some(ref probe) = cli.probe {
-        cfg.probe = Some(probe.clone());
-    }
-
-    if let Some(ref chip) = cli.chip {
-        cfg.chip = Some(chip.clone());
     }
 
     if let Some(ref elf) = cli.elf {
@@ -1396,7 +1377,7 @@ fn list_devices(json: bool) -> Result<()> {
     }
 
     println!();
-    println!("=== Debug Probes (RTT) ===");
+    println!("=== Debug Probes ===");
     if probes.is_empty() {
         println!("  (none found)");
     } else {

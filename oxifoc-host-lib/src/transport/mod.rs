@@ -2,14 +2,11 @@
 //!
 //! Provides different transport backends:
 //! - Serial (UART over USB VCP) — COBS stream
-//! - RTT (via debug probe using probe-rs) — COBS stream
 //! - TCP (for oxifoc-virtual or remote devices) — COBS stream
 //! - UDP — framed (no COBS)
 //! - USB (via nusb bulk endpoints) — framed (no COBS)
 
 pub mod ble;
-#[cfg(feature = "desktop")]
-pub mod rtt;
 #[cfg(feature = "desktop")]
 pub mod serial;
 pub mod tcp;
@@ -31,9 +28,6 @@ pub enum TransportType {
     #[cfg(feature = "desktop")]
     #[serde(rename = "usb-serial-jtag")]
     UsbSerialJtag,
-    /// RTT via debug probe (probe-rs)
-    #[cfg(feature = "desktop")]
-    Rtt,
     /// TCP connection (for oxifoc-virtual or remote devices)
     Tcp,
     /// UDP connection
@@ -68,11 +62,6 @@ pub enum TransportConfig {
         path: String,
         baud: u32,
     },
-    #[cfg(feature = "desktop")]
-    Rtt {
-        probe: Option<String>,
-        chip: String,
-    },
     Tcp {
         host: String,
         port: u16,
@@ -87,7 +76,7 @@ pub enum TransportConfig {
     },
 }
 
-/// A COBS-stream transport (TCP, serial, RTT).
+/// A COBS-stream transport (TCP, serial).
 ///
 /// Returns AsyncRead/AsyncWrite pairs for use with ergot's `tokio_stream` toolkit.
 /// UDP and USB use different ergot toolkits and don't go through this struct.
@@ -96,9 +85,6 @@ pub struct CobsStreamTransport {
     pub reader: Box<dyn AsyncRead + Send + Unpin>,
     /// Writer for ergot data (host -> device)
     pub writer: Box<dyn AsyncWrite + Send + Unpin>,
-    /// Optional reader for defmt data (RTT mode only, channel 0).
-    /// In serial/TCP mode, defmt is forwarded over ergot network instead.
-    pub defmt_reader: Option<Box<dyn AsyncRead + Send + Unpin>>,
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //!
 //! Provides enumeration of available devices for each transport type:
 //! - Serial ports (via tokio_serial, which re-exports mio_serial/serialport)
-//! - Debug probes for RTT (via probe-rs)
+//! - Debug probes (via probe-rs), for flashing and SWD tooling
 //! - BLE devices (via blec)
 
 #[cfg(feature = "desktop")]
@@ -44,7 +44,7 @@ impl fmt::Display for SerialPortInfo {
 }
 
 #[cfg(feature = "desktop")]
-/// Information about a discovered debug probe (for RTT transport).
+/// Information about a discovered debug probe.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProbeInfo {
     /// Identifier string ("VID:PID" or "VID:PID:SERIAL")
@@ -128,7 +128,7 @@ pub fn usb_serial_jtag_port(ports: &[SerialPortInfo]) -> anyhow::Result<String> 
 }
 
 #[cfg(feature = "desktop")]
-/// List all available debug probes (for RTT transport).
+/// List all available debug probes (probe-rs selectors for flashing and SWD tooling).
 ///
 /// Uses probe-rs to enumerate connected debug probes such as
 /// ST-Link, J-Link, CMSIS-DAP, etc.

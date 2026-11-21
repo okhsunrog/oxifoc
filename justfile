@@ -14,16 +14,6 @@ core_embassy_features := core_test_features + ",embassy"
 install-hooks:
     git config --local core.hooksPath .githooks
 
-# SRAM read-phase benchmark. probe-rs Session setup/cleanup briefly halt/run.
-[positional-arguments]
-bench-probe-read *ARGS:
-    cargo run --release --locked -p oxifoc-host-lib --example probe_read_bench -- "$@"
-
-# Active-drive-qualified PCSR records; attach/detach with the motor stopped.
-[positional-arguments]
-bench-probe-pc *ARGS:
-    cargo run --release --locked -p oxifoc-host-lib --example pc_sampler -- "$@"
-
 # Offline Hall estimation from a stopped capture; no motor or observer simulation.
 [positional-arguments]
 replay-hall *ARGS:
@@ -264,10 +254,6 @@ flash-mk5-profile: build-mk5-profile
     probe-rs download --verify --chip STM32F405RGTx {{mk5_probe_arg}} {{ mk5_elf }}
     probe-rs reset --chip STM32F405RGTx {{mk5_probe_arg}}
 
-# Explicit motor excitation, no fast stream; same secured +40 erad/s CPU control.
-test-velocity-no-stream-mk5 elf:
-    cargo run --release --locked -p oxifoc-host-lib --example velocity_cpu_control -- --run {{ quote(elf) }}
-
 profile-netstack-mk5 capture mask="basepri" maneuver="maneuvers/mk5-hall-current-check.json":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -358,11 +344,6 @@ cli *ARGS:
 cli-usb *ARGS:
     @just cli --transport usb --wait-secs 8 --json "$@"
 
-# MK5 RTT transport; opening it resets the controller before the handshake.
-[positional-arguments]
-cli-rtt *ARGS:
-    @just cli --transport rtt --chip STM32F405RGTx --elf {{ mk5_elf }} --wait-secs 8 --json "$@"
-
 # Export hall-diagnostics evidence after Stop; probe attach may briefly halt, but does not reset.
 dump-hall-mk5 output elf=mk5_elf cli="":
     uv run python scripts/bench_hall_edges.py {{ quote(output) }} --elf {{ quote(elf) }} {{ if cli == "" { "" } else { "--cli " + quote(cli) } }}
@@ -378,19 +359,17 @@ test-live-model-mk5 capture elf=mk5_elf *ARGS:
     cargo run -p oxifoc-host-cli --locked --example live_model_apply -- --elf "$elf" --out "$capture" "$@"
 
 # Short Hall-commutated current-control pilot; the motor must be secured.
-test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" transport="usb" elf="":
+test-current-mk5 capture maneuver="maneuvers/mk5-hall-current-pilot.json" elf="":
     #!/usr/bin/env bash
     set -euo pipefail
-    transport={{ quote(transport) }}
-    test "$transport" = usb -o "$transport" = rtt
-    cli=(just "cli-$transport")
+    cli=(just cli-usb)
     elf={{ quote(elf) }}
     if test -n "$elf"; then
-        cli=(just cli --transport "$transport" --chip STM32F405RGTx --elf "$elf" --wait-secs 8 --json)
+        cli=(just cli --transport usb --elf "$elf" --wait-secs 8 --json)
     fi
     trap '"${cli[@]}" stop >/dev/null' EXIT
     "${cli[@]}" source hall > {{ quote(capture + ".source.json") }}
-    RUST_LOG="${RUST_LOG:-warn,device=info,oxifoc_host_lib::transport::rtt=info}" "${cli[@]}" maneuver run \
+    RUST_LOG="${RUST_LOG:-warn,device=info}" "${cli[@]}" maneuver run \
         {{ quote(maneuver) }} --out {{ quote(capture) }} \
         > {{ quote(capture + ".json") }} 2> {{ quote(capture + ".host.log") }}
 
@@ -415,7 +394,7 @@ bench-current-mk5 capture maneuver="maneuvers/mk5-hall-hold-check.json" elf=mk5_
         > {{ quote(capture + ".flash.log") }} 2>&1
     probe-rs reset --chip STM32F405RGTx >> {{ quote(capture + ".flash.log") }} 2>&1
     capture_status=0
-    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} usb "$elf" || capture_status=$?
+    just test-current-mk5 {{ quote(capture) }} {{ quote(maneuver) }} "$elf" || capture_status=$?
     just cli-usb status > {{ quote(capture + ".status.json") }}
     exit "$capture_status"
 

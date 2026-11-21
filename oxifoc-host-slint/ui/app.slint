@@ -57,14 +57,11 @@ export component App inherits Window {
     icon: @image-url("../../oxifoc-ui/assets/oxifoc-icon.png");
 
     // ── Connection properties ──
-    // transport-mode: 0=Serial, 1=RTT, 2=TCP, 3=UDP, 4=USB
+    // transport-mode: 0=Serial, 2=TCP, 3=UDP, 4=USB, 5=BLE (1 was RTT)
     in-out property <int> transport-mode: 0;
     in property <[StandardListViewItem]> serial-ports;
-    in property <[StandardListViewItem]> probes;
     in-out property <int> selected-serial: -1;
-    in-out property <int> selected-probe: -1;
     in-out property <int> baud-index: 3;
-    in-out property <string> chip-name: "STM32G474RETx";
     in-out property <bool> usb-only: true;
     in-out property <string> tcp-host: "127.0.0.1";
     in-out property <string> tcp-port: "2025";
@@ -334,7 +331,6 @@ export component App inherits Window {
 
     // ── Callbacks ──
     callback refresh-serial-ports();
-    callback refresh-probes();
     callback scan-ble();
     callback connect-device();
     callback disconnect-device();
@@ -348,7 +344,7 @@ export component App inherits Window {
         visible: root.page == "connect";
         width: min(parent.width - 32px, 740px);
         height: min(parent.height - 32px,
-            root.transport-mode == 0 || root.transport-mode == 1 || root.transport-mode == 5 ? 560px : 350px);
+            root.transport-mode == 0 || root.transport-mode == 5 ? 560px : 350px);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: root.panel-color;
@@ -385,11 +381,6 @@ export component App inherits Window {
                     text: "Serial";
                     primary: root.transport-mode == 0;
                     clicked => { root.transport-mode = 0; }
-                }
-                if root.desktop-transports: OxiButton {
-                    text: "RTT";
-                    primary: root.transport-mode == 1;
-                    clicked => { root.transport-mode = 1; }
                 }
                 OxiButton {
                     text: "TCP";
@@ -474,57 +465,6 @@ export component App inherits Window {
                         model: ["115200", "230400", "460800", "921600", "1000000", "2000000"];
                         current-index <=> root.baud-index;
                         width: 150px;
-                    }
-                }
-            }
-
-            // ── RTT config ──
-            if root.transport-mode == 1 : VerticalLayout {
-                spacing: 8px;
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-
-                    Text {
-                        text: "Debug Probes";
-                        font-size: 16px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
-                    OxiButton {
-                        text: "Refresh";
-                        clicked => { root.refresh-probes(); }
-                    }
-                }
-
-                Rectangle {
-                    min-height: 160px;
-                    vertical-stretch: 1;
-                    StandardListView {
-                        width: parent.width;
-                        height: parent.height;
-                        model: root.probes;
-                        current-item <=> root.selected-probe;
-                    }
-                    if root.probes.length == 0 : Text {
-                        text: "No debug probes found.";
-                        x: 16px;
-                        y: (parent.height - self.height) / 2;
-                        width: parent.width - 32px;
-                        horizontal-alignment: center;
-                        color: root.muted-text;
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-
-                    Text { text: "Target Chip:"; vertical-alignment: center; }
-                    OxiField {
-                        accessible-name: "Target chip"; text <=> root.chip-name;
-                        width: 220px;
                     }
                 }
             }
@@ -663,7 +603,6 @@ export component App inherits Window {
                     text: "Connect";
                     primary: true;
                     enabled: root.transport-mode == 0 ? root.selected-serial >= 0
-                           : root.transport-mode == 1 ? (root.selected-probe >= 0 && root.chip-name != "")
                            : root.transport-mode == 2 ? (root.tcp-host != "" && root.tcp-port != "")
                            : root.transport-mode == 3 ? (root.udp-host != "" && root.udp-port != "")
                            : root.transport-mode == 4 ? true // USB always enabled

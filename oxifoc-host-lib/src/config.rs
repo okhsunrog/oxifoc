@@ -5,14 +5,8 @@ use std::{env, fs, path::PathBuf};
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct HostConfig {
-    /// Transport type: "serial" (default), "rtt", "tcp", "udp", or "usb"
+    /// Transport type: "serial" (default), "usb-serial-jtag", "tcp", "udp", "usb" or "ble"
     pub transport: Option<TransportType>,
-
-    // RTT transport options (desktop only)
-    #[cfg(feature = "desktop")]
-    pub probe: Option<String>, // e.g. "0483:374b:<serial>" or "0483:374b"
-    #[cfg(feature = "desktop")]
-    pub chip: Option<String>, // e.g. "STM32G431CBTx"
 
     // Serial transport options (desktop only)
     #[cfg(feature = "desktop")]
@@ -37,7 +31,7 @@ pub struct HostConfig {
     pub stream_defmt: Option<bool>, // default: true
     pub stream_ergot: Option<bool>, // default: true
 
-    /// Reconnection policy for COBS-stream transports (TCP, Serial, RTT).
+    /// Reconnection policy for COBS-stream transports (TCP, Serial).
     /// None = use default (infinite retries)
     pub reconnect: Option<ReconnectPolicy>,
 
@@ -124,16 +118,6 @@ impl HostConfig {
                 // USB Serial/JTAG ignores UART line coding; this is not its bit rate.
                 baud: self.serial_baud(),
             }),
-            #[cfg(feature = "desktop")]
-            TransportType::Rtt => {
-                let chip = self.chip.clone().ok_or_else(|| {
-                    anyhow::anyhow!("RTT transport requires 'chip' to be specified in config")
-                })?;
-                Ok(TransportConfig::Rtt {
-                    probe: self.probe.clone(),
-                    chip,
-                })
-            }
             TransportType::Tcp => Ok(TransportConfig::Tcp {
                 host: self
                     .tcp_host
