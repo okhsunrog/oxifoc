@@ -46,6 +46,10 @@ use super::constants::{FRAC_1_SQRT_3 as ONE_BY_SQRT3, FRAC_2_SQRT_3 as TWO_BY_SQ
 /// let duties = space_vector_pwm(alpha_mod, beta_mod, 1000);
 /// assert!(duties.iter().all(|&duty| duty <= 1000));
 /// ```
+#[cfg_attr(
+    all(feature = "compact-foc", target_arch = "arm", target_os = "none"),
+    unsafe(link_section = ".text.foc_svpwm")
+)]
 pub fn space_vector_pwm(alpha: f32, beta: f32, max_duty: u16) -> [u16; 3] {
     let sector = get_sector(alpha, beta);
 

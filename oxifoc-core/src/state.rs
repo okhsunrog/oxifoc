@@ -1352,7 +1352,7 @@ where
 // `from_hall_kind` — no per-category value parameters.
 #[cfg_attr(feature = "isr-speed", optimize(speed))]
 #[cfg_attr(
-    all(feature = "compact-foc", target_arch = "arm", target_os = "none",),
+    all(feature = "compact-foc", target_arch = "arm", target_os = "none"),
     unsafe(link_section = ".text.foc_cycle")
 )]
 pub fn run_foc_cycle<P, C, Ph, S, F>(

@@ -253,6 +253,10 @@ where
         })
     }
 
+    #[cfg_attr(
+        all(feature = "compact-foc", target_arch = "arm", target_os = "none"),
+        unsafe(link_section = ".text.foc_velocity_step")
+    )]
     fn step_scheduled_velocity(
         &mut self,
         target: Option<ElectricalAngularVelocity>,

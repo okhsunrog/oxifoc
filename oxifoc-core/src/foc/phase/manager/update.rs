@@ -719,6 +719,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     #[cfg(feature = "hfi")]
+    #[cfg_attr(
+        all(feature = "compact-foc", target_arch = "arm", target_os = "none"),
+        unsafe(link_section = ".text.foc_injection")
+    )]
     fn injection(&self) -> (ElectricPotential, ElectricPotential) {
         if self.hfi_active()
             && let Some(hfi) = &self.hfi
@@ -730,6 +734,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
     }
 
     #[cfg(not(feature = "hfi"))]
+    #[cfg_attr(
+        all(feature = "compact-foc", target_arch = "arm", target_os = "none"),
+        unsafe(link_section = ".text.foc_injection")
+    )]
     fn injection(&self) -> (ElectricPotential, ElectricPotential) {
         (ElectricPotential::ZERO, ElectricPotential::ZERO)
     }

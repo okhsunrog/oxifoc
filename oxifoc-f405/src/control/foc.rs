@@ -546,6 +546,8 @@ fn isr_timing_now() -> u32 {
 /// Triggered by ADC3 JEOC (end of injected conversion sequence).
 /// ADC1, ADC2, ADC3 all start conversion simultaneously on TIM1_CC4.
 #[interrupt]
+// Placed by foc-hot.x on the MK5, like the core hot path.
+#[cfg_attr(feature = "board-vesc6-mk5", unsafe(link_section = ".text.foc_adc"))]
 fn ADC() {
     static mut ADCS: Option<AdcHandles> = None;
     static mut DRIVER: Option<&'static mut FocDriverType> = None;

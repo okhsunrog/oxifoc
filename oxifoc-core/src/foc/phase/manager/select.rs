@@ -351,6 +351,10 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     fn seed_hfi_from_output(&mut self) {}
 
     /// Blend sensor output with observer based on velocity
+    #[cfg_attr(
+        all(feature = "compact-foc", target_arch = "arm", target_os = "none"),
+        unsafe(link_section = ".text.foc_blend")
+    )]
     fn blend_with_observer(
         &mut self,
         sensor: PhaseOutput,
