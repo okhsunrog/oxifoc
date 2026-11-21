@@ -1417,6 +1417,9 @@ where
     let board = prepared_board.board();
     driver.set_vbus(vbus);
     let check_deadman = driver.deadman_check_due();
+    if check_deadman {
+        driver.phase_mut().service();
+    }
 
     let prof_t0 = isr_prof::now();
 

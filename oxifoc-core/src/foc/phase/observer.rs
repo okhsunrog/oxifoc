@@ -87,6 +87,14 @@ impl Observer {
         }
     }
 
+    /// See [`BackEmfObserver::recover_if_non_finite`].
+    pub fn recover_if_non_finite(&mut self) -> bool {
+        match self {
+            Self::None => false,
+            Self::BackEmf(o) => o.recover_if_non_finite(),
+        }
+    }
+
     /// Get estimated electrical phase
     pub fn phase(&self) -> Option<ElectricalAngle> {
         match self {
@@ -937,19 +945,6 @@ impl BackEmfObserver {
         // Advance the readiness Schmitt latch: evaluated against the
         // PREVIOUS latch state (that is what makes it hysteresis), stored
         // for the next cycle and for `is_ready` callers in between.
-        // A non-finite input (a NaN current or voltage) would otherwise stay
-        // in the integrator, the PLL and the adapted λ for good. Restart the
-        // estimate from rest instead, as VESC does; readiness drops with it.
-        if !(self.x1.is_finite()
-            && self.x2.is_finite()
-            && self.phase_pll.radians().is_finite()
-            && self.velocity_pll.is_finite()
-            && self.lambda.is_finite())
-        {
-            self.recover_from_non_finite();
-            return;
-        }
-
         let prof_t2 = isr_prof::now();
         self.refresh_readiness_err();
         // The refresh evaluated readiness against the previous latch. With
@@ -1073,11 +1068,28 @@ impl BackEmfObserver {
             && self.valid_travel >= VALID_TRAVEL_GRANTED
     }
 
-    /// Restart after a non-finite state. A non-finite λ returns to the
-    /// configured value, the middle of the [0.5, 2] adaptation window.
-    #[cold]
+    /// Restart from rest if the state went non-finite; returns whether it did.
+    ///
+    /// A non-finite input (a NaN current or voltage) would otherwise stay in
+    /// the integrator, the PLL and the adapted λ for good. Readiness already
+    /// fails on a NaN state (every comparison with NaN is false), so the
+    /// phase manager stops trusting the angle in the same cycle; this restart
+    /// runs at the service cadence (~1 kHz) rather than in every update,
+    /// which kept 90 cycles off the ISR. VESC zeroes NaN state per cycle.
+    /// A non-finite λ returns to the configured value, the middle of the
+    /// [0.5, 2] adaptation window.
     #[inline(never)]
-    fn recover_from_non_finite(&mut self) {
+    pub fn recover_if_non_finite(&mut self) -> bool {
+        // NaN and ±inf survive the sum, and the states are far too small for
+        // a finite sum to overflow, so one test covers all five.
+        let state_sum = self.x1.value
+            + self.x2.value
+            + self.phase_pll.radians()
+            + self.velocity_pll.value
+            + self.lambda.value;
+        if state_sum.is_finite() {
+            return false;
+        }
         if !self.lambda.is_finite() {
             self.lambda = if self.lambda_min.is_positive() {
                 self.lambda_min * 2.0
@@ -1086,6 +1098,7 @@ impl BackEmfObserver {
             };
         }
         self.reset();
+        true
     }
 
     /// Reset observer state. The adapted λ is kept — it is a physical
@@ -1993,6 +2006,9 @@ mod tests {
             i_beta: amps(f32::NAN),
             dt: seconds(dt),
         });
+        assert!(!obs.is_ready(), "a NaN state must fail readiness at once");
+        assert!(obs.recover_if_non_finite());
+        assert!(!obs.recover_if_non_finite());
         assert!(!obs.is_ready());
         assert!(obs.phase().radians().is_finite() && obs.velocity().is_finite());
         assert!(obs.lambda.is_finite());

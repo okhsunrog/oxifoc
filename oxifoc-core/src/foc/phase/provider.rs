@@ -253,6 +253,11 @@ pub trait PhaseProvider {
     /// Default: no-op.
     fn note_torque_current(&mut self, _iq_abs: ElectricCurrent, _dt: Time) {}
 
+    /// Housekeeping once per service frame (~1 kHz), outside the per-cycle
+    /// update: restarts an observer whose state went non-finite.
+    /// Default: no-op.
+    fn service(&mut self) {}
+
     /// Back-EMF observer internals for diagnostics (the F405 Hall-edge
     /// recorder): `(phase_pll, phase_raw, velocity_pll, readiness_phase_err)`.
     /// Default: none (providers without an observer).
