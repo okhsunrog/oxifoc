@@ -3,8 +3,9 @@
 Single place for everything firmware-size related — flash AND static
 RAM: current numbers, how to measure, what to watch when adding code,
 what has been done, and what reserves exist when a board runs out
-again. Perf-side numbers (cycle counts) live in
-[perf-bench-2026-06-11.md](perf-bench-2026-06-11.md).
+again. Control ISR timing lives in [performance.md](performance.md); the
+June G431 math benchmarks in [perf-bench-2026-06-11.md](perf-bench-2026-06-11.md)
+are history.
 
 ## Current state
 

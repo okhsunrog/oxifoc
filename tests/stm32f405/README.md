@@ -1,6 +1,6 @@
 # STM32F405 / MK5 benchmarks
 
-See the [ADC ISR measurement workflow](../../docs/adc-isr-measurement.md) for
+See [control ISR performance](../../docs/performance.md) for
 the shared procedure and [optimization history](../../docs/notes/adc-isr-optimization.md)
 for measured alternatives and the accepted implementation.
 
@@ -83,7 +83,7 @@ measurement of the board's oscillator or the production calibrated clock.
 | Actual TIM1/ADC cadence and phase | `scripts/f405_timing.py`, Stopped register readback |
 | Motor, commands and deadman | Bounded CLI maneuver, Packed28, ACK, fault generation |
 
-See [the ADC ISR measurement workflow](../../docs/adc-isr-measurement.md) for
+See [control ISR performance](../../docs/performance.md) for
 the full controller. Isolated tests lack ADC interrupt load, protocol activity,
 real motion and PI/command collisions. Do not combine their values with
 full-controller timing or treat different instrumentation levels as identical

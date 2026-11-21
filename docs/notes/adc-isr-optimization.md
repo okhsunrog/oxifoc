@@ -4,7 +4,7 @@ Updated 2026-11-17. This is the single record of accepted optimizations,
 measured alternatives and rejected experiments. Motor tuning, Hall behavior
 and transport qualification remain in the [bench journal](foc-loop-research.md).
 Timings belong to specific MK5 images; gains from different series are not additive.
-Follow the [measurement workflow](../adc-isr-measurement.md) for new experiments.
+Follow the [measurement workflow](../performance.md) for new experiments.
 
 ## Accepted implementation
 
@@ -1285,7 +1285,7 @@ A minimal rebuild with work diagnostics disabled has byte-identical `.text`,
 The equal-sized `.rodata` changes contain source-line location records.
 The work image adds 17444 bytes of diagnostic `.bss`.
 
-The shared [measurement workflow](../adc-isr-measurement.md) now describes
+The shared [measurement workflow](../performance.md) now describes
 fixed-ELF runs, work masks, nested section attribution, PWM witnesses,
 CPU fixtures, PC sampling, artifact provenance and restoration. The existing
 FOC runner supports separate build, fixed-image capture and offline report

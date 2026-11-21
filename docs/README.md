@@ -16,16 +16,17 @@
 - [VESC 6 MK5 and C5 bridge](hw/vesc6-mk5.md)
 - [Cheap FOCer 2](hw/cheap-focer2-notes.md)
 - [NUCLEO-G474RE + IHM08M1](hw/nucleo-g474re-ihm08m1.md)
-- [Register access](register-access.md) and [flash budget](flash-size.md)
+- [Register access](register-access.md), [flash budget](flash-size.md) and
+  [control ISR performance](performance.md)
 
 ## Bench and research
 
-- [ADC ISR measurement workflow](adc-isr-measurement.md) defines the tools,
-  reproducible commands, attribution method and required measurement evidence.
+- [Control ISR performance](performance.md): budget, current timings, code and
+  RAM placement, measurement tools and the rules for changing the hot path.
 - [Hall-to-observer tuning](notes/hall-observer-tuning.md) records the current
   thresholds, their baseline and how to revisit the estimator.
-- [ADC ISR optimization](notes/adc-isr-optimization.md) records the accepted
-  implementation, timing methodology, measured history and rejected experiments.
+- [ADC ISR optimization](notes/adc-isr-optimization.md) is the measured history
+  up to November 17 and the detailed record of rejected experiments.
 - [Motor and telemetry journal](notes/foc-loop-research.md) records low-speed
   behavior, transport qualification and Hall-to-observer crossover captures.
 - [Commissioning design and implementation history](notes/motor-setup-wizard.md)
