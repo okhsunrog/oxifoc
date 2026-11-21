@@ -1,19 +1,18 @@
 import unittest
 from unittest.mock import patch
 
-import bench_overclock as bench
+import mk5_probe as bench
 
 
 class ClockReadbackTests(unittest.TestCase):
-    def registers(self, n=169, overclock=True):
-        # F405 HSE/4 * PLLN / 2, AHB /1. Independent register fixtures.
-        cfgr = 0xb80a if overclock else 0x940a
+    def registers(self, n=169):
+        # F405 HSE/4 * PLLN / 2, AHB /1, APB1 /4, APB2 /2. Independent fixtures.
         return {
-            0x40023800: [0x03037e83, (7 << 24) | (1 << 22) | (n << 6) | 4, cfgr],
-            0x40023c00: [5 if n == 169 else 7],
-            0x40012304: [0 if overclock else 1 << 16],
+            0x40023800: [0x03037e83, (7 << 24) | (1 << 22) | (n << 6) | 4, 0x940a],
+            0x40023c00: [5],
+            0x40012304: [1 << 16],
             0x40013000: [1 << 3],  # SPI /4
-            0x40010028: [0, 2097 if overclock else 4195],
+            0x40010028: [0, 4195],
             0x40010020: [0],
         }
 
@@ -22,30 +21,10 @@ class ClockReadbackTests(unittest.TestCase):
             return bench.clocks()
 
     def test_normal_profile(self):
-        x = self.decode(self.registers(overclock=False))
+        x = self.decode(self.registers())
         self.assertEqual(x["cpu_hz"], 167835864)
         self.assertEqual(x["tim1_hz"], 167835864)
         self.assertEqual(x["adc_hz"], 20979483)
-
-    def test_reduced_bus_dividers(self):
-        x = self.decode(self.registers())
-        self.assertEqual(x["tim1_hz"], 83917932)
-        self.assertEqual(x["adc_hz"], 20979483)
-
-    def test_upper_step(self):
-        regs = self.registers(n=241)
-        regs[0x40010028] = [0, 2991]
-        x = self.decode(regs)
-        self.assertEqual(x["cpu_hz"], 239339901)
-        self.assertEqual(x["flash_ws"], 7)
-
-    def test_maximum_experimental_step(self):
-        regs = self.registers(n=261)
-        regs[0x40010028] = [0, 3239]
-        x = self.decode(regs)
-        self.assertEqual(x["cpu_hz"], 259202134)
-        self.assertEqual(x["flash_ws"], 7)
-        self.assertGreater(x["flash_access_hz"], 30_000_000)
 
     def test_rejects_incomplete_capture(self):
         meta = dict(gaps=0, samples_lost=0, rows=10, raw_telemetry=dict(
@@ -66,9 +45,9 @@ class ClockReadbackTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "FLASH wait"):
             self.decode(regs)
 
-    def test_rejects_overclocked_apb(self):
+    def test_rejects_apb_above_its_limit(self):
         with self.assertRaises(AssertionError):
-            self.decode(self.registers(n=241, overclock=False))
+            self.decode(self.registers(n=241))
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import time
 
-import bench_overclock as probe
+import mk5_probe as probe
 
 ROOT = Path(__file__).resolve().parents[1]
 CRATE = ROOT / "tests/stm32f405"

@@ -17,7 +17,7 @@ import subprocess
 import struct
 import time
 
-import bench_overclock as probe
+import mk5_probe as probe
 import f405_timing
 
 

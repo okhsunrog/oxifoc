@@ -260,7 +260,6 @@ cleanup; they are not measurements of every subsequent rebuild.
 | Shadow-observer multirate | Earlier screening reduced loss but still failed continuous capture; reverted. Accepted observer work remains native-rate. |
 | Whole STATE/driver in CCM | Stock-clock, phase-inhibited workload: 36.76→36.81 us; no useful gain. Existing CPU-only telemetry-queue CCM placement is a separate setting. |
 | Hot code in SRAM (`ram-foc`) | At 168 MHz with phases inhibited: 36.76→40.62–40.68 us and two body overruns. Not selected; CCM cannot execute code. |
-| Overclock, SRAM+CCM at 240 MHz | Inhibited current workload: Flash 31.65 versus SRAM+CCM 29.72 us. Short integrity tests completed through requested 260 MHz. Rotating/loaded operation is unqualified; production retains the stock clock. |
 
 `DriverCommand` is **56 bytes** on the measured ARM target, not 176. Larger
 copies came from rare model/config application. Command enum/FIFO layout and
@@ -313,7 +312,6 @@ Local artifact root:
 | Directory under the root | Evidence |
 |---|---|
 | `oxifoc-adc-opt-2026-11-10/` | Initial math/NTC batches, exact ELF, raw captures, report |
-| `oxifoc-overclock-2026-11-10/` | Clock/SRAM/CCM matrix, registers, inhibited outputs, `analysis.json` |
 | `oxifoc-foc-research-2026-11-11/` | Early body/gap/PWM work, rejected Hall/cruise variants |
 | `oxifoc-nightly-ab.C6IY3o/`, `oxifoc-arm-flags.uLpWZf/` | Nightly/FPU/flag comparisons; early printed PWM margins are doubled, use raw TIM1 ticks |
 | `oxifoc-embassy-ab.ox3qLp/`, `oxifoc-isr-cause.9mxWCf/` | Embassy/clocks, address-preserving PRIMASK A/B, incremental |

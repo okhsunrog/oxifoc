@@ -8,9 +8,6 @@ pub mod cycle_work;
 #[cfg(feature = "bench-foc-distribution")]
 pub mod foc_distribution;
 
-#[cfg(feature = "bench-overclock")]
-pub mod clock_stress;
-
 #[cfg(feature = "bench-cycle-outliers")]
 pub mod cycle_outliers;
 

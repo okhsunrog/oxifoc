@@ -208,19 +208,6 @@ impl ClockProfile {
     }
 }
 
-#[cfg(feature = "bench-overclock")]
-const BENCH_PLL_N: u16 = include!(concat!(env!("OUT_DIR"), "/bench_pll_n.rs"));
-const REDUCED_APB: bool = {
-    #[cfg(feature = "bench-overclock")]
-    {
-        BENCH_PLL_N > 169
-    }
-    #[cfg(not(feature = "bench-overclock"))]
-    {
-        false
-    }
-};
-
 /// Default board clock, or the UUID-guarded bench estimate; never persisted in
 /// runtime calibration. RCC must be configured before that storage is loaded.
 pub const CLOCK_PROFILE: ClockProfile = ClockProfile {
@@ -231,58 +218,24 @@ pub const CLOCK_PROFILE: ClockProfile = ClockProfile {
     },
     pll: Pll {
         prediv: PllPreDiv::Div4,
-        mul: {
-            #[cfg(feature = "bench-overclock")]
-            {
-                PllMul::from_bits(BENCH_PLL_N)
-            }
-            #[cfg(not(feature = "bench-overclock"))]
-            if cfg!(feature = "bench-calibrated-clock") {
-                PllMul::Mul169
-            } else {
-                PllMul::Mul168
-            }
+        mul: if cfg!(feature = "bench-calibrated-clock") {
+            PllMul::Mul169
+        } else {
+            PllMul::Mul168
         },
         divp: Some(PllPDiv::Div2),
-        divq: Some({
-            #[cfg(feature = "bench-overclock")]
-            {
-                PllQDiv::from_bits(
-                    ((7_944_893 * BENCH_PLL_N as u32).div_ceil(4 * 48_000_000)) as u8,
-                )
-            }
-            #[cfg(not(feature = "bench-overclock"))]
-            {
-                PllQDiv::Div7
-            }
-        }),
+        divq: Some(PllQDiv::Div7),
         divr: None,
     },
-    apb1_pre: if REDUCED_APB {
-        APBPrescaler::Div8
-    } else {
-        APBPrescaler::Div4
-    },
-    apb2_pre: if REDUCED_APB {
-        APBPrescaler::Div4
-    } else {
-        APBPrescaler::Div2
-    },
+    apb1_pre: APBPrescaler::Div4,
+    apb2_pre: APBPrescaler::Div2,
 };
 pub const HSE_HZ: u32 = CLOCK_PROFILE.hse_hz;
 /// Core clock after PLL init — MUST match hardware/peripherals.rs.
 /// Single source for all cycle-based timing: the ISR cycle budget,
 /// busy-wait delays (DRV8301 tWAKE, bit-bang SPI), load percentages.
 pub const CPU_HZ: u32 = CLOCK_PROFILE.sys_hz();
-const _: () = assert!(
-    CPU_HZ
-        <= if cfg!(feature = "bench-overclock") {
-            260_000_000
-        } else {
-            168_000_000
-        }
-);
-#[cfg(not(feature = "bench-overclock"))]
+const _: () = assert!(CPU_HZ <= 168_000_000);
 const _: () = assert!(CLOCK_PROFILE.clk48_hz() >= 47_880_000);
 const _: () = assert!(CLOCK_PROFILE.clk48_hz() <= 48_120_000);
 const _: () = assert!(CLOCK_PROFILE.apb_hz(CLOCK_PROFILE.apb1_pre) <= 42_000_000);

@@ -60,30 +60,6 @@ flash-mk5-spi: build-mk5-spi
     probe-rs download --verify --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
     probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
 
-# No motor outputs at any experimental clock; normal flash-mk5-spi restores stock.
-build-mk5-overclock mhz="168" load="stress":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    test {{quote(load)}} = stress -o {{quote(load)}} = light
-    config=$(uv run --no-project python -B scripts/bench_prepare_embassy.py)
-    cd oxifoc-f405
-    OXIFOC_BENCH_CPU_MHZ={{quote(mhz)}} DEFMT_LOG=warn,oxifoc_f405::control::foc=info cargo -Z lockfile-path --config "$config" build --offline --release --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + if load == "light" { ",bench-overclock-light" } else { ",bench-overclock" })}} --bin oxifoc-f405
-
-flash-mk5-overclock mhz="168" load="stress": (build-mk5-overclock mhz load)
-    probe-rs download --verify --connect-under-reset --chip STM32F405RGTx --probe {{mk5_probe}} {{mk5_elf}}
-    probe-rs reset --chip STM32F405RGTx --probe {{mk5_probe}}
-
-bench-mk5-overclock output seconds="20": build-mk5-spi
-    uv run --no-project python -B scripts/bench_overclock.py {{quote(output)}} --seconds {{seconds}}
-
-# Retry one step using the previously verified recovery image; no stock rebuild.
-bench-mk5-overclock-step output mhz recovery seconds="20":
-    uv run --no-project python -B scripts/bench_overclock.py {{quote(output)}} --steps {{mhz}} --recovery-elf {{quote(recovery)}} --seconds {{seconds}}
-
-# Virtual current control only: phase outputs stay inhibited in every image.
-bench-mk5-overclock-current output recovery seconds="10":
-    uv run --no-project python -B scripts/bench_overclock.py {{quote(output)}} --steps 168 204 216 240 --load light --current-maneuver maneuvers/mk5-hall-hold-check.json --recovery-elf {{quote(recovery)}} --seconds {{seconds}}
-
 # Run all checks (fmt, clippy, tests — workspace + device crates)
 check:
     @just check-host

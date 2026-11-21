@@ -2,7 +2,7 @@
 import argparse
 import json
 
-import bench_overclock as probe
+import mk5_probe as probe
 
 SAMPLE_CYCLES = [3, 15, 28, 56, 84, 112, 144, 480]
 
