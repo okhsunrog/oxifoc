@@ -937,6 +937,19 @@ impl BackEmfObserver {
         // Advance the readiness Schmitt latch: evaluated against the
         // PREVIOUS latch state (that is what makes it hysteresis), stored
         // for the next cycle and for `is_ready` callers in between.
+        // A non-finite input (a NaN current or voltage) would otherwise stay
+        // in the integrator, the PLL and the adapted λ for good. Restart the
+        // estimate from rest instead, as VESC does; readiness drops with it.
+        if !(self.x1.is_finite()
+            && self.x2.is_finite()
+            && self.phase_pll.radians().is_finite()
+            && self.velocity_pll.is_finite()
+            && self.lambda.is_finite())
+        {
+            self.recover_from_non_finite();
+            return;
+        }
+
         let prof_t2 = isr_prof::now();
         self.refresh_readiness_err();
         // The refresh evaluated readiness against the previous latch. With
@@ -1058,6 +1071,21 @@ impl BackEmfObserver {
             && self.readiness_phase_err() < err_bound
             && self.velocity_pll.abs() >= READY_MIN_VELOCITY
             && self.valid_travel >= VALID_TRAVEL_GRANTED
+    }
+
+    /// Restart after a non-finite state. A non-finite λ returns to the
+    /// configured value, the middle of the [0.5, 2] adaptation window.
+    #[cold]
+    #[inline(never)]
+    fn recover_from_non_finite(&mut self) {
+        if !self.lambda.is_finite() {
+            self.lambda = if self.lambda_min.is_positive() {
+                self.lambda_min * 2.0
+            } else {
+                MIN_LAMBDA
+            };
+        }
+        self.reset();
     }
 
     /// Reset observer state. The adapted λ is kept — it is a physical
@@ -1946,6 +1974,39 @@ mod tests {
             theta = theta_next;
         }
         theta
+    }
+
+    /// A NaN input must not poison the integrator, PLL or λ: the observer
+    /// restarts from rest, drops readiness and locks again on clean input.
+    #[test]
+    fn non_finite_input_restarts_the_observer() {
+        let (r, l, lambda) = (0.1, 50e-6, 0.005);
+        let (omega, dt) = (300.0, 5e-5);
+        let mut obs = BackEmfObserver::new(ohms(r), henries(l), webers(lambda));
+        run_observer(&mut obs, r, l, lambda, omega, 0.0, 40_000, dt);
+        assert!(obs.is_ready(), "precondition: the observer locked");
+
+        obs.update(&ObserverInput {
+            v_alpha: volts(f32::NAN),
+            v_beta: volts(0.0),
+            i_alpha: amps(0.0),
+            i_beta: amps(f32::NAN),
+            dt: seconds(dt),
+        });
+        assert!(!obs.is_ready());
+        assert!(obs.phase().radians().is_finite() && obs.velocity().is_finite());
+        assert!(obs.lambda.is_finite());
+
+        run_observer(&mut obs, r, l, lambda, omega, 0.0, 40_000, dt);
+        assert!(
+            obs.is_ready(),
+            "the observer must lock again after recovery"
+        );
+        assert!(
+            (obs.velocity() - erad_per_s(omega)).abs() < erad_per_s(0.05 * omega),
+            "velocity {:?}",
+            obs.velocity()
+        );
     }
 
     #[test]
