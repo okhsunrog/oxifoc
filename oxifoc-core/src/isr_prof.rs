@@ -7,11 +7,7 @@
 //! the shared code cost nothing on host builds.
 
 use core::sync::atomic::AtomicU32;
-#[cfg(any(
-    feature = "isr-profiling",
-    feature = "isr-profile-phase",
-    feature = "runtime"
-))]
+#[cfg(any(feature = "isr-profiling", feature = "runtime"))]
 use core::sync::atomic::Ordering;
 
 /// `run_foc_cycle`: command drain + deadman/link/fault gates.
@@ -250,30 +246,6 @@ pub fn add(sum: &AtomicU32, t0: u32, t1: u32) {
     #[cfg(feature = "isr-profiling")]
     sum.fetch_add(t1.wrapping_sub(t0), Ordering::Relaxed);
     #[cfg(not(feature = "isr-profiling"))]
-    {
-        let _ = (sum, t0, t1);
-    }
-}
-
-/// Selected phase/outer-loop group, allowing native-rate live attribution
-/// without enabling all nested ISR markers simultaneously.
-#[inline(always)]
-pub fn phase_now() -> u32 {
-    #[cfg(any(feature = "isr-profiling", feature = "isr-profile-phase"))]
-    {
-        cortex_m::peripheral::DWT::cycle_count()
-    }
-    #[cfg(not(any(feature = "isr-profiling", feature = "isr-profile-phase")))]
-    {
-        0
-    }
-}
-
-#[inline(always)]
-pub fn phase_add(sum: &AtomicU32, t0: u32, t1: u32) {
-    #[cfg(any(feature = "isr-profiling", feature = "isr-profile-phase"))]
-    sum.fetch_add(t1.wrapping_sub(t0), Ordering::Relaxed);
-    #[cfg(not(any(feature = "isr-profiling", feature = "isr-profile-phase")))]
     {
         let _ = (sum, t0, t1);
     }

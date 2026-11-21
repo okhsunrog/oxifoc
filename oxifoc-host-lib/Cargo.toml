@@ -8,7 +8,6 @@ rust-version.workspace = true
 default = ["desktop"]
 # Only for the transport lifecycle regression test; never enable in a GUI.
 ble-mock-tests = ["blec/mock"]
-transport-bench = ["oxifoc-core/transport-bench"]
 desktop = [
     "dep:probe-rs",
     "dep:tokio-serial",
@@ -50,10 +49,6 @@ workspace = true
 [[example]]
 name = "velocity_cpu_control"
 required-features = ["desktop"]
-
-[[example]]
-name = "usb_serial_jtag_bench"
-required-features = ["desktop", "transport-bench"]
 
 [dev-dependencies]
 btleplug = "0.13.5"

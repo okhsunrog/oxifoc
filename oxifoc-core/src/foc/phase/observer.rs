@@ -29,8 +29,6 @@ use crate::foc::transforms;
 #[cfg(feature = "hfi")]
 use crate::foc::trig::{LibmSinCos, SinCos};
 use crate::foc::wrap_angle;
-#[cfg(feature = "isr-work-events")]
-use crate::isr_work;
 #[cfg(feature = "hfi")]
 use crate::units::hertz;
 use crate::units::{
@@ -784,8 +782,6 @@ impl BackEmfObserver {
         // PLL tracking. The error must be the SIGNED shortest angular distance
         // (like VESC's foc_pll_run): wrapping to [0, 2π) would make the error
         // always non-negative and the velocity integrator could only grow.
-        #[cfg(feature = "isr-work-events")]
-        isr_work::angle_difference(isr_work::OBSERVER_ERROR_WRAP, phase_raw, self.phase_pll);
         let phase_error = foc::angle_difference_signed_minus_wrapped(phase_raw, self.phase_pll);
         self.velocity_pll += self.pll_ki * phase_error * dt;
         // Physics acceleration prior (see set_accel_prior): |ω̂| is clamped

@@ -189,7 +189,7 @@ where
         dt: Time,
         now_ticks: u64,
     ) {
-        let voltage_start = isr_prof::phase_now();
+        let voltage_start = isr_prof::now();
         let bridge_driven = !self.mode.is_high_z();
         let (v_alpha, v_beta) =
             match observer_voltage_source(self.phase_voltage.as_ref(), bridge_driven) {
@@ -201,7 +201,7 @@ where
                 },
                 ObserverVoltage::Commanded => self.applied_voltage(),
             };
-        isr_prof::phase_add(&isr_prof::EST_VOLTAGE, voltage_start, isr_prof::phase_now());
+        isr_prof::add(&isr_prof::EST_VOLTAGE, voltage_start, isr_prof::now());
         self.phase.update(
             &PhaseInput {
                 v_alpha,

@@ -11,16 +11,6 @@ path = "./src/bin/main.rs"
 test = false
 bench = false
 
-[[bin]]
-name = "motor-test"
-path = "src/bin/motor-test.rs"
-required-features = ["bench-motor-test"]
-test = false
-bench = false
-
-[features]
-bench-motor-test = []
-
 [[test]]
 harness = false
 name    = "hello_test"

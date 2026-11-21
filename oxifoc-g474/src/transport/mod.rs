@@ -1,13 +1,12 @@
 //! Multi-interface transport layer for ergot communication
 //!
-//! Up to three ergot interfaces, each behind a `transport-*` feature
+//! Up to two ergot interfaces, each behind a `transport-*` feature
 //! (default = USB + UART, both active simultaneously):
 //! - USB FS:  ergot over USB bulk endpoints (PA12 D+, PA11 D-)  [`transport-usb`]
 //! - LPUART1: ergot over ST-LINK VCP (PA2 TX, PA3 RX)           [`transport-uart`]
-//! - RTT:     ergot over RTT channel 1 (+ defmt on ch0)         [`transport-rtt`]
 //!
 //! defmt always goes over RTT channel 0 (read via probe-rs). The Router has
-//! capacity for all three; a build registers only the enabled interfaces.
+//! capacity for both; a build registers only the enabled interfaces.
 
 pub mod io;
 pub use io::*;
@@ -24,54 +23,45 @@ use ergot::interface_manager::transports::eio::RxWorker as EioRxWorker;
 use ergot::interface_manager::transports::eusb_0_6_preview::RxWorker as UsbRxWorker;
 use ergot::interface_manager::utils::{cobs_stream, framed_stream};
 use ergot::toolkits::{embassy_usb_v0_6_preview as usb_kit, embedded_io_async_v0_7 as io_kit};
-#[cfg(feature = "transport-rtt")]
-use ergot::transport::rtt::{RttReader, RttWriter};
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use oxifoc_core::icd::LIVENESS_TIMEOUT_MS;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
 
 use crate::config::{
-    MAX_PACKET_SIZE, RTT_OUT_QUEUE_SIZE, UART_BAUD, UART_BUF_LEN, UART_OUT_QUEUE_SIZE,
-    USB_LIVENESS_TIMEOUT_MS, USB_OUT_QUEUE_SIZE,
+    MAX_PACKET_SIZE, UART_BAUD, UART_BUF_LEN, UART_OUT_QUEUE_SIZE, USB_LIVENESS_TIMEOUT_MS,
+    USB_OUT_QUEUE_SIZE,
 };
 use oxifoc_core::stm32_rng::ErgotRng;
 
 // ========== Multi-Interface Definition ==========
 //
-// All three sink variants are always compiled (the RTT sink is the same
-// `IoInterface` family as UART, so it needs no extra ergot feature); only the
-// init / registration / worker code is gated per `transport-*` feature. The
-// Router has capacity for all three; a build registers only the enabled ones.
+// Both sink variants are always compiled; only the init / registration /
+// worker code is gated per `transport-*` feature.
 
 type UsbQ = &'static UsbQueue;
 type UartQ = &'static UartQueue;
-type RttQ = &'static RttQueue;
 
 ergot::multi_interface! {
     pub enum McSink for McInterface {
         Usb(EmbassyInterface<UsbQ>),
         Uart(IoInterface<UartQ>),
-        Rtt(IoInterface<RttQ>),
     }
 }
 
 // ========== Type Aliases ==========
 
 pub type Rng = ErgotRng;
-pub type McRouter = Router<McInterface, Rng, 3, 0>;
+pub type McRouter = Router<McInterface, Rng, 2, 0>;
 pub type Stack = NetStack<CriticalSectionRawMutex, McRouter>;
 
 pub type UsbQueue = usb_kit::Queue<USB_OUT_QUEUE_SIZE, AtomicCoord>;
 pub type UartQueue = io_kit::Queue<UART_OUT_QUEUE_SIZE, AtomicCoord>;
-pub type RttQueue = io_kit::Queue<RTT_OUT_QUEUE_SIZE, AtomicCoord>;
 
 pub type AppDriver = usb::Driver<'static, peripherals::USB>;
 
 pub type UartRxWorkerType = EioRxWorker<&'static Stack, UartReader, RouterFrameProcessor>;
 pub type UsbRxWorkerType = UsbRxWorker<&'static Stack, AppDriver, RouterFrameProcessor>;
-#[cfg(feature = "transport-rtt")]
-pub type RttRxWorkerType = EioRxWorker<&'static Stack, RttReader, RouterFrameProcessor>;
 
 // ========== Static Storage ==========
 
@@ -81,18 +71,12 @@ static STACK_CELL: StaticCell<Stack> = StaticCell::new();
 /// Output queues (one per interface)
 pub static USB_OUTQ: UsbQueue = usb_kit::Queue::new();
 pub static UART_OUTQ: UartQueue = io_kit::Queue::new();
-#[cfg(feature = "transport-rtt")]
-pub static RTT_OUTQ: RttQueue = io_kit::Queue::new();
 
 /// State notification queue — woken on interface state transitions
 pub static STATE_NOTIFY: WaitQueue = WaitQueue::new();
 
 /// RTT defmt channel storage
 static RTT_DEFMT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
-#[cfg(feature = "transport-rtt")]
-static RTT_ERGOT_UP: StaticCell<rtt_target::UpChannel> = StaticCell::new();
-#[cfg(feature = "transport-rtt")]
-static RTT_ERGOT_DOWN: StaticCell<rtt_target::DownChannel> = StaticCell::new();
 
 /// UART buffers
 static UART_TX_BUF: StaticCell<[u8; UART_BUF_LEN]> = StaticCell::new();
@@ -117,9 +101,7 @@ bind_interrupts!(pub struct RngIrqs {
 
 // ========== Initialization ==========
 
-/// Initialize RTT for defmt logging only (no ergot-over-RTT interface). Must be
-/// called before any defmt macros. Used when `transport-rtt` is disabled.
-#[cfg(not(feature = "transport-rtt"))]
+/// Initialize RTT for defmt logging. Must be called before any defmt macros.
 pub fn init_defmt_rtt() {
     use ergot::logging::defmt_sink;
     let channels = rtt_init! {
@@ -136,71 +118,6 @@ pub fn init_defmt_rtt() {
 pub fn init_stack(hw_rng: Rng) -> &'static Stack {
     let router = McRouter::new(hw_rng);
     STACK_CELL.init(NetStack::new_with_profile(router))
-}
-
-// ========== RTT Transport (feature = "transport-rtt") ==========
-
-/// RTT transport handles (ergot over RTT channels + defmt over channel 0).
-#[cfg(feature = "transport-rtt")]
-pub struct RttTransport {
-    pub rx_worker: RttRxWorkerType,
-    pub tx: RttWriter,
-}
-
-/// Initialize RTT: defmt sink on channel 0 **and** an ergot interface on the
-/// ergot up/down channels, registered on the Router. Replaces `init_defmt_rtt`
-/// when `transport-rtt` is enabled (a single `rtt_init!` owns the control
-/// block, so defmt and ergot channels are declared together). Needs the stack,
-/// so call right after `init_stack` and before any other `defmt` use.
-#[cfg(feature = "transport-rtt")]
-pub fn init_rtt(stack: &'static Stack) -> (RttTransport, u8) {
-    use ergot::logging::defmt_sink;
-
-    let channels = rtt_init! {
-        up: {
-            0: { size: 2048, mode: NoBlockSkip, name: "defmt" }
-            // NoBlockTrim, NOT NoBlockSkip (back-ported from the g431 fix,
-            // e1f65b5): the ergot TX path hands multi-KB stream grants to
-            // this channel; Skip refuses partial writes, returns 0 and
-            // re-polls — a hot loop that monopolizes the cooperative
-            // executor and starves the other tasks. Trim always makes
-            // forward progress into whatever space the host has freed.
-            1: { size: 8192, mode: NoBlockTrim, name: "ergot" }
-        }
-        down: {
-            0: { size: 1024, name: "ergot-down" }
-        }
-    };
-    defmt_sink::init_rtt(RTT_DEFMT_UP.init(channels.up.0));
-
-    defmt::info!("Oxifoc G474 - initializing ergot over RTT");
-
-    let rtt_rx = RttReader::new(RTT_ERGOT_DOWN.init(channels.down.0));
-    let rtt_tx = RttWriter::new(RTT_ERGOT_UP.init(channels.up.1));
-
-    let sink = McSink::Rtt(cobs_stream::Sink::new(
-        RTT_OUTQ.stream_producer(),
-        MAX_PACKET_SIZE as u16,
-    ));
-    let ident = defmt::unwrap!(
-        stack.manage_profile(|router| router.register_interface(sink)),
-        "RTT interface registration failed"
-    );
-    let net_id = defmt::unwrap!(stack.manage_profile(|router| router.net_id_of(ident)));
-
-    let rx_worker = RttRxWorkerType::new(stack, rtt_rx, RouterFrameProcessor::new(net_id), ident)
-        .with_liveness(LivenessConfig {
-            timeout_ms: LIVENESS_TIMEOUT_MS,
-        })
-        .with_state_notify(&STATE_NOTIFY);
-
-    (
-        RttTransport {
-            rx_worker,
-            tx: rtt_tx,
-        },
-        ident,
-    )
 }
 
 // ========== UART Transport ==========

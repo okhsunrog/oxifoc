@@ -68,8 +68,6 @@ pub async fn pump(stack: &'static Stack, ident: u8, r: Resources, epoch: u32) {
         }
         builder.finish(checksum);
     };
-    #[cfg(feature = "bench-delayed-upstream")]
-    Timer::after_secs(3).await;
     let net = defmt::unwrap!(stack.manage_profile(|p| p.net_id_of(ident)));
     let mut processor = RouterFrameProcessor::new(net);
     let mut pending = false;

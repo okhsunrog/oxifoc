@@ -127,8 +127,6 @@ pub mod timer;
 
 /// Per-section ISR cycle profiling (feature `isr-profiling`, device-only)
 pub mod isr_prof;
-#[cfg(feature = "isr-work-events")]
-pub mod isr_work;
 
 /// High-level motor driver combining FOC with sensors and PWM
 pub mod motor;
@@ -186,8 +184,6 @@ pub mod types;
 pub mod raw_telemetry;
 #[cfg(feature = "spi-link")]
 pub mod spi_link;
-#[cfg(feature = "transport-bench")]
-pub mod transport_bench;
 pub mod velocity_telemetry;
 
 /// Interface Control Document with ergot endpoints (requires `icd` feature)
@@ -240,8 +236,6 @@ pub mod runtime;
 
 /// Field-Oriented Control algorithms
 pub mod foc {
-    #[cfg(feature = "isr-work-events")]
-    use crate::isr_work;
     use crate::units::AngleRepr;
     use core::f32::consts::TAU;
 
@@ -302,8 +296,6 @@ pub mod foc {
             magnitude != 0 && magnitude <= TAU.to_bits()
         };
         if one_turn {
-            #[cfg(feature = "isr-work-events")]
-            isr_work::mark(isr_work::ANGLE_WRAP);
             return angle - f32::from_bits(TAU.to_bits() | (bits & 0x8000_0000));
         }
         wrap_angle_complete(angle)
@@ -312,8 +304,6 @@ pub mod foc {
     #[cold]
     #[inline(never)]
     fn wrap_angle_complete(angle: f32) -> f32 {
-        #[cfg(feature = "isr-work-events")]
-        isr_work::mark(isr_work::ANGLE_WRAP);
         let mut a = angle;
         // Keep exact 2*TAU cold: one subtraction would still leave TAU.
         if !(-TAU..2.0 * TAU).contains(&a) {

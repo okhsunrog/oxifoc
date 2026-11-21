@@ -10,8 +10,6 @@ use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
 use crate::isr_prof;
-#[cfg(feature = "isr-work-events")]
-use crate::isr_work;
 use crate::units::{
     AngleRepr, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
     ElectricalAngularVelocity, Scalar, Sign, Time,
@@ -73,13 +71,6 @@ enum CurrentFeedback {
     Ignore,
     Cruise,
 }
-
-// Only the stopped bench harness selects a profile over SWD. Reset starts
-// disabled and unknown values cannot add torque.
-#[cfg(feature = "bench-cogging-compensation")]
-#[unsafe(no_mangle)]
-pub static BENCH_COGGING_PROFILE: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
 
 impl<P, C, Phase, S> FocDriver<P, C, Phase, S>
 where
@@ -333,8 +324,6 @@ where
     /// velocity invalidation drop the stored bounds.
     #[inline(never)]
     fn prepare_velocity_authority(&mut self, now_ticks: u64) {
-        #[cfg(feature = "isr-work-events")]
-        isr_work::mark(isr_work::AUTHORITY_AHEAD);
         let (iq_min, iq_max, omega) = self.velocity_authority();
         self.velocity_schedule.store_authority(
             iq_min,
@@ -355,9 +344,7 @@ where
         dt: Time,
         now_ticks: u64,
     ) {
-        #[cfg(feature = "isr-work-events")]
-        isr_work::mark(isr_work::VELOCITY_PI);
-        let profile_start = isr_prof::phase_now();
+        let profile_start = isr_prof::now();
         let target_vel = self.velocity_target(target);
         let (tracking, mut blockage, mut voltage_clip) = self.velocity_schedule.take_feedback();
         self.velocity_loop.track_grant(tracking);
@@ -397,8 +384,6 @@ where
                 bounds
             }
             None => {
-                #[cfg(feature = "isr-work-events")]
-                isr_work::mark(isr_work::AUTHORITY_FALLBACK);
                 #[cfg(test)]
                 authority_audit::fallback();
                 let (iq_min, iq_max, _) = self.velocity_authority();
@@ -417,40 +402,6 @@ where
         } else {
             iq_min
         };
-        #[cfg(feature = "bench-cogging-compensation")]
-        let position_feedforward =
-            match BENCH_COGGING_PROFILE.load(core::sync::atomic::Ordering::Relaxed) {
-                1 if target.is_some() => 0.25,
-                2 if target.is_some() => -0.25,
-                _ => 0.0,
-            };
-        #[cfg(feature = "bench-cogging-compensation")]
-        let iq_target = if position_feedforward != 0.0 {
-            use crate::units::{amps, erad};
-            // Measured acceleration peaks at 137° modulo 180°. Counter
-            // torque peaks 90 electrical degrees away, at 47°.
-            let feedforward =
-                self.phase
-                    .bench_hall_position(now_ticks)
-                    .map_or(ElectricCurrent::ZERO, |angle| {
-                        let doubled = wrap_angle(2.0 * (angle - erad(47.0_f32.to_radians())));
-                        let (_, cos) = S::sin_cos(doubled.radians());
-                        amps(position_feedforward * cos)
-                    });
-            self.velocity_loop.step_with_feedforward(
-                target_vel,
-                omega,
-                iq_min,
-                iq_max,
-                blockage,
-                dt,
-                feedforward,
-            )
-        } else {
-            self.velocity_loop
-                .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt)
-        };
-        #[cfg(not(feature = "bench-cogging-compensation"))]
         let iq_target = self
             .velocity_loop
             .step_with_blockage(target_vel, omega, iq_min, iq_max, blockage, dt);
@@ -483,11 +434,7 @@ where
         if !self.velocity_schedule.set_request(iq_target) {
             self.invalidate_velocity();
         }
-        isr_prof::phase_add(
-            &isr_prof::VELOCITY_REQUEST,
-            profile_start,
-            isr_prof::phase_now(),
-        );
+        isr_prof::add(&isr_prof::VELOCITY_REQUEST, profile_start, isr_prof::now());
     }
 
     #[cfg(feature = "velocity-debug")]

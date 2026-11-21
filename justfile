@@ -8,7 +8,7 @@ device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 # On-target test crates (run on hardware; compiled here so they don't rot)
 target_test_crates := "tests/stm32g474 tests/stm32f405"
 
-core_test_features := "runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect,impedance-sweep"
+core_test_features := "runtime,virtual-motor,storage,std,delivery,hfi,hfi-detect"
 core_embassy_features := core_test_features + ",embassy"
 
 install-hooks:
@@ -56,9 +56,6 @@ build-mk5-bridge-spi:
 bench-mk5-bridge-spi output c5_project=c5_project: build-mk5-bridge-spi
     @test -n {{quote(c5_project)}} || { echo "set OXIFOC_C5_PROJECT or pass c5_project" >&2; exit 1; }
     uv run --no-project python scripts/bench-bridge-spi.py --output {{quote(output)}} --c5-project {{quote(c5_project)}}
-
-bench-usb-serial-jtag port fps="625" bytes="832" seconds="30":
-    cargo run --release --locked -p oxifoc-host-lib --features transport-bench --example usb_serial_jtag_bench -- {{quote(port)}} {{fps}} {{bytes}} {{seconds}}
 
 build-mk5-spi:
     cd oxifoc-f405 && cargo build --release --locked --target-dir target/vesc6-mk5 --no-default-features --features {{quote(mk5_features + ",bench-calibrated-clock")}} --bin oxifoc-f405

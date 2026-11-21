@@ -29,8 +29,6 @@ use crate::foc::sensors::{AdcSnapshot, CurrentSensor, HallSnapshot};
 use crate::foc::trig::SinCos;
 use crate::foc::velocity::PreparedVelocityConfig;
 use crate::isr_prof;
-#[cfg(feature = "isr-work-events")]
-use crate::isr_work;
 use crate::motor::derating::{DeratingScales, PreparedDerating};
 use crate::motor::failsafe::{BRAKE_ENTRY_MAX_SPEED, FailsafeConfig};
 use crate::motor::foc_driver::MotorModelError;
@@ -878,8 +876,6 @@ where
         critical_section::with(|cs| state_mutex.borrow(cs).borrow_mut().set_stopped());
     }
     while let Ok(cmd) = CMD_CHANNEL.try_receive() {
-        #[cfg(feature = "isr-work-events")]
-        isr_work::mark(isr_work::COMMAND);
         foc.drop_velocity_authority();
         let detection_authority = match cmd {
             DriverCommand::DetectionMode { token, .. } => Some(token),
@@ -1377,10 +1373,6 @@ where
     let board = prepared_board.board();
     driver.set_vbus(vbus);
     let check_deadman = driver.deadman_check_due();
-    #[cfg(feature = "isr-work-events")]
-    if check_deadman {
-        isr_work::mark(isr_work::DEADMAN);
-    }
 
     let prof_t0 = isr_prof::now();
 

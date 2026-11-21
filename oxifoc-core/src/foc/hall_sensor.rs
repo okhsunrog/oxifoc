@@ -21,8 +21,6 @@ use super::sensors::{
 };
 use super::{angle_difference, wrap_angle};
 use crate::foc::fast_math;
-#[cfg(feature = "isr-work-events")]
-use crate::isr_work;
 #[cfg(feature = "storage")]
 use crate::storage::{HallCalibrationConfig, HallTuningConfig};
 #[cfg(feature = "storage")]
@@ -1214,12 +1212,6 @@ impl HallSensor {
         let max_step = effective_vel * dt_sample * self.rate_limit_factor;
 
         // Calculate desired step from current rate-limited angle
-        #[cfg(feature = "isr-work-events")]
-        isr_work::angle_difference(
-            isr_work::HALL_SLEW_WRAP,
-            target_angle,
-            self.rate_limited_angle,
-        );
         let desired_step = angle_difference(target_angle, self.rate_limited_angle);
 
         // Apply rate limiting
@@ -1227,8 +1219,6 @@ impl HallSensor {
             desired_step
         } else {
             // Clamp to max step, preserving sign
-            #[cfg(feature = "isr-work-events")]
-            isr_work::mark(isr_work::HALL_SLEW_CLIPPED);
             if desired_step.is_positive() {
                 max_step
             } else {
@@ -1378,18 +1368,6 @@ impl Default for HallCalibration {
 }
 
 impl AngleSensor for HallSensor {
-    #[cfg(feature = "bench-cogging-compensation")]
-    fn bench_hall_position(&self, now_ticks: u64) -> Option<ElectricalAngle> {
-        let age = self.time_since_edge_s(now_ticks)?;
-        if self.in_glitch || self.geometry_resync {
-            return None;
-        }
-        if !self.base_is_boundary {
-            return Some(self.calib.angle_for_state(self.raw_state));
-        }
-        Some(wrap_angle(self.angle + self.decayed_velocity(age) * age))
-    }
-
     #[cfg(feature = "storage")]
     fn apply_hall_tuning(&mut self, tuning: &HallTuningConfig) -> bool {
         self.set_interp_min_erpm(tuning.interp_min_speed.get::<electrical::erpm>());

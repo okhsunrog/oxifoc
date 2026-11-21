@@ -16,21 +16,12 @@ use crate::foc::transforms::park;
 use crate::foc::trig::SinCos;
 use crate::foc::wrap_angle;
 use crate::isr_prof;
-#[cfg(feature = "isr-work-events")]
-use crate::isr_work;
 #[cfg(feature = "storage")]
 use crate::storage::HallTuningConfig;
 use crate::units::{
     AngleRepr, ConstZero, ElectricCurrent, ElectricPotential, ElectricalAngle,
     ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux, Sign, Time,
 };
-
-/// Diagnostic-only reproduction switch, changed while Stopped by the bench.
-/// Compiled out together with periodic observer logging in normal images.
-#[cfg(feature = "observer-logging")]
-#[unsafe(no_mangle)]
-pub static OBSERVER_LOG_ENABLED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(true);
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
     #[inline(never)]
@@ -144,18 +135,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
 // ============================================================================
 
 impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H, E, S> {
-    #[cfg(feature = "bench-cogging-compensation")]
-    fn bench_hall_position(&self, now_ticks: u64) -> Option<ElectricalAngle> {
-        if self.source == PhaseSource::Hall
-            && self.hall_health == HallHealth::Ok
-            && !self.open_loop_override.active
-        {
-            self.hall.bench_hall_position(now_ticks)
-        } else {
-            None
-        }
-    }
-
     fn motion_reference_epoch(&self) -> super::super::MotionReferenceEpoch {
         self.motion_reference_epoch
     }
@@ -273,7 +252,7 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
 
     #[cfg_attr(feature = "isr-speed", optimize(speed))]
     fn update(&mut self, input: &PhaseInput, now_ticks: u64) {
-        let sensor_start = isr_prof::phase_now();
+        let sensor_start = isr_prof::now();
         let previous_hall_health = self.hall_health;
         let previous_crossover = self.crossover_latched;
         let observer_was_ready = matches!(
@@ -409,40 +388,11 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             i_beta: input.i_beta,
             dt: input.dt,
         };
-        isr_prof::phase_add(&isr_prof::EST_SENSE, sensor_start, isr_prof::phase_now());
+        isr_prof::add(&isr_prof::EST_SENSE, sensor_start, isr_prof::now());
         let prof_t0 = isr_prof::now();
         self.observer.update(&obs_input);
         isr_prof::add(&isr_prof::EST_OBS, prof_t0, isr_prof::now());
 
-        // Optional ~2.4 Hz observer text diagnostic. Logging from the ADC
-        // handler can exceed its deadline even at this low average rate;
-        // normal images use telemetry and compile this entire block out.
-        #[cfg(feature = "observer-logging")]
-        {
-            use crate::units::erad_per_s;
-            // Plain field, not an atomic: this runs only in the ISR, and a
-            // static AtomicU32 here was a per-cycle LDREX/STREX pair (PC
-            // sampling, tier-3 shave).
-            self.obs_trace_ticks = self.obs_trace_ticks.wrapping_add(1);
-            if self.obs_trace_ticks.is_multiple_of(8192)
-                && OBSERVER_LOG_ENABLED.load(core::sync::atomic::Ordering::Relaxed)
-                && let Some(vel) = self.observer.velocity()
-                && vel.abs() > erad_per_s(20.0)
-            {
-                let (bemf_q, travel) = self
-                    .observer
-                    .validity()
-                    .unwrap_or((ElectricPotential::ZERO, ElectricalAngle::ZERO));
-                info!(
-                    "obs: vel={:?} conf={} e_q={:?} travel={:?} lambda={:?}",
-                    vel,
-                    self.observer.confidence(),
-                    bemf_q,
-                    travel,
-                    self.observer.lambda().unwrap_or(MagneticFlux::ZERO)
-                );
-            }
-        }
         #[cfg(feature = "hfi")]
         {
             let hfi_active = self.hfi_active();
@@ -482,8 +432,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
             self.tracker.startup_tracking = true;
         }
         if self.startup.is_active() {
-            #[cfg(feature = "isr-work-events")]
-            isr_work::mark(isr_work::STARTUP);
             let phase_before = self.startup.phase();
             if phase_before == StartupPhase::Deadshort {
                 // Flying-restart probe: the driver holds the bridge at zero

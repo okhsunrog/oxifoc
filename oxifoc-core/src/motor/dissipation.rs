@@ -40,8 +40,6 @@
 //! accepted).
 
 use crate::foc::fast_math;
-#[cfg(feature = "isr-work-events")]
-use crate::isr_work;
 use crate::units::{
     ConstZero, CurrentSquared, ElectricCurrent, ElectricPotential, ElectricalAngularVelocity,
     ElectricalResistance, Inductance, MagneticFlux, Power, sqrt_current,
@@ -261,8 +259,6 @@ fn dissipate_magnitude<const COMPUTE_D: bool>(
         } else if circle_charge(q) <= a {
             q
         } else if circle_charge(boundary) <= a {
-            #[cfg(feature = "isr-work-events")]
-            isr_work::mark(isr_work::CIRCLE_SEARCH);
             #[cfg(feature = "isr-profiling")]
             BENCH_DISSIPATION_SEARCHES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             // q*sqrt(I²-q²) is concave for q>=0. With a feasible left

@@ -73,8 +73,6 @@ default = ["algorithms", "detection", "offset-diagnostics"]
 compact-foc = []
 # Fused atan2 polynomial. no_std builds with this policy require nightly.
 atan2-fma = []
-# ADC work tags, independent of nested DWT timers.
-isr-work-events = []
 
 # Runtime current-offset comparison (undriven / per-phase / all-phases).
 # Boot calibration remains unconditional; flash-tight devices can omit this
@@ -97,10 +95,6 @@ detection = ["algorithms", "dep:embassy-futures"]
 # See tier-3 PC sampling, 2026-07-07. Device crates enable this feature.
 isr-speed = []
 
-# Opt-in observer text logging from the control ISR. Can exceed its deadline;
-# production images should consume telemetry instead.
-observer-logging = []
-
 # Runtime HFI sensorless observer (carrier injection + synchronous demod for
 # low/zero-speed commutation on salient motors). Independent of `hfi-detect`
 # (that's the one-time inductance measurement). Off on non-salient boards
@@ -115,16 +109,9 @@ hfi = []
 # outrunners) and to drop the FFT on flash-tight boards.
 hfi-detect = ["detection", "dep:microfft"]
 
-# Bench experiment: replace the inductance step with a one-lock R(f)/L(f)
-# frequency sweep (`measure_impedance_sweep`), logging the complex impedance at
-# each carrier frequency over RTT. Reuses the HFI lock/probe/current-budget, so
-# it builds on `hfi-detect`. Off in all shipping builds — debug/characterization
-# only (overlay against a bench LCR sweep).
-impedance-sweep = ["hfi-detect"]
 
 # Interface Control Document - ergot endpoints and wire types
 icd = ["dep:ergot"]
-transport-bench = ["icd"]
 spi-link = []
 
 # Delivery semantics — typed at-most/at-least/effectively-once ladder over ergot.
@@ -153,7 +140,6 @@ ccm-telemetry = []
 # PhaseManager keeps the last Hall/observer blend weight for the F405
 # hall-diagnostics crossover records.
 hall-diagnostics = []
-bench-cogging-compensation = []
 
 # Virtual motor simulation for testing without hardware
 # Useful for host-side integration tests and GUI simulation mode
@@ -168,8 +154,6 @@ defmt = ["dep:defmt", "heapless/defmt", "uom/defmt"]
 # FocDriver::step) — device-only (reads the Cortex-M DWT directly). ~30
 # cycles of overhead per ISR; the platform stats task reports the sums.
 isr-profiling = ["dep:cortex-m"]
-# Only phase front-end/voltage and outer velocity request: bounded live profiling.
-isr-profile-phase = ["dep:cortex-m"]
 
 # log crate support for std logging
 log = ["dep:log"]

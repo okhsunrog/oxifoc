@@ -23,12 +23,6 @@ use crate::transport::UART_OUTQ;
 use crate::transport::{AppDriver, Stack, UartRxWorkerType, UartWriter, UsbQueue, UsbRxWorkerType};
 use crate::{FAULT_REGISTRY, STATE};
 
-#[cfg(feature = "transport-rtt")]
-use {
-    crate::transport::{RTT_OUTQ, RttRxWorkerType},
-    ergot::transport::rtt::RttWriter,
-};
-
 // ========== Worker Tasks ==========
 
 /// USB device task — runs the USB state machine
@@ -120,34 +114,6 @@ pub async fn run_uart_tx(mut tx: UartWriter, stack: &'static Stack, uart_ident: 
     }
 }
 
-// ========== RTT Transport workers (feature = "transport-rtt") ==========
-
-/// Worker task for incoming ergot data (RTT down channel)
-#[cfg(feature = "transport-rtt")]
-#[embassy_executor::task]
-pub async fn run_rtt_rx(
-    mut rcvr: RttRxWorkerType,
-    recv_buf: &'static mut [u8],
-    scratch_buf: &'static mut [u8],
-) {
-    use ergot::interface_manager::InterfaceState;
-    loop {
-        let _ = rcvr
-            .run(InterfaceState::Inactive, recv_buf, scratch_buf)
-            .await;
-    }
-}
-
-/// Worker task for outgoing ergot data (RTT up channel)
-#[cfg(feature = "transport-rtt")]
-#[embassy_executor::task]
-pub async fn run_rtt_tx(mut tx: RttWriter) {
-    use ergot::toolkits::embedded_io_async_v0_7::tx_worker;
-    loop {
-        let _ = tx_worker(&mut tx, RTT_OUTQ.stream_consumer()).await;
-    }
-}
-
 /// Packed28 session stream: the only consumer of the FOC ISR's fast
 /// telemetry queue, sending blocks to the node that armed the session.
 #[embassy_executor::task]
@@ -213,7 +179,7 @@ pub async fn protocol_servers(stack: &'static Stack, boot_epoch: u64) {
 /// State monitor — watches interface state transitions and updates DeviceState.
 /// Linked when ANY registered interface is active; stops motor and disables
 /// telemetry when ALL of them go down. Watches every transport that was
-/// registered (USB / UART / RTT), passed as their idents.
+/// registered (USB / UART), passed as their idents.
 #[embassy_executor::task]
 pub async fn state_monitor(stack: &'static Stack, idents: heapless::Vec<u8, 3>) {
     use crate::protocol::{DeviceState, set_device_state};

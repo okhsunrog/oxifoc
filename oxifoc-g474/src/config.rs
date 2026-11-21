@@ -107,9 +107,6 @@ pub const USB_OUT_QUEUE_SIZE: usize = 2048;
 /// Size of outgoing packet queue for UART (COBS stream)
 pub const UART_OUT_QUEUE_SIZE: usize = 2048;
 
-/// Size of outgoing packet queue for the ergot-over-RTT interface (COBS stream).
-pub const RTT_OUT_QUEUE_SIZE: usize = 4096;
-
 /// LPUART1 baud rate (ST-LINK VCP)
 pub const UART_BAUD: u32 = 115_200;
 

@@ -14,12 +14,6 @@ pub static UART_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
 /// Scratch buffer for COBS decoding (UART only)
 pub static UART_SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
-/// RTT RX worker buffers (ergot over RTT)
-#[cfg(feature = "transport-rtt")]
-pub static RTT_RECV_BUF: StaticCell<[u8; MAX_PACKET_SIZE]> = StaticCell::new();
-#[cfg(feature = "transport-rtt")]
-pub static RTT_SCRATCH_BUF: StaticCell<[u8; 64]> = StaticCell::new();
-
 // ========== Device State Management ==========
 
 /// Device operational state

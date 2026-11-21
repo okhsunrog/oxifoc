@@ -13,8 +13,6 @@ use crate::foc::sensors::CurrentSensor;
 use crate::foc::trig::SinCos;
 #[cfg(feature = "isr-profiling")]
 use crate::isr_prof;
-#[cfg(all(feature = "isr-work-events", feature = "runtime"))]
-use crate::isr_work;
 use crate::motor::derating::{DeratingConfig, DeratingScales, PreparedDerating};
 use crate::motor::dissipation;
 use crate::motor::dissipation::{RegenBudget, WindingModel, dissipate_with_id, heat_current_limit};
@@ -389,8 +387,6 @@ impl ProtectionMonitor {
         // --- Graduated derating (decimated) ---
         let refresh_derating = self.service_slots.derating_due();
         if refresh_derating {
-            #[cfg(feature = "isr-work-events")]
-            isr_work::mark(isr_work::DERATING);
             let omega = sample.velocity;
             let temperature = self.config.thermal_scales(fet_c, motor_c);
             let bus_voltage = self.config.bus_voltage_scales(sample.vbus);

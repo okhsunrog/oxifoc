@@ -13,13 +13,10 @@ bench = false
 
 [features]
 # ergot transports. USB + UART are the production interfaces (both default-on,
-# run simultaneously). transport-rtt adds an ergot-over-RTT interface (defmt
-# shares RTT channel 0) for throughput diagnostics; it pulls in the ergot `rtt`
-# feature.
+# run simultaneously); defmt goes over RTT channel 0.
 default = ["transport-usb", "transport-uart"]
 transport-usb = []
 transport-uart = []
-transport-rtt = ["ergot/rtt"]
 
 [dependencies]
 # Embassy dependencies (main branch with async flash support for G4)

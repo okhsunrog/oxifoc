@@ -30,8 +30,6 @@ ble = [
   "dep:rand_chacha",
   "trouble-host/security",
 ]
-# Fault injection for host discovery/reconnect qualification; never enabled normally.
-bench-delayed-upstream = []
 
 [dependencies]
 esp-hal = { features = ["defmt", "esp32c5", "unstable"], version = "1.2.2" }

@@ -5,8 +5,6 @@ use crate::foc::fast_math::u64_to_f32;
 use crate::foc::hall_sensor::{STALE_MIN_WINDOW, STALE_SECTOR_MULTIPLE};
 use crate::foc::phase::provider::PhaseOutput;
 use crate::foc::sensors::{HallEdgeObservation, HallEdgeTiming};
-#[cfg(feature = "isr-work-events")]
-use crate::isr_work;
 use crate::units::{
     ConstZero, ElectricalAngle, ElectricalAngularVelocity, Time, erad_per_s, seconds,
 };
@@ -79,8 +77,6 @@ impl HallMotionWitness {
         let Some(baseline) = self.baseline.as_mut().filter(|baseline| {
             baseline.edge_ticks == edge.ticks && baseline.reference_epoch == edge.reference_epoch
         }) else {
-            #[cfg(feature = "isr-work-events")]
-            isr_work::mark(isr_work::HALL_NEW_EDGE);
             self.baseline = Some(Baseline {
                 edge_ticks: edge.ticks,
                 reference_epoch: edge.reference_epoch,
@@ -90,8 +86,6 @@ impl HallMotionWitness {
             });
             return false;
         };
-        #[cfg(feature = "isr-work-events")]
-        isr_work::angle_difference(isr_work::HALL_WITNESS_WRAP, phase, baseline.phase);
         baseline.travel += angle_difference(phase, baseline.phase);
         baseline.phase = phase;
         // Preserve the 300-us minimum observation window and 1.5-sector

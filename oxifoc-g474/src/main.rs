@@ -94,11 +94,8 @@ async fn main(spawner: Spawner) {
         (u64::from(rng.blocking_next_u32()) << 32) | u64::from(rng.blocking_next_u32());
     let stack = transport::init_stack(ErgotRng::new(rng));
 
-    // ========== STEP 3: RTT (defmt sink; ergot interface when transport-rtt) ==
-    #[cfg(not(feature = "transport-rtt"))]
+    // ========== STEP 3: RTT (defmt sink) ==========
     transport::init_defmt_rtt();
-    #[cfg(feature = "transport-rtt")]
-    let (rtt_transport, rtt_ident) = transport::init_rtt(stack);
 
     // ========== STEP 4: UART (LPUART1 VCP) + USB transports ==========
     #[cfg(feature = "transport-uart")]
@@ -108,8 +105,6 @@ async fn main(spawner: Spawner) {
 
     // Collect the idents of every registered interface for the state monitor.
     let mut idents: heapless::Vec<u8, 3> = heapless::Vec::new();
-    #[cfg(feature = "transport-rtt")]
-    let _ = idents.push(rtt_ident);
     #[cfg(feature = "transport-uart")]
     let _ = idents.push(uart_ident);
     #[cfg(feature = "transport-usb")]
@@ -137,19 +132,6 @@ async fn main(spawner: Spawner) {
     defmt::info!("Config loaded from flash");
 
     // ========== STEP 8: Spawn Transport and Protocol Tasks ==========
-
-    // Spawn RTT I/O workers (ergot over RTT)
-    #[cfg(feature = "transport-rtt")]
-    {
-        spawner.spawn(defmt::unwrap!(protocol::servers::run_rtt_rx(
-            rtt_transport.rx_worker,
-            protocol::RTT_RECV_BUF.init_with(|| [0u8; config::MAX_PACKET_SIZE]),
-            protocol::RTT_SCRATCH_BUF.init_with(|| [0u8; 64]),
-        )));
-        spawner.spawn(defmt::unwrap!(protocol::servers::run_rtt_tx(
-            rtt_transport.tx
-        )));
-    }
 
     // Spawn USB tasks
     #[cfg(feature = "transport-usb")]

@@ -55,8 +55,6 @@ impl PhaseManager<NoSensor, NoSensor> {
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy: ElectricPotential::ZERO,
-            #[cfg(feature = "observer-logging")]
-            obs_trace_ticks: 0,
             hold_trace_ticks: 0,
             faults: HeaplessVec::new(),
         }
@@ -98,8 +96,6 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy: ElectricPotential::ZERO,
-            #[cfg(feature = "observer-logging")]
-            obs_trace_ticks: 0,
             hold_trace_ticks: 0,
             faults: HeaplessVec::new(),
         }
@@ -139,8 +135,6 @@ impl<H: AngleSensor> PhaseManager<H, NoSensor> {
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
             bemf_proxy: self.bemf_proxy,
-            #[cfg(feature = "observer-logging")]
-            obs_trace_ticks: self.obs_trace_ticks,
             hold_trace_ticks: self.hold_trace_ticks,
             faults: self.faults,
         }
@@ -183,8 +177,6 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseManager<H, E, S> {
             #[cfg(feature = "hfi")]
             hfi_was_active: self.hfi_was_active,
             bemf_proxy: self.bemf_proxy,
-            #[cfg(feature = "observer-logging")]
-            obs_trace_ticks: self.obs_trace_ticks,
             hold_trace_ticks: self.hold_trace_ticks,
             faults: self.faults,
         }
@@ -226,8 +218,6 @@ impl<E: AngleSensor> PhaseManager<NoSensor, E> {
             #[cfg(feature = "hfi")]
             hfi_was_active: false,
             bemf_proxy: ElectricPotential::ZERO,
-            #[cfg(feature = "observer-logging")]
-            obs_trace_ticks: 0,
             hold_trace_ticks: 0,
             faults: HeaplessVec::new(),
         }
