@@ -22,8 +22,8 @@ use crate::motor::failsafe::FailsafeConfig;
 pub use crate::motor::{derating::DeratingConfig, drive::DriveConfig};
 #[cfg(all(feature = "runtime", feature = "storage"))]
 use crate::state;
-use crate::types::ConfigValue;
 pub use crate::types::VoltageFeedforwardMode;
+use crate::types::{ConfigGroupId, ConfigValue};
 use crate::units::{
     AngularVelocity, CurrentRate, ElectricCurrent, ElectricalAngle, ElectricalAngularAcceleration,
     ElectricalAngularVelocity, ElectricalResistance, Inductance, MagneticFlux, Power, Sign, amps,
@@ -893,9 +893,73 @@ pub struct RuntimeConfig {
     pub drive_invalid: bool,
     pub motor_feedback: Option<MotorFeedbackConfig>,
     pub motor_feedback_invalid: bool,
+    /// Groups whose stored record failed to read at boot (one bit per
+    /// `ConfigGroupId::index`). Their fields hold the board defaults until
+    /// the group is written again.
+    pub corrupt_records: u32,
 }
 
 impl RuntimeConfig {
+    /// Nothing loaded: every group on its board default. Equal to
+    /// `Default::default()`, usable in a `static` initializer.
+    pub const fn new() -> Self {
+        Self {
+            board_calibration: None,
+            board_calibration_invalid: false,
+            motor_params: None,
+            hall_calibration: None,
+            hall_calibration_invalid: false,
+            dc_offsets: None,
+            current_limits: None,
+            voltage_limits: None,
+            pwm_config: None,
+            pi_gains: None,
+            hall_tuning: None,
+            failsafe: None,
+            velocity: None,
+            derating: None,
+            voltage_feedforward: None,
+            motor_temperature: None,
+            drive: None,
+            drive_invalid: false,
+            motor_feedback: None,
+            motor_feedback_invalid: false,
+            corrupt_records: 0,
+        }
+    }
+
+    /// Groups a corrupt record must not silently replace with defaults: the
+    /// motor stays stopped until they are written again.
+    const SAFETY_RECORDS: [ConfigGroupId; 3] = [
+        ConfigGroupId::CurrentLimits,
+        ConfigGroupId::VoltageLimits,
+        ConfigGroupId::Failsafe,
+    ];
+
+    pub(crate) fn mark_corrupt(&mut self, group: ConfigGroupId) {
+        self.corrupt_records |= 1 << group.index();
+    }
+
+    /// A successful write replaces the unreadable record.
+    pub(crate) fn mark_rewritten(&mut self, group: ConfigGroupId) {
+        self.corrupt_records &= !(1 << group.index());
+    }
+
+    pub fn record_is_valid(&self, group: ConfigGroupId) -> bool {
+        self.corrupt_records & (1 << group.index()) == 0
+    }
+
+    pub fn has_corrupt_records(&self) -> bool {
+        self.corrupt_records != 0
+    }
+
+    /// Current/voltage limits and the failsafe either loaded or are unset.
+    pub fn safety_records_valid(&self) -> bool {
+        Self::SAFETY_RECORDS
+            .iter()
+            .all(|&group| self.record_is_valid(group))
+    }
+
     /// Resolve the installed policy after loading the motor and Hall records.
     pub fn boot_feedback_source(&self) -> PhaseSource {
         self.configured_feedback_source().unwrap_or_else(|| {
@@ -1372,13 +1436,14 @@ where
 {
     let mut cfg = RuntimeConfig::default();
 
+    // A record that fails to read leaves its field unset (board defaults)
+    // and marks the group corrupt; see `RuntimeConfig::safety_records_valid`.
     macro_rules! load {
         ($field:ident, $key:ident) => {
-            cfg.$field = storage
-                .fetch_item(buf, &ConfigKey::$key)
-                .await
-                .ok()
-                .flatten();
+            match storage.fetch_item(buf, &ConfigKey::$key).await {
+                Ok(value) => cfg.$field = value,
+                Err(_) => cfg.mark_corrupt(ConfigGroupId::$key),
+            }
         };
     }
 
@@ -2061,6 +2126,50 @@ mod tests {
         assert_eq!(loaded.drive, Some(drive));
         assert!(loaded.drive_is_valid());
         assert_eq!(loaded.effective_derating(), derating);
+    }
+
+    /// An unreadable record loads as defaults and marks its group corrupt
+    /// until rewritten; limits and failsafe are the safety records.
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn unreadable_records_are_marked_corrupt() {
+        use sequential_storage::cache::Cache;
+        use sequential_storage::map::{MapConfig, MapStorage};
+        use sequential_storage::mock_flash::{MockFlashBase, WriteCountCheck};
+        fn ready<T>(future: impl Future<Output = T>) -> T {
+            let mut future = core::pin::pin!(future);
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            match future.as_mut().poll(&mut cx) {
+                core::task::Poll::Ready(v) => v,
+                core::task::Poll::Pending => panic!("mock flash unexpectedly yielded"),
+            }
+        }
+        type Flash = MockFlashBase<4, 4, 256>;
+        let mut storage = MapStorage::new(
+            Flash::new(WriteCountCheck::TwiceWithZero, None, true),
+            MapConfig::new(Flash::FULL_FLASH_RANGE),
+            Cache::new_uncached(),
+        );
+        let mut buf = [0; 128];
+        let absent = ready(load_all(&mut storage, &mut buf));
+        assert!(!absent.has_corrupt_records() && absent.safety_records_valid());
+
+        // A truncated record cannot decode as its type.
+        ready(storage.store_item(&mut buf, &ConfigKey::PiGains, &0u8)).unwrap();
+        let mut loaded = ready(load_all(&mut storage, &mut buf));
+        assert_eq!(loaded.pi_gains, None);
+        assert!(!loaded.record_is_valid(ConfigGroupId::PiGains));
+        assert!(loaded.has_corrupt_records() && loaded.safety_records_valid());
+
+        ready(storage.store_item(&mut buf, &ConfigKey::Failsafe, &0u8)).unwrap();
+        loaded = ready(load_all(&mut storage, &mut buf));
+        assert_eq!(loaded.failsafe, None);
+        assert!(!loaded.safety_records_valid());
+
+        loaded.mark_rewritten(ConfigGroupId::Failsafe);
+        assert!(loaded.safety_records_valid() && loaded.has_corrupt_records());
+        loaded.mark_rewritten(ConfigGroupId::PiGains);
+        assert!(!loaded.has_corrupt_records());
     }
 
     #[cfg(feature = "runtime")]

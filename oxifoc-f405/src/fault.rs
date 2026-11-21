@@ -37,6 +37,8 @@ pub enum F405Fault {
     Derating,
     /// Stored board calibration was unreadable or invalid at boot.
     BoardCalibrationInvalid,
+    /// Other stored configuration records were unreadable at boot.
+    ConfigCorrupt,
 }
 
 impl PlatformFault for F405Fault {
@@ -52,6 +54,7 @@ impl PlatformFault for F405Fault {
             Self::CommTimeout => FaultCategory::CommTimeout,
             Self::Derating => FaultCategory::Derating,
             Self::BoardCalibrationInvalid => FaultCategory::CalibrationFault,
+            Self::ConfigCorrupt => FaultCategory::ConfigCorrupt,
         }
     }
 
@@ -102,6 +105,9 @@ impl PlatformFault for F405Fault {
                     "invalid stored board calibration; motor start blocked until repaired",
                 );
             }
+            Self::ConfigCorrupt => {
+                let _ = s.push_str(oxifoc_core::foc::fault::CONFIG_CORRUPT_DETAILS);
+            }
             Self::HallError(kind) => {
                 return kind.details();
             }
@@ -132,6 +138,7 @@ impl PlatformFault for F405Fault {
             FaultCategory::CommTimeout => Some(Self::CommTimeout),
             FaultCategory::Derating => Some(Self::Derating),
             FaultCategory::CalibrationFault => Some(Self::BoardCalibrationInvalid),
+            FaultCategory::ConfigCorrupt => Some(Self::ConfigCorrupt),
             _ => None,
         }
     }

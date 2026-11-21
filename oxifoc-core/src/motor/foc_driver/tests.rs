@@ -4445,6 +4445,73 @@ mod severity_gate {
         );
     }
 
+    /// A corrupt limits or failsafe record blocks starts like invalid board
+    /// calibration; other corrupt records only warn and run on defaults.
+    #[cfg(feature = "storage")]
+    #[test]
+    fn corrupt_safety_records_block_starts_and_others_only_warn() {
+        use crate::foc::fault::StandardFault;
+        use crate::types::ConfigGroupId;
+        let _serial = cmd_channel_lock();
+        for (group, starts) in [
+            (ConfigGroupId::CurrentLimits, false),
+            (ConfigGroupId::VoltageLimits, false),
+            (ConfigGroupId::Failsafe, false),
+            (ConfigGroupId::PiGains, true),
+            (ConfigGroupId::Derating, true),
+        ] {
+            let mut config = RuntimeConfig::default();
+            config.mark_corrupt(group);
+            let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+            critical_section::with(|cs| {
+                let mut state = state.borrow(cs).borrow_mut();
+                state.set_link_active();
+                state.load_record_health(&config);
+            });
+            let registry = FaultRegistry::<StandardFault>::new();
+            let mut driver = FocDriver::new(
+                FocController::<SvpwmModulator>::new(volts(24.0)),
+                GatedPwm {
+                    enabled: false,
+                    applied: [0; 3],
+                },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                PhaseManager::sensorless(),
+                seconds(0.00005),
+            );
+            CMD_CHANNEL
+                .try_send(DriverCommand::SetMode(ControlMode::Brake))
+                .unwrap();
+            let expected = if starts {
+                ControlMode::Brake
+            } else {
+                ControlMode::Stopped
+            };
+            assert_eq!(
+                process_commands(&state, &mut driver, &registry),
+                expected,
+                "{group:?}"
+            );
+            let _ = run_foc_cycle(&state, &registry, &mut driver, volts(24.0), 50, &BOARD);
+            assert_eq!(driver.pwm().enabled, starts, "{group:?}");
+            assert!(
+                registry.has_category(FaultCategory::ConfigCorrupt),
+                "{group:?}"
+            );
+
+            // Rewriting the group clears both the interlock and the warning.
+            config.mark_rewritten(group);
+            critical_section::with(|cs| {
+                state.borrow(cs).borrow_mut().load_record_health(&config);
+            });
+            registry.clear_all();
+            let _ = run_foc_cycle(&state, &registry, &mut driver, volts(24.0), 100, &BOARD);
+            assert!(!registry.any(), "{group:?}");
+        }
+    }
+
     #[test]
     fn braking_a_coasting_stopped_rotor_keeps_flash_gate_busy() {
         use crate::foc::phase::{PhaseInput, PhaseOutput};

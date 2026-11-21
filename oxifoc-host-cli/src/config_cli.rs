@@ -101,10 +101,7 @@ pub fn dump_config(runtime: &HostRuntime, rust: bool, json_mode: bool) -> Result
             None => println!("        {field}: None,"),
         }
     }
-    println!("        board_calibration_invalid: false,");
-    println!("        hall_calibration_invalid: false,");
-    println!("        drive_invalid: false,");
-    println!("        motor_feedback_invalid: false,");
+    println!("        ..RuntimeConfig::new()");
     println!("    }}");
     println!("}}");
     Ok(())

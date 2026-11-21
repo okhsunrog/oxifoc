@@ -563,6 +563,13 @@ pub struct MotorControlState {
     pub hall_calibration_valid: bool,
     #[cfg(feature = "storage")]
     pub motor_feedback_valid: bool,
+    /// Mirrors of `RuntimeConfig`'s corrupt-record set, refreshed by
+    /// [`Self::load_record_health`]: corrupt limits or failsafe block starts,
+    /// any corrupt record raises [`FaultCategory::ConfigCorrupt`].
+    #[cfg(feature = "storage")]
+    pub safety_records_valid: bool,
+    #[cfg(feature = "storage")]
+    pub config_records_corrupt: bool,
     /// Current motor state (Stopped/Running/Error)
     pub motor_state: MotorState,
     /// Current control mode
@@ -607,6 +614,10 @@ impl MotorControlState {
             hall_calibration_valid: true,
             #[cfg(feature = "storage")]
             motor_feedback_valid: true,
+            #[cfg(feature = "storage")]
+            safety_records_valid: true,
+            #[cfg(feature = "storage")]
+            config_records_corrupt: false,
             motor_state: MotorState::Stopped,
             control_mode: ControlMode::Stopped,
             last_hall: None,
@@ -635,6 +646,14 @@ impl MotorControlState {
         } else {
             BoardCalibrationConfig::IDENTITY
         };
+    }
+
+    /// Mirror which stored records failed to load (at boot, and after a
+    /// config write replaced one).
+    #[cfg(feature = "storage")]
+    pub fn load_record_health(&mut self, config: &RuntimeConfig) {
+        self.safety_records_valid = config.safety_records_valid();
+        self.config_records_corrupt = config.has_corrupt_records();
     }
 
     /// Load the stored Hall-reference interlock before control/command tasks.
@@ -1197,7 +1216,9 @@ where
             }
 
             #[cfg(feature = "storage")]
-            if mode != ControlMode::Stopped && !state.board_calibration_valid {
+            if mode != ControlMode::Stopped
+                && !(state.board_calibration_valid && state.safety_records_valid)
+            {
                 return MotorCommandOutcome::RejectedSafety;
             }
 
@@ -1342,6 +1363,29 @@ where
     foc.mode()
 }
 
+/// Re-raise the stored-config warnings each cycle while the condition
+/// holds, so a host clear only sticks once the records are repaired.
+#[cfg(feature = "storage")]
+#[cold]
+#[inline(never)]
+fn raise_stored_config_faults<F: PlatformFault>(
+    state: &MotorControlState,
+    fault_registry: &FaultRegistry<F>,
+) {
+    let categories = [
+        (
+            !state.board_calibration_valid,
+            FaultCategory::CalibrationFault,
+        ),
+        (state.config_records_corrupt, FaultCategory::ConfigCorrupt),
+    ];
+    for (active, category) in categories {
+        if active && let Some(fault) = F::from_category(category) {
+            fault_registry.set(fault);
+        }
+    }
+}
+
 /// One FOC cycle of driver work, shared by every platform ISR.
 ///
 /// Call with exclusive access to the FOC driver after reading the ADC:
@@ -1399,10 +1443,8 @@ where
     } = critical_section::with(|cs| {
         let mut st = state_mutex.borrow(cs).borrow_mut();
         #[cfg(feature = "storage")]
-        if !st.board_calibration_valid
-            && let Some(fault) = F::from_category(FaultCategory::CalibrationFault)
-        {
-            fault_registry.set(fault);
+        if !st.board_calibration_valid || st.config_records_corrupt {
+            raise_stored_config_faults(&st, fault_registry);
         }
         st.derating = driver.derating();
         CycleInputs {

@@ -25,6 +25,7 @@ fn fault_category_id(cat: FaultCategory) -> i32 {
         FaultCategory::CalibrationFault => 8,
         FaultCategory::CommTimeout => 9,
         FaultCategory::Derating => 10,
+        FaultCategory::ConfigCorrupt => 11,
     }
 }
 
@@ -40,6 +41,7 @@ fn fault_category_from_id(id: i32) -> Option<FaultCategory> {
         8 => FaultCategory::CalibrationFault,
         9 => FaultCategory::CommTimeout,
         10 => FaultCategory::Derating,
+        11 => FaultCategory::ConfigCorrupt,
         _ => return None,
     })
 }

@@ -608,6 +608,8 @@ pub struct TelemetryConfigAck {
 /// requester's link carries in one frame.
 /// Sessions are the only fast telemetry: the `telemetry/fast` broadcast
 /// (`FastTelemetryBatch`) and `TelemetryConfigEndpoint` are removed.
+/// `FaultCategory` gains `ConfigCorrupt` (index 11, Warning); config
+/// snapshots report `valid: false` for any group whose record was unreadable.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.

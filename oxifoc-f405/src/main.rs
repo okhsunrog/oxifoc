@@ -65,28 +65,7 @@ oxifoc_core::define_platform_state!(fault::F405Fault);
 
 /// Global runtime config — loaded from flash at boot, read by config_server for protocol access.
 pub static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig>> =
-    critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig {
-        board_calibration: None,
-        board_calibration_invalid: false,
-        motor_params: None,
-        hall_calibration: None,
-        hall_calibration_invalid: false,
-        dc_offsets: None,
-        current_limits: None,
-        voltage_limits: None,
-        pwm_config: None,
-        pi_gains: None,
-        voltage_feedforward: None,
-        hall_tuning: None,
-        failsafe: None,
-        velocity: None,
-        derating: None,
-        drive: None,
-        drive_invalid: false,
-        motor_feedback: None,
-        motor_feedback_invalid: false,
-        motor_temperature: None,
-    }));
+    critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig::new()));
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -210,6 +189,7 @@ async fn main(spawner: Spawner) {
     critical_section::with(|cs| {
         let mut state = STATE.borrow(cs).borrow_mut();
         state.load_board_calibration(&runtime_config);
+        state.load_record_health(&runtime_config);
         state.load_hall_calibration(&runtime_config);
         state.load_motor_feedback(&runtime_config);
     });

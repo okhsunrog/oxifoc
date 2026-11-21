@@ -93,6 +93,13 @@ From v24 on, the firmware skips flash keys it does not know and keeps them
 through compaction. v23 and older fail every read once the map holds a v24
 key, so roll back to them only together with their own storage image.
 
+A stored record that fails to read no longer passes for a missing one. The
+group runs on defaults, its config snapshot reports `valid: false`, and the
+new `ConfigCorrupt` fault category (index 11, Warning) stays raised until
+every such group is written again (Apply, Persist, drive setup or reset).
+While the current limits, voltage limits or failsafe record is corrupt,
+motor starts are rejected.
+
 
 The host validates, in order:
 

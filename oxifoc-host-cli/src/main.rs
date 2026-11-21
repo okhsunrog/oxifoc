@@ -170,6 +170,8 @@ enum FaultCategoryArg {
     Stall,
     CalibrationFault,
     CommTimeout,
+    Derating,
+    ConfigCorrupt,
 }
 
 impl From<FaultCategoryArg> for FaultCategory {
@@ -184,6 +186,8 @@ impl From<FaultCategoryArg> for FaultCategory {
             FaultCategoryArg::Stall => Self::Stall,
             FaultCategoryArg::CalibrationFault => Self::CalibrationFault,
             FaultCategoryArg::CommTimeout => Self::CommTimeout,
+            FaultCategoryArg::Derating => Self::Derating,
+            FaultCategoryArg::ConfigCorrupt => Self::ConfigCorrupt,
         }
     }
 }

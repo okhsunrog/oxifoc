@@ -55,28 +55,7 @@ pub const VIRTUAL_CALIB: oxifoc_core::types::BoardCalib = oxifoc_core::types::Bo
 
 // Runtime config shared between config server and simulation
 static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeConfig>> =
-    critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig {
-        board_calibration: None,
-        board_calibration_invalid: false,
-        motor_params: None,
-        hall_calibration: None,
-        hall_calibration_invalid: false,
-        dc_offsets: None,
-        current_limits: None,
-        voltage_limits: None,
-        pwm_config: None,
-        pi_gains: None,
-        voltage_feedforward: None,
-        motor_temperature: None,
-        hall_tuning: None,
-        failsafe: None,
-        velocity: None,
-        derating: None,
-        drive: None,
-        drive_invalid: false,
-        motor_feedback: None,
-        motor_feedback_invalid: false,
-    }));
+    critical_section::Mutex::new(core::cell::RefCell::new(RuntimeConfig::new()));
 
 #[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
 enum Transport {

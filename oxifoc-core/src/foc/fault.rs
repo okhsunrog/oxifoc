@@ -73,6 +73,10 @@ pub enum FaultCategory {
     // postcard encodes the variant index — append only.
     /// Graduated derating active (power rolloff > 20%)
     Derating,
+    /// A stored configuration record was unreadable at boot; the group runs
+    /// on defaults until rewritten. Corrupt limits or failsafe also block
+    /// motor starts (a state gate, not this fault's severity).
+    ConfigCorrupt,
 }
 
 /// What the firmware does about a fault — see `docs/notes/fault-overhaul.md`.
@@ -121,9 +125,11 @@ impl FaultCategory {
             }
             // Degradations the vehicle rides through (fallback paths carry
             // commutation); the rider gets informed, nothing else.
-            Self::HallError | Self::CalibrationFault | Self::Derating | Self::None => {
-                FaultSeverity::Warning
-            }
+            Self::HallError
+            | Self::CalibrationFault
+            | Self::Derating
+            | Self::ConfigCorrupt
+            | Self::None => FaultSeverity::Warning,
         }
     }
 }
@@ -271,6 +277,8 @@ pub enum StandardFault {
     CommTimeout,
     /// Graduated derating active (power rolloff > 20%) — warning class
     Derating,
+    /// Stored configuration records were unreadable at boot.
+    ConfigCorrupt,
 }
 
 impl PlatformFault for StandardFault {
@@ -284,6 +292,7 @@ impl PlatformFault for StandardFault {
             Self::HallError(_) => FaultCategory::HallError,
             Self::CommTimeout => FaultCategory::CommTimeout,
             Self::Derating => FaultCategory::Derating,
+            Self::ConfigCorrupt => FaultCategory::ConfigCorrupt,
         }
     }
 
@@ -293,6 +302,7 @@ impl PlatformFault for StandardFault {
                 String::try_from("invalid board calibration; repair before starting")
                     .unwrap_or_default()
             }
+            Self::ConfigCorrupt => String::try_from(CONFIG_CORRUPT_DETAILS).unwrap_or_default(),
             Self::HallError(kind) => kind.details(),
             _ => String::new(),
         }
@@ -314,10 +324,15 @@ impl PlatformFault for StandardFault {
             FaultCategory::OverTemp => Some(Self::OverTemp),
             FaultCategory::CommTimeout => Some(Self::CommTimeout),
             FaultCategory::Derating => Some(Self::Derating),
+            FaultCategory::ConfigCorrupt => Some(Self::ConfigCorrupt),
             _ => None,
         }
     }
 }
+
+/// Fault detail for [`FaultCategory::ConfigCorrupt`], shared by the boards.
+pub const CONFIG_CORRUPT_DETAILS: &str =
+    "unreadable stored config; rewrite the groups marked invalid";
 
 // ============================================================================
 // Fault Registry (requires runtime feature)
@@ -373,10 +388,11 @@ const _: () = {
         | FaultCategory::Stall
         | FaultCategory::CalibrationFault
         | FaultCategory::CommTimeout
-        | FaultCategory::Derating => {}
+        | FaultCategory::Derating
+        | FaultCategory::ConfigCorrupt => {}
     }
     assert!(
-        1u32 << (FaultCategory::Derating as u32) <= SUMMARY_CATEGORIES,
+        1u32 << (FaultCategory::ConfigCorrupt as u32) <= SUMMARY_CATEGORIES,
         "fault categories overflow the registry summary into its flag bits"
     );
 };
@@ -667,6 +683,8 @@ mod tests {
             (FaultCategory::Stall, GracefulStop),
             (FaultCategory::CalibrationFault, Warning),
             (FaultCategory::CommTimeout, GracefulStop),
+            (FaultCategory::Derating, Warning),
+            (FaultCategory::ConfigCorrupt, Warning),
         ];
         for (cat, sev) in expected {
             assert_eq!(cat.severity(), sev, "{cat:?}");
