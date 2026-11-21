@@ -1090,6 +1090,15 @@ impl BackEmfObserver {
         if state_sum.is_finite() {
             return false;
         }
+        #[cfg(feature = "defmt")]
+        defmt::warn!(
+            "observer non-finite, restarting: x1={} x2={} phase={} vel={} lambda={}",
+            self.x1.value,
+            self.x2.value,
+            self.phase_pll.radians(),
+            self.velocity_pll.value,
+            self.lambda.value
+        );
         if !self.lambda.is_finite() {
             self.lambda = if self.lambda_min.is_positive() {
                 self.lambda_min * 2.0

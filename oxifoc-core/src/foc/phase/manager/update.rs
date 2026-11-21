@@ -746,8 +746,8 @@ impl<H: AngleSensor, E: AngleSensor, S: SinCos> PhaseProvider for PhaseManager<H
         self.observer.note_torque_current(iq_abs, dt);
     }
 
-    fn service(&mut self) {
-        self.observer.recover_if_non_finite();
+    fn service(&mut self) -> bool {
+        self.observer.recover_if_non_finite()
     }
 
     fn debug_observer(

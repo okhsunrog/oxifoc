@@ -1386,6 +1386,14 @@ fn raise_stored_config_faults<F: PlatformFault>(
     }
 }
 
+#[cold]
+#[inline(never)]
+fn report_observer_restart<F: PlatformFault>(fault_registry: &FaultRegistry<F>) {
+    if let Some(fault) = F::from_category(FaultCategory::ObserverNonFinite) {
+        fault_registry.set(fault);
+    }
+}
+
 /// One FOC cycle of driver work, shared by every platform ISR.
 ///
 /// Call with exclusive access to the FOC driver after reading the ADC:
@@ -1417,8 +1425,8 @@ where
     let board = prepared_board.board();
     driver.set_vbus(vbus);
     let check_deadman = driver.deadman_check_due();
-    if check_deadman {
-        driver.phase_mut().service();
+    if check_deadman && driver.phase_mut().service() {
+        report_observer_restart(fault_registry);
     }
 
     let prof_t0 = isr_prof::now();

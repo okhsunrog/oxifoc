@@ -4445,6 +4445,56 @@ mod severity_gate {
         );
     }
 
+    /// An observer restart reported by the service hook raises the
+    /// ObserverNonFinite warning, without stopping anything.
+    #[test]
+    fn observer_restart_raises_a_warning() {
+        use crate::foc::fault::StandardFault;
+        use crate::foc::phase::{PhaseInput, PhaseOutput};
+        struct RestartingPhase;
+        impl PhaseProvider for RestartingPhase {
+            fn get(&self) -> PhaseOutput {
+                PhaseOutput {
+                    angle: erad(0.0),
+                    velocity: erad_per_s(0.0),
+                }
+            }
+            fn update(&mut self, _: &PhaseInput, _: u64) {}
+            fn service(&mut self) -> bool {
+                true
+            }
+        }
+        let _serial = cmd_channel_lock();
+        let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+        critical_section::with(|cs| state.borrow(cs).borrow_mut().set_link_active());
+        let registry = FaultRegistry::<StandardFault>::new();
+        let mut driver = FocDriver::new(
+            FocController::<SvpwmModulator>::new(volts(24.0)),
+            GatedPwm {
+                enabled: false,
+                applied: [0; 3],
+            },
+            MockCurrentSensor {
+                currents: (0.0, 0.0, 0.0),
+            },
+            RestartingPhase,
+            seconds(0.00005),
+        );
+        // The hook runs on the ~1 kHz service slot: within one 20 kHz millisecond.
+        for cycle in 0..20 {
+            let _ = run_foc_cycle(
+                &state,
+                &registry,
+                &mut driver,
+                volts(24.0),
+                cycle * 50,
+                &BOARD,
+            );
+        }
+        assert!(registry.has_category(FaultCategory::ObserverNonFinite));
+        assert!(!registry.any_stopping());
+    }
+
     /// A corrupt limits or failsafe record blocks starts like invalid board
     /// calibration; other corrupt records only warn and run on defaults.
     #[cfg(feature = "storage")]

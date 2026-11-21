@@ -39,6 +39,8 @@ pub enum F405Fault {
     BoardCalibrationInvalid,
     /// Other stored configuration records were unreadable at boot.
     ConfigCorrupt,
+    /// The observer was restarted after a non-finite state.
+    ObserverNonFinite,
 }
 
 impl PlatformFault for F405Fault {
@@ -55,6 +57,7 @@ impl PlatformFault for F405Fault {
             Self::Derating => FaultCategory::Derating,
             Self::BoardCalibrationInvalid => FaultCategory::CalibrationFault,
             Self::ConfigCorrupt => FaultCategory::ConfigCorrupt,
+            Self::ObserverNonFinite => FaultCategory::ObserverNonFinite,
         }
     }
 
@@ -139,6 +142,7 @@ impl PlatformFault for F405Fault {
             FaultCategory::Derating => Some(Self::Derating),
             FaultCategory::CalibrationFault => Some(Self::BoardCalibrationInvalid),
             FaultCategory::ConfigCorrupt => Some(Self::ConfigCorrupt),
+            FaultCategory::ObserverNonFinite => Some(Self::ObserverNonFinite),
             _ => None,
         }
     }

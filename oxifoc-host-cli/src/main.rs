@@ -172,6 +172,7 @@ enum FaultCategoryArg {
     CommTimeout,
     Derating,
     ConfigCorrupt,
+    ObserverNonFinite,
 }
 
 impl From<FaultCategoryArg> for FaultCategory {
@@ -188,6 +189,7 @@ impl From<FaultCategoryArg> for FaultCategory {
             FaultCategoryArg::CommTimeout => Self::CommTimeout,
             FaultCategoryArg::Derating => Self::Derating,
             FaultCategoryArg::ConfigCorrupt => Self::ConfigCorrupt,
+            FaultCategoryArg::ObserverNonFinite => Self::ObserverNonFinite,
         }
     }
 }

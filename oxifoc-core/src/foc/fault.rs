@@ -77,6 +77,10 @@ pub enum FaultCategory {
     /// on defaults until rewritten. Corrupt limits or failsafe also block
     /// motor starts (a state gate, not this fault's severity).
     ConfigCorrupt,
+    /// The back-EMF observer's state went non-finite (NaN/inf) and it was
+    /// restarted. Always a firmware bug or an unhandled numeric edge case;
+    /// latched until cleared so it is not missed.
+    ObserverNonFinite,
 }
 
 /// What the firmware does about a fault — see `docs/notes/fault-overhaul.md`.
@@ -129,6 +133,7 @@ impl FaultCategory {
             | Self::CalibrationFault
             | Self::Derating
             | Self::ConfigCorrupt
+            | Self::ObserverNonFinite
             | Self::None => FaultSeverity::Warning,
         }
     }
@@ -279,6 +284,8 @@ pub enum StandardFault {
     Derating,
     /// Stored configuration records were unreadable at boot.
     ConfigCorrupt,
+    /// The observer was restarted after a non-finite state.
+    ObserverNonFinite,
 }
 
 impl PlatformFault for StandardFault {
@@ -293,6 +300,7 @@ impl PlatformFault for StandardFault {
             Self::CommTimeout => FaultCategory::CommTimeout,
             Self::Derating => FaultCategory::Derating,
             Self::ConfigCorrupt => FaultCategory::ConfigCorrupt,
+            Self::ObserverNonFinite => FaultCategory::ObserverNonFinite,
         }
     }
 
@@ -325,6 +333,7 @@ impl PlatformFault for StandardFault {
             FaultCategory::CommTimeout => Some(Self::CommTimeout),
             FaultCategory::Derating => Some(Self::Derating),
             FaultCategory::ConfigCorrupt => Some(Self::ConfigCorrupt),
+            FaultCategory::ObserverNonFinite => Some(Self::ObserverNonFinite),
             _ => None,
         }
     }
@@ -389,10 +398,11 @@ const _: () = {
         | FaultCategory::CalibrationFault
         | FaultCategory::CommTimeout
         | FaultCategory::Derating
-        | FaultCategory::ConfigCorrupt => {}
+        | FaultCategory::ConfigCorrupt
+        | FaultCategory::ObserverNonFinite => {}
     }
     assert!(
-        1u32 << (FaultCategory::ConfigCorrupt as u32) <= SUMMARY_CATEGORIES,
+        1u32 << (FaultCategory::ObserverNonFinite as u32) <= SUMMARY_CATEGORIES,
         "fault categories overflow the registry summary into its flag bits"
     );
 };
@@ -685,6 +695,7 @@ mod tests {
             (FaultCategory::CommTimeout, GracefulStop),
             (FaultCategory::Derating, Warning),
             (FaultCategory::ConfigCorrupt, Warning),
+            (FaultCategory::ObserverNonFinite, Warning),
         ];
         for (cat, sev) in expected {
             assert_eq!(cat.severity(), sev, "{cat:?}");

@@ -100,6 +100,10 @@ every such group is written again (Apply, Persist, drive setup or reset).
 While the current limits, voltage limits or failsafe record is corrupt,
 motor starts are rejected.
 
+`ObserverNonFinite` (index 12, Warning) reports that the back-EMF
+observer's state went NaN or infinite and the observer restarted. It does
+not stop the motor and stays raised until cleared.
+
 
 The host validates, in order:
 

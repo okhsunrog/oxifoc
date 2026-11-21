@@ -26,6 +26,7 @@ fn fault_category_id(cat: FaultCategory) -> i32 {
         FaultCategory::CommTimeout => 9,
         FaultCategory::Derating => 10,
         FaultCategory::ConfigCorrupt => 11,
+        FaultCategory::ObserverNonFinite => 12,
     }
 }
 
@@ -42,6 +43,7 @@ fn fault_category_from_id(id: i32) -> Option<FaultCategory> {
         9 => FaultCategory::CommTimeout,
         10 => FaultCategory::Derating,
         11 => FaultCategory::ConfigCorrupt,
+        12 => FaultCategory::ObserverNonFinite,
         _ => return None,
     })
 }
