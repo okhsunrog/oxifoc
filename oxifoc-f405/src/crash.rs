@@ -163,11 +163,26 @@ pub fn record_panic(info: &core::panic::PanicInfo) {
 }
 
 /// Record a HardFault.
+///
+/// Skipped when the fault is a debug event (HFSR.DEBUGEVT: a BKPT with no
+/// debugger halting the core, e.g. probe-rs running its flash algorithm) or
+/// when this boot already recorded something: the panic handler ends in
+/// `udf`, whose escalated fault must not overwrite the panic it follows.
 pub fn record_hard_fault(frame: &cortex_m_rt::ExceptionFrame) {
+    const HFSR_DEBUGEVT: u32 = 1 << 31;
+    let (cfsr, hfsr) = fault_status();
+    if hfsr & HFSR_DEBUGEVT != 0 {
+        return;
+    }
+    // SAFETY: see `Raw::store`; any bit pattern is a valid `Raw`.
+    let current = unsafe { core::ptr::read_volatile(slot()) };
+    if current.valid() && current.boots_since == 0 {
+        return;
+    }
     let mut raw = blank(CrashKind::HardFault);
     raw.pc = frame.pc();
     raw.lr = frame.lr();
-    (raw.cfsr, raw.hfsr) = fault_status();
+    (raw.cfsr, raw.hfsr) = (cfsr, hfsr);
     raw.store();
 }
 
