@@ -734,10 +734,10 @@ pub(crate) fn spawn_ergot_subscriber<NS>(
     tokio::spawn(async move {
         use oxifoc_core::icd::RawTelemetryBlockTopic;
         let ns = stack.stack();
-        // UDP frame replay can release a burst of queued messages.
+        // 32 blocks bound the additional decoded-message queue.
         let receiver = ns
             .topics()
-            .heap_bounded_receiver::<RawTelemetryBlockTopic>(256, Some("raw_fast"));
+            .heap_bounded_receiver::<RawTelemetryBlockTopic>(32, Some("raw_fast"));
         let mut receiver = core::pin::pin!(receiver);
         let mut handle = receiver.as_mut().subscribe_unicast();
         let mut ingress = RawIngress::new(state.clone());

@@ -178,6 +178,7 @@ pub struct BridgeDiag {
     pub spi: SpiLinkDiag,
     pub usb: UsbLinkDiag,
     pub ble: [BleLinkDiag; BRIDGE_BLE_LINKS],
+    pub wifi: WifiLinkDiag,
 }
 
 pub const BRIDGE_BLE_LINKS: usize = 2;
@@ -204,6 +205,18 @@ pub struct UsbLinkDiag {
     pub write_errors: u32,
     /// Largest single write grant, bytes.
     pub max_grant: u32,
+}
+
+/// Ergot TCP link over Wi-Fi; all zero in an image without it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct WifiLinkDiag {
+    pub connected: bool,
+    pub connects: u32,
+    /// Frames the outbound queue had no room for.
+    pub dropped: u32,
+    /// Most bytes the TCP transmit buffer has held.
+    pub max_backlog: u32,
 }
 
 /// One BLE central slot. Counters only grow.
@@ -370,6 +383,12 @@ mod tests {
                 max_grant: u32::MAX,
             },
             ble: [link; BRIDGE_BLE_LINKS],
+            wifi: WifiLinkDiag {
+                connected: true,
+                connects: u32::MAX,
+                dropped: u32::MAX,
+                max_backlog: u32::MAX,
+            },
         };
         let mut buf = [0u8; 512];
         let len = postcard::to_slice(&bridge, &mut buf).unwrap().len();

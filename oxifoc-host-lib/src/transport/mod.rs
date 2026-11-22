@@ -44,12 +44,11 @@ impl TransportType {
     /// `max_block_bytes` of every session Arm. The device lowers it further
     /// to its own link limit. BLE carries one 505-byte frame per GATT
     /// notification and nothing fragments a frame on the way, so a session
-    /// through the bridge's BLE radio gets 15-record blocks. UDP uses the
-    /// largest block that fits the datagram MTU.
+    /// through the bridge's radio gets 15-record blocks; every other host
+    /// transport takes full blocks.
     pub fn raw_block_limit(&self) -> u16 {
         match self {
             Self::Ble => oxifoc_core::icd::raw_block_limit(ble::BLE_MTU),
-            Self::Udp => oxifoc_core::icd::raw_block_limit(oxifoc_core::udp_link::FRAME_MTU),
             _ => oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES as u16,
         }
     }

@@ -130,7 +130,7 @@ async fn main(spawner: Spawner) -> ! {
     let network = oxifoc_bridge::wifi::start(spawner, p.WIFI);
     #[cfg(feature = "wifi")]
     if let Some(network) = network {
-        transport::udp::start(spawner, stack, network);
+        transport::tcp::start(spawner, stack, network);
     }
     #[cfg(feature = "swd-probe")]
     oxifoc_bridge::probe::start(spawner, stack, usb_ident, p.GPIO4, p.GPIO5, network);

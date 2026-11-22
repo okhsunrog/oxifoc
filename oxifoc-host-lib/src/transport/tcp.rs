@@ -12,6 +12,11 @@ pub async fn connect(host: &str, port: u16) -> Result<CobsStreamTransport> {
     let stream = TcpStream::connect(&addr)
         .await
         .with_context(|| format!("Failed to connect to {addr}"))?;
+    // Requests are small frames followed by a wait for the reply; Nagle
+    // would hold each one back until the previous segment is acknowledged.
+    stream
+        .set_nodelay(true)
+        .context("Failed to disable Nagle on the TCP stream")?;
 
     info!("TCP connected to {}", addr);
     let (reader, writer) = stream.into_split();

@@ -1,4 +1,5 @@
-//! C5 bridge: root router with SPI, USB Serial/JTAG and optional BLE segments.
+//! C5 bridge: root router with SPI, USB Serial/JTAG and optional BLE and
+//! Wi-Fi segments.
 use core::sync::atomic::{AtomicU32, Ordering};
 use ergot::{
     NetStack,
@@ -11,21 +12,24 @@ use mutex::raw_impls::cs::CriticalSectionRawMutex;
 
 pub mod spi;
 #[cfg(feature = "wifi")]
-pub mod udp;
+pub mod tcp;
 pub mod usb;
 pub const MTU: u16 = 2304;
 pub const BLE_MTU: u16 = 505;
 pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
-// Wi-Fi builds with a configured Ergot peer reserve RAM for the network
-// queue and datagram history. The USB-only budget covers about 200 ms at 20 kHz.
-const USB_QUEUE_BYTES: usize =
-    if cfg!(feature = "wifi") && option_env!("OXIFOC_BRIDGE_ERGOT_PEER").is_some() {
-        44 * 1024
-    } else {
-        124 * 1024
-    };
+/// Wi-Fi station credentials were set when the image was built.
+pub const WIFI_CONFIGURED: bool = cfg!(feature = "wifi")
+    && matches!(option_env!("OXIFOC_PROBE_WIFI_SSID"), Some(ssid) if !ssid.is_empty());
+// An image with Wi-Fi reserves RAM for the TCP transmit buffer and its
+// queue. The USB-only budget covers about 200 ms at 20 kHz.
+const USB_QUEUE_BYTES: usize = if WIFI_CONFIGURED {
+    44 * 1024
+} else {
+    124 * 1024
+};
 pub type UsbQueue = kit::Queue<USB_QUEUE_BYTES, AtomicCoord>;
-pub type WifiQueue = kit::Queue<{ 24 * 1024 }, AtomicCoord>;
+/// Frames between two runs of the TCP transmit loop: three full SPI slots.
+pub type WifiQueue = kit::Queue<{ 12 * 1024 }, AtomicCoord>;
 pub type BleQueue = kit::Queue<1024, AtomicCoord>;
 /// Simultaneous BLE centrals, e.g. the remote and a phone or laptop. Each link
 /// is its own ergot interface with its own outbound queue.
@@ -90,7 +94,7 @@ impl<S: ergot::interface_manager::InterfaceSink> ergot::interface_manager::Inter
 }
 pub struct WifiInterface;
 impl Interface for WifiInterface {
-    type Sink = framed_stream::Sink<&'static WifiQueue>;
+    type Sink = Counted<ergot::interface_manager::utils::cobs_stream::Sink<&'static WifiQueue>>;
 }
 pub struct BleNusInterface;
 pub struct UsbInterface;

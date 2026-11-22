@@ -22,7 +22,6 @@ use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::delivery::{ReliableExt, RetryPolicy};
 use oxifoc_core::foc::phase::PhaseSource;
-use oxifoc_core::icd::UDP_MTU;
 use oxifoc_core::icd::{
     ConfigEndpoint, DetectEndpoint, FaultTopic, MotorEndpoint, SlowTelemetryEndpoint,
     TelemetryConfig,
@@ -778,7 +777,7 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         }
         TransportConfig::Udp { host, port } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let (stack, queue) = transport::udp::new_stack(ERGOT_QUEUE_SIZE, UDP_MTU);
+            let (stack, queue) = transport::udp::new_stack(ERGOT_QUEUE_SIZE, ERGOT_MTU);
             let register_fn = {
                 let stack = stack.clone();
                 let notify = state_notify.clone();

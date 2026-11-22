@@ -5,7 +5,7 @@ use core::pin::pin;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use oxifoc_core::icd::BridgeDiagEndpoint;
-use oxifoc_core::types::diag::{BleLinkDiag, BridgeDiag, SpiLinkDiag, UsbLinkDiag};
+use oxifoc_core::types::diag::{BleLinkDiag, BridgeDiag, SpiLinkDiag, UsbLinkDiag, WifiLinkDiag};
 
 use crate::transport::{BLE_LINKS, Stack, spi, usb};
 
@@ -77,7 +77,24 @@ fn snapshot() -> BridgeDiag {
             max_grant: load(&usb::USB_MAX_GRANT),
         },
         ble: core::array::from_fn(|link| BLE[link].snapshot()),
+        wifi: wifi(),
     }
+}
+
+#[cfg(feature = "wifi")]
+fn wifi() -> WifiLinkDiag {
+    use crate::transport::tcp;
+    WifiLinkDiag {
+        connected: tcp::CONNECTED.load(Ordering::Relaxed),
+        connects: tcp::CONNECTS.load(Ordering::Relaxed),
+        dropped: tcp::DROPPED.load(Ordering::Relaxed),
+        max_backlog: tcp::MAX_BACKLOG.load(Ordering::Relaxed),
+    }
+}
+
+#[cfg(not(feature = "wifi"))]
+fn wifi() -> WifiLinkDiag {
+    WifiLinkDiag::default()
 }
 
 /// Serve `req/bridge_diag`.

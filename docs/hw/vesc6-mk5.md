@@ -361,7 +361,7 @@ controller's motor state over ergot before arming.
    set -a
    . ./.env
    set +a
-   target/debug/oxifoc-host-cli --transport udp --udp-host 192.0.2.10 swd-probe arm --minutes 5
+   target/debug/oxifoc-host-cli --transport tcp --tcp-host 192.0.2.10 swd-probe arm --minutes 5
    ```
 
 3. Use probe-rs from git master until a release contains
@@ -381,7 +381,7 @@ controller's motor state over ergot before arming.
    ```
 
 4. After detaching, run
-   `target/debug/oxifoc-host-cli --transport udp --udp-host 192.0.2.10 swd-probe disarm`.
+   `target/debug/oxifoc-host-cli --transport tcp --tcp-host 192.0.2.10 swd-probe disarm`.
 
 The arming command also works over BLE with the key or over USB Serial/JTAG
 with physical access. Arming opens one TCP connection at a time for

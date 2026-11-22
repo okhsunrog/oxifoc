@@ -55,8 +55,6 @@ use crate::types::swd_probe::{ProbeRequest, ProbeResponse};
 /// conservative interim (500 ms risks BLE flapping — this constant is shared
 /// across all transports). See docs/safety.md (Layer 1 vs Layer 2).
 pub const LIVENESS_TIMEOUT_MS: u64 = 1000;
-/// Largest Ergot frame in an IPv4 UDP datagram on a 1500-byte IP MTU.
-pub const UDP_MTU: u16 = 1500 - 20 - 8;
 
 // ============================================================================
 // Topic Definitions (push-based streaming)

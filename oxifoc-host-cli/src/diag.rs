@@ -147,6 +147,17 @@ fn format_bridge(b: &BridgeDiag) -> String {
             l.dropped,
         ));
     }
+    out.push_str(&format!(
+        "\nwifi: {} connects={} dropped={} max_backlog={}",
+        if b.wifi.connected {
+            "connected"
+        } else {
+            "free"
+        },
+        b.wifi.connects,
+        b.wifi.dropped,
+        b.wifi.max_backlog,
+    ));
     out
 }
 

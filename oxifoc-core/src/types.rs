@@ -618,7 +618,8 @@ pub struct TelemetryConfigAck {
 /// The bridge adds `cmd/bridge_ota` for authenticated app-slot updates.
 /// The C5 can authorize SWD arming wirelessly and publishes bridge logs
 /// on Ergot's standard formatted-log topic.
-/// The host and bridge can negotiate replay for Ergot datagrams over Wi-Fi.
+/// The bridge carries Ergot over Wi-Fi as COBS frames on one TCP connection
+/// and reports that link in `req/bridge_diag`.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.
