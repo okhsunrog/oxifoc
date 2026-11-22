@@ -1,10 +1,10 @@
 //! Ergot over one TCP connection: COBS frames on a byte stream, as on USB.
 //!
 //! TCP repeats lost segments and keeps the stream ordered, so neither side
-//! needs a sequence or replay layer of its own. The socket's transmit buffer
-//! holds telemetry that is not yet acknowledged while a loss is repaired;
-//! [`OUT`] only covers what the router queues between two runs of the
-//! transmit loop. A frame the queue refuses is counted in [`DROPPED`].
+//! needs a sequence or replay layer of its own. [`OUT`] holds the backlog
+//! while a loss is repaired, about 90 ms of 20-kHz Packed28 telemetry; the
+//! socket keeps only the window in flight. A frame the queue refuses is
+//! counted in [`DROPPED`].
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -21,12 +21,14 @@ use ergot::interface_manager::{
 };
 use static_cell::StaticCell;
 
-use super::{BridgeSink, Counted, MTU, STATE_NOTIFY, Stack, WIFI_CONFIGURED, WifiQueue};
+use super::{BridgeSink, Counted, LINK, MTU, STATE_NOTIFY, Stack, WIFI_CONFIGURED, WifiQueue};
 
 const PORT: u16 = 2025;
-/// Unacknowledged and unsent bytes the socket retains: about 90 ms of
-/// 20-kHz Packed28 telemetry.
-const TX_BYTES: usize = 56 * 1024;
+/// Unacknowledged bytes the socket retains. smoltcp has no selective
+/// acknowledgement and resends everything after a lost segment, so a large
+/// window makes every loss expensive: with 56 KiB here the buffer filled and
+/// native-rate captures lost frames. The backlog waits in [`OUT`] instead.
+const TX_BYTES: usize = 16 * 1024;
 const RX_BYTES: usize = 4096;
 /// Largest COBS-encoded frame from the host, as on USB.
 const FRAME_BYTES: usize = 4096;
@@ -48,15 +50,24 @@ pub static DROPPED: AtomicU32 = AtomicU32::new(0);
 /// Most bytes the socket's transmit buffer has held.
 pub static MAX_BACKLOG: AtomicU32 = AtomicU32::new(0);
 
+/// Wait until [`OUT`] has contiguous room for `bytes`. Returns at once
+/// without a host: the router does not queue for a closed link.
+pub async fn room(bytes: usize) {
+    if CONNECTED.load(Ordering::Relaxed) {
+        // The probe reserves nothing: an uncommitted grant is released.
+        drop(OUT.stream_producer().wait_grant_exact(bytes).await);
+    }
+}
+
 pub fn start(spawner: Spawner, router: &'static Stack, stack: NetStack<'static>) {
     // Without credentials the task and its buffers stay out of the image.
     if !WIFI_CONFIGURED {
         return;
     }
     let task = run(router, stack).expect("Ergot TCP task is spawned once");
-    // Part of the forwarding path, like the SPI and USB tasks: at the default
-    // priority the queue overflowed while the socket was nearly empty.
-    task.metadata().set_priority(1);
+    // Below the SPI slot task's priority the queue overflowed while the
+    // socket was nearly empty.
+    task.metadata().set_priority(LINK);
     spawner.spawn(task);
 }
 

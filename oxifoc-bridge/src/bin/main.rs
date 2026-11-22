@@ -63,36 +63,48 @@ async fn main(spawner: Spawner) -> ! {
             )))
         })
         .expect("USB interface slot must be available at startup");
+    // The slot handshake preempts the thread executor and the radio tasks.
+    static LINK_EXECUTOR: static_cell::StaticCell<esp_rtos::embassy::InterruptExecutor<2>> =
+        static_cell::StaticCell::new();
+    let link_executor =
+        LINK_EXECUTOR.init(esp_rtos::embassy::InterruptExecutor::new(p.FROM_CPU_INTR2));
+    link_executor
+        .start(esp_hal::interrupt::Priority::Priority1)
+        .spawn(
+            transport::spi::link(
+                transport::spi::Resources {
+                    bus: p.SPI2,
+                    sck: p.GPIO6,
+                    mosi: p.GPIO7,
+                    miso: p.GPIO9,
+                    cs: p.GPIO10,
+                    ready: p.GPIO0,
+                    dma: p.DMA_CH0,
+                },
+                epoch,
+            )
+            .expect("SPI link task is spawned once"),
+        );
     spawn_bridge_task(
         spawner,
-        transport::spi::pump(
-            stack,
-            spi_ident,
-            transport::spi::Resources {
-                bus: p.SPI2,
-                sck: p.GPIO6,
-                mosi: p.GPIO7,
-                miso: p.GPIO9,
-                cs: p.GPIO10,
-                ready: p.GPIO0,
-                dma: p.DMA_CH0,
-            },
-            epoch,
-        )
-        .expect("SPI pump task is spawned once"),
+        transport::spi::slots(stack, spi_ident, epoch).expect("SPI slot task is spawned once"),
+        LINK,
     );
     let (rx, tx) = UsbSerialJtag::new(p.USB_DEVICE).into_async().split();
     spawn_bridge_task(
         spawner,
         transport::usb::rx(stack, rx, usb_ident).expect("USB RX task is spawned once"),
+        FORWARDING,
     );
     spawn_bridge_task(
         spawner,
         transport::usb::tx(tx).expect("USB TX task is spawned once"),
+        FORWARDING,
     );
     spawn_bridge_task(
         spawner,
         transport::root_services(stack).expect("USB route task is spawned once"),
+        FORWARDING,
     );
     #[cfg(any(feature = "ble", feature = "wifi"))]
     {
@@ -124,6 +136,7 @@ async fn main(spawner: Spawner) -> ! {
             spawner,
             oxifoc_bridge::ble_runtime::run(stack, p.BT, ble_idents, flash)
                 .expect("BLE task is spawned once"),
+            FORWARDING,
         );
     }
     #[cfg(feature = "wifi")]
@@ -142,10 +155,12 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
-fn spawn_bridge_task<S>(spawner: Spawner, task: SpawnToken<S>) {
-    // Keep the whole forwarding path ahead of Wi-Fi and DAP. Prioritizing
-    // SPI alone still leaves USB draining its queues alongside TCP.
+use transport::{FORWARDING, LINK};
+
+fn spawn_bridge_task<S>(spawner: Spawner, task: SpawnToken<S>, priority: u8) {
     #[cfg(feature = "wifi")]
-    task.metadata().set_priority(1);
+    task.metadata().set_priority(priority);
+    #[cfg(not(feature = "wifi"))]
+    let _ = priority;
     spawner.spawn(task);
 }

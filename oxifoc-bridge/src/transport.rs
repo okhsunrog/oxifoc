@@ -14,6 +14,14 @@ pub mod spi;
 #[cfg(feature = "wifi")]
 pub mod tcp;
 pub mod usb;
+/// Task priority of the forwarding path, ahead of DAP and housekeeping.
+pub const FORWARDING: u8 = 1;
+/// Task priority of the two short steps between the SPI link and the Wi-Fi
+/// stack: routing a received slot and copying the queue into the TCP socket.
+/// The stack sends several segments in one poll; behind it at the same
+/// priority the SPI link fell below a 20 kHz stream, and with only one of
+/// the two raised the queue between them overflowed.
+pub const LINK: u8 = 2;
 pub const MTU: u16 = 2304;
 pub const BLE_MTU: u16 = 505;
 pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
@@ -28,8 +36,8 @@ const USB_QUEUE_BYTES: usize = if WIFI_CONFIGURED {
     124 * 1024
 };
 pub type UsbQueue = kit::Queue<USB_QUEUE_BYTES, AtomicCoord>;
-/// Frames between two runs of the TCP transmit loop: three full SPI slots.
-pub type WifiQueue = kit::Queue<{ 12 * 1024 }, AtomicCoord>;
+/// The Wi-Fi backlog: frames wait here, not in the TCP window.
+pub type WifiQueue = kit::Queue<{ 52 * 1024 }, AtomicCoord>;
 pub type BleQueue = kit::Queue<1024, AtomicCoord>;
 /// Simultaneous BLE centrals, e.g. the remote and a phone or laptop. Each link
 /// is its own ergot interface with its own outbound queue.

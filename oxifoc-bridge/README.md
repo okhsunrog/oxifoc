@@ -36,13 +36,17 @@ target/debug/oxifoc-host-cli --transport tcp --tcp-host 192.0.2.10 status
 ```
 
 TCP repeats lost segments, so a native-rate capture needs no recovery of
-its own. The bridge keeps unacknowledged telemetry in a 56 KiB socket
-buffer, about 90 ms at 20 kHz, and its TCP stack retransmits after 50 ms
-without an acknowledgement (`SMOLTCP_TCP_MIN_RTO_MS` in
-`.cargo/config.toml`; see `../vendor/smoltcp/PATCHES.md`). A stall that
-outlasts the buffer drops frames at the bridge and fails the capture.
-`diag bridge` reports those drops and the largest backlog as `wifi:
-dropped=… max_backlog=…`. USB and BLE remain available.
+its own. The bridge queues up to 52 KiB for the socket, about 90 ms at
+20 kHz, and keeps the TCP window at 16 KiB: its TCP stack resends the
+whole window after a lost segment. It retransmits after 50 ms without an
+acknowledgement (`SMOLTCP_TCP_MIN_RTO_MS` in `.cargo/config.toml`; see
+`../vendor/smoltcp/PATCHES.md`). While the queue is full the bridge holds
+back the SPI link for up to 50 ms per slot, so the backlog collects in the
+controller's queue first; a longer stall drops frames at the bridge and
+fails the capture. `diag bridge` reports those drops and the fullest TCP
+window as `wifi: dropped=… max_backlog=…`. A BLE central exchanging data at
+the same time takes radio time from Wi-Fi, and a 20 kHz stream then does
+not fit. USB and BLE remain available.
 
 ## Bridge logs
 
