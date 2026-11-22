@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use embassy_executor::Spawner;
+use embassy_executor::{SpawnToken, Spawner};
 use embassy_time::Timer;
 use ergot::{
     NetStack,
@@ -58,7 +58,8 @@ async fn main(spawner: Spawner) -> ! {
             )))
         })
         .expect("USB interface slot must be available at startup");
-    spawner.spawn(
+    spawn_bridge_task(
+        spawner,
         transport::spi::pump(
             stack,
             spi_ident,
@@ -76,17 +77,29 @@ async fn main(spawner: Spawner) -> ! {
         .expect("SPI pump task is spawned once"),
     );
     let (rx, tx) = UsbSerialJtag::new(p.USB_DEVICE).into_async().split();
-    spawner.spawn(transport::usb::rx(stack, rx, usb_ident).expect("USB RX task is spawned once"));
-    spawner.spawn(transport::usb::tx(tx).expect("USB TX task is spawned once"));
-    spawner.spawn(transport::root_services(stack).expect("USB route task is spawned once"));
-    #[cfg(feature = "ble")]
+    spawn_bridge_task(
+        spawner,
+        transport::usb::rx(stack, rx, usb_ident).expect("USB RX task is spawned once"),
+    );
+    spawn_bridge_task(
+        spawner,
+        transport::usb::tx(tx).expect("USB TX task is spawned once"),
+    );
+    spawn_bridge_task(
+        spawner,
+        transport::root_services(stack).expect("USB route task is spawned once"),
+    );
+    #[cfg(any(feature = "ble", feature = "swd-probe"))]
     {
-        // The BLE heap lives in the RAM the 2nd-stage bootloader frees
+        // The radio heap lives in the RAM the 2nd-stage bootloader frees
         // (dram2_seg, 64 KiB), so it does not shrink the main stack. LESC
         // pairing computes P-256 in software on that stack; with the heap in
         // .bss the stack was ~16 KiB and pairing overflowed it into the BLE
         // controller's state.
         esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
+    }
+    #[cfg(feature = "ble")]
+    {
         let ble_idents = core::array::from_fn(|link| {
             stack
                 .manage_profile(|p| {
@@ -100,7 +113,8 @@ async fn main(spawner: Spawner) -> ! {
                 })
                 .expect("BLE interface slots must be available at startup")
         });
-        spawner.spawn(
+        spawn_bridge_task(
+            spawner,
             oxifoc_bridge::ble_runtime::run(
                 stack,
                 p.BT,
@@ -110,8 +124,18 @@ async fn main(spawner: Spawner) -> ! {
             .expect("BLE task is spawned once"),
         );
     }
+    #[cfg(feature = "swd-probe")]
+    oxifoc_bridge::probe::start(spawner, stack, usb_ident, p.GPIO4, p.GPIO5, p.WIFI);
     defmt::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");
     loop {
         Timer::after_secs(60).await;
     }
+}
+
+fn spawn_bridge_task<S>(spawner: Spawner, task: SpawnToken<S>) {
+    // Keep the whole forwarding path ahead of Wi-Fi and DAP. Prioritizing
+    // SPI alone still leaves USB draining its queues alongside TCP.
+    #[cfg(feature = "swd-probe")]
+    task.metadata().set_priority(1);
+    spawner.spawn(task);
 }

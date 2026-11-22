@@ -614,6 +614,7 @@ pub struct TelemetryConfigAck {
 /// New endpoints: `req/diag` (`DiagEndpoint`: ISR windows, totals since boot,
 /// reset flags, the crash record) on the controller and `req/bridge_diag`
 /// (`BridgeDiagEndpoint`: SPI/USB/BLE link counters) on the bridge.
+/// The C5 bridge can serve `cmd/swd_probe` to arm or disarm wireless SWD.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.
@@ -1407,3 +1408,6 @@ pub mod measurement;
 
 /// BLE pairing management served by the bridge.
 pub mod pairing;
+
+/// USB control of the bridge's wireless SWD probe.
+pub mod swd_probe;

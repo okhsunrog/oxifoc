@@ -38,6 +38,7 @@ pub use crate::types::*;
 
 use crate::raw_telemetry;
 use crate::raw_telemetry::{RawTelemetryAck, RawTelemetryRequest, VelocityDebugArm};
+use crate::types::swd_probe::{ProbeRequest, ProbeResponse};
 
 // ============================================================================
 // Protocol Constants
@@ -195,6 +196,13 @@ endpoint!(
     "cmd/pairing"
 );
 ergot::topic!(PairingEventTopic, PairingEvent, "events/pairing");
+
+endpoint!(
+    SwdProbeEndpoint,
+    ProbeRequest,
+    ProbeResponse,
+    "cmd/swd_probe"
+);
 
 // Configuration endpoint (host → device)
 #[cfg(feature = "storage")]

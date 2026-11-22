@@ -3,6 +3,7 @@ set dotenv-load
 # oxifoc — FOC motor controller monorepo
 
 # Device firmware crates (excluded from workspace, different toolchain)
+bridge_features := "ble,swd-probe"
 device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 
 # On-target test crates (run on hardware; compiled here so they don't rot)
@@ -71,6 +72,10 @@ check-host:
     cargo clippy --workspace --all-targets --quiet -- -D warnings
     echo "tests (workspace)..."
     output=$(cargo test --workspace --quiet 2>&1) || { echo "$output"; exit 1; }
+    echo "CMSIS-DAP TCP framing..."
+    mkdir -p target
+    rustc --edition 2024 --test oxifoc-bridge/src/probe/framing.rs -o target/probe-framing-tests
+    target/probe-framing-tests
     echo "oxifoc-core without detection (gate must not rot)..."
     # clippy, not check: the embassy-gated modules are compiled ONLY in this
     # slice (no workspace member enables the feature), so this is their one
@@ -86,11 +91,15 @@ check-device:
     for crate in {{ device_crates }}; do
         echo "$crate: fmt + clippy + build..."
         (cd "$crate" && cargo fmt --check) || exit 1
-        (cd "$crate" && cargo clippy --quiet -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
+        args=()
+        if [ "$crate" = "oxifoc-bridge" ]; then
+            args=(--features {{quote(bridge_features)}})
+        fi
+        (cd "$crate" && cargo clippy --quiet "${args[@]}" -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
         if [ "$crate" = "oxifoc-f405" ]; then
             (cd "$crate" && cargo build --release --quiet --target-dir target/cf2 --no-default-features --features board-cf2,transport-usb 2>&1 | filter) || exit 1
         else
-            (cd "$crate" && cargo build --release --quiet 2>&1 | filter) || exit 1
+            (cd "$crate" && cargo build --release --quiet "${args[@]}" 2>&1 | filter) || exit 1
         fi
         if [ "$crate" = "oxifoc-bridge" ]; then
             # BLE is opt-in but is the deployed configuration: check it too.
@@ -288,13 +297,13 @@ test-replay-bridge capture resistance request:
     OXIFOC_HARDWARE_REPLAY={{quote(request)}} just test-stop-bridge {{quote(capture)}} {{quote(resistance)}}
 
 # Build ESP32 bridge firmware.
-build-bridge features="":
+build-bridge features=bridge_features:
     cd oxifoc-bridge && cargo build --release --features {{quote(features)}}
 
 # Build and flash the C5 bridge without claiming the STM32 debug probe.
 # --restore-unwritten keeps the NVS partition (BLE bonds); probe-rs otherwise
 # erases it together with the bootloader block.
-flash-bridge features="": (build-bridge features)
+flash-bridge features=bridge_features: (build-bridge features)
     probe-rs download --verify --restore-unwritten --chip esp32c5 {{c5_probe_arg}} oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge
     probe-rs reset --chip esp32c5 {{c5_probe_arg}}
 

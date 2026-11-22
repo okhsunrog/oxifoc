@@ -422,6 +422,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dap-rs"
+version = "0.2.0"
+source = "git+https://github.com/probe-rs/dap-rs?rev=a867ca7b41547b24aaad52b913528575685a5df5#a867ca7b41547b24aaad52b913528575685a5df5"
+dependencies = [
+ "bitflags 1.3.2",
+ "embedded-hal 1.0.0",
+ "num_enum",
+ "replace_with",
+ "usb-device",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1365,6 +1377,7 @@ dependencies = [
  "defmt 1.2.0",
  "docsplay",
  "document-features",
+ "embassy-net-driver",
  "embassy-sync 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "embedded-io 0.6.1",
  "embedded-io 0.7.1",
@@ -2256,6 +2269,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_enum"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f646caf906c20226733ed5b1374287eb97e3c2a5c227ce668c1f2ce20ae57c9"
+dependencies = [
+ "num_enum_derive",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcbff9bc912032c62bf65ef1d5aea88983b420f4f839db1e9b0c281a25c9c799"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "object"
 version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2277,12 +2310,14 @@ dependencies = [
  "bbqueue",
  "bt-hci 0.11.0",
  "critical-section",
+ "dap-rs",
  "defmt 1.2.0",
  "embassy-crypto",
  "embassy-crypto-rustcrypto",
  "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "embassy-net 0.9.1",
  "embassy-sync 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "embassy-time",
  "embedded-io 0.7.1",
@@ -2300,6 +2335,7 @@ dependencies = [
  "oxifoc-core",
  "postcard-schema",
  "rand_chacha",
+ "riscv",
  "rtt-target",
  "sequential-storage",
  "serde",
@@ -2539,6 +2575,12 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "replace_with"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51743d3e274e2b18df81c4dc6caf8a5b8e15dbe799e0dca05c7617380094e884"
 
 [[package]]
 name = "rfc6979"
@@ -3163,6 +3205,16 @@ dependencies = [
  "postcard-schema",
  "serde_core",
  "typenum",
+]
+
+[[package]]
+name = "usb-device"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98816b1accafbb09085168b90f27e93d790b4bfa19d883466b5e53315b5f06a6"
+dependencies = [
+ "heapless 0.8.0",
+ "portable-atomic",
 ]
 
 [[package]]

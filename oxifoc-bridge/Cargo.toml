@@ -30,6 +30,15 @@ ble = [
   "dep:rand_chacha",
   "trouble-host/security",
 ]
+swd-probe = [
+  "dep:dap-rs",
+  "dep:embassy-net",
+  "dep:esp-radio",
+  "dep:riscv",
+  "embassy-executor/scheduler-priority",
+  "esp-radio/coex",
+  "esp-radio/wifi",
+]
 
 [dependencies]
 esp-hal = { features = ["defmt", "esp32c5", "unstable"], version = "1.2.2" }
@@ -72,6 +81,9 @@ embassy-futures = "0.1.2"
 bbqueue = "0.7"
 heapless = { version = "0.9", default-features = false }
 oxifoc-core = { version = "0.1.0", path = "../oxifoc-core", default-features = false, features = ["icd", "defmt", "spi-link"] }
+dap-rs = { git = "https://github.com/probe-rs/dap-rs", rev = "a867ca7b41547b24aaad52b913528575685a5df5", version = "0.2.0", optional = true }
+embassy-net = { version = "=0.9.1", default-features = false, features = ["tcp", "dhcpv4", "medium-ethernet", "defmt"], optional = true }
+riscv = { version = "=0.15.0", optional = true }
 
 [dev-dependencies]
 embedded-test = { version = "0.7.3", features = [

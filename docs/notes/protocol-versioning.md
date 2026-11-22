@@ -89,6 +89,9 @@ broadcast topic with its byte-delta `FastTelemetryBatch` and the
 `RawTelemetryEndpoint`. The G474 caps its blocks at 997 bytes (34 records)
 for its 1024-byte MTU.
 
+The C5 bridge adds `cmd/swd_probe` for time-limited arming and disarming
+of wireless SWD over its USB ergot link.
+
 From v24 on, the firmware skips flash keys it does not know and keeps them
 through compaction. v23 and older fail every read once the map holds a v24
 key, so roll back to them only together with their own storage image.

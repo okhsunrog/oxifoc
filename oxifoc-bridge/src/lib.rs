@@ -18,3 +18,6 @@ mod csprng;
 use embassy_crypto_rustcrypto as _;
 #[cfg(feature = "ble")]
 pub mod pairing;
+
+#[cfg(feature = "swd-probe")]
+pub mod probe;
