@@ -29,6 +29,16 @@ preserves older review findings and experimental detail.
 - [ ] Compare the observer's voltage and phase lag at high modulation.
   Check the actuation delay and phase-voltage filters before changing PLL
   gains. See [phase sensing](notes/phase-sense.md).
+- [ ] Widen the actuation advance bound before riding above 5000
+  electrical rad/s at 15 kHz. MK5 turns the output vector by 1.5 PWM
+  periods of rotation and `MAX_ACTUATION_ADVANCE` stops it at 0.5 rad:
+  5000 rad/s at 15 kHz, 6670 at 20 kHz. The bench motor (3.98 mWb, 7 pole
+  pairs) reaches about 6100 rad/s unloaded on 42 V and 7300 on 50 V, where
+  15 kHz needs 0.61 and 0.73 rad; the shortfall comes off the current
+  loop's phase margin. These are calculated, not measured: 24 V stops at
+  about 3500 rad/s. At 0.8 rad the small-angle rotation is still within
+  about 1 % in amplitude. Check in the virtual motor that a velocity spike
+  from the estimator still cannot rail the phases, the reason for the bound.
 - [ ] Compare AC inductance, fundamental inductance and the detector's
   estimate on representative motors. Decide what the observer and
   decoupling each need using the [inductance study](notes/bench-inductance-model-2026-11-09.md).
