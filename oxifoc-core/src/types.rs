@@ -613,7 +613,8 @@ pub struct TelemetryConfigAck {
 /// `FaultCategory` also gains `ObserverNonFinite` (index 12, Warning).
 /// New endpoints: `req/diag` (`DiagEndpoint`: ISR windows, totals since boot,
 /// reset flags, the crash record) on the controller and `req/bridge_diag`
-/// (`BridgeDiagEndpoint`: SPI/USB/BLE link counters) on the bridge.
+/// (`BridgeDiagEndpoint`: link counters and the bridge's own crash record)
+/// on the bridge.
 /// The C5 bridge can serve `cmd/swd_probe` to arm or disarm wireless SWD
 /// and `cmd/bridge_ota` for app-slot updates, over any of its links, and
 /// publishes bridge logs on Ergot's standard formatted-log topic.

@@ -114,7 +114,7 @@ of the 78 s, two runs per rate:
 At 20 kHz one capture lost a block within its first second, and the hold
 stopped with `CommTimeout` at 73.9 s, long after the capture had ended. In the
 other the bridge reset itself 22 s into the capture (reset reason: software).
-The cause is unknown: the panic text goes to RTT only.
+The cause is unknown: the bridge kept no crash record yet.
 
 One radio therefore carries a 10 kHz stream (2.4 Mbit/s) beside a BLE
 connection but not the native 20 kHz one, which the bridge forwards without

@@ -80,7 +80,7 @@ preserves older review findings and experimental detail.
   with a BLE central driving the motor, and why a setpoint held over BLE
   beside Wi-Fi still trips the deadman
   ([measurements](notes/ble-link-reliability.md#a-host-as-central-with-wi-fi-on-the-same-bridge)).
-  The bridge keeps no crash record; its panic text reaches RTT only.
+  `diag bridge` shows the panic record once it happens again.
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 

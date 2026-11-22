@@ -47,6 +47,9 @@ pub enum CrashKind {
 /// What the firmware recorded when it last panicked or hard-faulted. It
 /// lives in RAM that survives a reset (not a power cycle) and stays until a
 /// client clears it, so a crash followed by more reboots is not lost.
+///
+/// The bridge records panics only: its CPU exceptions arrive as panics
+/// whose message names the cause and the faulting address.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CrashRecord {
@@ -166,6 +169,25 @@ pub struct HallStats {
     pub overcaptures: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum BridgeDiagRequest {
+    /// Uptime, reset reason and the counters of every link.
+    Links,
+    /// The bridge's last panic record, kept across resets until cleared.
+    Crash,
+    /// Forget the crash record (answers `Crash(None)`).
+    ClearCrash,
+}
+
+// postcard encodes the variant index — append only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum BridgeDiagResponse {
+    Links(BridgeDiag),
+    Crash(Option<CrashRecord>),
+}
+
 /// Bridge diagnostics (`req/bridge_diag`, served by the bridge itself): the
 /// links it carries, reachable over BLE even when the controller is silent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
@@ -173,7 +195,8 @@ pub struct HallStats {
 pub struct BridgeDiag {
     pub uptime_ms: u64,
     /// The bridge MCU's raw reset-reason code (ESP32-C5 `SocResetReason`;
-    /// 0 = unknown, 0x01 power-on, 0x0C software, 0x0F brown-out).
+    /// 0 = unknown, 0x01 power-on, 0x03 software, 0x0F brown-out). A panic
+    /// and an update both end in a software reset.
     pub reset_reason: u8,
     pub spi: SpiLinkDiag,
     pub usb: UsbLinkDiag,
@@ -391,8 +414,13 @@ mod tests {
             },
         };
         let mut buf = [0u8; 512];
-        let len = postcard::to_slice(&bridge, &mut buf).unwrap().len();
-        assert!(len + 24 <= 505, "bridge diag: {len} bytes");
+        for response in [
+            BridgeDiagResponse::Links(bridge),
+            BridgeDiagResponse::Crash(Some(crash.clone())),
+        ] {
+            let len = postcard::to_slice(&response, &mut buf).unwrap().len();
+            assert!(len + 24 <= 505, "{response:?}: {len} bytes");
+        }
         for response in [
             DiagResponse::IsrWindow(window),
             DiagResponse::Summary(summary),

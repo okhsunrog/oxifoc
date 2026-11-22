@@ -21,8 +21,12 @@ pub enum DiagAction {
         #[arg(long, default_value_t = 0)]
         watch: u64,
     },
-    /// The bridge's own link counters (SPI, USB, BLE); works without the controller
-    Bridge,
+    /// The bridge's own link counters and crash record; works without the controller
+    Bridge {
+        /// Forget the bridge's crash record after printing it
+        #[arg(long)]
+        clear_crash: bool,
+    },
     /// The last panic/HardFault record (kept across resets until cleared)
     Crash {
         /// Forget the record after printing it
@@ -41,9 +45,22 @@ pub fn run(runtime: &HostRuntime, action: DiagAction, json: bool) -> Result<()> 
                 format_summary(&summary),
             );
         }
-        DiagAction::Bridge => {
+        DiagAction::Bridge { clear_crash } => {
             let bridge = ops::bridge(&runtime.cmd_tx)?;
-            emit(json, serde_json::to_value(bridge)?, format_bridge(&bridge));
+            let crash = ops::bridge_crash(&runtime.cmd_tx)?;
+            let mut value = serde_json::to_value(bridge)?;
+            value["crash"] = serde_json::to_value(&crash)?;
+            let human = format!(
+                "{}\ncrash: {}",
+                format_bridge(&bridge),
+                crash
+                    .as_ref()
+                    .map_or_else(|| "none".to_string(), format_bridge_crash)
+            );
+            emit(json, value, human);
+            if clear_crash && crash.is_some() {
+                ops::clear_bridge_crash(&runtime.cmd_tx)?;
+            }
         }
         DiagAction::Crash { clear } => {
             let record = ops::crash(&runtime.cmd_tx)?;
@@ -174,6 +191,19 @@ fn format_crash(c: &CrashRecord) -> String {
         c.lr,
         c.cfsr,
         c.hfsr,
+    )
+}
+
+/// The bridge records panics only, so the fault registers are left out.
+fn format_bridge_crash(c: &CrashRecord) -> String {
+    format!(
+        "{:?} {} boot(s) ago at uptime {:.3}s\n  {}:{} {}",
+        c.kind,
+        c.boots_since,
+        f64::from(c.uptime_ms) / 1000.0,
+        c.file,
+        c.line,
+        c.message,
     )
 }
 

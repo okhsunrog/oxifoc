@@ -144,10 +144,16 @@ The bridge serves its own diagnostics, `req/bridge_diag`
 (`oxifoc-host-cli diag bridge`): uptime and C5 reset reason, SPI slots and
 errors by kind, controller boots it has seen (its link epoch changing), USB
 and per-link BLE counters (connects, disconnects with the last HCI reason,
-untrusted drops, notify errors, frames the outbound queue refused). It
-answers over USB or BLE even when the controller is silent. A bridge panic
-logs over RTT and resets the C5 (`esp_hal::init` disables its watchdogs, so
-looping would leave BLE dead until a power cycle).
+untrusted drops, notify errors, frames the outbound queue refused), the
+Wi-Fi link and the bridge's crash record. It answers over any link even
+when the controller is silent.
+
+A bridge panic resets the C5 (`esp_hal::init` disables its watchdogs, so
+looping would leave BLE dead until a power cycle). The panic's location and
+message are kept in RTC RAM across that reset and later ones, until
+`diag bridge --clear-crash` or a power cycle. CPU exceptions are recorded
+the same way: esp-hal raises them as panics that name the cause, `mepc` and
+`mtval`. The text also goes to RTT.
 
 `just bench-bridge-handshake PORT SECONDS HZ` checks 20-Hz acknowledged Stop
 commands simultaneously with 0/5000/20000-Hz legacy Ergot streaming. It never

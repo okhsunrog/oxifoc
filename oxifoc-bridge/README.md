@@ -63,6 +63,10 @@ The same command works over BLE. Ergot delivers live messages once the
 link is up. Internal Ergot and driver diagnostics go to wired RTT. RTT
 also carries early boot logs and panic output.
 
+A panic or CPU exception resets the bridge. `diag bridge` shows where it
+happened and its message after the reset, over any link; the record stays
+until `diag bridge --clear-crash` or a power cycle.
+
 ## Bridge firmware updates
 
 Any host that reaches the bridge over USB, a bonded BLE link or the Wi-Fi

@@ -26,7 +26,7 @@
 //! | `RawTelemetryEndpoint` | `RawTelemetryRequest` | `RawTelemetryAck` | Arm, stop and query a fast telemetry session |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
 //! | `DiagEndpoint` | `DiagRequest` | `DiagResponse` | ISR timing, totals since boot, reset cause, crash record |
-//! | `BridgeDiagEndpoint` | `()` | `BridgeDiag` | SPI/USB/BLE link counters (served by the bridge) |
+//! | `BridgeDiagEndpoint` | `BridgeDiagRequest` | `BridgeDiagResponse` | Link counters and the crash record (served by the bridge) |
 //! | `DetectEndpoint` | `MeasurementRequest` | `MeasurementReply` | Motor detection |
 //! | `ConfigEndpoint` | `ConfigRequest` | `ConfigResponse` | Revisioned config apply/persist (`storage` feature) |
 //! | `PairingEndpoint` | `PairingRequest` | `PairingResponse` | BLE pairing windows and bonds (served by the bridge) |
@@ -175,8 +175,13 @@ endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
 // Controller diagnostics: what an assembled board can report without a probe.
 pub use crate::types::diag::{DiagRequest, DiagResponse};
 endpoint!(DiagEndpoint, DiagRequest, DiagResponse, "req/diag");
-pub use crate::types::diag::BridgeDiag;
-endpoint!(BridgeDiagEndpoint, (), BridgeDiag, "req/bridge_diag");
+pub use crate::types::diag::{BridgeDiagRequest, BridgeDiagResponse};
+endpoint!(
+    BridgeDiagEndpoint,
+    BridgeDiagRequest,
+    BridgeDiagResponse,
+    "req/bridge_diag"
+);
 
 // Session-scoped actions: retries preserve CAS session or operation identity.
 pub use crate::types::measurement::{Reply as MeasurementReply, Request as MeasurementRequest};

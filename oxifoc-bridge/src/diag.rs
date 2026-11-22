@@ -1,13 +1,20 @@
 //! Bridge diagnostics, served as `req/bridge_diag`: the counters of the links
-//! the bridge carries, reachable over BLE even when the controller is silent.
+//! the bridge carries and its own crash record, reachable over BLE even when
+//! the controller is silent.
 
 use core::pin::pin;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use oxifoc_core::icd::BridgeDiagEndpoint;
-use oxifoc_core::types::diag::{BleLinkDiag, BridgeDiag, SpiLinkDiag, UsbLinkDiag, WifiLinkDiag};
+use oxifoc_core::types::diag::{
+    BleLinkDiag, BridgeDiag, BridgeDiagRequest, BridgeDiagResponse, SpiLinkDiag, UsbLinkDiag,
+    WifiLinkDiag,
+};
 
-use crate::transport::{BLE_LINKS, Stack, spi, usb};
+use crate::{
+    crash,
+    transport::{BLE_LINKS, Stack, spi, usb},
+};
 
 /// Counters of one BLE central slot.
 pub struct BleCounters {
@@ -106,8 +113,15 @@ pub async fn server(stack: &'static Stack) {
     let mut handle = server.attach();
     loop {
         let _ = handle
-            .serve(|_: &()| {
-                let reply = snapshot();
+            .serve(|request: &BridgeDiagRequest| {
+                let reply = match request {
+                    BridgeDiagRequest::Links => BridgeDiagResponse::Links(snapshot()),
+                    BridgeDiagRequest::Crash => BridgeDiagResponse::Crash(crash::read()),
+                    BridgeDiagRequest::ClearCrash => {
+                        crash::clear();
+                        BridgeDiagResponse::Crash(None)
+                    }
+                };
                 async move { reply }
             })
             .await;

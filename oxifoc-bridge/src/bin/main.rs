@@ -18,12 +18,13 @@ use oxifoc_bridge::{
     transport::{self, BridgeSink, MTU},
 };
 
-/// Log over RTT, then reset. esp_hal::init disables the watchdogs, so a
-/// panic that only looped would leave BLE dead until a power cycle; the
-/// reset reason (`req/bridge_diag`) then reports the software reset. The
-/// Ergot log queue cannot drain here, so the message goes to RTT directly.
+/// Record the panic, log it over RTT, then reset. esp_hal::init disables the
+/// watchdogs, so a panic that only looped would leave BLE dead until a power
+/// cycle. The Ergot log queue cannot drain here: the record survives the
+/// reset for `req/bridge_diag`, and the message goes to RTT directly.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    oxifoc_bridge::crash::record_panic(info);
     rtt_target::rprintln!("PANIC: {}", info);
     esp_hal::system::software_reset()
 }
@@ -38,6 +39,7 @@ async fn main(spawner: Spawner) -> ! {
         esp_hal::system::reset_reason().map_or(0, |reason| reason as u8),
         core::sync::atomic::Ordering::Relaxed,
     );
+    oxifoc_bridge::crash::count_boot();
     // Waveshare C5-Zero onboard antenna, selected before any radio initialization.
     let _antenna = Output::new(p.GPIO26, Level::Low, OutputConfig::default());
     let timer = TimerGroup::new(p.TIMG0);

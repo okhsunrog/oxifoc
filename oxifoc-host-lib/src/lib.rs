@@ -311,7 +311,7 @@ pub type PairingResponseSender =
 pub type FaultResponseReceiver = tokio::sync::oneshot::Receiver<Result<FaultResponse>>;
 /// Reply channel for the bridge's diagnostics (`BridgeDiagEndpoint`).
 pub type BridgeDiagSender =
-    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::diag::BridgeDiag>>;
+    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::diag::BridgeDiagResponse>>;
 /// Reply channel for a diagnostics request (`DiagEndpoint`).
 pub type DiagResponseSender =
     tokio::sync::oneshot::Sender<Result<oxifoc_core::types::diag::DiagResponse>>;
@@ -368,9 +368,12 @@ pub enum HostCommand {
     Fault(FaultRequest, FaultResponseSender),
     /// Read controller diagnostics (`DiagEndpoint`).
     Diag(oxifoc_core::types::diag::DiagRequest, DiagResponseSender),
-    /// Read the bridge's link diagnostics (`BridgeDiagEndpoint`); needs only
+    /// Read the bridge's own diagnostics (`BridgeDiagEndpoint`); needs only
     /// the link, not a verified controller.
-    BridgeDiag(BridgeDiagSender),
+    BridgeDiag(
+        oxifoc_core::types::diag::BridgeDiagRequest,
+        BridgeDiagSender,
+    ),
     /// Send one firmware upload request to the bridge.
     BridgeOta(
         Option<Address>,
@@ -930,9 +933,9 @@ where
                                 );
                                 continue;
                             }
-                            HostCommand::BridgeDiag(reply) => {
+                            HostCommand::BridgeDiag(req, reply) => {
                                 let _ = reply.send(
-                                    bridge_request::<oxifoc_core::icd::BridgeDiagEndpoint, _>(&stack, &())
+                                    bridge_request::<oxifoc_core::icd::BridgeDiagEndpoint, _>(&stack, &req)
                                         .await,
                                 );
                                 continue;
@@ -1151,7 +1154,7 @@ fn reject_unverified_command(cmd: HostCommand) {
         HostCommand::Diag(_, reply) => {
             let _ = reply.send(Err(error()));
         }
-        HostCommand::BridgeDiag(reply) => {
+        HostCommand::BridgeDiag(_, reply) => {
             let _ = reply.send(Err(error()));
         }
         HostCommand::BridgeOta(_, _, reply) => {
@@ -1484,9 +1487,9 @@ async fn handle_non_motor_command<NS>(
             let _ = reply_tx
                 .send(bridge_request::<oxifoc_core::icd::PairingEndpoint, _>(ns, &req).await);
         }
-        HostCommand::BridgeDiag(reply_tx) => {
+        HostCommand::BridgeDiag(req, reply_tx) => {
             let _ = reply_tx
-                .send(bridge_request::<oxifoc_core::icd::BridgeDiagEndpoint, _>(ns, &()).await);
+                .send(bridge_request::<oxifoc_core::icd::BridgeDiagEndpoint, _>(ns, &req).await);
         }
         HostCommand::Fault(req, reply_tx) => {
             tracing::info!("Fault request: {:?}", req);

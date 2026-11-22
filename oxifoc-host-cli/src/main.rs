@@ -694,7 +694,7 @@ fn main() -> Result<()> {
         cli.command,
         Command::Pairing { .. }
             | Command::Diag {
-                action: diag::DiagAction::Bridge
+                action: diag::DiagAction::Bridge { .. }
             }
     );
     if pairing && cli.wait_secs > 0 {

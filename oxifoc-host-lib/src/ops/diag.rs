@@ -2,7 +2,8 @@
 
 use anyhow::{Context, Result, bail};
 use oxifoc_core::types::diag::{
-    BridgeDiag, CrashRecord, DiagRequest, DiagResponse, DiagSummary, IsrWindow,
+    BridgeDiag, BridgeDiagRequest, BridgeDiagResponse, CrashRecord, DiagRequest, DiagResponse,
+    DiagSummary, IsrWindow,
 };
 
 use crate::{CommandSender, HostCommand};
@@ -16,14 +17,37 @@ fn request(cmd: &CommandSender, request: DiagRequest) -> Result<DiagResponse> {
         .context("diag request failed")
 }
 
-/// The bridge's link counters; needs only the link to the bridge.
-pub fn bridge(cmd: &CommandSender) -> Result<BridgeDiag> {
+fn bridge_request(cmd: &CommandSender, request: BridgeDiagRequest) -> Result<BridgeDiagResponse> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    cmd.send(HostCommand::BridgeDiag(tx))
+    cmd.send(HostCommand::BridgeDiag(request, tx))
         .context("send bridge diag request")?;
     rx.blocking_recv()
         .context("backend dropped the bridge diag request")?
         .context("bridge diag request failed")
+}
+
+/// The bridge's link counters; needs only the link to the bridge.
+pub fn bridge(cmd: &CommandSender) -> Result<BridgeDiag> {
+    match bridge_request(cmd, BridgeDiagRequest::Links)? {
+        BridgeDiagResponse::Links(links) => Ok(links),
+        other => bail!("bridge answered {other:?} to a links request"),
+    }
+}
+
+/// The bridge's last panic record, kept across resets until cleared.
+pub fn bridge_crash(cmd: &CommandSender) -> Result<Option<CrashRecord>> {
+    match bridge_request(cmd, BridgeDiagRequest::Crash)? {
+        BridgeDiagResponse::Crash(record) => Ok(record),
+        other => bail!("bridge answered {other:?} to a crash request"),
+    }
+}
+
+/// Forget the bridge's crash record.
+pub fn clear_bridge_crash(cmd: &CommandSender) -> Result<()> {
+    match bridge_request(cmd, BridgeDiagRequest::ClearCrash)? {
+        BridgeDiagResponse::Crash(None) => Ok(()),
+        other => bail!("bridge answered {other:?} to a crash clear"),
+    }
 }
 
 /// Totals since boot and the reset cause.
