@@ -14,7 +14,15 @@ use esp_hal::{
     usb::usb_serial_jtag::UsbSerialJtag,
 };
 use oxifoc_bridge::transport::{self, BridgeSink, MTU};
-use panic_rtt_target as _;
+
+/// Log over RTT, then reset. esp_hal::init disables the watchdogs, so a
+/// panic that only looped would leave BLE dead until a power cycle; the
+/// reset reason (`req/bridge_diag`) then reports the software reset.
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    defmt::error!("PANIC: {}", defmt::Display2Format(info));
+    esp_hal::system::software_reset()
+}
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -22,6 +30,10 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(spawner: Spawner) -> ! {
     rtt_target::rtt_init_defmt!();
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
+    oxifoc_bridge::diag::RESET_REASON.store(
+        esp_hal::system::reset_reason().map_or(0, |reason| reason as u8),
+        core::sync::atomic::Ordering::Relaxed,
+    );
     // Waveshare C5-Zero onboard antenna, selected before any radio initialization.
     let _antenna = Output::new(p.GPIO26, Level::Low, OutputConfig::default());
     let timer = TimerGroup::new(p.TIMG0);
@@ -40,8 +52,9 @@ async fn main(spawner: Spawner) -> ! {
         .expect("SPI interface slot must be available at startup");
     let usb_ident = stack
         .manage_profile(|p| {
-            p.register_interface(BridgeSink::Usb(transport::usb::UsbSink::new(
+            p.register_interface(BridgeSink::Usb(transport::Counted::new(
                 cobs_stream::Sink::new(transport::USB_OUTQ.stream_producer(), MTU),
+                &transport::usb::USB_DROPPED,
             )))
         })
         .expect("USB interface slot must be available at startup");
@@ -77,9 +90,12 @@ async fn main(spawner: Spawner) -> ! {
         let ble_idents = core::array::from_fn(|link| {
             stack
                 .manage_profile(|p| {
-                    p.register_interface(BridgeSink::Ble(framed_stream::Sink::new(
-                        transport::BLE_OUTQ[link].framed_producer(),
-                        transport::BLE_MTU,
+                    p.register_interface(BridgeSink::Ble(transport::Counted::new(
+                        framed_stream::Sink::new(
+                            transport::BLE_OUTQ[link].framed_producer(),
+                            transport::BLE_MTU,
+                        ),
+                        &oxifoc_bridge::diag::BLE[link].dropped,
                     )))
                 })
                 .expect("BLE interface slots must be available at startup")

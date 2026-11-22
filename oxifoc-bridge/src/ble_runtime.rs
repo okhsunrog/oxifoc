@@ -201,7 +201,13 @@ async fn link_slot<'v, C: Controller>(
                 // The central chooses the PHY: the remote stays on 1M for
                 // sensitivity, host tools may request 2M for telemetry.
                 debug!("[ble{}] connection established", link);
+                let counters = &crate::diag::BLE[link];
+                crate::diag::BleCounters::bump(&counters.connects);
+                counters.connected.store(true, Ordering::Relaxed);
                 link_session(ctx, server, &conn, link, ident).await;
+                crate::diag::BleCounters::bump(&counters.disconnects);
+                counters.connected.store(false, Ordering::Relaxed);
+                counters.trusted.store(false, Ordering::Relaxed);
                 PAIRING.link_bond[link].store(NO_BOND, Ordering::Relaxed);
                 stack_inactive(ctx.stack, ident);
                 // Never send frames queued for the old central to the next one.
@@ -354,7 +360,12 @@ async fn link_session<C: Controller, P: PacketPool>(
         };
         match select4(conn.next(), frame, PAIRING.inputs[link].wait(), deadline).await {
             Either4::First(event) => match event {
-                GattConnectionEvent::Disconnected { .. } => break,
+                GattConnectionEvent::Disconnected { reason } => {
+                    crate::diag::BLE[link]
+                        .last_disconnect_reason
+                        .store(reason.into_inner(), Ordering::Relaxed);
+                    break;
+                }
                 GattConnectionEvent::Encrypted {
                     security_level,
                     bond: Some(bond),
@@ -365,6 +376,9 @@ async fn link_session<C: Controller, P: PacketPool>(
                     {
                         trusted = Some(id);
                         PAIRING.link_bond[link].store(id, Ordering::Relaxed);
+                        crate::diag::BLE[link]
+                            .trusted
+                            .store(true, Ordering::Relaxed);
                         info!(
                             "[ble{}] trusted, bond {}, {} ms after connect",
                             link,
@@ -428,6 +442,9 @@ async fn link_session<C: Controller, P: PacketPool>(
                         Some(id) => {
                             trusted = Some(id);
                             PAIRING.link_bond[link].store(id, Ordering::Relaxed);
+                            crate::diag::BLE[link]
+                                .trusted
+                                .store(true, Ordering::Relaxed);
                         }
                         None => {
                             conn.raw().disconnect();
@@ -501,6 +518,7 @@ async fn link_session<C: Controller, P: PacketPool>(
                 grant.release();
                 if result.is_err() {
                     warn!("[ble] notify error, disconnecting");
+                    crate::diag::BleCounters::bump(&crate::diag::BLE[link].notify_errors);
                     break;
                 }
             }
@@ -530,6 +548,9 @@ async fn link_session<C: Controller, P: PacketPool>(
             },
             Either4::Fourth(()) => {
                 debug!("[ble{}] dropping link (untrusted or bond removed)", link);
+                if trusted.is_none() {
+                    crate::diag::BleCounters::bump(&crate::diag::BLE[link].untrusted_drops);
+                }
                 conn.raw().disconnect();
                 break;
             }

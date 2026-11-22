@@ -867,6 +867,44 @@ impl IsrStatistics {
     }
 }
 
+/// Publish one second of ISR statistics to `req/diag`.
+fn publish_diag_window(
+    stats: &IsrStatistics,
+    elapsed_cycles: Option<core::num::NonZeroU32>,
+    telemetry: oxifoc_core::types::diag::TelemetryStats,
+    hall: oxifoc_core::types::diag::HallStats,
+) {
+    use oxifoc_core::types::diag::{CycleStats, IntervalStats, IsrWindow};
+    let (interval_n, interval_sum, interval_min, interval_max, long, short) = stats.intervals;
+    let window = IsrWindow {
+        window: 0,
+        elapsed_cycles: elapsed_cycles.map_or(0, core::num::NonZeroU32::get),
+        budget_cycles: ISR_TIMING.budget_cycles.load(Ordering::Relaxed),
+        isr: CycleStats {
+            samples: stats.samples,
+            sum_cycles: stats.cycles,
+            max_cycles: stats.max_cycles,
+        },
+        motion: CycleStats {
+            samples: stats.motion.0,
+            sum_cycles: stats.motion.1,
+            max_cycles: stats.motion.2,
+        },
+        overruns: stats.overruns,
+        intervals: IntervalStats {
+            samples: interval_n,
+            sum_cycles: interval_sum,
+            min_cycles: interval_min,
+            max_cycles: interval_max,
+            long,
+            short,
+        },
+        telemetry,
+        hall,
+    };
+    oxifoc_core::runtime::diag::publish_window(window, embassy_time::Instant::now().as_millis());
+}
+
 #[embassy_executor::task]
 pub async fn isr_stats_task() {
     use embassy_time::Ticker;
@@ -931,6 +969,17 @@ pub async fn isr_stats_task() {
         let Some(sample_count) = core::num::NonZeroU32::new(stats.samples) else {
             continue;
         };
+        let telemetry = oxifoc_core::types::diag::TelemetryStats {
+            pushed: FAST_PRODUCER.push_ok.swap(0, Ordering::Relaxed),
+            dropped: FAST_PRODUCER.push_drops.swap(0, Ordering::Relaxed),
+            read: FAST_PRODUCER.read_ok.swap(0, Ordering::Relaxed),
+        };
+        let hall_window = oxifoc_core::types::diag::HallStats {
+            state: hall::read_hall_state_raw(),
+            edges: hall::EDGES.swap(0, Ordering::Relaxed),
+            overcaptures: hall::OVERCAPTURES.swap(0, Ordering::Relaxed),
+        };
+        publish_diag_window(&stats, elapsed_cycles, telemetry, hall_window);
         let cyc_n = sample_count.get();
         if stats.motion.0 != 0 {
             defmt::info!(
@@ -981,9 +1030,7 @@ pub async fn isr_stats_task() {
                 );
             }
         }
-        let pushed = FAST_PRODUCER.push_ok.swap(0, Ordering::Relaxed);
-        let dropped = FAST_PRODUCER.push_drops.swap(0, Ordering::Relaxed);
-        let read = FAST_PRODUCER.read_ok.swap(0, Ordering::Relaxed);
+        let (pushed, dropped, read) = (telemetry.pushed, telemetry.dropped, telemetry.read);
         #[cfg(feature = "hall-diagnostics")]
         crate::diagnostics::hall_edges::observe_stream_stats(dropped);
         if pushed != 0 || dropped != 0 || read != 0 {
@@ -995,9 +1042,9 @@ pub async fn isr_stats_task() {
         // wiring shows as state flips and edge bursts with cable movement.
         defmt::info!(
             "hall/s: state={=u8:b} edges={} overcap={}",
-            hall::read_hall_state_raw(),
-            hall::EDGES.swap(0, Ordering::Relaxed),
-            hall::OVERCAPTURES.swap(0, Ordering::Relaxed),
+            hall_window.state,
+            hall_window.edges,
+            hall_window.overcaptures,
         );
         // run_foc_cycle internals (core isr_prof buckets) — same lines as
         // the g431 protocol stats task.

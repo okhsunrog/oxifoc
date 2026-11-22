@@ -7,6 +7,7 @@
 //! telemetry into parquet files with full provenance metadata.
 
 mod detect;
+mod diag;
 mod maneuver;
 mod pairing;
 mod watch;
@@ -282,6 +283,11 @@ enum Command {
     Pairing {
         #[command(subcommand)]
         action: pairing::PairingAction,
+    },
+    /// Controller diagnostics: ISR timing, totals since boot, reset cause
+    Diag {
+        #[command(subcommand)]
+        action: diag::DiagAction,
     },
     /// Query active faults; --clear / --clear-category to clear
     Faults {
@@ -661,7 +667,14 @@ fn main() -> Result<()> {
     let wait = Duration::from_secs(cli.wait_secs);
     // The bridge serves pairing itself: wait for the bridge, not for the
     // motor controller, which may be absent or on another protocol version.
-    let pairing = matches!(cli.command, Command::Pairing { .. });
+    // The bridge answers these itself; the controller may be absent.
+    let pairing = matches!(
+        cli.command,
+        Command::Pairing { .. }
+            | Command::Diag {
+                action: diag::DiagAction::Bridge
+            }
+    );
     if pairing && cli.wait_secs > 0 {
         oxifoc_host_lib::ops::pairing::wait_for_bridge(&runtime.cmd_tx, wait)?;
     } else if cli.wait_secs > 0 && !runtime.wait_for_connection(wait) {
@@ -730,6 +743,7 @@ fn main() -> Result<()> {
             );
         }
         Command::Pairing { action } => pairing::run(&runtime, action, json)?,
+        Command::Diag { action } => diag::run(&runtime, action, json)?,
         Command::Faults {
             clear,
             clear_category,

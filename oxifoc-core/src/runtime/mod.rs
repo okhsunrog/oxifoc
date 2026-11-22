@@ -17,6 +17,7 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
+pub mod diag;
 pub mod raw_stream;
 pub mod servers;
 pub mod streaming;

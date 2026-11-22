@@ -307,6 +307,12 @@ pub type FaultResponseSender = tokio::sync::oneshot::Sender<Result<FaultResponse
 pub type PairingResponseSender =
     tokio::sync::oneshot::Sender<Result<oxifoc_core::types::pairing::PairingResponse>>;
 pub type FaultResponseReceiver = tokio::sync::oneshot::Receiver<Result<FaultResponse>>;
+/// Reply channel for the bridge's diagnostics (`BridgeDiagEndpoint`).
+pub type BridgeDiagSender =
+    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::diag::BridgeDiag>>;
+/// Reply channel for a diagnostics request (`DiagEndpoint`).
+pub type DiagResponseSender =
+    tokio::sync::oneshot::Sender<Result<oxifoc_core::types::diag::DiagResponse>>;
 
 /// Create a oneshot channel pair for a fault request/response
 pub fn fault_channel() -> (FaultResponseSender, FaultResponseReceiver) {
@@ -358,6 +364,11 @@ pub enum HostCommand {
     ),
     /// Query or clear device faults (`FaultEndpoint`).
     Fault(FaultRequest, FaultResponseSender),
+    /// Read controller diagnostics (`DiagEndpoint`).
+    Diag(oxifoc_core::types::diag::DiagRequest, DiagResponseSender),
+    /// Read the bridge's link diagnostics (`BridgeDiagEndpoint`); needs only
+    /// the link, not a verified controller.
+    BridgeDiag(BridgeDiagSender),
     /// BLE pairing management on the bridge (`PairingEndpoint`).
     Pairing(
         oxifoc_core::types::pairing::PairingRequest,
@@ -898,10 +909,23 @@ where
                         let Some(cmd) = cmd else { break };
                         // The bridge serves and authorizes pairing itself, so
                         // it needs only the link, not a verified controller.
-                        if let HostCommand::Pairing(req, reply) = cmd {
-                            let _ = reply.send(pairing_request(&stack, &req).await);
-                            continue;
-                        }
+                        let cmd = match cmd {
+                            HostCommand::Pairing(req, reply) => {
+                                let _ = reply.send(
+                                    bridge_request::<oxifoc_core::icd::PairingEndpoint, _>(&stack, &req)
+                                        .await,
+                                );
+                                continue;
+                            }
+                            HostCommand::BridgeDiag(reply) => {
+                                let _ = reply.send(
+                                    bridge_request::<oxifoc_core::icd::BridgeDiagEndpoint, _>(&stack, &())
+                                        .await,
+                                );
+                                continue;
+                            }
+                            cmd => cmd,
+                        };
                         if !connected.load(Ordering::Relaxed) {
                             *active_setpoint.lock().unwrap() = None;
                             reject_unverified_command(cmd);
@@ -1031,30 +1055,25 @@ fn spawn_fault_topic_subscriber<NS>(
 /// One request to the bridge's pairing endpoint. Not retried: OpenWindow is
 /// not idempotent (a retry would report WindowBusy for the window it just
 /// opened).
-async fn pairing_request<NS>(
-    ns: &NS,
-    req: &oxifoc_core::types::pairing::PairingRequest,
-) -> Result<oxifoc_core::types::pairing::PairingResponse>
+/// One request to an endpoint the bridge serves, found by its key.
+async fn bridge_request<E, NS>(ns: &NS, req: &E::Request) -> Result<E::Response>
 where
+    E: ergot::traits::Endpoint,
+    E::Request: serde::Serialize + serde::de::DeserializeOwned + Clone + 'static,
+    E::Response: serde::Serialize + serde::de::DeserializeOwned + Clone + 'static,
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
-    use ergot::traits::Endpoint as _;
-    let addr = connection::resolve_endpoint_addr(
-        ns,
-        oxifoc_core::icd::PairingEndpoint::REQ_KEY.to_bytes(),
-        Duration::from_millis(500),
-    )
-    .await
-    .ok_or(ops::pairing::NoBridge)?;
+    let addr =
+        connection::resolve_endpoint_addr(ns, E::REQ_KEY.to_bytes(), Duration::from_millis(500))
+            .await
+            .ok_or(ops::pairing::NoBridge)?;
     tokio::time::timeout(
         Duration::from_secs(3),
-        ns.stack()
-            .endpoints()
-            .request::<oxifoc_core::icd::PairingEndpoint>(addr, req, None),
+        ns.stack().endpoints().request::<E>(addr, req, None),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("pairing request timed out"))?
-    .map_err(|e| anyhow::anyhow!("pairing request failed: {e:?}"))
+    .map_err(|_| anyhow::anyhow!("{} request timed out", E::PATH))?
+    .map_err(|e| anyhow::anyhow!("{} request failed: {e:?}", E::PATH))
 }
 
 /// Refuse every externally visible command until HardwareInfo has passed the
@@ -1106,6 +1125,12 @@ fn reject_unverified_command(cmd: HostCommand) {
             let _ = reply.send(Err(error()));
         }
         HostCommand::Fault(_, reply) => {
+            let _ = reply.send(Err(error()));
+        }
+        HostCommand::Diag(_, reply) => {
+            let _ = reply.send(Err(error()));
+        }
+        HostCommand::BridgeDiag(reply) => {
             let _ = reply.send(Err(error()));
         }
         HostCommand::Pairing(_, reply) => {
@@ -1423,12 +1448,28 @@ async fn handle_non_motor_command<NS>(
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }
         HostCommand::Pairing(req, reply_tx) => {
-            let _ = reply_tx.send(pairing_request(ns, &req).await);
+            let _ = reply_tx
+                .send(bridge_request::<oxifoc_core::icd::PairingEndpoint, _>(ns, &req).await);
+        }
+        HostCommand::BridgeDiag(reply_tx) => {
+            let _ = reply_tx
+                .send(bridge_request::<oxifoc_core::icd::BridgeDiagEndpoint, _>(ns, &()).await);
         }
         HostCommand::Fault(req, reply_tx) => {
             tracing::info!("Fault request: {:?}", req);
             let res = client
                 .at_least_once::<FaultEndpoint>(device_addr, &req, Some("fault"), &SETPOINT_POLICY)
+                .await;
+            let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
+        }
+        HostCommand::Diag(req, reply_tx) => {
+            let res = client
+                .at_least_once::<oxifoc_core::icd::DiagEndpoint>(
+                    device_addr,
+                    &req,
+                    Some("diag"),
+                    &SETPOINT_POLICY,
+                )
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
         }

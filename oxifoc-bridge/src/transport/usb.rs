@@ -12,55 +12,11 @@ use esp_hal::{
 };
 
 #[unsafe(no_mangle)]
-pub static USB_ADMISSION_ERRORS: AtomicU32 = AtomicU32::new(0);
+pub static USB_DROPPED: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub static USB_MAX_GRANT: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub static USB_WRITE_ERRORS: AtomicU32 = AtomicU32::new(0);
-
-pub struct UsbSink(ergot::interface_manager::utils::cobs_stream::Sink<&'static super::UsbQueue>);
-impl UsbSink {
-    pub fn new(
-        sink: ergot::interface_manager::utils::cobs_stream::Sink<&'static super::UsbQueue>,
-    ) -> Self {
-        Self(sink)
-    }
-    fn counted(result: Result<(), ()>) -> Result<(), ()> {
-        if result.is_err() {
-            USB_ADMISSION_ERRORS.fetch_add(1, Ordering::Relaxed);
-        }
-        result
-    }
-}
-impl ergot::interface_manager::InterfaceSink for UsbSink {
-    fn mtu(&self) -> u16 {
-        self.0.mtu()
-    }
-    fn send_ty<T: serde::Serialize>(
-        &mut self,
-        link: &ergot::interface_manager::LinkMeta,
-        hdr: &ergot::Header,
-        body: &T,
-    ) -> Result<(), ()> {
-        Self::counted(self.0.send_ty(link, hdr, body))
-    }
-    fn send_raw(
-        &mut self,
-        link: &ergot::interface_manager::LinkMeta,
-        hdr: &ergot::Header,
-        body: &[u8],
-    ) -> Result<(), ()> {
-        Self::counted(self.0.send_raw(link, hdr, body))
-    }
-    fn send_err(
-        &mut self,
-        link: &ergot::interface_manager::LinkMeta,
-        hdr: &ergot::Header,
-        error: ergot::ProtocolError,
-    ) -> Result<(), ()> {
-        self.0.send_err(link, hdr, error)
-    }
-}
 
 #[embassy_executor::task]
 pub async fn rx(stack: &'static Stack, rx: UsbSerialJtagRx<'static, Async>, ident: u8) {

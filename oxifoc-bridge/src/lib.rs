@@ -5,6 +5,7 @@ defmt::timestamp!("{=u64:us}", embassy_time::Instant::now().as_micros());
 
 #[allow(clippy::needless_borrows_for_generic_args)]
 pub mod ble_nus;
+pub mod diag;
 pub mod transport;
 
 #[cfg(feature = "ble")]

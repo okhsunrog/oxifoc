@@ -611,6 +611,9 @@ pub struct TelemetryConfigAck {
 /// `FaultCategory` gains `ConfigCorrupt` (index 11, Warning); config
 /// snapshots report `valid: false` for any group whose record was unreadable.
 /// `FaultCategory` also gains `ObserverNonFinite` (index 12, Warning).
+/// New endpoints: `req/diag` (`DiagEndpoint`: ISR windows, totals since boot,
+/// reset flags, the crash record) on the controller and `req/bridge_diag`
+/// (`BridgeDiagEndpoint`: SPI/USB/BLE link counters) on the bridge.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.
@@ -1397,6 +1400,8 @@ mod tests {
 }
 
 pub mod commissioning;
+/// Controller diagnostics: ISR timing windows, totals since boot, reset cause.
+pub mod diag;
 /// Session-scoped motor measurement commands.
 pub mod measurement;
 

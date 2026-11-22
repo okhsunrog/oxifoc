@@ -1,10 +1,12 @@
 //! C5 bridge: root router with SPI, USB Serial/JTAG and optional BLE segments.
+use core::sync::atomic::{AtomicU32, Ordering};
 use ergot::{
     NetStack,
     exports::bbqueue::traits::coordination::cas::AtomicCoord,
     interface_manager::{Interface, profiles::router::Router, utils::framed_stream},
     toolkits::embedded_io_async_v0_7 as kit,
 };
+
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 
 pub mod spi;
@@ -15,7 +17,9 @@ pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
 // About 200 ms of 20-kHz Packed28 traffic, including framing and control.
 // Host scheduling jitter is buffered on C5, without consuming STM32 SRAM.
 pub type UsbQueue = kit::Queue<131072, AtomicCoord>;
-pub type BleQueue = kit::Queue<1024, AtomicCoord>;
+/// Eight 505-byte notifications: a burst of fault and status replies while
+/// telemetry streams must not drop frames at the bridge.
+pub type BleQueue = kit::Queue<4096, AtomicCoord>;
 /// Simultaneous BLE centrals, e.g. the remote and a phone or laptop. Each link
 /// is its own ergot interface with its own outbound queue.
 pub const BLE_LINKS: usize = 2;
@@ -23,13 +27,67 @@ pub struct SpiInterface;
 impl Interface for SpiInterface {
     type Sink = framed_stream::Sink<&'static SpiQueue>;
 }
+
+/// A sink that counts the frames its queue refuses (`req/bridge_diag`).
+pub struct Counted<S> {
+    inner: S,
+    dropped: &'static AtomicU32,
+}
+
+impl<S> Counted<S> {
+    pub const fn new(inner: S, dropped: &'static AtomicU32) -> Self {
+        Self { inner, dropped }
+    }
+
+    fn count(&self, result: Result<(), ()>) -> Result<(), ()> {
+        if result.is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
+impl<S: ergot::interface_manager::InterfaceSink> ergot::interface_manager::InterfaceSink
+    for Counted<S>
+{
+    fn mtu(&self) -> u16 {
+        self.inner.mtu()
+    }
+    fn send_ty<T: serde::Serialize>(
+        &mut self,
+        link: &ergot::interface_manager::LinkMeta,
+        hdr: &ergot::Header,
+        body: &T,
+    ) -> Result<(), ()> {
+        let result = self.inner.send_ty(link, hdr, body);
+        self.count(result)
+    }
+    fn send_raw(
+        &mut self,
+        link: &ergot::interface_manager::LinkMeta,
+        hdr: &ergot::Header,
+        body: &[u8],
+    ) -> Result<(), ()> {
+        let result = self.inner.send_raw(link, hdr, body);
+        self.count(result)
+    }
+    fn send_err(
+        &mut self,
+        link: &ergot::interface_manager::LinkMeta,
+        hdr: &ergot::Header,
+        error: ergot::ProtocolError,
+    ) -> Result<(), ()> {
+        let result = self.inner.send_err(link, hdr, error);
+        self.count(result)
+    }
+}
 pub struct BleNusInterface;
 pub struct UsbInterface;
 impl Interface for UsbInterface {
-    type Sink = usb::UsbSink;
+    type Sink = Counted<ergot::interface_manager::utils::cobs_stream::Sink<&'static UsbQueue>>;
 }
 impl Interface for BleNusInterface {
-    type Sink = framed_stream::Sink<&'static BleQueue>;
+    type Sink = Counted<framed_stream::Sink<&'static BleQueue>>;
 }
 ergot::multi_interface! {
     pub enum BridgeSink for BridgeInterface {
@@ -49,10 +107,11 @@ pub static STATE_NOTIFY: ergot::exports::maitake_sync::WaitQueue =
 /// C5 owns all directly attached segments. No upstream seed leases are needed.
 #[embassy_executor::task]
 pub async fn root_services(stack: &'static Stack) {
-    embassy_futures::join::join3(
+    embassy_futures::join::join4(
         stack.services().seed_router_request_handler::<2>(),
         stack.services().ping_handler::<2>(),
         stack.services().socket_query_handler::<2>(),
+        crate::diag::server(stack),
     )
     .await;
 }

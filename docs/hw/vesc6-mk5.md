@@ -140,6 +140,15 @@ its address; a nonzero discovered network is required by its link gate.
 A changed C5 epoch discards the old edge address. No downstream seed leases
 are required on C5; root seed/ping/discovery services live there.
 
+The bridge serves its own diagnostics, `req/bridge_diag`
+(`oxifoc-host-cli diag bridge`): uptime and C5 reset reason, SPI slots and
+errors by kind, controller boots it has seen (its link epoch changing), USB
+and per-link BLE counters (connects, disconnects with the last HCI reason,
+untrusted drops, notify errors, frames the outbound queue refused). It
+answers over USB or BLE even when the controller is silent. A bridge panic
+logs over RTT and resets the C5 (`esp_hal::init` disables its watchdogs, so
+looping would leave BLE dead until a power cycle).
+
 `just bench-bridge-handshake PORT SECONDS HZ` checks 20-Hz acknowledged Stop
 commands simultaneously with 0/5000/20000-Hz legacy Ergot streaming. It never
 energizes the motor. The 150-ms stream-enable interval is reported separately

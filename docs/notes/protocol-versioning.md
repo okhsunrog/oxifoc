@@ -104,6 +104,16 @@ motor starts are rejected.
 observer's state went NaN or infinite and the observer restarted. It does
 not stop the motor and stays raised until cleared.
 
+v24 adds diagnostics a board without a debug probe can still report.
+`req/diag` on the controller answers `Summary` (totals since boot, the
+boot epoch and the MCU reset flags), `IsrWindow` (the last one-second
+window of control-ISR timing, telemetry and Hall counts, numbered so a
+poller sees a missed one) and `Crash` (the last panic or HardFault record,
+which survives resets until `ClearCrash`). `req/bridge_diag` is served by
+the bridge itself and reports its uptime, reset reason and the SPI, USB and
+per-link BLE counters, so it answers even when the controller is silent.
+Every response fits one 505-byte BLE frame.
+
 
 The host validates, in order:
 

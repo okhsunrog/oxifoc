@@ -936,11 +936,13 @@ impl RuntimeConfig {
         ConfigGroupId::Failsafe,
     ];
 
+    #[cfg(feature = "runtime")]
     pub(crate) fn mark_corrupt(&mut self, group: ConfigGroupId) {
         self.corrupt_records |= 1 << group.index();
     }
 
     /// A successful write replaces the unreadable record.
+    #[cfg(feature = "runtime")]
     pub(crate) fn mark_rewritten(&mut self, group: ConfigGroupId) {
         self.corrupt_records &= !(1 << group.index());
     }

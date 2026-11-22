@@ -36,6 +36,9 @@ pub static SPI_RX_CRC_ERRORS: AtomicU32 = AtomicU32::new(0);
 pub static SPI_RX_HEADER_ERRORS: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub static SPI_LAST_RX_LEN: AtomicU32 = AtomicU32::new(0);
+/// Controller boots seen: its link epoch changed (the first one included).
+#[unsafe(no_mangle)]
+pub static SPI_PEER_BOOTS: AtomicU32 = AtomicU32::new(0);
 fn checksum(bytes: &[u8]) -> u32 {
     !esp_hal::rom::crc::crc32_be(0, bytes)
 }
@@ -144,6 +147,7 @@ fn process_slot(
     match parse(&mut rx.as_mut_slice()[..SLOT_BYTES], checksum) {
         Ok(slot) => {
             if *peer_epoch != Some(slot.epoch) {
+                SPI_PEER_BOOTS.fetch_add(1, Ordering::Relaxed);
                 <RouterFrameProcessor as FrameProcessor<&'static Stack>>::reset(processor);
                 *peer_epoch = Some(slot.epoch);
                 let _ = stack

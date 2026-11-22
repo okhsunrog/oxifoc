@@ -30,6 +30,22 @@ pub fn kill_gates() {
     pac::GPIOB.bsrr().write(|w| w.set_br(5, true));
 }
 
+/// Read why the MCU last reset and clear the flags, so the next boot sees
+/// only its own cause. Call once, first thing at boot.
+pub fn take_reset_flags() -> oxifoc_core::types::diag::ResetFlags {
+    let csr = pac::RCC.csr().read();
+    pac::RCC.csr().modify(|w| w.set_rmvf(true));
+    oxifoc_core::types::diag::ResetFlags {
+        power_on: csr.porrstf(),
+        brown_out: csr.borrstf(),
+        pin: csr.pinrstf(),
+        software: csr.sftrstf(),
+        independent_watchdog: csr.iwdgrstf(),
+        window_watchdog: csr.wwdgrstf(),
+        low_power: csr.lpwrrstf(),
+    }
+}
+
 /// Configure and start the IWDG. Call only once the FOC ISR is running —
 /// it is the sole feeder.
 pub fn arm_watchdog(iwdg: Peri<'static, peripherals::IWDG>) {
@@ -53,6 +69,7 @@ pub fn feed_watchdog() {
 fn panic(info: &core::panic::PanicInfo) -> ! {
     cortex_m::interrupt::disable();
     kill_gates();
+    crate::crash::record_panic(info);
     crate::logging::enter_fatal();
     defmt::error!("PANIC: {}", defmt::Display2Format(info));
     // Same exit as panic-probe: UDF halts the core under a debugger
@@ -64,6 +81,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 #[cortex_m_rt::exception]
 unsafe fn HardFault(frame: &cortex_m_rt::ExceptionFrame) -> ! {
     kill_gates();
+    crate::crash::record_hard_fault(frame);
     crate::logging::enter_fatal();
     defmt::error!(
         "HARD FAULT: pc={=u32:#x} lr={=u32:#x}",

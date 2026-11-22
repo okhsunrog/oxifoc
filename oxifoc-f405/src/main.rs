@@ -48,6 +48,7 @@ mod logging;
 mod motor;
 mod protocol;
 // Panic/HardFault handlers (gate kill) + IWDG live here.
+mod crash;
 mod safety;
 mod sensors;
 mod storage;
@@ -69,6 +70,8 @@ pub static RUNTIME_CONFIG: critical_section::Mutex<core::cell::RefCell<RuntimeCo
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    oxifoc_core::runtime::diag::set_reset_flags(safety::take_reset_flags());
+    oxifoc_core::runtime::diag::set_crash(crash::take_at_boot(), crash::clear);
     // ========== STEP 1: Initialize Clock ==========
     let p = hardware::peripherals::init_clock();
     // MK5 ties PB10 to PA7/MOSI. Never drive the shared net from USART3.

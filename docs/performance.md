@@ -149,8 +149,20 @@ static.
 
 ### Always-on counters
 
-Every image times the ISR with two DWT reads and reports once per second
-through defmt (RTT on the MK5 SPI image; read it with
+Every image times the ISR with two DWT reads. Once per second a task folds
+the counts into a window that any client reads over the protocol, without a
+debug probe and on any build:
+
+```sh
+oxifoc-host-cli diag isr --watch 30     # each new window; --json for scripts
+oxifoc-host-cli diag summary            # totals since boot, reset flags
+```
+
+The window carries the same numbers as the RTT lines below (samples,
+cycle sum and maximum, overruns, the motion-only subset, entry intervals,
+telemetry and Hall counts); `diag summary` adds running totals that a
+before/after comparison can check. The same task still prints them through
+defmt (RTT on the MK5 SPI image; read it with
 `probe-rs attach --chip STM32F405RGTx --probe <selector> <elf>`, which does
 not reset the core):
 

@@ -1335,12 +1335,13 @@ pub async fn run_all_servers_with_config<NS, F, T>(
     T: Timer,
 {
     let drive_pwm_hz = device_info.foc_freq_hz;
-    join(
+    join3(
         join3(
             info_server::<NS, 2>(endpoints.clone(), device_info, state_mutex),
             motor_command_server::<NS, F, T, 2>(endpoints.clone(), state_mutex, fault_registry),
             fault_server::<NS, F, 2>(endpoints.clone(), fault_registry),
         ),
+        super::diag::diag_server::<NS, 2>(endpoints.clone(), boot_epoch),
         join3(
             slow_telemetry_server::<NS, F, 2>(endpoints.clone(), state_mutex, fault_registry),
             config_server::<NS, T, 2>(

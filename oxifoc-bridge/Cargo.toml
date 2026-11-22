@@ -47,7 +47,6 @@ embedded-io = { version = "0.7.1", features = ["defmt"] }
 embedded-io-async = { version = "0.7.0", features = ["defmt"] }
 esp-alloc = { features = ["defmt"], version = "0.11.0" }
 esp-radio = { features = ["ble", "defmt", "esp-alloc", "esp32c5", "unstable"], version = "1.0.0-beta.1", optional = true }
-panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 # Bond storage in the NVS partition (ble feature).
 esp-storage = { version = "0.10", features = ["esp32c5", "embedded-storage", "defmt"], optional = true }
 sequential-storage = { version = "8.0", features = ["postcard", "defmt"], optional = true }
