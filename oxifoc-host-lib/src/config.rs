@@ -38,6 +38,10 @@ pub struct HostConfig {
     /// Request velocity-loop observations in the same Ergot raw session.
     #[serde(default)]
     pub velocity_debug: bool,
+
+    /// Connect to bridge services without configuring the controller stream.
+    #[serde(skip)]
+    pub bridge_only: bool,
 }
 
 /// Controls how the host handles transport disconnection/failure.

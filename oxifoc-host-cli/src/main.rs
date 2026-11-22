@@ -679,7 +679,11 @@ fn main() -> Result<()> {
     }
 
     // Build config from CLI args or load from file
-    let cfg = build_config(&cli)?;
+    let mut cfg = build_config(&cli)?;
+    cfg.bridge_only = matches!(
+        cli.command,
+        Command::Ota { .. } | Command::SwdProbe { .. } | Command::Pairing { .. }
+    );
     let runtime = start_host(cfg);
 
     let wait = Duration::from_secs(cli.wait_secs);

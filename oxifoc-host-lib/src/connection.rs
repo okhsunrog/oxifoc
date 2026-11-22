@@ -186,9 +186,13 @@ where
         // Resolve the controller's address before the handshake: through a
         // bridge the link peer is the bridge, not the motor controller, so
         // the handshake must target whoever actually serves MotorEndpoint.
-        let resolution = tokio::select! {
-            resolution = resolve_device_addr(&stack, RESOLVE_TIMEOUT) => resolution,
-            _ = cancel.cancelled() => break,
+        let resolution = if cfg.bridge_only {
+            AddrResolution::NoAnswer
+        } else {
+            tokio::select! {
+                resolution = resolve_device_addr(&stack, RESOLVE_TIMEOUT) => resolution,
+                _ = cancel.cancelled() => break,
+            }
         };
         let (resolved, handshake_attempts) = match resolution {
             AddrResolution::Resolved(addr) => {
@@ -198,10 +202,10 @@ where
                 );
                 (addr, 10)
             }
-            AddrResolution::NoAnswer if bridge_reachable(&stack).await => {
-                // A bridge without a (booted) controller. Keep the link: the
-                // bridge serves pairing on its own. Look again later.
-                if !waiting_for_controller {
+            AddrResolution::NoAnswer if cfg.bridge_only || bridge_reachable(&stack).await => {
+                // Bridge services stay available even when controller
+                // telemetry cannot be configured or the controller is off.
+                if !cfg.bridge_only && !waiting_for_controller {
                     info!("Bridge reachable, no motor controller behind it yet; keeping the link");
                     waiting_for_controller = true;
                 }
