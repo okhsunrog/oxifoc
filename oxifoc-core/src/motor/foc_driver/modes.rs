@@ -80,8 +80,8 @@ where
     S: SinCos,
 {
     /// Hard overcurrent trip: float the bridge, drop the PI state and stop.
-    /// Out of line so the trip never weighs on the native-rate paths.
-    #[cold]
+    /// Out of line so the trip never weighs on the native-rate paths (not
+    /// `#[cold]`, see `isr_log::raise`).
     #[inline(never)]
     fn trip_overcurrent(&mut self) -> StepError {
         self.pwm.disable();

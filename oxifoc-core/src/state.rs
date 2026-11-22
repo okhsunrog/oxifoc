@@ -1360,7 +1360,6 @@ where
 /// Re-raise the stored-config warnings each cycle while the condition
 /// holds, so a host clear only sticks once the records are repaired.
 #[cfg(feature = "storage")]
-#[cold]
 #[inline(never)]
 fn raise_stored_config_faults<F: PlatformFault>(
     state: &MotorControlState,
@@ -1380,7 +1379,6 @@ fn raise_stored_config_faults<F: PlatformFault>(
     }
 }
 
-#[cold]
 #[inline(never)]
 fn report_observer_restart<F: PlatformFault>(fault_registry: &FaultRegistry<F>) {
     if let Some(fault) = F::from_category(FaultCategory::ObserverNonFinite) {
