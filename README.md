@@ -52,7 +52,8 @@ rate for full-rate data, or a lower rate when the analysis allows it. Check
 the capture's loss counters and command acknowledgements before using it
 as evidence.
 
-To use BLE with the C5 bridge, flash it with `just flash-bridge ble`.
+`just flash-bridge` enables BLE and [wireless SWD](docs/hw/vesc6-mk5.md#wireless-swd)
+on the C5 bridge.
 The host uses the same controller commands over Ergot on the OxiFOC GATT
 service (NUS-shaped, own UUIDs), for example
 `just cli --transport ble --ble-name "Oxifoc Bridge" --wait-secs 12 status`.

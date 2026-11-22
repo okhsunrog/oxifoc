@@ -334,3 +334,72 @@ Keep this in mind on every first flash of a new image.
 6. Follow the [commissioning guide](../commissioning.md) for source limits,
    detection and Hall calibration. Use a bounded first spin and review the
    capture before changing controller or power-source limits.
+
+## Wireless SWD
+
+Connect the MK5 SWCLK pad to C5 GPIO4 and SWDIO to GPIO5, with a 33–100 Ω
+series resistor on each line. The COMM ground is shared. The bridge keeps
+both pins as inputs without pulls between TCP sessions, so you can use a
+wired probe on the same pads while the wireless probe is idle. Use one
+probe at a time. The STM32 resets through SYSRESETREQ over SWD. NRST is
+unavailable for connect-under-reset.
+
+**Stop the motor before arming and keep it stopped throughout the session.**
+Halting the CPU can interrupt motor control. Disarming or losing the
+connection releases the pins and can leave the target halted. Reset the
+controller before returning it to service. A future bridge may check the
+controller's motor state over ergot before arming.
+
+1. Put the Wi-Fi station credentials in the git-ignored `.env` as described
+   in the [bridge README](../../oxifoc-bridge/README.md). Run
+   `just flash-bridge` with the C5 connected to USB.
+2. Run `just build-cli` and `just build-mk5-spi`. With the bridge on USB, run
+   the following command after the bridge has a DHCP address. Copy the
+   selector it prints.
+
+   ```sh
+   target/debug/oxifoc-host-cli --transport usb-serial-jtag swd-probe arm --minutes 5
+   ```
+
+3. Use probe-rs from git master until a release contains
+   [PR #4499](https://github.com/probe-rs/probe-rs/pull/4499). Port 4441 is
+   implicit. In the example, replace the address with the one from step 2.
+
+   ```sh
+   probe=0000:0001:192.0.2.10
+   elf=oxifoc-f405/target/vesc6-mk5/thumbv7em-none-eabihf/release/oxifoc-f405
+   probe-rs info --verbose --probe "$probe" --protocol swd --speed 1000
+   export PROBE_RS_PROBE="$probe" PROBE_RS_CHIP=STM32F405RGTx
+   export PROBE_RS_PROTOCOL=swd PROBE_RS_SPEED=1000
+   probe-rs read b32 0xE000ED00 1
+   probe-rs download --verify "$elf"
+   probe-rs reset
+   probe-rs attach "$elf"
+   ```
+
+4. After detaching, run
+   `target/debug/oxifoc-host-cli --transport usb-serial-jtag swd-probe disarm`.
+
+USB arming opens one TCP connection at a time for 1–30 minutes. Any
+reachable Wi-Fi client can connect while armed. CMSIS-DAP/TCP provides
+neither authentication nor encryption. Use a trusted network and keep the
+window short. Rearming replaces the current TCP session. The deadline,
+disarm, and loss of the Wi-Fi address close the listener.
+
+The bit-banger defaults to a nominal 1 MHz SWCLK. It accepts requested
+rates from 500 kHz and caps them at 1 MHz. GPIO overhead and interrupts
+lower the effective rate. A bridge-timed 256-clock SWJ burst measured
+about 0.42 MHz at the 1 MHz setting. The bridge advertises 128-byte
+CMSIS-DAP packets and yields between commands, so round-trip latency
+limits small reads and flashing throughput. A 432 KiB MK5 image took
+about 2 min 12 s to download and verify on the 5 GHz bench link. SPI, USB,
+and BLE have higher cooperative priority. The bridge also spaces
+DAP replies by at least 20 ms while SPI traffic is active. Wi-Fi and BLE
+share the radio.
+
+[C5 dedicated GPIO](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c5/api-reference/peripherals/dedic_gpio.html)
+could shorten the CPU-driven pin accesses while preserving explicit SWDIO
+turnaround. [PARLIO with GDMA](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c5/api-reference/peripherals/parlio/index.html)
+could offload longer clocked shifts. It would need a separate DMA channel
+from SPI2 and a way to switch GPIO5 direction between the SWD request,
+ACK, and data phases.

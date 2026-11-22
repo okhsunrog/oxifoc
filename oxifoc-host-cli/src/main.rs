@@ -10,6 +10,7 @@ mod detect;
 mod diag;
 mod maneuver;
 mod pairing;
+mod swd_probe;
 mod watch;
 
 use oxifoc_core::types::MotorStatus;
@@ -288,6 +289,11 @@ enum Command {
     Diag {
         #[command(subcommand)]
         action: diag::DiagAction,
+    },
+    /// Arm or disarm the bridge’s wireless SWD probe over USB
+    SwdProbe {
+        #[command(subcommand)]
+        action: swd_probe::ProbeAction,
     },
     /// Query active faults; --clear / --clear-category to clear
     Faults {
@@ -665,6 +671,9 @@ fn main() -> Result<()> {
     let runtime = start_host(cfg);
 
     let wait = Duration::from_secs(cli.wait_secs);
+    if let Command::SwdProbe { action } = cli.command {
+        return swd_probe::run(&runtime, action, wait, json);
+    }
     // The bridge serves pairing itself: wait for the bridge, not for the
     // motor controller, which may be absent or on another protocol version.
     // The bridge answers these itself; the controller may be absent.
@@ -691,7 +700,7 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
-        Command::List => unreachable!(), // Handled above
+        Command::List | Command::SwdProbe { .. } => unreachable!(), // Handled above
         Command::Info => {
             let info = record::latest_hw_info(&runtime)
                 .context("no hardware info received — device not connected?")?;

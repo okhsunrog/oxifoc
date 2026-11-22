@@ -28,6 +28,7 @@ use oxifoc_core::icd::{
 };
 use oxifoc_core::icd::{FaultEndpoint, HardwareInfoEndpoint, LIVENESS_TIMEOUT_MS};
 use oxifoc_core::timer::Timer;
+use oxifoc_core::types::swd_probe::{ProbeRequest, ProbeResponse};
 use oxifoc_core::types::{
     ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, DetectRequest, DetectResponse,
     FaultRequest, FaultSnapshot, HardwareInfo, MotorCommand, MotorCommandOutcome, MotorRequest,
@@ -369,6 +370,11 @@ pub enum HostCommand {
     /// Read the bridge's link diagnostics (`BridgeDiagEndpoint`); needs only
     /// the link, not a verified controller.
     BridgeDiag(BridgeDiagSender),
+    /// Arm or disarm a wireless SWD session on the C5 bridge.
+    SwdProbe(
+        ProbeRequest,
+        tokio::sync::oneshot::Sender<Result<ProbeResponse>>,
+    ),
     /// BLE pairing management on the bridge (`PairingEndpoint`).
     Pairing(
         oxifoc_core::types::pairing::PairingRequest,
@@ -924,6 +930,10 @@ where
                                 );
                                 continue;
                             }
+                            HostCommand::SwdProbe(req, reply) => {
+                                let _ = reply.send(ops::swd_probe::request_on_link(&stack, &req).await);
+                                continue;
+                            }
                             cmd => cmd,
                         };
                         if !connected.load(Ordering::Relaxed) {
@@ -1131,6 +1141,9 @@ fn reject_unverified_command(cmd: HostCommand) {
             let _ = reply.send(Err(error()));
         }
         HostCommand::BridgeDiag(reply) => {
+            let _ = reply.send(Err(error()));
+        }
+        HostCommand::SwdProbe(_, reply) => {
             let _ = reply.send(Err(error()));
         }
         HostCommand::Pairing(_, reply) => {
@@ -1446,6 +1459,9 @@ async fn handle_non_motor_command<NS>(
                 )
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
+        }
+        HostCommand::SwdProbe(req, reply_tx) => {
+            let _ = reply_tx.send(ops::swd_probe::request_on_link(ns, &req).await);
         }
         HostCommand::Pairing(req, reply_tx) => {
             let _ = reply_tx
