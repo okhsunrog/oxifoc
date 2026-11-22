@@ -89,6 +89,9 @@ broadcast topic with its byte-delta `FastTelemetryBatch` and the
 `RawTelemetryEndpoint`. The G474 caps its blocks at 997 bytes (34 records)
 for its 1024-byte MTU.
 
+The bridge adds `cmd/bridge_ota` for authenticated application updates
+over BLE and Ergot UDP.
+
 The C5 bridge adds `cmd/swd_probe` for time-limited arming and disarming
 of wireless SWD over its USB ergot link.
 

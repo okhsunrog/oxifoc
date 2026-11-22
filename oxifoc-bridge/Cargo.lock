@@ -2322,6 +2322,7 @@ dependencies = [
  "embassy-time",
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
+ "embedded-storage",
  "embedded-test",
  "ergot",
  "esp-alloc",
@@ -2339,6 +2340,7 @@ dependencies = [
  "rtt-target",
  "sequential-storage",
  "serde",
+ "sha2",
  "static_cell",
  "trouble-host",
 ]
@@ -2350,9 +2352,12 @@ dependencies = [
  "defmt 1.2.0",
  "ergot",
  "heapless 0.9.3",
+ "hmac",
  "libm",
+ "postcard",
  "postcard-schema",
  "serde",
+ "sha2",
  "uom-ng",
 ]
 

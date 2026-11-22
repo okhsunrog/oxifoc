@@ -21,3 +21,10 @@ pub mod pairing;
 
 #[cfg(feature = "swd-probe")]
 pub mod probe;
+
+#[cfg(any(feature = "ble", feature = "ota"))]
+pub mod flash;
+#[cfg(feature = "ota")]
+pub mod ota;
+#[cfg(feature = "wifi")]
+pub mod wifi;

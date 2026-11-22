@@ -89,7 +89,7 @@ async fn main(spawner: Spawner) -> ! {
         spawner,
         transport::root_services(stack).expect("USB route task is spawned once"),
     );
-    #[cfg(any(feature = "ble", feature = "swd-probe"))]
+    #[cfg(any(feature = "ble", feature = "wifi"))]
     {
         // The radio heap lives in the RAM the 2nd-stage bootloader frees
         // (dram2_seg, 64 KiB), so it does not shrink the main stack. LESC
@@ -98,6 +98,8 @@ async fn main(spawner: Spawner) -> ! {
         // controller's state.
         esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
     }
+    #[cfg(any(feature = "ble", feature = "ota"))]
+    let flash = oxifoc_bridge::flash::Flash::new(p.FLASH);
     #[cfg(feature = "ble")]
     {
         let ble_idents = core::array::from_fn(|link| {
@@ -115,17 +117,20 @@ async fn main(spawner: Spawner) -> ! {
         });
         spawn_bridge_task(
             spawner,
-            oxifoc_bridge::ble_runtime::run(
-                stack,
-                p.BT,
-                ble_idents,
-                esp_storage::FlashStorage::new(p.FLASH),
-            )
-            .expect("BLE task is spawned once"),
+            oxifoc_bridge::ble_runtime::run(stack, p.BT, ble_idents, flash)
+                .expect("BLE task is spawned once"),
         );
     }
+    #[cfg(feature = "wifi")]
+    let network = oxifoc_bridge::wifi::start(spawner, p.WIFI);
+    #[cfg(feature = "wifi")]
+    if let Some(network) = network {
+        transport::udp::start(spawner, stack, network);
+    }
     #[cfg(feature = "swd-probe")]
-    oxifoc_bridge::probe::start(spawner, stack, usb_ident, p.GPIO4, p.GPIO5, p.WIFI);
+    oxifoc_bridge::probe::start(spawner, stack, usb_ident, p.GPIO4, p.GPIO5, network);
+    #[cfg(feature = "ota")]
+    oxifoc_bridge::ota::start(spawner, stack, flash);
     defmt::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");
     loop {
         Timer::after_secs(60).await;
@@ -135,7 +140,7 @@ async fn main(spawner: Spawner) -> ! {
 fn spawn_bridge_task<S>(spawner: Spawner, task: SpawnToken<S>) {
     // Keep the whole forwarding path ahead of Wi-Fi and DAP. Prioritizing
     // SPI alone still leaves USB draining its queues alongside TCP.
-    #[cfg(feature = "swd-probe")]
+    #[cfg(feature = "wifi")]
     task.metadata().set_priority(1);
     spawner.spawn(task);
 }

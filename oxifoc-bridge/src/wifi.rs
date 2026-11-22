@@ -12,7 +12,7 @@ use static_cell::StaticCell;
 pub fn start(spawner: Spawner, wifi: WIFI<'static>) -> Option<Stack<'static>> {
     match configure(wifi) {
         Ok(Some(controller)) => {
-            static RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
+            static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
             let rng = Rng::new();
             let seed = (u64::from(rng.random()) << 32) | u64::from(rng.random());
             let (stack, runner) = embassy_net::new(

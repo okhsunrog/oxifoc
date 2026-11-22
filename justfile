@@ -3,7 +3,10 @@ set dotenv-load
 # oxifoc — FOC motor controller monorepo
 
 # Device firmware crates (excluded from workspace, different toolchain)
-bridge_features := "ble,swd-probe"
+bridge_features := "ble,swd-probe,ota"
+bridge_elf := "oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge"
+bridge_partitions := "oxifoc-bridge/partitions.csv"
+bridge_blank_otadata := "oxifoc-bridge/target/blank-otadata.bin"
 device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 
 # On-target test crates (run on hardware; compiled here so they don't rot)
@@ -300,11 +303,15 @@ test-replay-bridge capture resistance request:
 build-bridge features=bridge_features:
     cd oxifoc-bridge && cargo build --release --features {{quote(features)}}
 
-# Build and flash the C5 bridge without claiming the STM32 debug probe.
-# --restore-unwritten keeps the NVS partition (BLE bonds); probe-rs otherwise
-# erases it together with the bootloader block.
+# Package an app-only image for the inactive OTA slot.
+build-bridge-ota output features=bridge_features: (build-bridge features)
+    espflash save-image --chip esp32c5 --flash-size 4mb --partition-table {{bridge_partitions}} --target-app-partition ota_0 {{bridge_elf}} {{quote(output)}}
+
+# Install or recover the bridge in ota_0. Preserve the existing NVS bonds.
 flash-bridge features=bridge_features: (build-bridge features)
-    probe-rs download --verify --restore-unwritten --chip esp32c5 {{c5_probe_arg}} oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge
+    probe-rs download --verify --restore-unwritten --chip esp32c5 {{c5_probe_arg}} --idf-partition-table {{bridge_partitions}} --idf-target-app-partition ota_0 {{bridge_elf}}
+    uv run --no-project python -c 'from pathlib import Path; Path("{{bridge_blank_otadata}}").write_bytes(bytes([255]) * 8192)'
+    probe-rs download --verify --chip esp32c5 {{c5_probe_arg}} --binary-format bin --base-address 0x3e0000 {{bridge_blank_otadata}}
     probe-rs reset --chip esp32c5 {{c5_probe_arg}}
 
 # Build nRF52840 remote firmware.

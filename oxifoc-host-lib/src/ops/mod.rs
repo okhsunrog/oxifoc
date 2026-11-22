@@ -6,6 +6,7 @@
 //! presets, the detection sequence and its post-processing — lives here and
 //! is called by both. The front-ends keep only their own rendering.
 
+pub mod bridge_ota;
 pub mod config;
 pub mod detect;
 pub mod diag;

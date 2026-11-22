@@ -8,7 +8,6 @@ use embassy_embedded_hal::adapter::BlockingAsync;
 use esp_bootloader_esp_idf::partitions::{
     DataPartitionSubType, PARTITION_TABLE_MAX_LEN, PartitionType, read_partition_table,
 };
-use esp_storage::FlashStorage;
 use heapless::{String, Vec};
 use oxifoc_core::types::pairing::{BOND_NAME_LEN, BondEntry, BondRole, MAX_BONDS, PairingError};
 use sequential_storage::cache::{Cache, Uncached};
@@ -19,8 +18,8 @@ use trouble_host::prelude::{
     SecurityLevel,
 };
 
-type Flash = BlockingAsync<FlashStorage<'static>>;
-type Storage = MapStorage<u8, Flash, Cache<Uncached, Uncached, Uncached, u8>>;
+use crate::flash::Flash;
+type Storage = MapStorage<u8, BlockingAsync<Flash>, Cache<Uncached, Uncached, Uncached, u8>>;
 
 /// Flash record of one bond. Keys stay on the bridge; only [`BondEntry`] is
 /// reported to clients.
@@ -100,17 +99,17 @@ pub struct BondStore {
 
 impl BondStore {
     /// Open the map in the NVS partition and load every bond.
-    pub async fn open(mut flash: FlashStorage<'static>) -> Self {
+    pub async fn open(flash: Flash) -> Self {
         let mut table_buf = [0u8; PARTITION_TABLE_MAX_LEN];
-        let range = {
+        let range = flash.with(|flash| {
             let table =
-                read_partition_table(&mut flash, &mut table_buf).expect("partition table readable");
+                read_partition_table(flash, &mut table_buf).expect("partition table readable");
             let nvs = table
                 .find_partition(PartitionType::Data(DataPartitionSubType::Nvs))
                 .expect("partition table parses")
                 .expect("NVS partition present");
             nvs.offset()..nvs.offset() + nvs.len()
-        };
+        });
         info!("[bonds] NVS partition {:#x}..{:#x}", range.start, range.end);
         let mut store = Self {
             storage: MapStorage::new(

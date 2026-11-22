@@ -6,6 +6,7 @@
 //! is fully readable/writable field-by-field, and `record` captures fast
 //! telemetry into parquet files with full provenance metadata.
 
+mod bridge_ota;
 mod detect;
 mod diag;
 mod maneuver;
@@ -289,6 +290,11 @@ enum Command {
     Diag {
         #[command(subcommand)]
         action: diag::DiagAction,
+    },
+    /// Inspect or update the C5 bridge firmware over Ergot
+    Ota {
+        #[command(subcommand)]
+        action: bridge_ota::OtaCommand,
     },
     /// Arm or disarm the bridge’s wireless SWD probe over USB
     SwdProbe {
@@ -671,6 +677,9 @@ fn main() -> Result<()> {
     let runtime = start_host(cfg);
 
     let wait = Duration::from_secs(cli.wait_secs);
+    if let Command::Ota { action } = cli.command {
+        return bridge_ota::run(&runtime, action, wait, json);
+    }
     if let Command::SwdProbe { action } = cli.command {
         return swd_probe::run(&runtime, action, wait, json);
     }
@@ -700,7 +709,7 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
-        Command::List | Command::SwdProbe { .. } => unreachable!(), // Handled above
+        Command::List | Command::SwdProbe { .. } | Command::Ota { .. } => unreachable!(), // Handled above
         Command::Info => {
             let info = record::latest_hw_info(&runtime)
                 .context("no hardware info received — device not connected?")?;

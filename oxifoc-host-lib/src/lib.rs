@@ -22,12 +22,14 @@ use ergot::net_stack::NetStackHandle;
 use ergot::well_known::ErgotDefmtRxOwnedTopic;
 use oxifoc_core::delivery::{ReliableExt, RetryPolicy};
 use oxifoc_core::foc::phase::PhaseSource;
+use oxifoc_core::icd::UDP_MTU;
 use oxifoc_core::icd::{
     ConfigEndpoint, DetectEndpoint, FaultTopic, MotorEndpoint, SlowTelemetryEndpoint,
     TelemetryConfig,
 };
 use oxifoc_core::icd::{FaultEndpoint, HardwareInfoEndpoint, LIVENESS_TIMEOUT_MS};
 use oxifoc_core::timer::Timer;
+use oxifoc_core::types::bridge_ota::{OtaRequest, OtaResponse};
 use oxifoc_core::types::swd_probe::{ProbeRequest, ProbeResponse};
 use oxifoc_core::types::{
     ConfigApply, ConfigGroupId, ConfigPersist, ConfigResponse, DetectRequest, DetectResponse,
@@ -370,6 +372,12 @@ pub enum HostCommand {
     /// Read the bridge's link diagnostics (`BridgeDiagEndpoint`); needs only
     /// the link, not a verified controller.
     BridgeDiag(BridgeDiagSender),
+    /// Send one firmware upload request to the bridge.
+    BridgeOta(
+        Option<Address>,
+        Box<OtaRequest>,
+        tokio::sync::oneshot::Sender<Result<(Address, OtaResponse)>>,
+    ),
     /// Arm or disarm a wireless SWD session on the C5 bridge.
     SwdProbe(
         ProbeRequest,
@@ -770,7 +778,7 @@ async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
         }
         TransportConfig::Udp { host, port } => {
             let state_notify = Arc::new(ergot::toolkits::tokio_stream::WaitQueue::new());
-            let (stack, queue) = transport::udp::new_stack(ERGOT_QUEUE_SIZE, ERGOT_MTU);
+            let (stack, queue) = transport::udp::new_stack(ERGOT_QUEUE_SIZE, UDP_MTU);
             let register_fn = {
                 let stack = stack.clone();
                 let notify = state_notify.clone();
@@ -928,6 +936,10 @@ where
                                     bridge_request::<oxifoc_core::icd::BridgeDiagEndpoint, _>(&stack, &())
                                         .await,
                                 );
+                                continue;
+                            }
+                            HostCommand::BridgeOta(target, req, reply) => {
+                                let _ = reply.send(ops::bridge_ota::request_on_link(&stack, target, &req).await);
                                 continue;
                             }
                             HostCommand::SwdProbe(req, reply) => {
@@ -1141,6 +1153,9 @@ fn reject_unverified_command(cmd: HostCommand) {
             let _ = reply.send(Err(error()));
         }
         HostCommand::BridgeDiag(reply) => {
+            let _ = reply.send(Err(error()));
+        }
+        HostCommand::BridgeOta(_, _, reply) => {
             let _ = reply.send(Err(error()));
         }
         HostCommand::SwdProbe(_, reply) => {
@@ -1459,6 +1474,9 @@ async fn handle_non_motor_command<NS>(
                 )
                 .await;
             let _ = reply_tx.send(res.map_err(|e| anyhow::anyhow!("{e:?}")));
+        }
+        HostCommand::BridgeOta(target, req, reply_tx) => {
+            let _ = reply_tx.send(ops::bridge_ota::request_on_link(ns, target, &req).await);
         }
         HostCommand::SwdProbe(req, reply_tx) => {
             let _ = reply_tx.send(ops::swd_probe::request_on_link(ns, &req).await);

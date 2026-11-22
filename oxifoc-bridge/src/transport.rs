@@ -10,6 +10,8 @@ use ergot::{
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 
 pub mod spi;
+#[cfg(feature = "wifi")]
+pub mod udp;
 pub mod usb;
 pub const MTU: u16 = 2304;
 pub const BLE_MTU: u16 = 505;
@@ -17,6 +19,7 @@ pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
 // About 200 ms of 20-kHz Packed28 traffic, including framing and control.
 // Host scheduling jitter is buffered on C5, without consuming STM32 SRAM.
 pub type UsbQueue = kit::Queue<131072, AtomicCoord>;
+pub type WifiQueue = kit::Queue<4096, AtomicCoord>;
 /// Eight 505-byte notifications: a burst of fault and status replies while
 /// telemetry streams must not drop frames at the bridge.
 pub type BleQueue = kit::Queue<4096, AtomicCoord>;
@@ -81,6 +84,10 @@ impl<S: ergot::interface_manager::InterfaceSink> ergot::interface_manager::Inter
         self.count(result)
     }
 }
+pub struct WifiInterface;
+impl Interface for WifiInterface {
+    type Sink = framed_stream::Sink<&'static WifiQueue>;
+}
 pub struct BleNusInterface;
 pub struct UsbInterface;
 impl Interface for UsbInterface {
@@ -94,10 +101,13 @@ ergot::multi_interface! {
         Spi(SpiInterface),
         Usb(UsbInterface),
         Ble(BleNusInterface),
+        Wifi(WifiInterface),
     }
 }
-pub type Stack =
-    NetStack<CriticalSectionRawMutex, Router<BridgeInterface, esp_hal::rng::Rng, 4, 8>>;
+pub type Stack = NetStack<
+    CriticalSectionRawMutex,
+    Router<BridgeInterface, esp_hal::rng::Rng, { 4 + cfg!(feature = "wifi") as usize }, 8>,
+>;
 pub static SPI_OUTQ: SpiQueue = kit::Queue::new();
 pub static USB_OUTQ: UsbQueue = kit::Queue::new();
 pub static BLE_OUTQ: [BleQueue; BLE_LINKS] = [const { kit::Queue::new() }; BLE_LINKS];

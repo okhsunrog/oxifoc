@@ -8,6 +8,8 @@ use core::future::pending;
 use core::pin::pin;
 use core::sync::atomic::Ordering;
 
+use crate::flash::Flash;
+
 use crate::{
     ble_nus::NusServer,
     bonds::{BondStore, StoredBond},
@@ -56,7 +58,7 @@ pub async fn run(
     stack: &'static transport::Stack,
     bt: esp_hal::peripherals::BT<'static>,
     ble_idents: [u8; transport::BLE_LINKS],
-    flash: esp_storage::FlashStorage<'static>,
+    flash: Flash,
 ) {
     // ========== BLE setup ==========
     // Maximum TX power: the board is powered and the link carries the throttle.

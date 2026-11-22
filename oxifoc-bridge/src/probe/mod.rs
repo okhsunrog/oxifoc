@@ -12,7 +12,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read, Write};
 use ergot::socket::HeaderMessage;
-use esp_hal::peripherals::{GPIO4, GPIO5, WIFI};
+use esp_hal::peripherals::{GPIO4, GPIO5};
 use oxifoc_core::{
     icd::SwdProbeEndpoint,
     types::swd_probe::{MAX_ARM_MINUTES, ProbeRequest, ProbeResponse},
@@ -23,7 +23,6 @@ use crate::transport::{Stack, spi::SPI_LINK_SLOTS};
 mod framing;
 mod packet;
 mod pins;
-mod wifi;
 
 use framing::{HEADER_LEN, PACKET_SIZE, PORT};
 use packet::Action;
@@ -43,10 +42,9 @@ pub fn start(
     usb_ident: u8,
     clk: GPIO4<'static>,
     dio: GPIO5<'static>,
-    wifi: WIFI<'static>,
+    stack: Option<NetStack<'static>>,
 ) {
     let pins = Pins::new(clk, dio);
-    let stack = wifi::start(spawner, wifi);
     spawner.spawn(control(router, usb_ident, stack).expect("probe control task is spawned once"));
     if let Some(stack) = stack {
         spawner.spawn(serve(stack, pins).expect("probe task is spawned once"));

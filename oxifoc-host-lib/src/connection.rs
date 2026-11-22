@@ -483,19 +483,27 @@ where
     }
 }
 
-/// True when a bridge on the link serves its own pairing endpoint.
+/// True when a bridge replies on the link, even with the controller absent.
 async fn bridge_reachable<NS>(stack: &NS) -> bool
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
     use ergot::traits::Endpoint as _;
-    resolve_endpoint_addr(
+    let pairing = resolve_endpoint_addr(
         stack,
         oxifoc_core::icd::PairingEndpoint::REQ_KEY.to_bytes(),
         RESOLVE_TIMEOUT,
-    )
-    .await
-    .is_some()
+    );
+    let ota = resolve_endpoint_addr(
+        stack,
+        oxifoc_core::icd::BridgeOtaEndpoint::REQ_KEY.to_bytes(),
+        RESOLVE_TIMEOUT,
+    );
+    tokio::pin!(pairing, ota);
+    tokio::select! {
+        value = &mut pairing => value.is_some() || ota.await.is_some(),
+        value = &mut ota => value.is_some() || pairing.await.is_some(),
+    }
 }
 
 /// Wait `delay` on the current link. `Some(true)` if it is still Active,
