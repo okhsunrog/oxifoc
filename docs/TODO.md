@@ -13,6 +13,13 @@ preserves older review findings and experimental detail.
 - [ ] Tune velocity PI and acceleration with drivetrain inertia and load.
   Compare actual speed against an independent reference where the estimator
   is under test.
+- [ ] Smooth velocity control below about 50 electrical rad/s on Hall
+  feedback. With a regeneration allowance the unloaded bench motor holds
+  the mean speed at +40 but still stops and surges about five times a
+  second; the pauses fall in four of the six Hall sectors. Softer or
+  stiffer PI gains and open-loop commutation do not remove them, and the
+  HFI source gives no torque in velocity control. Try position-dependent
+  torque feedforward in `sim_trace` first, then HFI.
 - [ ] Reproduce the historical sensorless torque oscillation with the
   current firmware before retuning the PLL, voltage model or λ adaptation.
   See the [older sensorless bench evidence](archive/backlog-through-2026-11-13.md#sensorless-startup-see-notesstartup-and-samplingmd).

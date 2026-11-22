@@ -10,7 +10,17 @@ pairs, and choose Hall or sensorless operation.
 Enter **Input current limit** and **Regenerative current limit** in amps.
 Both describe the connected DC source. Set regeneration to zero if the
 supply cannot sink current. Confirm these limits again when changing from a
-bench supply to a battery. The motor current rating is estimated separately
+bench supply to a battery.
+
+At zero the velocity loop cannot brake, and it withholds drive torque while
+the rotor rolls backwards, because torque against the rotation counts as
+braking. At low speed this shows as surging and a mean speed below the
+target. An allowance smaller than the controller's own supply current does
+not reach the source and restores both, for example on a 24 V bench supply:
+
+```sh
+just cli-bridge config set current-limits bus_regen_max=0.02
+``` The motor current rating is estimated separately
 from the class's allowed winding loss and the measured resistance.
 
 The interactive CLI asks for any missing source values. In scripts,
