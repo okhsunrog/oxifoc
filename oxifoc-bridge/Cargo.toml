@@ -101,6 +101,10 @@ embedded-test = { version = "0.7.3", features = [
   "external-executor",
 ] }
 
+# TCP_MIN_RTO_MS; see ../vendor/smoltcp/PATCHES.md.
+[patch.crates-io]
+smoltcp = { path = "../vendor/smoltcp" }
+
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
 # The default debug profile is too slow and too big for resource-constrained devices.

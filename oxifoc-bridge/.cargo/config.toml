@@ -7,6 +7,10 @@ TROUBLE_HOST_DEFAULT_PACKET_POOL_MTU = "512"
 ESP_RADIO_CONFIG_WIFI_MAX_BURST_SIZE = "10"
 # embassy-net counts the Ethernet header in the driver's MTU.
 ESP_RADIO_CONFIG_WIFI_MTU = "1514"
+# The Ergot TCP socket buffers about 90 ms of native-rate telemetry; a
+# retransmission must not wait the RFC 6298 second. 50 ms stays above the
+# host's 40 ms delayed acknowledgement.
+SMOLTCP_TCP_MIN_RTO_MS = "50"
 
 [build]
 rustflags = [
