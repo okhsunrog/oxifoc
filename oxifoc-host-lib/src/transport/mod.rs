@@ -49,7 +49,7 @@ impl TransportType {
     pub fn raw_block_limit(&self) -> u16 {
         match self {
             Self::Ble => oxifoc_core::icd::raw_block_limit(ble::BLE_MTU),
-            Self::Udp => oxifoc_core::icd::raw_block_limit(oxifoc_core::icd::UDP_MTU),
+            Self::Udp => oxifoc_core::icd::raw_block_limit(oxifoc_core::udp_link::FRAME_MTU),
             _ => oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES as u16,
         }
     }

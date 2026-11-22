@@ -44,7 +44,7 @@ fn configure(wifi: WIFI<'static>) -> Result<Option<WifiController<'static>>, Wif
 
     // Reserve headroom for association, BLE connections and in-flight frames
     // without moving the existing 64 KiB radio heap onto the main stack's RAM.
-    esp_alloc::heap_allocator!(size: 4 * 1024);
+    esp_alloc::heap_allocator!(size: 12 * 1024);
     let station = StationConfig::default()
         .with_ssid(ssid.try_into()?)
         .with_authentication(AuthenticationMethodConfig::Wpa2Personal(

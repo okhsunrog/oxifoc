@@ -16,8 +16,8 @@ pub mod usb;
 pub const MTU: u16 = 2304;
 pub const BLE_MTU: u16 = 505;
 pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
-// Wi-Fi builds with a configured Ergot peer reserve RAM for a UDP buffer
-// and replay history. The USB-only budget covers about 200 ms at 20 kHz.
+// Wi-Fi builds with a configured Ergot peer reserve RAM for the network
+// queue and datagram history. The USB-only budget covers about 200 ms at 20 kHz.
 const USB_QUEUE_BYTES: usize =
     if cfg!(feature = "wifi") && option_env!("OXIFOC_BRIDGE_ERGOT_PEER").is_some() {
         44 * 1024
@@ -25,7 +25,7 @@ const USB_QUEUE_BYTES: usize =
         124 * 1024
     };
 pub type UsbQueue = kit::Queue<USB_QUEUE_BYTES, AtomicCoord>;
-pub type WifiQueue = kit::Queue<{ 32 * 1024 }, AtomicCoord>;
+pub type WifiQueue = kit::Queue<{ 24 * 1024 }, AtomicCoord>;
 pub type BleQueue = kit::Queue<1024, AtomicCoord>;
 /// Simultaneous BLE centrals, e.g. the remote and a phone or laptop. Each link
 /// is its own ergot interface with its own outbound queue.

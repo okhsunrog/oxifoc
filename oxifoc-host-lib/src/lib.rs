@@ -854,23 +854,14 @@ fn unpack_addr(v: u32) -> Address {
     }
 }
 
-fn spawn_protocol_tasks<NS>(
-    stack: &NS,
-    ctx: BackendCtx,
-    recover_udp: bool,
-) -> tokio::task::JoinHandle<()>
+fn spawn_protocol_tasks<NS>(stack: &NS, ctx: BackendCtx) -> tokio::task::JoinHandle<()>
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
-    raw_telemetry::spawn_ergot_subscriber(
-        stack,
-        ctx.raw_telemetry.clone(),
-        ctx.cancel.clone(),
-        recover_udp,
-    );
+    raw_telemetry::spawn_ergot_subscriber(stack, ctx.raw_telemetry.clone(), ctx.cancel.clone());
     spawn_fault_topic_subscriber(
         stack,
         ctx.fault_sink.clone(),

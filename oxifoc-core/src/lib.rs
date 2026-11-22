@@ -193,6 +193,8 @@ pub mod velocity_telemetry;
 /// - Re-exports all types from the `types` module
 #[cfg(feature = "icd")]
 pub mod icd;
+#[cfg(feature = "icd")]
+pub mod udp_link;
 
 /// Delivery semantics (requires `delivery` feature)
 ///

@@ -92,7 +92,8 @@ for its 1024-byte MTU.
 The bridge adds `cmd/bridge_ota` for authenticated application updates
 over BLE and Ergot UDP.
 
-The bridge can recover missing UDP telemetry through `bridge/telemetry_replay`.
+The host and C5 can negotiate sequence numbers and replay for Ergot
+datagrams from the bridge to the host.
 
 The C5 bridge adds `cmd/swd_probe` for time-limited arming and disarming
 of wireless SWD over USB Ergot or with authentication over UDP and BLE.

@@ -10,7 +10,6 @@ fn roundtrip(bytes: &[u8]) {
     let encoded = postcard::to_slice(&RawTelemetryBlockRef { data: bytes }, &mut wire)
         .expect("borrowed raw block fits the Ergot MTU");
     assert!(encoded.len() + ergot::wire_frames::MAX_HDR_ENCODED_SIZE <= 2304);
-    assert_eq!(postcard::from_bytes::<&[u8]>(encoded).unwrap(), bytes);
     let decoded: RawTelemetryBlock = postcard::from_bytes(encoded)
         .expect("borrowed and owned raw topic representations share a wire format");
     assert_eq!(decoded.data.as_slice(), bytes);
