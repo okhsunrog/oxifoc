@@ -7,6 +7,8 @@
 pub mod model;
 
 use core::cell::RefCell;
+
+use crate::isr_log;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use critical_section::Mutex as CriticalSectionMutex;
@@ -906,8 +908,7 @@ where
         };
         // NaN/inf payloads die here, not in the PI loop.
         if !cmd.is_sane() {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("Dropping non-finite driver command");
+            isr_log::raise(isr_log::Event::NonFiniteCommand);
             if let Some(request) = protocol_request {
                 signal_motor_completion(request, MotorCommandOutcome::RejectedInvalid);
             }
@@ -1154,16 +1155,14 @@ where
                 .boot_current_offset_pending
                 .load(Ordering::Relaxed)
             {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("Mode rejected: boot current calibration active");
+                isr_log::raise(isr_log::Event::RejectedBootCalibration);
                 if let Some(request) = protocol_request {
                     signal_motor_completion(request, MotorCommandOutcome::RejectedSafety);
                 }
                 continue;
             }
             if mode != ControlMode::Stopped {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("Mode rejected: current-offset calibration active");
+                isr_log::raise(isr_log::Event::RejectedOffsetCalibration);
                 if let Some(request) = protocol_request {
                     signal_motor_completion(request, MotorCommandOutcome::RejectedSafety);
                 }
@@ -1210,8 +1209,7 @@ where
                     || model_apply_pending()
                     || ISR_FLAGS.drive_setup_recovery.load(Ordering::Acquire))
             {
-                #[cfg(feature = "defmt")]
-                defmt::warn!("Motor start rejected: flash operation in flight");
+                isr_log::raise(isr_log::Event::RejectedFlashPending);
                 return MotorCommandOutcome::RejectedSafety;
             }
 
@@ -1260,8 +1258,7 @@ where
             // sensor is uncalibrated (can't current-brake).
             if mode == ControlMode::Brake && foc.torque_speed().abs() > BRAKE_ENTRY_MAX_SPEED {
                 if foc.enter_brake_ramp() {
-                    #[cfg(feature = "defmt")]
-                    defmt::info!("Brake at speed: ramping to standstill first");
+                    isr_log::raise(isr_log::Event::BrakeRampAtSpeed);
                     // The stop sequencer drives PWM even when the previous
                     // driver mode was Stopped. Keep flash/config gates busy
                     // for the entire ramp and its parking-brake terminal.
@@ -1269,8 +1266,7 @@ where
                     state.drive_ownership.release();
                     return MotorCommandOutcome::Applied;
                 } else {
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!("Brake rejected: at speed and current sensor uncalibrated");
+                    isr_log::raise(isr_log::Event::BrakeRejectedUncalibrated);
                     return MotorCommandOutcome::RejectedSafety;
                 }
             }
@@ -1287,8 +1283,7 @@ where
                     mode,
                     ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
                 ) {
-                    #[cfg(feature = "defmt")]
-                    defmt::warn!("Mode rejected: failsafe latched, acknowledge with Stopped first");
+                    isr_log::raise(isr_log::Event::RejectedFailsafeLatched);
                     return MotorCommandOutcome::RejectedSafety;
                 }
                 // The safe-mode command IS the acknowledgement — released
@@ -1352,11 +1347,10 @@ where
         )
     {
         // Edge-detect on the failsafe not yet running: this gate re-fires
-        // every cycle while the link stays down and would spam the ISR log.
-        // ISR log disabled 2026-11-14, see the CommTimeout note in this file.
-        // if !foc.failsafe_active() {
-        //     warn!("failsafe: host link lost while running");
-        // }
+        // every cycle while the link stays down.
+        if !foc.failsafe_active() {
+            isr_log::raise(isr_log::Event::FailsafeLinkLost);
+        }
         foc.enter_failsafe();
     }
 
@@ -1519,18 +1513,12 @@ where
     {
         // Log the raise edge only, and say which detector fired — the two have
         // different bench remedies (host affirm cadence vs transport drop).
-        // ISR log disabled 2026-11-14: each defmt message costs about 15 us
-        // inside the control ISR, and this path emits up to three in one
-        // cycle (a 91 us body was recorded at failsafe entry, against a
-        // 66.7 us period). The event stays visible in the fault registry.
-        // To restore, uncomment or move to a deferred task-side logger;
-        // scripts/benchsuite.py matches this text.
-        // if !fault_registry.has_category(FaultCategory::CommTimeout) {
-        //     warn!(
-        //         "CommTimeout raised: deadman_expired={} link_lost={}",
-        //         deadman_expired, link_lost_unacked
-        //     );
-        // }
+        if !fault_registry.has_category(FaultCategory::CommTimeout) {
+            isr_log::raise(isr_log::Event::CommTimeout {
+                deadman_expired,
+                link_lost: link_lost_unacked,
+            });
+        }
         fault_registry.set(f);
     }
 
@@ -1579,10 +1567,9 @@ where
             excitation::DONE_WAKER.wake();
         }
         // Edge log: safe_off() latches Stopped, so this fires once per trip.
-        // ISR log disabled 2026-11-14: it also ran before the gate cut below.
-        // if !matches!(driver.mode(), ControlMode::Stopped) {
-        //     error!("KILL fault active: cutting gate drive");
-        // }
+        if !matches!(driver.mode(), ControlMode::Stopped) {
+            isr_log::raise(isr_log::Event::KillCutGate);
+        }
         // Cut the gate drive NOW, re-asserted every cycle the Kill stays
         // latched. `set_mode(Stopped)` alone only floats the bridge on the
         // next step() in Stopped mode, which the early return below skips —
@@ -1616,10 +1603,9 @@ where
             ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
         )
     {
-        // ISR log disabled 2026-11-14, see the CommTimeout note in this file.
-        // if !driver.failsafe_active() {
-        //     warn!("failsafe: stopping-class fault active");
-        // }
+        if !driver.failsafe_active() {
+            isr_log::raise(isr_log::Event::FailsafeStoppingFault);
+        }
         driver.enter_failsafe();
     }
 
@@ -1731,13 +1717,11 @@ where
                 && let Some(f) = F::from_category(FaultCategory::OverCurrent)
             {
                 fault_registry.set(f);
-                #[cfg(feature = "defmt")]
-                defmt::error!(
-                    "SW overcurrent FAULT: ia={}, ib={}, ic={}",
-                    telem.ia.value,
-                    telem.ib.value,
-                    telem.ic.value
-                );
+                isr_log::raise(isr_log::Event::SwOvercurrent {
+                    ia: telem.ia.value,
+                    ib: telem.ib.value,
+                    ic: telem.ic.value,
+                });
             }
             Some(telem)
         }
@@ -1749,8 +1733,7 @@ where
                 cancel_detection();
                 driver.end_commissioning();
             }
-            #[cfg(feature = "defmt")]
-            defmt::error!("FOC step error: {}", _e);
+            isr_log::raise(isr_log::Event::StepError(_e));
             if matches!(_e, StepError::Overcurrent) {
                 // The driver tripped its dq-magnitude protection (and cut
                 // PWM itself). Surface it: latch the fault so the host sees

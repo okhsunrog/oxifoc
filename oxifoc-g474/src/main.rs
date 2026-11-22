@@ -75,6 +75,7 @@ async fn main(spawner: Spawner) {
 
     // ========== STEP 3: RTT (defmt sink) ==========
     transport::init_defmt_rtt();
+    spawner.spawn(defmt::unwrap!(isr_log_task()));
 
     // ========== STEP 4: UART (LPUART1 VCP) + USB transports ==========
     #[cfg(feature = "transport-uart")]
@@ -185,4 +186,10 @@ async fn main(spawner: Spawner) {
             }
         }
     }
+}
+
+/// Print the log events the control ISR raised (see `oxifoc_core::isr_log`).
+#[embassy_executor::task]
+async fn isr_log_task() {
+    oxifoc_core::isr_log::run::<oxifoc_core::timer::EmbassyTimer>().await;
 }

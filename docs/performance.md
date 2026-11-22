@@ -327,9 +327,11 @@ into `foc-hot.x` and record the measurement in the commit message.
   and say what moved in the commit message, as AGENTS.md requires
   (`just isr-compare`, then `isr_placement.py diff --function NAME`). Treat
   the counts as a hint and confirm a timing claim on the bench.
-- Do not log in the ISR. A defmt message costs about 15 µs there; record an
-  event in shared state and log it from a task. Five such messages on the
-  failsafe path once produced a 91 µs body.
+- Do not call defmt in the ISR; raise an `oxifoc_core::isr_log` event and
+  let its task print it. Even with the deferred logger a message costs about
+  1 040 cycles in the ISR (serialization, queue grant, worker wake-up): the
+  three failsafe-entry messages took that cycle from 6 930 to 10 050 cycles,
+  against 7 270 with events. Repeats of an event within 10 ms print once.
 - Counters only the ISR writes do not need read-modify-write atomics: a
   relaxed load and store is enough, while `fetch_*` compiles to an
   LDREX/STREX loop.
@@ -338,9 +340,12 @@ into `foc-hot.x` and record the measurement in the commit message.
   SRAM2 filler (`rust-nm` check above).
 - After a substantial change to a pinned function, re-sweep its residue; after
   adding a new hot function, consider pinning it.
-- Keep work that does not need native rate on the slot frame, and mark rare
-  branches `#[cold] #[inline(never)]`; marking a whole native-rate service cold
-  made it slower.
+- Keep work that does not need native rate on the slot frame and move rare
+  branches out of line with `#[inline(never)]`. Measure before adding
+  `#[cold]`: it changes block layout around every call site. Cold on
+  `isr_log::raise` made each command cycle about 450 cycles slower (seven
+  call sites in `process_commands`), and marking a whole native-rate service
+  cold made it slower too.
 - Report flash and RAM deltas for MK5, CF2 and G474.
 
 ## Known limits and open work

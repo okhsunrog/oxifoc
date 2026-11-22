@@ -103,6 +103,7 @@ async fn main(spawner: Spawner) {
     transport::init_defmt();
 
     spawner.spawn(defmt::unwrap!(logging::worker()));
+    spawner.spawn(defmt::unwrap!(isr_log_task()));
 
     // ========== STEP 4: Initialize LEDs ==========
     let leds = hardware::peripherals::init_status_leds(p.TIM8, p.PB0, p.PB1);
@@ -281,6 +282,12 @@ async fn main(spawner: Spawner) {
 }
 
 // ========== Background Tasks ==========
+
+/// Print the log events the control ISR raised (see `oxifoc_core::isr_log`).
+#[embassy_executor::task]
+async fn isr_log_task() {
+    oxifoc_core::isr_log::run::<oxifoc_core::timer::EmbassyTimer>().await;
+}
 
 /// Preserve the 50-ms heartbeat and fault indication, capped at 10% on duty.
 #[embassy_executor::task]

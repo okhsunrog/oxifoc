@@ -213,6 +213,9 @@ pub mod delivery;
 #[cfg(feature = "runtime")]
 pub mod state;
 
+/// ISR log events, printed from a task
+pub mod isr_log;
+
 /// Dynamic PMSM motor simulation (requires `virtual-motor` feature)
 #[cfg(feature = "virtual-motor")]
 pub mod virtual_motor;

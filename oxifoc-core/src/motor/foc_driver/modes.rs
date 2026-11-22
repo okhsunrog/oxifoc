@@ -165,10 +165,10 @@ where
                 let start = i_mag.min(limit);
                 self.park_iq = Some(if omega.is_positive() { -start } else { start });
             } else {
-                warn!(
-                    "park brake: short current {:?} A past the {:?} A limit without an angle, releasing",
-                    i_mag, limit
-                );
+                crate::isr_log::raise(crate::isr_log::Event::ParkBrakeReleased {
+                    current: i_mag.value,
+                    limit: limit.value,
+                });
                 self.pwm.disable();
                 self.pwm_off = true;
                 self.mode = ControlMode::Stopped;

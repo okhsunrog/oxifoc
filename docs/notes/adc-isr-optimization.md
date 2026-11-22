@@ -106,6 +106,9 @@ Five failsafe/Kill defmt messages were commented out. Each cost about 15 us,
 and several could occur together. A deliberate 0.4-s host pause reduced the
 observed maximum from 91.0 to 52.3 us. The fault registry retains the event.
 Other rare ISR messages remain; not every exceptional path has a WCET bound.
+They came back on November 21 as `isr_log` events, printed by a task; the
+deferred logger had brought a message down to about 1 040 cycles, still too
+much for the failsafe-entry cycle (see [performance](../performance.md)).
 
 ### Numerical contracts
 

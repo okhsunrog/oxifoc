@@ -338,8 +338,9 @@ impl ProtectionMonitor {
                 && let Some(f) = F::from_category(FaultCategory::OverVoltage)
             {
                 registry.set(f);
-                #[cfg(feature = "defmt")]
-                defmt::error!("OverVoltage FAULT: vbus = {} V (integrated)", sample.vbus);
+                crate::isr_log::raise(crate::isr_log::Event::OverVoltage {
+                    vbus: sample.vbus.value,
+                });
             }
         } else {
             self.ov_integral *= decay;
@@ -352,8 +353,9 @@ impl ProtectionMonitor {
                 && let Some(f) = F::from_category(FaultCategory::UnderVoltage)
             {
                 registry.set(f);
-                #[cfg(feature = "defmt")]
-                defmt::error!("UnderVoltage FAULT: vbus = {} V (integrated)", sample.vbus);
+                crate::isr_log::raise(crate::isr_log::Event::UnderVoltage {
+                    vbus: sample.vbus.value,
+                });
             }
         } else {
             self.uv_integral *= decay;
@@ -376,12 +378,10 @@ impl ProtectionMonitor {
             && let Some(f) = F::from_category(FaultCategory::OverTemp)
         {
             registry.set(f);
-            #[cfg(feature = "defmt")]
-            defmt::error!(
-                "OverTemp FAULT (fet_over={}, motor_over={})",
+            crate::isr_log::raise(crate::isr_log::Event::OverTemp {
                 fet_over,
-                motor_over
-            );
+                motor_over,
+            });
         }
 
         // --- Graduated derating (decimated) ---
