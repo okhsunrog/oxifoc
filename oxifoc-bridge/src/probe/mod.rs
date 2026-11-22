@@ -12,10 +12,16 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read, Write};
 use ergot::socket::HeaderMessage;
-use esp_hal::peripherals::{GPIO4, GPIO5};
+use esp_hal::{
+    peripherals::{GPIO4, GPIO5},
+    rng::Rng,
+};
 use oxifoc_core::{
     icd::SwdProbeEndpoint,
-    types::swd_probe::{MAX_ARM_MINUTES, ProbeRequest, ProbeResponse},
+    types::{
+        bridge_auth::{Nonce, parse_key},
+        swd_probe::{MAX_ARM_MINUTES, ProbeOperation, ProbeRequest, ProbeResponse},
+    },
 };
 
 use crate::transport::{Stack, spi::SPI_LINK_SLOTS};
@@ -31,6 +37,7 @@ use pins::Pins;
 const PAYLOAD_LEN: usize = PACKET_SIZE as usize;
 const SPI_ACTIVE_WINDOW: Duration = Duration::from_secs(1);
 const ACTIVE_SPI_PACKET_INTERVAL: Duration = Duration::from_millis(20);
+const CHALLENGE_LIFETIME: Duration = Duration::from_secs(15);
 
 // None disarms. Sending a new deadline replaces any existing listener or
 // connection. The request handler is the only writer.
@@ -59,36 +66,85 @@ async fn control(router: &'static Stack, usb_ident: u8, stack: Option<NetStack<'
     let server = pin!(server);
     let mut handle = server.attach();
     let usb_net = router.manage_profile(|p| p.net_id_of(usb_ident));
+    let key = option_env!("OXIFOC_BRIDGE_OTA_KEY").and_then(parse_key);
+    let mut challenge: Option<(Nonce, Instant)> = None;
 
     loop {
         let _ = handle
             .serve_full(async |msg: &HeaderMessage<ProbeRequest>| {
-                if usb_net != Some(msg.hdr.src.network_id) {
-                    return ProbeResponse::UsbRequired;
-                }
-                match msg.t {
-                    ProbeRequest::Disarm => {
-                        ARM.signal(None);
-                        ProbeResponse::Disarmed
+                let now = Instant::now();
+                let local = usb_net == Some(msg.hdr.src.network_id);
+                let operation = match msg.t {
+                    ProbeRequest::Arm { minutes } if local => ProbeOperation::Arm { minutes },
+                    ProbeRequest::Disarm if local => ProbeOperation::Disarm,
+                    ProbeRequest::Arm { .. } | ProbeRequest::Disarm => {
+                        return ProbeResponse::UsbRequired;
                     }
-                    ProbeRequest::Arm { minutes } => {
-                        if !(1..=MAX_ARM_MINUTES).contains(&minutes) {
-                            return ProbeResponse::InvalidDuration;
+                    ProbeRequest::Challenge => {
+                        if key.is_none() {
+                            return ProbeResponse::AuthorizationUnavailable;
                         }
-                        let Some(config) = stack.and_then(|net| net.config_v4()) else {
+                        if stack.and_then(|net| net.config_v4()).is_none() {
                             return ProbeResponse::WifiUnavailable;
-                        };
-                        ARM.signal(Some(
-                            Instant::now() + Duration::from_secs(u64::from(minutes) * 60),
-                        ));
-                        ProbeResponse::Armed {
-                            ipv4: config.address.address().octets(),
-                            minutes,
                         }
+                        let current = challenge.filter(|&(_, expires)| now < expires);
+                        let (nonce, expires) = current.unwrap_or_else(|| {
+                            let mut nonce = [0; 16];
+                            Rng::new().read(&mut nonce);
+                            (nonce, now + CHALLENGE_LIFETIME)
+                        });
+                        challenge = Some((nonce, expires));
+                        return ProbeResponse::Challenge { nonce };
                     }
-                }
+                    ProbeRequest::Authenticated {
+                        operation,
+                        nonce,
+                        tag,
+                    } => {
+                        let Some(key) = &key else {
+                            return ProbeResponse::AuthorizationUnavailable;
+                        };
+                        if !challenge
+                            .is_some_and(|(expected, expires)| expected == nonce && now < expires)
+                            || !operation.verify(key, nonce, &tag)
+                        {
+                            return ProbeResponse::Unauthorized;
+                        }
+                        challenge = None;
+                        operation
+                    }
+                };
+                apply(operation, stack, now)
             })
             .await;
+    }
+}
+
+fn apply(
+    operation: ProbeOperation,
+    stack: Option<NetStack<'static>>,
+    now: Instant,
+) -> ProbeResponse {
+    match operation {
+        ProbeOperation::Disarm => {
+            ARM.signal(None);
+            log::info!("Wireless SWD disarmed");
+            ProbeResponse::Disarmed
+        }
+        ProbeOperation::Arm { minutes } => {
+            if !(1..=MAX_ARM_MINUTES).contains(&minutes) {
+                return ProbeResponse::InvalidDuration;
+            }
+            let Some(config) = stack.and_then(|net| net.config_v4()) else {
+                return ProbeResponse::WifiUnavailable;
+            };
+            ARM.signal(Some(now + Duration::from_secs(u64::from(minutes) * 60)));
+            log::info!("Wireless SWD armed for {minutes} min");
+            ProbeResponse::Armed {
+                ipv4: config.address.address().octets(),
+                minutes,
+            }
+        }
     }
 }
 

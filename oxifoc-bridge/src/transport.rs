@@ -16,10 +16,11 @@ pub mod usb;
 pub const MTU: u16 = 2304;
 pub const BLE_MTU: u16 = 505;
 pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
-// About 200 ms of 20-kHz Packed28 traffic, including framing and control.
-// Host scheduling jitter is buffered on C5, without consuming STM32 SRAM.
-pub type UsbQueue = kit::Queue<131072, AtomicCoord>;
-pub type WifiQueue = kit::Queue<4096, AtomicCoord>;
+// About 200 ms of 20-kHz Packed28 traffic. Limit this queue to 124 KiB
+// to leave main stack room for BLE pairing and the text logger.
+pub type UsbQueue = kit::Queue<126976, AtomicCoord>;
+// Buffer about 24 ms of native-rate telemetry while Wi-Fi yields the radio.
+pub type WifiQueue = kit::Queue<10240, AtomicCoord>;
 /// Eight 505-byte notifications: a burst of fault and status replies while
 /// telemetry streams must not drop frames at the bridge.
 pub type BleQueue = kit::Queue<4096, AtomicCoord>;

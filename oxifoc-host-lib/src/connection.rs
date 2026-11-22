@@ -107,6 +107,10 @@ where
     // Protocol tasks are spawned once — they operate on the stack, not the
     // per-connection interface.
     let commands = spawn_protocol_tasks(&stack, ctx);
+    tokio::spawn({
+        let stack = stack.clone();
+        async move { stack.stack().services().log_handler(32).await }
+    });
     let keepalive = tokio::spawn(bridge_keepalive(
         stack.clone(),
         connected.clone(),

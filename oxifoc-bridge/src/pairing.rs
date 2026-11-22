@@ -14,7 +14,7 @@ use crate::transport::BLE_LINKS;
 
 pub const NO_BOND: u8 = u8::MAX;
 
-#[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stage {
     /// Waiting for a candidate to start pairing.
     Open,
@@ -48,7 +48,7 @@ pub struct Window {
 }
 
 /// User input for the link slot that is pairing.
-#[derive(Clone, Copy, defmt::Format)]
+#[derive(Clone, Copy, Debug)]
 pub enum Input {
     Passkey(u32),
     Comparison(bool),

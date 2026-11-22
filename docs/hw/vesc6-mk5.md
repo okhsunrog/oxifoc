@@ -350,15 +350,18 @@ connection releases the pins and can leave the target halted. Reset the
 controller before returning it to service. A future bridge may check the
 controller's motor state over ergot before arming.
 
-1. Put the Wi-Fi station credentials in the git-ignored `.env` as described
-   in the [bridge README](../../oxifoc-bridge/README.md). Run
+1. Put the Wi-Fi station credentials, Ergot peer and OTA key in the
+   git-ignored `.env` as described in the [bridge README](../../oxifoc-bridge/README.md). Run
    `just flash-bridge` with the C5 connected to USB.
-2. Run `just build-cli` and `just build-mk5-spi`. With the bridge on USB, run
-   the following command after the bridge has a DHCP address. Copy the
-   selector it prints.
+2. Run `just build-cli` and `just build-mk5-spi`. After the bridge has a
+   DHCP address, load the key and arm the listener. Copy the selector it
+   prints.
 
    ```sh
-   target/debug/oxifoc-host-cli --transport usb-serial-jtag swd-probe arm --minutes 5
+   set -a
+   . ./.env
+   set +a
+   target/debug/oxifoc-host-cli --transport udp --udp-host 192.0.2.10 swd-probe arm --minutes 5
    ```
 
 3. Use probe-rs from git master until a release contains
@@ -378,9 +381,11 @@ controller's motor state over ergot before arming.
    ```
 
 4. After detaching, run
-   `target/debug/oxifoc-host-cli --transport usb-serial-jtag swd-probe disarm`.
+   `target/debug/oxifoc-host-cli --transport udp --udp-host 192.0.2.10 swd-probe disarm`.
 
-USB arming opens one TCP connection at a time for 1–30 minutes. Any
+The arming command also works over BLE with the key or over USB Serial/JTAG
+with physical access. Arming opens one TCP connection at a time for
+1–30 minutes. Any
 reachable Wi-Fi client can connect while armed. CMSIS-DAP/TCP provides
 neither authentication nor encryption. Use a trusted network and keep the
 window short. Rearming replaces the current TCP session. The deadline,

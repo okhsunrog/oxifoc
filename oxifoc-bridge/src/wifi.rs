@@ -26,7 +26,7 @@ pub fn start(spawner: Spawner, wifi: WIFI<'static>) -> Option<Stack<'static>> {
         }
         Ok(None) => None,
         Err(err) => {
-            defmt::warn!("wireless SWD Wi-Fi setup failed: {:?}", err);
+            log::warn!("Wi-Fi setup failed: {err:?}");
             None
         }
     }
@@ -48,8 +48,8 @@ fn configure(wifi: WIFI<'static>) -> Result<Option<WifiController<'static>>, Wif
         .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
             password.try_into()?,
         ));
-    // One small TCP stream needs few frames in flight. The default Wi-Fi
-    // buffers exhausted the shared radio heap before BLE could start.
+    // The default Wi-Fi buffers exhaust the shared radio heap before BLE
+    // can start. Keep frame queues small enough for both radios.
     let config = ControllerConfig::default()
         .with_static_rx_buf_num(4)
         .with_dynamic_rx_buf_num(8)
@@ -67,10 +67,10 @@ async fn run(mut controller: WifiController<'static>, mut runner: Runner<'static
         loop {
             match controller.connect_async().await {
                 Ok(_) => {
-                    defmt::info!("wireless SWD Wi-Fi associated");
+                    log::info!("Wi-Fi associated");
                     let _ = controller.wait_for_disconnect_async().await;
                 }
-                Err(err) => defmt::warn!("wireless SWD Wi-Fi association failed: {:?}", err),
+                Err(err) => log::warn!("Wi-Fi association failed: {err:?}"),
             }
             Timer::after_secs(3).await;
         }

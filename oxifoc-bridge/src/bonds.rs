@@ -3,12 +3,12 @@
 //! A `sequential-storage` map keyed by slot id `0..MAX_BONDS`. The record is our
 //! own type, so the flash format does not depend on the trouble version.
 
-use defmt::{info, warn};
 use embassy_embedded_hal::adapter::BlockingAsync;
 use esp_bootloader_esp_idf::partitions::{
     DataPartitionSubType, PARTITION_TABLE_MAX_LEN, PartitionType, read_partition_table,
 };
 use heapless::{String, Vec};
+use log::{info, warn};
 use oxifoc_core::types::pairing::{BOND_NAME_LEN, BondEntry, BondRole, MAX_BONDS, PairingError};
 use sequential_storage::cache::{Cache, Uncached};
 use sequential_storage::map::{MapConfig, MapStorage, PostcardValue};
@@ -135,7 +135,7 @@ impl BondStore {
                 Err(e) => {
                     // Foreign or corrupt data: the partition is ours alone, so
                     // start over rather than run without bond storage.
-                    warn!("[bonds] map unreadable ({:?}), erasing", e);
+                    warn!("[bonds] map unreadable ({e:?}), erasing");
                     if self.storage.erase_all().await.is_err() {
                         warn!("[bonds] erase failed");
                     }

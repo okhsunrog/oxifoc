@@ -4,12 +4,12 @@ use heapless::Vec;
 use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 
+use super::bridge_auth::Nonce;
+
 /// Leave room for the HMAC, nonce, sequence and Ergot header in one BLE frame.
 pub const CHUNK_SIZE: usize = 384;
 
-pub type Nonce = [u8; 16];
 pub type Digest = [u8; 32];
-pub type OtaKey = [u8; 32];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Schema)]
 #[allow(
@@ -84,48 +84,30 @@ pub fn is_bridge_image(first_bytes: &[u8]) -> bool {
         && first_bytes.get(80..94) == Some(b"oxifoc-bridge\0")
 }
 
-#[cfg(feature = "bridge-ota-auth")]
+#[cfg(feature = "bridge-auth")]
 mod authentication {
-    use hmac::{Hmac, KeyInit as _, Mac as _};
-    use sha2::Sha256;
+    use super::{CHUNK_SIZE, Digest, UploadRequest};
+    use crate::types::bridge_auth::{self, Key};
 
-    use super::{CHUNK_SIZE, Digest, OtaKey, UploadRequest};
+    const DOMAIN: &[u8] = b"OxiFOC C5 OTA v1\0";
 
-    pub fn parse_key(text: &str) -> Option<OtaKey> {
-        let (pairs, rest) = text.as_bytes().as_chunks::<2>();
-        if pairs.len() != 32 || !rest.is_empty() {
-            return None;
-        }
-        let mut key = [0; 32];
-        for (byte, pair) in key.iter_mut().zip(pairs) {
-            let pair = core::str::from_utf8(pair).ok()?;
-            *byte = u8::from_str_radix(pair, 16).ok()?;
-        }
-        Some(key)
-    }
-
-    fn mac(key: &OtaKey, upload: &UploadRequest) -> Option<Hmac<Sha256>> {
+    pub fn sign(key: &Key, upload: &UploadRequest) -> Option<Digest> {
         let mut bytes = [0; CHUNK_SIZE + 32];
         let data = postcard::to_slice(upload, &mut bytes).ok()?;
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
-        mac.update(b"OxiFOC C5 OTA v1\0");
-        mac.update(data);
-        Some(mac)
+        Some(bridge_auth::sign(key, DOMAIN, data))
     }
 
-    pub fn sign(key: &OtaKey, upload: &UploadRequest) -> Option<Digest> {
-        Some(mac(key, upload)?.finalize().into_bytes().into())
-    }
-
-    pub fn verify(key: &OtaKey, upload: &UploadRequest, tag: &Digest) -> bool {
-        mac(key, upload).is_some_and(|mac| mac.verify_slice(tag).is_ok())
+    pub fn verify(key: &Key, upload: &UploadRequest, tag: &Digest) -> bool {
+        let mut bytes = [0; CHUNK_SIZE + 32];
+        postcard::to_slice(upload, &mut bytes)
+            .is_ok_and(|data| bridge_auth::verify(key, DOMAIN, data, tag))
     }
 }
 
-#[cfg(feature = "bridge-ota-auth")]
-pub use authentication::{parse_key, sign, verify};
+#[cfg(feature = "bridge-auth")]
+pub use authentication::{sign, verify};
 
-#[cfg(all(test, feature = "bridge-ota-auth"))]
+#[cfg(all(test, feature = "bridge-auth"))]
 mod tests {
     use super::*;
 

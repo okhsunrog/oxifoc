@@ -56,14 +56,14 @@ async fn run(router: &'static Stack, stack: NetStack<'static>, host: IpAddress) 
         TX_BUFFER.init([0; FRAME_BYTES]),
     );
     if socket.bind(UDP_PORT).is_err() {
-        defmt::warn!("Ergot UDP bind failed");
+        log::warn!("Ergot UDP bind failed");
         return;
     }
     loop {
         stack.wait_config_up().await;
         let sink = BridgeSink::Wifi(framed_stream::Sink::new(OUT.framed_producer(), UDP_MTU));
         let Ok(ident) = router.manage_profile(|p| p.register_interface(sink)) else {
-            defmt::warn!("Ergot UDP has no router interface slot");
+            log::warn!("Ergot UDP has no router interface slot");
             Timer::after_secs(1).await;
             continue;
         };

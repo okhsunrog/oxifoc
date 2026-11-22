@@ -8,16 +8,14 @@ use core::future::pending;
 use core::pin::pin;
 use core::sync::atomic::Ordering;
 
-use crate::flash::Flash;
-
 use crate::{
     ble_nus::NusServer,
     bonds::{BondStore, StoredBond},
+    flash::Flash,
     pairing::{Input, NO_BOND, PairingState, Stage},
     transport,
 };
 use bt_hci::controller::ExternalController;
-use defmt::{debug, error, info, warn};
 use embassy_futures::{
     join::join5,
     select::{Either, Either4, select, select4},
@@ -29,6 +27,7 @@ use ergot::interface_manager::{
 };
 use ergot::socket::HeaderMessage;
 use esp_radio::ble::controller::BleConnector;
+use log::{debug, error, info, warn};
 use oxifoc_core::icd::{PairingEndpoint, PairingEventTopic};
 use oxifoc_core::types::pairing::{
     BondRole, MAX_BONDS, PairingError, PairingEvent, PairingFailure, PairingRequest,
@@ -136,7 +135,12 @@ struct Ctx<'a, 's, C: Controller> {
 }
 
 fn publish(stack: &'static transport::Stack, event: &PairingEvent) {
-    info!("[pairing] event {:?}", event);
+    match event {
+        PairingEvent::ShowPasskey { attempt, .. } | PairingEvent::CompareNumber { attempt, .. } => {
+            info!("[pairing] confirmation requested for attempt {attempt}");
+        }
+        _ => info!("[pairing] event {event:?}"),
+    }
     if stack
         .topics()
         .broadcast::<PairingEventTopic>(event, None)
@@ -155,7 +159,7 @@ fn close_window(stack: &'static transport::Stack, attempt: u32, reason: WindowCl
             PAIRING.inputs[link].signal(Input::Cancel);
         }
         publish(stack, &PairingEvent::WindowClosed { attempt, reason });
-        info!("[pairing] window {} closed: {:?}", attempt, reason);
+        info!("[pairing] window {attempt} closed: {reason:?}");
     }
 }
 
@@ -202,7 +206,7 @@ async fn link_slot<'v, C: Controller>(
             Ok(conn) => {
                 // The central chooses the PHY: the remote stays on 1M for
                 // sensitivity, host tools may request 2M for telemetry.
-                debug!("[ble{}] connection established", link);
+                debug!("[ble{link}] connection established");
                 let counters = &crate::diag::BLE[link];
                 crate::diag::BleCounters::bump(&counters.connects);
                 counters.connected.store(true, Ordering::Relaxed);
@@ -217,10 +221,10 @@ async fn link_slot<'v, C: Controller>(
                 while let Ok(frame) = consumer.read() {
                     frame.release();
                 }
-                debug!("[ble{}] disconnected, slot free", link);
+                debug!("[ble{link}] disconnected, slot free");
             }
             Err(_e) => {
-                warn!("[ble{}] advertise error, retrying", link);
+                warn!("[ble{link}] advertise error, retrying");
                 Timer::after_secs(1).await;
             }
         }
@@ -249,8 +253,8 @@ fn stack_inactive(stack: &'static transport::Stack, ident: u8) {
 
 async fn ble_runner<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
     loop {
-        if let Err(_e) = runner.run().await {
-            error!("[ble] runner error, restarting");
+        if let Err(error) = runner.run().await {
+            error!("[ble] runner error, restarting: {error:?}");
         }
     }
 }
@@ -301,7 +305,7 @@ async fn advertise<'v, 's, C: Controller>(
         )
         .await?;
 
-    debug!("[ble] advertising, filtered: {}", filtered);
+    debug!("[ble] advertising, filtered: {filtered}");
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
     Ok(conn)
 }
@@ -432,7 +436,7 @@ async fn link_session<C: Controller, P: PacketPool>(
                 }
                 GattConnectionEvent::PairingComplete { .. } if trusted.is_some() => {
                     // trouble reports completion again with the encryption change.
-                    debug!("[ble{}] repeated pairing completion ignored", link);
+                    debug!("[ble{link}] repeated pairing completion ignored");
                 }
                 GattConnectionEvent::PairingComplete {
                     security_level,
@@ -454,7 +458,7 @@ async fn link_session<C: Controller, P: PacketPool>(
                     }
                 }
                 GattConnectionEvent::PairingFailed(e) => {
-                    warn!("[ble{}] pairing failed: {:?}", link, e);
+                    warn!("[ble{link}] pairing failed: {e:?}");
                     let reason = match e {
                         Error::Security(
                             PairingFailedReason::ConfirmValueFailed
@@ -474,13 +478,10 @@ async fn link_session<C: Controller, P: PacketPool>(
                     security_level,
                     bond: None,
                 } => {
-                    info!(
-                        "[ble{}] encrypted without a stored bond: {:?}",
-                        link, security_level
-                    );
+                    info!("[ble{link}] encrypted without a stored bond: {security_level:?}");
                 }
                 GattConnectionEvent::BondLost => {
-                    warn!("[ble{}] peer lost its bond", link);
+                    warn!("[ble{link}] peer lost its bond");
                 }
                 GattConnectionEvent::Gatt { event } => {
                     let handle = match &event {
@@ -527,12 +528,12 @@ async fn link_session<C: Controller, P: PacketPool>(
             Either4::Third(input) => match input {
                 Input::Passkey(passkey) => {
                     if conn.raw().pass_key_input(passkey).is_err() {
-                        warn!("[ble{}] passkey input refused", link);
+                        warn!("[ble{link}] passkey input refused");
                     }
                 }
                 Input::Comparison(true) => {
                     if conn.raw().pass_key_confirm().is_err() {
-                        warn!("[ble{}] comparison confirm refused", link);
+                        warn!("[ble{link}] comparison confirm refused");
                     }
                 }
                 Input::Comparison(false) | Input::Cancel => {
@@ -549,7 +550,7 @@ async fn link_session<C: Controller, P: PacketPool>(
                 }
             },
             Either4::Fourth(()) => {
-                debug!("[ble{}] dropping link (untrusted or bond removed)", link);
+                debug!("[ble{link}] dropping link (untrusted or bond removed)");
                 if trusted.is_none() {
                     crate::diag::BleCounters::bump(&crate::diag::BLE[link].untrusted_drops);
                 }
@@ -583,13 +584,13 @@ fn claim<C: Controller, P: PacketPool>(
                 address,
             },
         );
-        info!("[ble{}] pairing in window {}", link, claimed);
+        info!("[ble{link}] pairing in window {claimed}");
     }
     Some(claimed)
 }
 
 fn fail(stack: &'static transport::Stack, attempt: u32, reason: PairingFailure) {
-    warn!("[pairing] attempt {} failed: {:?}", attempt, reason);
+    warn!("[pairing] attempt {attempt} failed: {reason:?}");
     publish(stack, &PairingEvent::Failed { attempt, reason });
     close_window(stack, attempt, WindowCloseReason::Failed);
 }
@@ -614,7 +615,7 @@ async fn pairing_complete<C: Controller, P: PacketPool>(
         }
     };
     let Some(a) = claimed else {
-        info!("[ble{}] pairing outside a window, dropping", link);
+        info!("[ble{link}] pairing outside a window, dropping");
         forget(&bond).await;
         return None;
     };
@@ -643,7 +644,7 @@ async fn pairing_complete<C: Controller, P: PacketPool>(
             }
             PAIRING.adv_changed.signal(());
             close_window(ctx.stack, a, WindowCloseReason::Bonded);
-            info!("[ble{}] bonded as {}", link, id);
+            info!("[ble{link}] bonded as {id}");
             Some(id)
         }
         Err(_e) => {
@@ -694,7 +695,7 @@ async fn handle_request<C: Controller>(
             let added_by = PAIRING.bond_on_net(nets, msg.hdr.src.network_id);
             match PAIRING.open(*role, name.clone(), *seconds, added_by) {
                 Ok((attempt, expires_ms)) => {
-                    info!("[pairing] window {} open for {} ms", attempt, expires_ms);
+                    info!("[pairing] window {attempt} open for {expires_ms} ms");
                     publish(
                         ctx.stack,
                         &PairingEvent::WindowOpened {
@@ -739,7 +740,7 @@ async fn handle_request<C: Controller>(
                 }
                 publish(ctx.stack, &PairingEvent::BondRemoved { id: *id });
                 PAIRING.adv_changed.signal(());
-                info!("[pairing] bond {} removed", id);
+                info!("[pairing] bond {id} removed");
             })
         }
         PairingRequest::RenameBond { id, name } => {

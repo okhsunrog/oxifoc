@@ -2,7 +2,6 @@
 runner = "probe-rs run --chip=esp32c5 --preverify --always-print-stacktrace --no-location"
 
 [env]
-DEFMT_LOG = "info"
 TROUBLE_HOST_DEFAULT_PACKET_POOL_MTU = "512"
 
 [build]

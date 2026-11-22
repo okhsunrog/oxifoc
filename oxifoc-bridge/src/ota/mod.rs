@@ -9,9 +9,9 @@ use ergot::socket::HeaderMessage;
 use esp_hal::{rng::Rng, system};
 use oxifoc_core::{
     icd::BridgeOtaEndpoint,
+    types::bridge_auth::{Key, Nonce, parse_key},
     types::bridge_ota::{
-        CHUNK_SIZE, Digest, Nonce, OtaAction, OtaError, OtaKey, OtaRequest, OtaResponse,
-        is_bridge_image, parse_key, verify,
+        CHUNK_SIZE, Digest, OtaAction, OtaError, OtaRequest, OtaResponse, is_bridge_image, verify,
     },
 };
 use sha2::{Digest as _, Sha256};
@@ -44,7 +44,7 @@ pub fn start(spawner: Spawner, stack: &'static Stack, flash: Flash) {
 pub struct Updater {
     flash: Flash,
     slots: Result<Slots, OtaError>,
-    key: Option<OtaKey>,
+    key: Option<Key>,
     nonce: Option<Nonce>,
     upload: Option<Upload>,
     rebooting: Option<u8>,

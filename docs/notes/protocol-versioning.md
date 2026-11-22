@@ -93,7 +93,8 @@ The bridge adds `cmd/bridge_ota` for authenticated application updates
 over BLE and Ergot UDP.
 
 The C5 bridge adds `cmd/swd_probe` for time-limited arming and disarming
-of wireless SWD over its USB ergot link.
+of wireless SWD over USB Ergot or with authentication over UDP and BLE.
+The bridge also publishes text on Ergot's standard formatted-log topic.
 
 From v24 on, the firmware skips flash keys it does not know and keeps them
 through compaction. v23 and older fail every read once the map holds a v24

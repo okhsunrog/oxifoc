@@ -13,14 +13,18 @@ use esp_hal::{
     timer::timg::TimerGroup,
     usb::usb_serial_jtag::UsbSerialJtag,
 };
-use oxifoc_bridge::transport::{self, BridgeSink, MTU};
+use oxifoc_bridge::{
+    bridge_logs,
+    transport::{self, BridgeSink, MTU},
+};
 
 /// Log over RTT, then reset. esp_hal::init disables the watchdogs, so a
 /// panic that only looped would leave BLE dead until a power cycle; the
-/// reset reason (`req/bridge_diag`) then reports the software reset.
+/// reset reason (`req/bridge_diag`) then reports the software reset. The
+/// Ergot log queue cannot drain here, so the message goes to RTT directly.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    defmt::error!("PANIC: {}", defmt::Display2Format(info));
+    rtt_target::rprintln!("PANIC: {}", info);
     esp_hal::system::software_reset()
 }
 
@@ -28,7 +32,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    rtt_target::rtt_init_defmt!();
+    bridge_logs::init();
     let p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
     oxifoc_bridge::diag::RESET_REASON.store(
         esp_hal::system::reset_reason().map_or(0, |reason| reason as u8),
@@ -47,6 +51,7 @@ async fn main(spawner: Spawner) -> ! {
     let router = ergot::interface_manager::profiles::router::Router::new(rng);
     static STACK: static_cell::StaticCell<transport::Stack> = static_cell::StaticCell::new();
     let stack = STACK.init(NetStack::new_with_profile(router));
+    spawner.spawn(bridge_logs::forward(stack).expect("bridge log task is spawned once"));
     let spi_ident = stack
         .manage_profile(|p| p.register_interface(spi_sink))
         .expect("SPI interface slot must be available at startup");
@@ -131,7 +136,7 @@ async fn main(spawner: Spawner) -> ! {
     oxifoc_bridge::probe::start(spawner, stack, usb_ident, p.GPIO4, p.GPIO5, network);
     #[cfg(feature = "ota")]
     oxifoc_bridge::ota::start(spawner, stack, flash);
-    defmt::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");
+    log::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");
     loop {
         Timer::after_secs(60).await;
     }

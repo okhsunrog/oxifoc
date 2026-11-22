@@ -45,7 +45,7 @@ fn checksum(bytes: &[u8]) -> u32 {
 
 #[embassy_executor::task]
 pub async fn pump(stack: &'static Stack, ident: u8, r: Resources, epoch: u32) {
-    defmt::assert_eq!(checksum(b"123456789"), 0x0376_e6e7);
+    assert_eq!(checksum(b"123456789"), 0x0376_e6e7);
     let mut ready = Output::new(r.ready, Level::Low, OutputConfig::default());
     let mut cs = Input::new(r.cs, InputConfig::default());
     let mut spi = Spi::new(r.bus, Mode::_0)
@@ -54,15 +54,16 @@ pub async fn pump(stack: &'static Stack, ident: u8, r: Resources, epoch: u32) {
         .with_miso(r.miso)
         .with_cs(cs.peripheral_input())
         .with_dma(r.dma);
-    let mut rx = defmt::unwrap!(dma_rx_buffer!(SLOT_BYTES));
-    let mut tx = defmt::unwrap!(dma_tx_buffer!(SLOT_BYTES));
-    let mut spare_rx = defmt::unwrap!(dma_rx_buffer!(SLOT_BYTES));
-    let mut spare_tx = defmt::unwrap!(dma_tx_buffer!(SLOT_BYTES));
+    let mut rx = dma_rx_buffer!(SLOT_BYTES).expect("fixed SPI DMA buffer");
+    let mut tx = dma_tx_buffer!(SLOT_BYTES).expect("fixed SPI DMA buffer");
+    let mut spare_rx = dma_rx_buffer!(SLOT_BYTES).expect("fixed SPI DMA buffer");
+    let mut spare_tx = dma_tx_buffer!(SLOT_BYTES).expect("fixed SPI DMA buffer");
     let consumer = SPI_OUTQ.framed_consumer();
     let prepare_tx = |tx: &mut DmaTxBuf, seq| {
         tx.set_length(SLOT_BYTES);
-        let mut builder =
-            defmt::unwrap!(Builder::new(tx.as_mut_slice(), epoch, seq).map_err(|_| ()));
+        let mut builder = Builder::new(tx.as_mut_slice(), epoch, seq)
+            .map_err(|_| ())
+            .expect("fixed SPI slot header fits");
         while let Ok(grant) = consumer.read() {
             if builder.append(&grant).is_err() {
                 break;
@@ -71,7 +72,9 @@ pub async fn pump(stack: &'static Stack, ident: u8, r: Resources, epoch: u32) {
         }
         builder.finish(checksum);
     };
-    let net = defmt::unwrap!(stack.manage_profile(|p| p.net_id_of(ident)));
+    let net = stack
+        .manage_profile(|p| p.net_id_of(ident))
+        .expect("registered SPI segment");
     let mut processor = RouterFrameProcessor::new(net);
     let mut pending = false;
     let mut seq = 0u32;
@@ -90,8 +93,9 @@ pub async fn pump(stack: &'static Stack, ident: u8, r: Resources, epoch: u32) {
         }
         rx.set_length(SLOT_BYTES);
         prepare_tx(&mut tx, seq);
+        #[expect(clippy::panic, reason = "a failed DMA arm consumes the SPI buffers")]
         let Ok(transfer) = spi.transfer(SLOT_BYTES, rx, SLOT_BYTES, tx) else {
-            defmt::panic!("SPI DMA arm failed");
+            panic!("SPI DMA arm failed");
         };
         ready.set_high();
         // Independent buffers allow routing the previous slot while this DMA

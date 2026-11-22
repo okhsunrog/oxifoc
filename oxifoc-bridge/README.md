@@ -35,14 +35,30 @@ target/debug/oxifoc-host-cli --transport udp --udp-host 192.0.2.10 status
 ```
 
 UDP telemetry uses blocks sized for a standard 1500-byte IPv4 path MTU.
-USB and BLE remain available.
+The bridge accepts one UDP client at a time. USB and BLE remain available.
+
+## Bridge logs
+
+The CLI prints C5 text logs to stderr under the `remote_log` target.
+If the controller is halted, use `--wait-secs 0` to skip waiting for its
+handshake.
+
+```sh
+RUST_LOG=remote_log=info target/debug/oxifoc-host-cli --transport udp --udp-host 192.0.2.10 \
+  --wait-secs 0 monitor --seconds 60 --fast-hz 0
+```
+
+The same command works over BLE. Ergot delivers live messages once the
+link is up. Internal Ergot and driver diagnostics go to wired RTT. RTT
+also carries early boot logs and panic output.
 
 ## Bridge firmware updates
 
 Generate a 32-byte OTA key with `openssl rand -hex 32` and keep it in the
 git-ignored `.env` as `OXIFOC_BRIDGE_OTA_KEY`. Source that file for the host
 CLI so it uses the key embedded in the bridge build. Keep credentialed app
-binaries private. The CLI authenticates each upload operation with HMAC.
+binaries private. The key authorizes uploads and wireless SWD arming.
+The CLI authenticates both with HMAC.
 
 Install the dual-slot partition table once with `just flash-bridge` over
 wired USB. Each wired install selects `ota_0` and preserves the BLE

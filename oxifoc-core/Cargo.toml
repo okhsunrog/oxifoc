@@ -173,7 +173,7 @@ embassy-hal = ["embassy", "dep:embassy-stm32", "dep:embedded-io-async", "dep:ran
 cordic = ["embassy-hal", "dep:dsp-fixedpoint"]
 embedded-storage-async = ["dep:embedded-storage-async"]
 cortex-m = ["dep:cortex-m"]
-bridge-ota-auth = ["dep:hmac", "dep:sha2", "dep:postcard"]
+bridge-auth = ["dep:hmac", "dep:sha2", "dep:postcard"]
 
 [[example]]
 name = "detection_report"

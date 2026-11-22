@@ -1,7 +1,7 @@
 //! Send an ESP-IDF application image to the C5 bridge over Ergot.
 
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -10,15 +10,15 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use clap::Subcommand;
 use heapless::Vec as Chunk;
+use oxifoc_core::types::bridge_auth::{Key, Nonce};
 use oxifoc_core::types::bridge_ota::{
-    CHUNK_SIZE, Nonce, OtaAction, OtaError, OtaKey, OtaRequest, OtaResponse, UploadRequest,
-    is_bridge_image, parse_key, sign,
+    CHUNK_SIZE, OtaAction, OtaError, OtaRequest, OtaResponse, UploadRequest, is_bridge_image, sign,
 };
 use oxifoc_host_lib::{HostRuntime, ops::bridge_ota::Client};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
-use crate::emit;
+use crate::{bridge_key, emit};
 
 #[derive(Subcommand)]
 pub enum OtaCommand {
@@ -43,7 +43,7 @@ pub fn run(runtime: &HostRuntime, action: OtaCommand, wait: Duration, json: bool
             format!("Running ota_{booted_slot}. Inactive slot capacity {capacity} bytes."),
         ),
         OtaCommand::Abort => {
-            let key = key()?;
+            let key = bridge_key()?;
             let reply = authenticated(&mut client, &key, nonce, OtaAction::Abort)?;
             ensure!(
                 matches!(reply, OtaResponse::Aborted),
@@ -56,11 +56,6 @@ pub fn run(runtime: &HostRuntime, action: OtaCommand, wait: Duration, json: bool
         }
     }
     Ok(())
-}
-
-fn key() -> Result<OtaKey> {
-    let key = env::var("OXIFOC_BRIDGE_OTA_KEY").context("set OXIFOC_BRIDGE_OTA_KEY")?;
-    parse_key(&key).context("OXIFOC_BRIDGE_OTA_KEY must be 64 hexadecimal digits")
 }
 
 fn info(client: &mut Client<'_>, wait: Duration) -> Result<(Nonce, u8, u32)> {
@@ -84,7 +79,7 @@ fn info(client: &mut Client<'_>, wait: Duration) -> Result<(Nonce, u8, u32)> {
 
 fn authenticated(
     client: &mut Client<'_>,
-    key: &OtaKey,
+    key: &Key,
     nonce: Nonce,
     action: OtaAction,
 ) -> Result<OtaResponse> {
@@ -92,13 +87,19 @@ fn authenticated(
     let tag = sign(key, &upload).context("encode bridge OTA request")?;
     let request = OtaRequest::Authenticated { upload, tag };
     // Repeating an identical authenticated request is safe. The bridge
-    // compares previously written bytes before acknowledging a duplicate.
-    for _ in 0..2 {
-        if let Ok(response) = client.request(request.clone()) {
-            return Ok(response);
+    // compares previously written bytes before acknowledging a duplicate. Let
+    // the backend reconnect and rediscover the endpoint if the transport drops.
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        match client.request(request.clone()) {
+            Ok(response) => return Ok(response),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => {
+                client.target = None;
+                thread::sleep(Duration::from_millis(250));
+            }
         }
     }
-    client.request(request)
 }
 
 fn update(
@@ -109,7 +110,7 @@ fn update(
     capacity: u32,
     json: bool,
 ) -> Result<()> {
-    let key = key()?;
+    let key = bridge_key()?;
     let image = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     ensure!(
         is_bridge_image(&image),
@@ -160,7 +161,7 @@ fn update(
         Err(_) | Ok(OtaResponse::Error(OtaError::Unauthorized)) => {}
         Ok(reply) => bail!("bridge rejected activation: {reply:?}"),
     }
-    let deadline = Instant::now() + Duration::from_secs(55);
+    let deadline = Instant::now() + Duration::from_secs(75);
     loop {
         let (challenge, slot, _) =
             info(client, deadline.saturating_duration_since(Instant::now()))?;
