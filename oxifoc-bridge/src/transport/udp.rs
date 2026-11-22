@@ -22,17 +22,20 @@ use static_cell::StaticCell;
 
 use super::{BridgeSink, Stack, WifiQueue};
 
+mod replay;
+
 const UDP_PORT: u16 = 2025;
 const FRAME_BYTES: usize = UDP_MTU as usize;
-
-// These buffers are only accessed by the CPU. Keep them out of main DRAM to
-// leave stack room for BLE pairing's P-256 operations.
-#[esp_hal::ram(unstable(rtc_fast))]
+const TX_PACKETS: usize = 7;
+const RX_PACKETS: usize = 2;
 static OUT: WifiQueue = WifiQueue::new();
+
+// The network stack copies these socket buffers into the driver's own
+// buffers. Put them in RTC RAM to leave stack room for BLE pairing.
 #[esp_hal::ram(unstable(rtc_fast))]
-static TX_BUFFER: StaticCell<[u8; FRAME_BYTES]> = StaticCell::new();
+static TX_BUFFER: StaticCell<[u8; FRAME_BYTES * TX_PACKETS]> = StaticCell::new();
 #[esp_hal::ram(unstable(rtc_fast))]
-static RX_BUFFER: StaticCell<[u8; FRAME_BYTES]> = StaticCell::new();
+static RX_BUFFER: StaticCell<[u8; FRAME_BYTES * RX_PACKETS]> = StaticCell::new();
 
 pub fn start(spawner: Spawner, router: &'static Stack, stack: NetStack<'static>) {
     let Some(host) =
@@ -40,20 +43,21 @@ pub fn start(spawner: Spawner, router: &'static Stack, stack: NetStack<'static>)
     else {
         return;
     };
+    spawner.spawn(replay::serve(router).expect("telemetry replay task is spawned once"));
     spawner
         .spawn(run(router, stack, IpAddress::Ipv4(host)).expect("Ergot UDP task is spawned once"));
 }
 
 #[embassy_executor::task]
 async fn run(router: &'static Stack, stack: NetStack<'static>, host: IpAddress) {
-    let mut tx_meta = [PacketMetadata::EMPTY; 2];
-    let mut rx_meta = [PacketMetadata::EMPTY; 2];
+    let mut tx_meta = [PacketMetadata::EMPTY; TX_PACKETS];
+    let mut rx_meta = [PacketMetadata::EMPTY; RX_PACKETS];
     let mut socket = UdpSocket::new(
         stack,
         &mut rx_meta,
-        RX_BUFFER.init([0; FRAME_BYTES]),
+        RX_BUFFER.init_with(|| [0; FRAME_BYTES * RX_PACKETS]),
         &mut tx_meta,
-        TX_BUFFER.init([0; FRAME_BYTES]),
+        TX_BUFFER.init_with(|| [0; FRAME_BYTES * TX_PACKETS]),
     );
     if socket.bind(UDP_PORT).is_err() {
         log::warn!("Ergot UDP bind failed");
@@ -90,6 +94,7 @@ async fn session(router: &'static Stack, socket: &mut UdpSocket<'_>, host: IpAdd
     let mut processor = RouterFrameProcessor::new(net);
     let mut peer: Option<IpEndpoint> = None;
     let mut deadline = Instant::now() + timeout;
+    let mut batch = 0;
     loop {
         match select(
             Timer::at(deadline),
@@ -127,11 +132,18 @@ async fn session(router: &'static Stack, socket: &mut UdpSocket<'_>, host: IpAdd
             }
             Either::Second(Either::Second(grant)) => {
                 if let Some(peer) = peer {
+                    replay::remember(net, &grant);
                     let _ = socket.send_to(&grant, peer).await;
                 }
                 grant.release();
             }
         }
-        yield_now().await;
+        // Let the network runner send a batch together, then yield even
+        // when both the socket and the queue are continuously ready.
+        batch += 1;
+        if batch == TX_PACKETS {
+            batch = 0;
+            yield_now().await;
+        }
     }
 }

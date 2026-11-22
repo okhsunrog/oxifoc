@@ -40,6 +40,7 @@ use crate::raw_telemetry;
 use crate::raw_telemetry::{RawTelemetryAck, RawTelemetryRequest, VelocityDebugArm};
 use crate::types::bridge_ota::{OtaRequest, OtaResponse};
 use crate::types::swd_probe::{ProbeRequest, ProbeResponse};
+use crate::types::wifi_telemetry::TelemetryReplayRequest;
 
 // ============================================================================
 // Protocol Constants
@@ -208,6 +209,13 @@ endpoint!(
 );
 
 endpoint!(BridgeOtaEndpoint, OtaRequest, OtaResponse, "cmd/bridge_ota");
+pub type TelemetryReplayResponse = Option<RawTelemetryBlock>;
+endpoint!(
+    TelemetryReplayEndpoint,
+    TelemetryReplayRequest,
+    TelemetryReplayResponse,
+    "bridge/telemetry_replay"
+);
 
 // Configuration endpoint (host → device)
 #[cfg(feature = "storage")]

@@ -35,6 +35,9 @@ target/debug/oxifoc-host-cli --transport udp --udp-host 192.0.2.10 status
 ```
 
 UDP telemetry uses blocks sized for a standard 1500-byte IPv4 path MTU.
+The bridge retains recent raw telemetry blocks. During a normal Packed28
+capture the CLI requests missing blocks before writing samples in order.
+The capture reports an error if a missing block is no longer available.
 The bridge accepts one UDP client at a time. USB and BLE remain available.
 
 ## Bridge logs

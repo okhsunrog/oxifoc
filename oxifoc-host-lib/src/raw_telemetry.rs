@@ -2,14 +2,17 @@
 
 use anyhow::{Result, anyhow, bail};
 use crossbeam_channel::Sender;
+use ergot::{Address, net_stack::NetStackHandle, socket::HeaderMessage};
 #[cfg(test)]
 use oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES;
 use oxifoc_core::{
+    icd::{RawTelemetryBlock, RawTelemetryBlockTopic, TelemetryReplayEndpoint},
     raw_telemetry::{
         DecodedRawBlock, RAW_HEADER_BYTES, RAW_MAGIC, RawBlockHeader, RawEncoding,
         RawStreamDecoder, RawTelemetryStatus,
     },
     types::FastTelemetry,
+    types::wifi_telemetry::TelemetryReplayRequest,
     velocity_telemetry::{SESSION_START, VelocityDebugFrame},
 };
 use serde::Serialize;
@@ -18,7 +21,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use super::LINK_LOCAL_PEER;
+
 const STALL_LIMIT: Duration = Duration::from_secs(2);
+// Preserve incoming blocks while the subscriber retrieves missing UDP data.
+const RAW_TOPIC_DEPTH: usize = 256;
+const MAX_REPLAY_GAP: u32 = 8;
+const REPLAY_TIMEOUT: Duration = Duration::from_millis(65);
 
 fn producer_off(status: RawTelemetryStatus) -> bool {
     matches!(
@@ -43,6 +52,7 @@ pub struct RawCaptureReport {
     pub records_received: u64,
     pub records_delivered: u64,
     pub host_drops: u64,
+    pub recovered_blocks: u64,
     pub producer_drops: u32,
     pub blocks_received: u64,
     pub packed28_blocks: u64,
@@ -283,6 +293,7 @@ impl RawTelemetryState {
                 records_received: 0,
                 records_delivered: 0,
                 host_drops: 0,
+                recovered_blocks: 0,
                 producer_drops: 0,
                 blocks_received: 0,
                 packed28_blocks: 0,
@@ -508,6 +519,21 @@ impl RawTelemetryState {
         self.changed.notify_all();
         result.map(|()| true)
     }
+
+    fn next_for(&self, session: u64) -> Option<u32> {
+        let inner = self.inner.lock().unwrap();
+        let capture = inner.capture.as_ref()?;
+        (capture.report.session == session && capture.report.error.is_none())
+            .then_some(capture.next_block)
+    }
+
+    fn count_replay(&self, session: u64) {
+        if let Some(capture) = &mut self.inner.lock().unwrap().capture
+            && capture.report.session == session
+        {
+            capture.report.recovered_blocks += 1;
+        }
+    }
 }
 
 /// Configure through Ergot control; raw readers and END waits never own this
@@ -516,10 +542,10 @@ pub(crate) async fn configure<NS>(
     stack: &NS,
     state: &Arc<RawTelemetryState>,
     fast_hz: u16,
-    address: ergot::Address,
+    address: Address,
 ) -> Result<oxifoc_core::types::TelemetryConfigAck>
 where
-    NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send + Sync,
@@ -530,10 +556,10 @@ where
 pub(crate) async fn prepare_connection<NS>(
     stack: &NS,
     state: &Arc<RawTelemetryState>,
-    address: ergot::Address,
+    address: Address,
 ) -> Result<()>
 where
-    NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send + Sync,
@@ -546,11 +572,11 @@ async fn configure_inner<NS>(
     stack: &NS,
     state: &Arc<RawTelemetryState>,
     fast_hz: u16,
-    address: ergot::Address,
+    address: Address,
     startup_cleanup: bool,
 ) -> Result<oxifoc_core::types::TelemetryConfigAck>
 where
-    NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send + Sync,
@@ -665,9 +691,9 @@ where
 
 /// Startup-only drain fence; callers have not published control readiness yet.
 /// Ordinary telemetry Stop returns its producer-disable ACK without this wait.
-pub(crate) async fn wait_stopped<NS>(stack: &NS, address: ergot::Address) -> Result<()>
+pub(crate) async fn wait_stopped<NS>(stack: &NS, address: Address) -> Result<()>
 where
-    NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send + Sync,
@@ -724,20 +750,19 @@ pub(crate) fn spawn_ergot_subscriber<NS>(
     stack: &NS,
     state: Arc<RawTelemetryState>,
     cancel: tokio_util::sync::CancellationToken,
+    recover_udp: bool,
 ) where
-    NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send,
 {
     let stack = stack.clone();
     tokio::spawn(async move {
-        use oxifoc_core::icd::RawTelemetryBlockTopic;
         let ns = stack.stack();
-        // 32 blocks bound the additional decoded-message queue.
         let receiver = ns
             .topics()
-            .heap_bounded_receiver::<RawTelemetryBlockTopic>(32, Some("raw_fast"));
+            .heap_bounded_receiver::<RawTelemetryBlockTopic>(RAW_TOPIC_DEPTH, Some("raw_fast"));
         let mut receiver = core::pin::pin!(receiver);
         let mut handle = receiver.as_mut().subscribe_unicast();
         let mut ingress = RawIngress::new(state.clone());
@@ -750,10 +775,67 @@ pub(crate) fn spawn_ergot_subscriber<NS>(
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = ticker.tick() => { let _ = state.check(); }
-                block = handle.recv() => { let _ = ingress.push(&block.t.data); }
+                block = handle.recv() => {
+                    if recover_udp && !state.velocity_debug {
+                        ingest_udp(&stack, &mut ingress, &block).await;
+                    } else {
+                        let _ = ingress.push(&block.t.data);
+                    }
+                }
             }
         }
     });
+}
+
+async fn ingest_udp<NS: NetStackHandle>(
+    stack: &NS,
+    ingress: &mut RawIngress,
+    block: &HeaderMessage<RawTelemetryBlock>,
+) {
+    if let Ok(header) = RawBlockHeader::parse(&block.t.data)
+        && let Some(expected) = ingress.state.next_for(header.session)
+    {
+        if header.block_index < expected {
+            return;
+        }
+        if header.block_index - expected <= MAX_REPLAY_GAP {
+            let peer = Address {
+                network_id: block.hdr.dst.network_id,
+                ..LINK_LOCAL_PEER
+            };
+            for missing in expected..header.block_index {
+                let request = TelemetryReplayRequest {
+                    session: header.session,
+                    block: missing,
+                };
+                let mut replay = None;
+                for _ in 0..2 {
+                    if let Ok(Ok(Some(value))) = Box::pin(tokio::time::timeout(
+                        REPLAY_TIMEOUT,
+                        stack
+                            .stack()
+                            .endpoints()
+                            .request::<TelemetryReplayEndpoint>(peer, &request, None),
+                    ))
+                    .await
+                    {
+                        replay = Some(value);
+                        break;
+                    }
+                }
+                let Some(replay) = replay else { break };
+                if !RawBlockHeader::parse(&replay.data).is_ok_and(|received| {
+                    received.session == header.session && received.block_index == missing
+                }) || ingress.push(&replay.data).is_err()
+                {
+                    break;
+                }
+                ingress.state.count_replay(header.session);
+            }
+        }
+    }
+    // If replay was unavailable, the strict parser reports the original gap.
+    let _ = ingress.push(&block.t.data);
 }
 
 impl RawIngress {
@@ -938,7 +1020,7 @@ mod tests {
             let (tx, rx) = bounded(64);
             let state = RawTelemetryState::new(tx);
             let cancel = tokio_util::sync::CancellationToken::new();
-            spawn_ergot_subscriber(&stack, state.clone(), cancel.clone());
+            spawn_ergot_subscriber(&stack, state.clone(), cancel.clone(), false);
             state.wait_ready().await.unwrap();
             let session = state.arm().unwrap();
             let samples: Vec<_> = (0..64)
@@ -961,7 +1043,7 @@ mod tests {
                 stack
                     .topics()
                     .unicast::<RawTelemetryBlockTopic>(
-                        ergot::Address {
+                        Address {
                             network_id: 0,
                             node_id: 0,
                             port_id: 0,

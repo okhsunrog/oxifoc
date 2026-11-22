@@ -106,7 +106,7 @@ where
 
     // Protocol tasks are spawned once — they operate on the stack, not the
     // per-connection interface.
-    let commands = spawn_protocol_tasks(&stack, ctx);
+    let commands = spawn_protocol_tasks(&stack, ctx, cfg.transport == Some(TransportType::Udp));
     tokio::spawn({
         let stack = stack.clone();
         async move { stack.stack().services().log_handler(32).await }

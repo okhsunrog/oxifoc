@@ -21,7 +21,9 @@ pub fn start(spawner: Spawner, wifi: WIFI<'static>) -> Option<Stack<'static>> {
                 RESOURCES.init(StackResources::new()),
                 seed,
             );
-            spawner.spawn(run(controller, runner).expect("Wi-Fi task is spawned once"));
+            let task = run(controller, runner).expect("Wi-Fi task is spawned once");
+            task.metadata().set_priority(1);
+            spawner.spawn(task);
             Some(stack)
         }
         Ok(None) => None,
@@ -53,9 +55,10 @@ fn configure(wifi: WIFI<'static>) -> Result<Option<WifiController<'static>>, Wif
     let config = ControllerConfig::default()
         .with_static_rx_buf_num(4)
         .with_dynamic_rx_buf_num(8)
-        .with_dynamic_tx_buf_num(8)
+        .with_dynamic_tx_buf_num(10)
+        .with_tx_queue_size(10)
         .with_ampdu_rx_enable(false)
-        .with_ampdu_tx_enable(false)
+        .with_ampdu_tx_enable(true)
         .with_initial_config(Config::Station(station));
     let controller = WifiController::new(wifi, config)?;
     Ok(Some(controller))

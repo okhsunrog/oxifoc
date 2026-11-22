@@ -3,6 +3,8 @@ runner = "probe-rs run --chip=esp32c5 --preverify --always-print-stacktrace --no
 
 [env]
 TROUBLE_HOST_DEFAULT_PACKET_POOL_MTU = "512"
+# Match the station driver's in-flight transmit budget in wifi.rs.
+ESP_RADIO_CONFIG_WIFI_MAX_BURST_SIZE = "10"
 
 [build]
 rustflags = [
