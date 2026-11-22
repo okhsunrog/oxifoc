@@ -87,6 +87,43 @@ between `connect` and the connection; the 32.768 kHz crystal also adds
 ≈250 ms before the stack starts. Range, hand blocking and long runs were not
 compared.
 
+### A host as central, with Wi-Fi on the same bridge
+
+Measured 2026-11-22. A Linux host (BlueZ) was the central and held a
++120 rad/s velocity setpoint, affirmed every 50 ms, on the unloaded MK5 bench
+motor. The bridge was associated to a 5 GHz access point throughout.
+
+BlueZ connects at a 45 ms interval, so three connection events span the
+150 ms deadman. Three holds out of three stopped with `CommTimeout`, after
+0.95, 3.7 and 9.7 s, and the gaps in the replies were multiples of 45 ms. The
+bridge now asks a trusted central whose interval is above 20 ms for 15–20 ms.
+The remote connects with these parameters and is not asked. BlueZ granted
+15 ms and a 78 s hold completed.
+
+The same hold with a Packed28 capture over the bridge's TCP link during 60 s
+of the 78 s, two runs per rate:
+
+| Capture rate | Capture | Setpoint held over BLE |
+|---|---|---|
+| none | – | 1 of 1 |
+| 2 kHz | 2 complete, no loss | 1 of 2; `CommTimeout` at 56.7 s |
+| 5 kHz | 2 complete, no loss | 2 of 2 |
+| 10 kHz | 2 complete, no loss | 2 of 2 |
+| 20 kHz | 0 complete | 0 of 2 |
+
+At 20 kHz one capture lost a block within its first second, and the hold
+stopped with `CommTimeout` at 73.9 s, long after the capture had ended. In the
+other the bridge reset itself 22 s into the capture (reset reason: software).
+The cause is unknown: the panic text goes to RTT only.
+
+One radio therefore carries a 10 kHz stream (2.4 Mbit/s) beside a BLE
+connection but not the native 20 kHz one, which the bridge forwards without
+loss when no central is connected. A setpoint held over BLE beside Wi-Fi
+still trips the deadman occasionally, at any stream rate: two stops in nine
+holds, the reset aside. Replies over BLE were up to 240 ms apart during a capture against
+151 ms without one. The host stood in for the remote; the remote was not
+measured beside Wi-Fi.
+
 ## Plan
 
 ### P0 — cheap, large effect

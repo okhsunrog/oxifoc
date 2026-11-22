@@ -15,7 +15,10 @@ use crate::{
     pairing::{Input, NO_BOND, PairingState, Stage},
     transport,
 };
-use bt_hci::controller::ExternalController;
+use bt_hci::{
+    cmd::le::LeReadLocalSupportedFeatures,
+    controller::{ControllerCmdSync, ExternalController},
+};
 use embassy_futures::{
     join::join5,
     select::{Either, Either4, select, select4},
@@ -42,6 +45,20 @@ const L2CAP_CHANNELS_MAX: usize = 2 * CONNECTIONS_MAX;
 /// so a stranger holds a link slot only briefly. Bonded devices encrypt well
 /// within this (see docs/notes/ble-pairing.md for measurements).
 const UNTRUSTED_TIMEOUT: Duration = Duration::from_secs(3);
+/// The connection interval asked of a trusted central that keeps a longer
+/// one, the same as the remote sets itself. A Linux host connects at 45 ms:
+/// three connection events span the controller's 150 ms command deadman, and
+/// a velocity setpoint held over that link stopped with CommTimeout within
+/// ten seconds.
+const DRIVE_INTERVAL_MAX: Duration = Duration::from_millis(20);
+const DRIVE_PARAMS: RequestedConnParams = RequestedConnParams {
+    min_connection_interval: Duration::from_millis(15),
+    max_connection_interval: DRIVE_INTERVAL_MAX,
+    max_latency: 0,
+    min_event_length: Duration::from_millis(0),
+    max_event_length: Duration::from_millis(0),
+    supervision_timeout: Duration::from_millis(2000),
+};
 
 type Bonds = Mutex<NoopRawMutex, BondStore>;
 
@@ -164,7 +181,7 @@ fn close_window(stack: &'static transport::Stack, attempt: u32, reason: WindowCl
 }
 
 #[allow(clippy::large_stack_frames)]
-async fn link_slot<'v, C: Controller>(
+async fn link_slot<'v, C: Controller + ControllerCmdSync<LeReadLocalSupportedFeatures>>(
     ctx: &Ctx<'_, '_, C>,
     peripheral: &Mutex<NoopRawMutex, Peripheral<'v, C, DefaultPacketPool>>,
     server: &NusServer<'v>,
@@ -310,13 +327,38 @@ async fn advertise<'v, 's, C: Controller>(
     Ok(conn)
 }
 
+/// Ask a trusted central for [`DRIVE_PARAMS`] unless it already runs them.
+async fn request_drive_interval<C: Controller + ControllerCmdSync<LeReadLocalSupportedFeatures>>(
+    ctx: &Ctx<'_, '_, C>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
+    link: usize,
+) {
+    let interval = conn.raw().params().conn_interval;
+    if interval <= DRIVE_INTERVAL_MAX {
+        return;
+    }
+    info!(
+        "[ble{}] connection interval {} us, asking for 15-20 ms",
+        link,
+        interval.as_micros()
+    );
+    if conn
+        .raw()
+        .update_connection_params(ctx.ble_stack, &DRIVE_PARAMS)
+        .await
+        .is_err()
+    {
+        warn!("[ble{link}] connection parameter request failed");
+    }
+}
+
 // ========== Link session: gate, pairing and frame pump ==========
 
 #[allow(clippy::large_stack_frames)]
-async fn link_session<C: Controller, P: PacketPool>(
+async fn link_session<C: Controller + ControllerCmdSync<LeReadLocalSupportedFeatures>>(
     ctx: &Ctx<'_, '_, C>,
     server: &NusServer<'_>,
-    conn: &GattConnection<'_, '_, P>,
+    conn: &GattConnection<'_, '_, DefaultPacketPool>,
     link: usize,
     ble_ident: u8,
 ) {
@@ -391,7 +433,15 @@ async fn link_session<C: Controller, P: PacketPool>(
                             id,
                             connected_at.elapsed().as_millis()
                         );
+                        request_drive_interval(ctx, conn, link).await;
                     }
+                }
+                GattConnectionEvent::ConnectionParamsUpdated { conn_interval, .. } => {
+                    info!(
+                        "[ble{}] connection interval {} us",
+                        link,
+                        conn_interval.as_micros()
+                    );
                 }
                 // The method tells the device kind: a remote has only a screen
                 // (it shows the code, Passkey Entry with input here); phones
@@ -451,6 +501,7 @@ async fn link_session<C: Controller, P: PacketPool>(
                             crate::diag::BLE[link]
                                 .trusted
                                 .store(true, Ordering::Relaxed);
+                            request_drive_interval(ctx, conn, link).await;
                         }
                         None => {
                             conn.raw().disconnect();

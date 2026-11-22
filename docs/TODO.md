@@ -66,6 +66,11 @@ preserves older review findings and experimental detail.
 - [ ] Bench-test a fast telemetry session through the bridge's BLE link.
   The host asks for 478-byte blocks (15 samples) there, so each block fits
   one 505-byte notification; nothing on that path fragments a frame.
+- [ ] Find why the bridge reset itself during a 20 kHz capture over Wi-Fi
+  with a BLE central driving the motor, and why a setpoint held over BLE
+  beside Wi-Fi still trips the deadman
+  ([measurements](notes/ble-link-reliability.md#a-host-as-central-with-wi-fi-on-the-same-bridge)).
+  The bridge keeps no crash record; its panic text reaches RTT only.
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 
