@@ -61,11 +61,9 @@ also carries early boot logs and panic output.
 
 ## Bridge firmware updates
 
-Generate a 32-byte OTA key with `openssl rand -hex 32` and keep it in the
-git-ignored `.env` as `OXIFOC_BRIDGE_OTA_KEY`. Source that file for the host
-CLI so it uses the key embedded in the bridge build. Keep credentialed app
-binaries private. The key authorizes uploads and wireless SWD arming.
-The CLI authenticates both with HMAC.
+Any host that reaches the bridge over USB, a bonded BLE link or the Wi-Fi
+port can update it and arm wireless SWD; nothing beyond the link itself
+authorizes these requests. The same links already carry motor commands.
 
 Install the dual-slot partition table once with `just flash-bridge` over
 wired USB. Each wired install selects `ota_0` and preserves the BLE
@@ -76,9 +74,6 @@ bridge to boot with.
 ```sh
 just build-cli
 just build-bridge-ota bridge-app.bin
-set -a
-. ./.env
-set +a
 target/debug/oxifoc-host-cli --transport tcp --tcp-host 192.0.2.10 ota update bridge-app.bin
 target/debug/oxifoc-host-cli --transport ble --ble-name "Oxifoc Bridge" ota update bridge-app.bin
 ```

@@ -6,7 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 oxifoc-host-lib = { path = "../oxifoc-host-lib" }
-oxifoc-core = { workspace = true, features = ["icd", "bridge-auth"] }
+oxifoc-core = { workspace = true, features = ["icd"] }
 anyhow = { workspace = true }
 clap = { workspace = true }
 crossbeam-channel = { workspace = true }

@@ -11,17 +11,10 @@ use embassy_net::{Stack as NetStack, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read, Write};
-use ergot::socket::HeaderMessage;
-use esp_hal::{
-    peripherals::{GPIO4, GPIO5},
-    rng::Rng,
-};
+use esp_hal::peripherals::{GPIO4, GPIO5};
 use oxifoc_core::{
     icd::SwdProbeEndpoint,
-    types::{
-        bridge_auth::{Nonce, parse_key},
-        swd_probe::{MAX_ARM_MINUTES, ProbeOperation, ProbeRequest, ProbeResponse},
-    },
+    types::swd_probe::{MAX_ARM_MINUTES, ProbeRequest, ProbeResponse},
 };
 
 use crate::transport::{Stack, spi::SPI_LINK_SLOTS};
@@ -37,7 +30,6 @@ use pins::Pins;
 const PAYLOAD_LEN: usize = PACKET_SIZE as usize;
 const SPI_ACTIVE_WINDOW: Duration = Duration::from_secs(1);
 const ACTIVE_SPI_PACKET_INTERVAL: Duration = Duration::from_millis(20);
-const CHALLENGE_LIFETIME: Duration = Duration::from_secs(15);
 
 // None disarms. Sending a new deadline replaces any existing listener or
 // connection. The request handler is the only writer.
@@ -46,92 +38,43 @@ static ARM: Signal<CriticalSectionRawMutex, Option<Instant>> = Signal::new();
 pub fn start(
     spawner: Spawner,
     router: &'static Stack,
-    usb_ident: u8,
     clk: GPIO4<'static>,
     dio: GPIO5<'static>,
     stack: Option<NetStack<'static>>,
 ) {
     let pins = Pins::new(clk, dio);
-    spawner.spawn(control(router, usb_ident, stack).expect("probe control task is spawned once"));
+    spawner.spawn(control(router, stack).expect("probe control task is spawned once"));
     if let Some(stack) = stack {
         spawner.spawn(serve(stack, pins).expect("probe task is spawned once"));
     }
 }
 
 #[embassy_executor::task]
-async fn control(router: &'static Stack, usb_ident: u8, stack: Option<NetStack<'static>>) {
+async fn control(router: &'static Stack, stack: Option<NetStack<'static>>) {
     let server = router
         .endpoints()
         .bounded_server::<SwdProbeEndpoint, 2>(None);
     let server = pin!(server);
     let mut handle = server.attach();
-    let usb_net = router.manage_profile(|p| p.net_id_of(usb_ident));
-    let key = option_env!("OXIFOC_BRIDGE_OTA_KEY").and_then(parse_key);
-    let mut challenge: Option<(Nonce, Instant)> = None;
 
     loop {
         let _ = handle
-            .serve_full(async |msg: &HeaderMessage<ProbeRequest>| {
-                let now = Instant::now();
-                let local = usb_net == Some(msg.hdr.src.network_id);
-                let operation = match msg.t {
-                    ProbeRequest::Arm { minutes } if local => ProbeOperation::Arm { minutes },
-                    ProbeRequest::Disarm if local => ProbeOperation::Disarm,
-                    ProbeRequest::Arm { .. } | ProbeRequest::Disarm => {
-                        return ProbeResponse::UsbRequired;
-                    }
-                    ProbeRequest::Challenge => {
-                        if key.is_none() {
-                            return ProbeResponse::AuthorizationUnavailable;
-                        }
-                        if stack.and_then(|net| net.config_v4()).is_none() {
-                            return ProbeResponse::WifiUnavailable;
-                        }
-                        let current = challenge.filter(|&(_, expires)| now < expires);
-                        let (nonce, expires) = current.unwrap_or_else(|| {
-                            let mut nonce = [0; 16];
-                            Rng::new().read(&mut nonce);
-                            (nonce, now + CHALLENGE_LIFETIME)
-                        });
-                        challenge = Some((nonce, expires));
-                        return ProbeResponse::Challenge { nonce };
-                    }
-                    ProbeRequest::Authenticated {
-                        operation,
-                        nonce,
-                        tag,
-                    } => {
-                        let Some(key) = &key else {
-                            return ProbeResponse::AuthorizationUnavailable;
-                        };
-                        if !challenge
-                            .is_some_and(|(expected, expires)| expected == nonce && now < expires)
-                            || !operation.verify(key, nonce, &tag)
-                        {
-                            return ProbeResponse::Unauthorized;
-                        }
-                        challenge = None;
-                        operation
-                    }
-                };
-                apply(operation, stack, now)
+            .serve(|request: &ProbeRequest| {
+                let reply = apply(*request, stack, Instant::now());
+                async move { reply }
             })
             .await;
     }
 }
 
-fn apply(
-    operation: ProbeOperation,
-    stack: Option<NetStack<'static>>,
-    now: Instant,
-) -> ProbeResponse {
-    match operation {
-        ProbeOperation::Disarm => {
+fn apply(request: ProbeRequest, stack: Option<NetStack<'static>>, now: Instant) -> ProbeResponse {
+    match request {
+        ProbeRequest::Disarm => {
             ARM.signal(None);
             log::info!("Wireless SWD disarmed");
             ProbeResponse::Disarmed
         }
-        ProbeOperation::Arm { minutes } => {
+        ProbeRequest::Arm { minutes } => {
             if !(1..=MAX_ARM_MINUTES).contains(&minutes) {
                 return ProbeResponse::InvalidDuration;
             }

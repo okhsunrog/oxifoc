@@ -614,10 +614,9 @@ pub struct TelemetryConfigAck {
 /// New endpoints: `req/diag` (`DiagEndpoint`: ISR windows, totals since boot,
 /// reset flags, the crash record) on the controller and `req/bridge_diag`
 /// (`BridgeDiagEndpoint`: SPI/USB/BLE link counters) on the bridge.
-/// The C5 bridge can serve `cmd/swd_probe` to arm or disarm wireless SWD.
-/// The bridge adds `cmd/bridge_ota` for authenticated app-slot updates.
-/// The C5 can authorize SWD arming wirelessly and publishes bridge logs
-/// on Ergot's standard formatted-log topic.
+/// The C5 bridge can serve `cmd/swd_probe` to arm or disarm wireless SWD
+/// and `cmd/bridge_ota` for app-slot updates, over any of its links, and
+/// publishes bridge logs on Ergot's standard formatted-log topic.
 /// The bridge carries Ergot over Wi-Fi as COBS frames on one TCP connection
 /// and reports that link in `req/bridge_diag`.
 pub const ICD_PROTO_VERSION: u16 = 24;
@@ -1414,9 +1413,8 @@ pub mod measurement;
 /// BLE pairing management served by the bridge.
 pub mod pairing;
 
-/// USB control of the bridge's wireless SWD probe.
+/// Arming of the bridge's wireless SWD probe.
 pub mod swd_probe;
 
-/// Authenticated over-the-air updates of the bridge firmware.
-pub mod bridge_auth;
+/// Over-the-air updates of the bridge firmware.
 pub mod bridge_ota;

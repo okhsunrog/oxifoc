@@ -23,7 +23,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use oxifoc_core::types::bridge_auth::{Key, parse_key};
 use oxifoc_core::types::{ConfigGroupId, ControlMode, FaultCategory, FaultClearTarget};
 use oxifoc_core::units::{self, amps, erad, erad_per_s, volts};
 use oxifoc_host_lib::{
@@ -31,11 +30,6 @@ use oxifoc_host_lib::{
     list_serial_ports, motor_channel, start_host,
 };
 use serde_json::json;
-
-fn bridge_key() -> Result<Key> {
-    let key = std::env::var("OXIFOC_BRIDGE_OTA_KEY").context("set OXIFOC_BRIDGE_OTA_KEY")?;
-    parse_key(&key).context("OXIFOC_BRIDGE_OTA_KEY must be 64 hexadecimal digits")
-}
 
 /// Send a motor command and wait for the device's acknowledgement — the
 /// process must exit nonzero when the command never reached the device.

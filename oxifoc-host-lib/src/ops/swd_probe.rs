@@ -1,4 +1,4 @@
-//! Control the C5 probe through the USB ergot link.
+//! Arm or disarm the C5 probe over the active Ergot link.
 
 use std::time::Duration;
 

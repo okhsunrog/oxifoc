@@ -89,14 +89,14 @@ broadcast topic with its byte-delta `FastTelemetryBatch` and the
 `RawTelemetryEndpoint`. The G474 caps its blocks at 997 bytes (34 records)
 for its 1024-byte MTU.
 
-The bridge adds `cmd/bridge_ota` for authenticated application updates
-over BLE and Wi-Fi.
+The bridge adds `cmd/bridge_ota` for application updates over any of its
+links.
 
 The bridge carries Ergot over Wi-Fi as COBS frames on one TCP connection,
 and `req/bridge_diag` reports that link.
 
 The C5 bridge adds `cmd/swd_probe` for time-limited arming and disarming
-of wireless SWD over USB Ergot or with authentication over Wi-Fi and BLE.
+of wireless SWD over any of its links.
 The bridge also publishes text on Ergot's standard formatted-log topic.
 
 From v24 on, the firmware skips flash keys it does not know and keeps them

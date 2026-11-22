@@ -2069,12 +2069,9 @@ version = "0.1.0"
 dependencies = [
  "ergot",
  "heapless 0.9.3",
- "hmac",
  "libm",
- "postcard",
  "postcard-schema",
  "serde",
- "sha2",
  "uom-ng",
 ]
 

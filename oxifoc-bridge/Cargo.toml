@@ -35,7 +35,6 @@ swd-probe = [
   "wifi",
   "dep:dap-rs",
   "dep:riscv",
-  "oxifoc-core/bridge-auth",
 ]
 wifi = [
   "dep:embassy-net",
@@ -44,7 +43,7 @@ wifi = [
   "esp-radio/coex",
   "esp-radio/wifi",
 ]
-ota = ["dep:esp-storage", "dep:embedded-storage", "oxifoc-core/bridge-auth", "dep:sha2"]
+ota = ["dep:esp-storage", "dep:embedded-storage", "dep:sha2"]
 
 [dependencies]
 esp-hal = { features = ["log-04", "esp32c5", "unstable"], version = "1.2.2" }

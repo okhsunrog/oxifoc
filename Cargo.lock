@@ -1135,12 +1135,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmov"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
-
-[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1491,15 +1485,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ctutils"
-version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "261af4dc7a06ea8a527a8717d8cbba3417530d6ea14e1edb3de6b67806be474f"
-dependencies = [
- "cmov",
-]
-
-[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1678,7 +1663,6 @@ checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer",
  "crypto-common",
- "ctutils",
 ]
 
 [[package]]
@@ -2870,15 +2854,6 @@ dependencies = [
  "nix 0.30.1",
  "pkg-config",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "hmac"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
-dependencies = [
- "digest",
 ]
 
 [[package]]
@@ -4843,7 +4818,6 @@ dependencies = [
  "embedded-storage-async",
  "ergot",
  "heapless 0.9.3",
- "hmac",
  "libm",
  "log",
  "postcard",
@@ -4852,7 +4826,6 @@ dependencies = [
  "sequential-storage",
  "serde",
  "serde_json",
- "sha2",
  "uom-ng",
 ]
 

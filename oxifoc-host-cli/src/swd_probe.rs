@@ -8,11 +8,11 @@ use std::{
 
 use anyhow::{Result, bail};
 use clap::Subcommand;
-use oxifoc_core::types::swd_probe::{MAX_ARM_MINUTES, ProbeOperation, ProbeRequest, ProbeResponse};
+use oxifoc_core::types::swd_probe::{MAX_ARM_MINUTES, ProbeRequest, ProbeResponse};
 use oxifoc_host_lib::{HostRuntime, ops::swd_probe as ops};
 use serde_json::json;
 
-use crate::{bridge_key, emit};
+use crate::emit;
 
 #[derive(Subcommand)]
 pub enum ProbeAction {
@@ -26,15 +26,12 @@ pub enum ProbeAction {
 }
 
 pub fn run(runtime: &HostRuntime, action: ProbeAction, wait: Duration, json: bool) -> Result<()> {
-    let (request, operation) = match action {
-        ProbeAction::Arm { minutes } => (
-            ProbeRequest::Arm { minutes },
-            ProbeOperation::Arm { minutes },
-        ),
-        ProbeAction::Disarm => (ProbeRequest::Disarm, ProbeOperation::Disarm),
+    let request = match action {
+        ProbeAction::Arm { minutes } => ProbeRequest::Arm { minutes },
+        ProbeAction::Disarm => ProbeRequest::Disarm,
     };
     let deadline = Instant::now() + wait;
-    let mut reply = loop {
+    let reply = loop {
         match ops::request(&runtime.cmd_tx, request) {
             Err(err) if err.is::<ops::NoProbe>() && Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(200));
@@ -42,22 +39,6 @@ pub fn run(runtime: &HostRuntime, action: ProbeAction, wait: Duration, json: boo
             result => break result?,
         }
     };
-    if matches!(reply, ProbeResponse::UsbRequired) {
-        reply = match ops::request(&runtime.cmd_tx, ProbeRequest::Challenge)? {
-            ProbeResponse::Challenge { nonce } => {
-                let tag = operation.sign(&bridge_key()?, nonce);
-                ops::request(
-                    &runtime.cmd_tx,
-                    ProbeRequest::Authenticated {
-                        operation,
-                        nonce,
-                        tag,
-                    },
-                )?
-            }
-            other => other,
-        };
-    }
 
     match reply {
         ProbeResponse::Armed { ipv4, minutes } => {
@@ -69,11 +50,6 @@ pub fn run(runtime: &HostRuntime, action: ProbeAction, wait: Duration, json: boo
             );
         }
         ProbeResponse::Disarmed => emit(json, json!({"armed": false}), "Disarmed.".into()),
-        ProbeResponse::UsbRequired | ProbeResponse::AuthorizationUnavailable => {
-            bail!("set OXIFOC_BRIDGE_OTA_KEY in the bridge build or arm over USB")
-        }
-        ProbeResponse::Unauthorized => bail!("bridge rejected the SWD authorization"),
-        ProbeResponse::Challenge { .. } => bail!("unexpected SWD authorization challenge"),
         ProbeResponse::InvalidDuration => bail!("arm duration must be 1–{MAX_ARM_MINUTES} minutes"),
         ProbeResponse::WifiUnavailable => {
             bail!("the bridge has no Wi-Fi address. Check its build-time credentials and DHCP")

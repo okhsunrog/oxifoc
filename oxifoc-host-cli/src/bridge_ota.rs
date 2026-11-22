@@ -10,15 +10,14 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use clap::Subcommand;
 use heapless::Vec as Chunk;
-use oxifoc_core::types::bridge_auth::{Key, Nonce};
 use oxifoc_core::types::bridge_ota::{
-    CHUNK_SIZE, OtaAction, OtaError, OtaRequest, OtaResponse, UploadRequest, is_bridge_image, sign,
+    CHUNK_SIZE, OtaError, OtaRequest, OtaResponse, is_bridge_image,
 };
 use oxifoc_host_lib::{HostRuntime, ops::bridge_ota::Client};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
-use crate::{bridge_key, emit};
+use crate::emit;
 
 #[derive(Subcommand)]
 pub enum OtaCommand {
@@ -35,7 +34,7 @@ pub fn run(runtime: &HostRuntime, action: OtaCommand, wait: Duration, json: bool
         cmd: &runtime.cmd_tx,
         target: None,
     };
-    let (nonce, booted_slot, capacity) = info(&mut client, wait)?;
+    let (boot, booted_slot, capacity) = info(&mut client, wait)?;
     match action {
         OtaCommand::Status => emit(
             json,
@@ -43,8 +42,7 @@ pub fn run(runtime: &HostRuntime, action: OtaCommand, wait: Duration, json: bool
             format!("Running ota_{booted_slot}. Inactive slot capacity {capacity} bytes."),
         ),
         OtaCommand::Abort => {
-            let key = bridge_key()?;
-            let reply = authenticated(&mut client, &key, nonce, OtaAction::Abort)?;
+            let reply = request(&mut client, OtaRequest::Abort)?;
             ensure!(
                 matches!(reply, OtaResponse::Aborted),
                 "unexpected reply: {reply:?}"
@@ -52,23 +50,24 @@ pub fn run(runtime: &HostRuntime, action: OtaCommand, wait: Duration, json: bool
             emit(json, json!({"aborted": true}), "Upload discarded.".into());
         }
         OtaCommand::Update { image } => {
-            update(&mut client, &image, nonce, booted_slot, capacity, json)?;
+            update(&mut client, &image, boot, booted_slot, capacity, json)?;
         }
     }
     Ok(())
 }
 
-fn info(client: &mut Client<'_>, wait: Duration) -> Result<(Nonce, u8, u32)> {
+/// The bridge's boot identifier, booted slot and inactive slot capacity.
+fn info(client: &mut Client<'_>, wait: Duration) -> Result<(u32, u8, u32)> {
     let deadline = Instant::now() + wait;
     loop {
         client.target = None;
         match client.request(OtaRequest::Info) {
             Ok(OtaResponse::Info {
-                nonce,
+                boot,
                 booted_slot,
                 capacity,
             }) => {
-                return Ok((nonce, booted_slot, capacity));
+                return Ok((boot, booted_slot, capacity));
             }
             Ok(reply) => bail!("bridge OTA status: {reply:?}"),
             Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(250)),
@@ -77,18 +76,10 @@ fn info(client: &mut Client<'_>, wait: Duration) -> Result<(Nonce, u8, u32)> {
     }
 }
 
-fn authenticated(
-    client: &mut Client<'_>,
-    key: &Key,
-    nonce: Nonce,
-    action: OtaAction,
-) -> Result<OtaResponse> {
-    let upload = UploadRequest { nonce, action };
-    let tag = sign(key, &upload).context("encode bridge OTA request")?;
-    let request = OtaRequest::Authenticated { upload, tag };
-    // Repeating an identical authenticated request is safe. The bridge
-    // compares previously written bytes before acknowledging a duplicate. Let
-    // the backend reconnect and rediscover the endpoint if the transport drops.
+fn request(client: &mut Client<'_>, request: OtaRequest) -> Result<OtaResponse> {
+    // Repeating an identical request is safe. The bridge compares previously
+    // written bytes before acknowledging a duplicate. Let the backend
+    // reconnect and rediscover the endpoint if the transport drops.
     let deadline = Instant::now() + Duration::from_secs(25);
     loop {
         match client.request(request.clone()) {
@@ -105,12 +96,11 @@ fn authenticated(
 fn update(
     client: &mut Client<'_>,
     path: &Path,
-    nonce: Nonce,
+    boot: u32,
     booted_slot: u8,
     capacity: u32,
     json: bool,
 ) -> Result<()> {
-    let key = bridge_key()?;
     let image = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     ensure!(
         is_bridge_image(&image),
@@ -122,7 +112,7 @@ fn update(
         "image does not fit the inactive slot"
     );
     let digest = Sha256::digest(&image).into();
-    let reply = authenticated(client, &key, nonce, OtaAction::Begin { length, digest })?;
+    let reply = request(client, OtaRequest::Begin { length, digest })?;
     let OtaResponse::Progress { mut offset } = reply else {
         bail!("bridge refused the upload: {reply:?}");
     };
@@ -138,7 +128,7 @@ fn update(
         let end = (offset + CHUNK_SIZE as u32).min(length);
         let data = Chunk::from_slice(&image[offset as usize..end as usize])
             .map_err(|_| anyhow::anyhow!("invalid OTA chunk length"))?;
-        let reply = authenticated(client, &key, nonce, OtaAction::Chunk { offset, data })?;
+        let reply = request(client, OtaRequest::Chunk { offset, data })?;
         let OtaResponse::Progress { offset: confirmed } = reply else {
             bail!("bridge rejected chunk at byte {offset}: {reply:?}");
         };
@@ -154,18 +144,18 @@ fn update(
     }
 
     let expected = booted_slot ^ 1;
-    match authenticated(client, &key, nonce, OtaAction::Finish) {
+    match request(client, OtaRequest::Finish) {
         Ok(OtaResponse::Rebooting { slot }) => ensure!(slot == expected, "unexpected boot slot"),
-        // The last reply can be lost as the bridge resets. Confirm the actual
-        // booted slot after rediscovery before reporting success.
-        Err(_) | Ok(OtaResponse::Error(OtaError::Unauthorized)) => {}
+        // The last reply can be lost as the bridge resets, and a repeat then
+        // reaches the restarted bridge. Confirm the actual booted slot after
+        // rediscovery before reporting success.
+        Err(_) | Ok(OtaResponse::Error(OtaError::NoUpload)) => {}
         Ok(reply) => bail!("bridge rejected activation: {reply:?}"),
     }
     let deadline = Instant::now() + Duration::from_secs(75);
     loop {
-        let (challenge, slot, _) =
-            info(client, deadline.saturating_duration_since(Instant::now()))?;
-        if challenge != nonce {
+        let (current, slot, _) = info(client, deadline.saturating_duration_since(Instant::now()))?;
+        if current != boot {
             ensure!(
                 slot == expected,
                 "bridge booted ota_{slot}, expected ota_{expected}"

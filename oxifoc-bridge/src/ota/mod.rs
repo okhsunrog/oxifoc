@@ -1,4 +1,4 @@
-//! Authenticated, resumable app-slot updates shared by the bridge transports.
+//! Resumable app-slot updates shared by the bridge transports.
 
 use core::{cell::RefCell, pin::pin};
 
@@ -9,10 +9,7 @@ use ergot::socket::HeaderMessage;
 use esp_hal::{rng::Rng, system};
 use oxifoc_core::{
     icd::BridgeOtaEndpoint,
-    types::bridge_auth::{Key, Nonce, parse_key},
-    types::bridge_ota::{
-        CHUNK_SIZE, Digest, OtaAction, OtaError, OtaRequest, OtaResponse, is_bridge_image, verify,
-    },
+    types::bridge_ota::{CHUNK_SIZE, Digest, OtaError, OtaRequest, OtaResponse, is_bridge_image},
 };
 use sha2::{Digest as _, Sha256};
 use static_cell::StaticCell;
@@ -30,10 +27,9 @@ pub type Service = RefCell<Updater>;
 pub fn start(spawner: Spawner, stack: &'static Stack, flash: Flash) {
     static STATE: StaticCell<Service> = StaticCell::new();
     let updater = Updater {
-        key: option_env!("OXIFOC_BRIDGE_OTA_KEY").and_then(parse_key),
         slots: Slots::read(flash),
         flash,
-        nonce: None,
+        boot: None,
         upload: None,
         rebooting: None,
     };
@@ -44,8 +40,8 @@ pub fn start(spawner: Spawner, stack: &'static Stack, flash: Flash) {
 pub struct Updater {
     flash: Flash,
     slots: Result<Slots, OtaError>,
-    key: Option<Key>,
-    nonce: Option<Nonce>,
+    /// Chosen on the first request, once a radio has seeded the generator.
+    boot: Option<u32>,
     upload: Option<Upload>,
     rebooting: Option<u8>,
 }
@@ -61,7 +57,6 @@ struct Upload {
 
 impl Updater {
     fn handle(&mut self, request: &OtaRequest) -> Result<OtaResponse, OtaError> {
-        let key = self.key.ok_or(OtaError::Disabled)?;
         let slots = self.slots?;
         let inactive = slots.inactive();
         let now = Instant::now();
@@ -72,34 +67,25 @@ impl Updater {
                 .is_some_and(|upload| now - upload.last_activity >= IDLE_LIMIT)
         {
             self.upload = None;
-            self.nonce = None;
         }
-
-        let OtaRequest::Authenticated { upload, tag } = request else {
-            let nonce = *self.nonce.get_or_insert_with(|| {
-                // The requesting BLE/Wi-Fi link has already enabled its radio.
-                let mut bytes = [0; 16];
-                Rng::new().read(&mut bytes);
-                bytes
-            });
-            return Ok(OtaResponse::Info {
-                nonce,
-                booted_slot: slots.booted,
-                capacity: inactive.len(),
-            });
-        };
-        if self.nonce != Some(upload.nonce) || !verify(&key, upload, tag) {
-            return Err(OtaError::Unauthorized);
-        }
-        if let Some(slot) = self.rebooting {
-            return match upload.action {
-                OtaAction::Finish => Ok(OtaResponse::Rebooting { slot }),
+        // Status stays available while the activation reply is on its way.
+        if let Some(slot) = self.rebooting
+            && !matches!(request, OtaRequest::Info)
+        {
+            return match request {
+                OtaRequest::Finish => Ok(OtaResponse::Rebooting { slot }),
                 _ => Err(OtaError::Busy),
             };
         }
 
-        match &upload.action {
-            OtaAction::Begin { length, digest } => {
+        match request {
+            OtaRequest::Info => Ok(OtaResponse::Info {
+                // The requesting BLE/Wi-Fi link has already enabled its radio.
+                boot: *self.boot.get_or_insert_with(|| Rng::new().random()),
+                booted_slot: slots.booted,
+                capacity: inactive.len(),
+            }),
+            OtaRequest::Begin { length, digest } => {
                 if *length < 256 || *length > inactive.len() || !length.is_multiple_of(4) {
                     return Err(OtaError::InvalidLength);
                 }
@@ -123,7 +109,7 @@ impl Updater {
                 });
                 Ok(OtaResponse::Progress { offset: 0 })
             }
-            OtaAction::Chunk { offset, data } => {
+            OtaRequest::Chunk { offset, data } => {
                 let current = self.upload.as_mut().ok_or(OtaError::NoUpload)?;
                 current.write(&mut self.flash, inactive.offset(), *offset, data)?;
                 current.last_activity = now;
@@ -131,7 +117,7 @@ impl Updater {
                     offset: current.offset,
                 })
             }
-            OtaAction::Finish => {
+            OtaRequest::Finish => {
                 let current = self.upload.as_ref().ok_or(OtaError::NoUpload)?;
                 if current.offset != current.length {
                     return Err(OtaError::UnexpectedOffset);
@@ -143,9 +129,8 @@ impl Updater {
                 self.rebooting = Some(slot);
                 Ok(OtaResponse::Rebooting { slot })
             }
-            OtaAction::Abort => {
+            OtaRequest::Abort => {
                 self.upload = None;
-                self.nonce = None;
                 Ok(OtaResponse::Aborted)
             }
         }

@@ -133,7 +133,7 @@ async fn main(spawner: Spawner) -> ! {
         transport::tcp::start(spawner, stack, network);
     }
     #[cfg(feature = "swd-probe")]
-    oxifoc_bridge::probe::start(spawner, stack, usb_ident, p.GPIO4, p.GPIO5, network);
+    oxifoc_bridge::probe::start(spawner, stack, p.GPIO4, p.GPIO5, network);
     #[cfg(feature = "ota")]
     oxifoc_bridge::ota::start(spawner, stack, flash);
     log::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");
