@@ -92,6 +92,11 @@ check-device:
         else
             (cd "$crate" && cargo build --release --quiet 2>&1 | filter) || exit 1
         fi
+        if [ "$crate" = "oxifoc-bridge" ]; then
+            # BLE is opt-in but is the deployed configuration: check it too.
+            (cd "$crate" && cargo clippy --quiet --features ble -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
+            (cd "$crate" && cargo build --release --quiet --features ble 2>&1 | filter) || exit 1
+        fi
     done
     for crate in {{ target_test_crates }}; do
         echo "$crate: fmt + compile..."
