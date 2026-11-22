@@ -121,6 +121,8 @@ Caveats:
   a slow bench host keeps up. Run it with `scripts/isr_bench.sh` while RTT is
   read and summarise with `scripts/isr_rtt.py`; see
   [ISR performance](../docs/performance.md#running-a-comparison-on-the-bench).
+  `isr-timing-short.json` is the same with 3 s stopped and 8 s per speed: it
+  gives the same averages in a third of the time, but not reliable maxima.
 
 Choose analysis by the measurement question. For stationary resistance, first
 inspect settling, zero-current offsets, signed V/I plateaus and repeat drift.

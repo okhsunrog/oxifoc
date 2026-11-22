@@ -242,13 +242,20 @@ committed.
 2. Record the ELF SHA-256, features, toolchain, PWM rate, phase source and
    supply (`build.txt` has the first three). Flash with an explicit `--probe`;
    after a failed flash, retry at `--speed 1000` before anything else.
-3. Use one maneuver for every image: `maneuvers/isr-timing.json` is 5 s
-   stopped, 20 s at +120 and 20 s at +450 electrical rad/s, then Stop. Keep
-   the fast-telemetry rate identical; a slow host (Raspberry Pi 3) cannot keep
-   up with native-rate capture, so the maneuver captures at 1 kHz.
+3. Use one maneuver for every image. +120 electrical rad/s runs on the Hall
+   angle and +450 on the observer (the bench blend is 150–300), so a change
+   to either path shows at one of them. `maneuvers/isr-timing-short.json`
+   (3 s stopped, 8 s at each speed, then Stop; 64 s per run including the
+   flash) gives the averages: it matched the long maneuver within 0.3 cycles.
+   Use `maneuvers/isr-timing.json` (5 s stopped, 20 s at each speed) when the
+   maximum matters: the per-second maximum of one image varies by about 500
+   cycles between runs, so a claim about it needs long phases and repeats.
+   Keep the fast-telemetry rate identical; a slow host (Raspberry Pi 3) cannot
+   keep up with native-rate capture, so both capture at 1 kHz.
 4. Read the RTT log during the run. `scripts/isr_bench.sh ELF MANEUVER OUT`
-   does steps 2–4 on the bench host: it flashes with `OXIFOC_MK5_PROBE`
-   (retrying at `--speed 1000`), resets, attaches `probe-rs attach` and runs
+   does steps 2–4 on the bench host: it flashes with `OXIFOC_MK5_PROBE` at
+   4 MHz SWD (retrying at 1 MHz; flashing takes about 33 s, erase and
+   programming dominate), resets, attaches `probe-rs attach` and runs
    the maneuver with the host CLI (`OXIFOC_HOST_CLI`, default
    `oxifoc-host-cli` on `PATH`; `OXIFOC_BRIDGE_SERIAL` selects the bridge),
    leaving `OUT.rtt.log`, `OUT.json` and the capture. It needs only probe-rs,
@@ -264,8 +271,10 @@ committed.
    per-second averages, their spread, the largest maximum. `--json` for
    scripts.
 6. Repeat each image and interleave control and candidate. Repeats of one ELF
-   agree within ±2 cycles; a difference between two images is meaningful only
-   when it exceeds the placement noise of the code you changed.
+   agree within ±2 cycles on the average; a difference between two images is
+   meaningful only when it exceeds the placement noise of the code you
+   changed. One run per image is enough to find an effect of tens of cycles;
+   repeat before claiming one under about 10.
 7. Restore a verified production image (`just build-mk5-spi`) and confirm
    `status` reports Stopped with no faults.
 

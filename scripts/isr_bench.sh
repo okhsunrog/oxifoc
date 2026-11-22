@@ -4,7 +4,7 @@
 #
 # usage: isr_bench.sh ELF MANEUVER OUT
 #   ELF       image built with the `isr/s` lines enabled (scripts/isr_placement.py build)
-#   MANEUVER  e.g. maneuvers/isr-timing.json
+#   MANEUVER  maneuvers/isr-timing-short.json (averages) or isr-timing.json (maxima)
 #   OUT       output prefix: OUT.flash.log, OUT.rtt.log, OUT.json (maneuver
 #             report), OUT.log (CLI stderr); the capture is OUT.parquet
 #
@@ -43,13 +43,15 @@ test -f "$maneuver" || { echo "no maneuver $maneuver" >&2; exit 2; }
 test -x "$cli" || { echo "host CLI $cli not found; set OXIFOC_HOST_CLI" >&2; exit 2; }
 mkdir -p "$(dirname "$out")"
 
-# After a failed flash, retry at 1 MHz SWD before anything else.
+# 4 MHz SWD: erase and programming dominate (about 33 s for the MK5 image,
+# 37 s at the 1 MHz default; 24 MHz saves one more second). After a failed
+# flash, retry at 1 MHz before anything else.
 : > "$out.flash.log"
 flashed=0
-for speed in "" 1000 1000; do
-    if probe-rs download --verify --chip $chip "${probe[@]}" ${speed:+--speed $speed} "$elf" \
+for speed in 4000 1000 1000; do
+    if probe-rs download --verify --chip $chip "${probe[@]}" --speed $speed "$elf" \
         >> "$out.flash.log" 2>&1; then flashed=1; break; fi
-    echo "flash failed${speed:+ at --speed $speed}" >&2
+    echo "flash failed at --speed $speed" >&2
     sleep 3
 done
 if [ $flashed != 1 ]; then echo "FLASH FAILED: $elf (see $out.flash.log)" >&2; exit 3; fi
