@@ -163,19 +163,51 @@ with packets queued for it, which hold 256 or 320 bytes of heap each.
 
 The heap's static region grew from 12 to 28 KiB, and the USB queue shrank
 from 44 to 28 KiB to pay for it. Three more holds beside a 20 kHz capture
-then left at least 10.0 KiB free, with no reset, and 20 kHz over Wi-Fi
+then left at least 8.5 KiB free, with no reset, and 20 kHz over Wi-Fi
 alone stayed complete with 18.5 KiB free. `diag bridge` reports the heap.
 Over USB a 20 kHz capture lost blocks with either queue size and a 10 kHz
 one was complete with either.
 
-Beside a central the 20 kHz stream is incomplete at any setting: the
-controller dropped 14 to 18 % of the samples before sending them, 335 000
-to 424 000 of 2.4 million. On the original heap a few hundred more were
-lost on the way. 10 kHz is complete.
+Beside a central the 20 kHz stream is incomplete at any setting: with the
+motor running the controller dropped about a third of the samples before
+sending them, 770 000 to 790 000 of 2.4 million, and 14 to 18 % with the
+motor stopped. On the original heap a few hundred more were lost on the
+way. 10 kHz is complete.
 
-The `CommTimeout` stops are not explained. The first two 138 s holds
-stopped, after 30.6 and 14.5 s; none of the 30 that followed did, at any
-setting.
+Most of the runs above were not holds. After the stand was power-cycled
+that morning the controller answered every velocity command with
+`Applied` and stayed `Stopped`: a `DriverFault` at power-on had cancelled
+the boot calibration of the current sensors, nothing repeated it, and the
+only trace was `FOC step error: NotCalibrated` in the controller's log.
+The central still sent its commands and polls, so the heap and panic
+figures stand: they depend on the radio traffic. They say nothing about
+the deadman. Only the first two 138 s holds had the motor running; both
+stopped with `CommTimeout`, after 30.6 and 14.5 s.
+
+After a controller reset, on the enlarged heap, five holds with the motor
+running had no stop: three of 138 s beside a 20 kHz capture, 78 s beside
+10 kHz and 78 s alone. Before it there were four stops in about 750 s of
+driving. A heap too full to take a received packet would explain them; that
+is not established.
+
+### Wi-Fi beside BLE on esp-hal main
+
+Measured 2026-11-23 on the branch that builds the bridge against esp-hal
+`main` (`ba36471`). A 20 kHz capture over Wi-Fi alone, complete on the
+releases, lost a block within two seconds in 7 runs of 7; about 3.0 Mbit/s
+got through where 4.8 are needed, at the same 72 Mbit/s link rate.
+
+Bisecting 319 commits found esp-hal `f11de2fb` (#6486, 2026-10-14). Until
+then the BLE controller's coexistence status calls were empty stubs on the
+C5, so Wi-Fi kept the radio; now they reach the coexistence scheduler and
+BLE gets its share. On `main` the capture is complete without BLE in the
+image (3 of 3) and with BLE up but not advertising (3 of 3). Advertising
+every 160-200 ms instead of every 20-30 ms did not help (0 of 3): the cost
+comes with the advertising state, not its rate. The library for the C5 has
+no `esp_coex_preference_set` to link against.
+
+So on `main` a 20 kHz stream over Wi-Fi needs BLE silent on the same
+chip, or a smaller stream. 10 kHz is complete beside a driving central.
 
 Loading the BLE link alone was worse. A 5 kHz capture requested over BLE,
 with no Wi-Fi stream and the motor stopped, left the bridge silent on both

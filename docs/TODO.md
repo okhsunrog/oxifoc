@@ -50,6 +50,11 @@ preserves older review findings and experimental detail.
 
 ## Safety
 
+- [ ] Report why a drive command does nothing. After a `DriverFault` at
+  power-on the boot current-sensor calibration stays cancelled: every
+  command is answered `Applied`, the state stays `Stopped`, no fault is
+  raised and only the controller's log says `NotCalibrated`. Repeat the
+  calibration once the fault is cleared, and tell the host the reason.
 - [ ] Qualify controlled stopping, regenerative limits, dissipative
   braking and parking-brake entry with the relevant source and load.
 - [ ] Verify F405 hardware watchdog reset leaves the bridge safe. Arm and
@@ -88,8 +93,14 @@ preserves older review findings and experimental detail.
   refuses other hosts while the session is open. The bridge logs two lines
   for every frame it cannot route.
 - [ ] Measure the remote, not a host, holding a setpoint beside Wi-Fi, and
-  find what stopped a host's holds with `CommTimeout` in the first
-  measurements: four of eleven then, none of the 30 holds since.
+  find what stopped a host's holds with `CommTimeout`: four stops in about
+  750 s of driving before the radio heap grew, none in five holds since
+  ([measurements](notes/ble-link-reliability.md#bridge-reset-and-radio-stall-under-ble-load)).
+- [ ] Move the bridge to esp-hal `main` for the CAN FD driver and the BLE
+  fixes no release carries. The branch `bridge-esp-hal-main` builds and
+  passes the bench runs except that BLE advertising now costs Wi-Fi about
+  a third of its airtime
+  ([measurements](notes/ble-link-reliability.md#wi-fi-beside-ble-on-esp-hal-main)).
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 
