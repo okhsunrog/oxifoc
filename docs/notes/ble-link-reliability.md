@@ -149,12 +149,33 @@ outgrows the pool. This is read from the esp-radio source, not observed in
 the controller. esp-hal `main` at `64977dfc7` (2026-11-20) has the same
 pool sizes, default and unchecked allocation.
 
-Loading the BLE link alone is worse. A 5 kHz capture requested over BLE,
+Loading the BLE link alone was worse. A 5 kHz capture requested over BLE,
 with no Wi-Fi stream and the motor stopped, left the bridge silent on both
 radios about two seconds after the host connected and asked for the
-stream: no reset, still associated at the access point, and a power cycle
-was needed. Not diagnosed. Its watchdogs are off, so nothing ends such a
-state.
+stream, twice out of twice: no reset, the TCP port did not answer and the
+access point had not heard the bridge for 31 s. The CPU was idle in six
+halts out of six, so the radio had stopped, not the program. RTT showed
+the start of it:
+
+```text
+[WARN esp_radio::ble] Dropping HCI packet of 260 bytes, which is too long
+[WARN esp_radio::ble] Dropping HCI byte with unknown packet type indicator 217
+```
+
+esp-radio 1.0.0-beta.1 accepts HCI packets of at most 259 bytes from the
+host, and an ACL packet with the 255 data bytes the controller allows is
+260 with its header and indicator. The packet is dropped and its payload
+is then read as new packets, one byte at a time. Raw telemetry blocks over
+BLE are the first notifications long enough to fill a packet. Upstream
+fixed the limit on 2026-10-02 (esp-hal #6448), after the last release.
+
+The bridge now tells the host 251 data bytes per ACL packet. Five more
+captures over BLE at 1 to 5 kHz left it answering over Wi-Fi at once, with
+no such warning. The captures themselves still stall: the link's 1 KiB
+queue refuses most of the blocks one SPI slot delivers (539 in one 15 s
+run). The controller also kept streaming to the host that had gone, until
+the bridge was reset; by the session rules another host is refused while
+that session is open.
 
 ## Plan
 
