@@ -54,6 +54,15 @@ const UNTRUSTED_TIMEOUT: Duration = Duration::from_secs(3);
 /// traffic and left the radio deaf to Wi-Fi as well. 251 is one link-layer
 /// payload.
 const CONTROLLER_ACL_BYTES: u16 = 251;
+/// ACL packets the controller lets the host queue for transmission.
+///
+/// esp-radio takes an mbuf per packet from pools fixed at 12 blocks of
+/// 256 bytes and 24 of 320, and panics when one is empty. Its default of 24
+/// packets outgrew them once Wi-Fi kept the radio from sending: the bridge
+/// reset during a 20 kHz capture with a central driving. A packet of 229 to
+/// 240 bytes can take two small blocks, so four packets stay within the
+/// small pool with room for received ones.
+const CONTROLLER_ACL_PACKETS: u16 = 4;
 /// The connection interval asked of a trusted central that keeps a longer
 /// one, the same as the remote sets itself. A Linux host connects at 45 ms:
 /// three connection events span the controller's 150 ms command deadman, and
@@ -91,6 +100,7 @@ pub async fn run(
         .with_default_tx_power(esp_radio::ble::TxPower::P20)
         .with_max_connections(CONNECTIONS_MAX as u16)
         .with_acl_buf_size(CONTROLLER_ACL_BYTES)
+        .with_acl_buf_count(CONTROLLER_ACL_PACKETS)
         // One filter accept list and resolving list entry per bond.
         .with_whitelist_size(MAX_BONDS as u8)
         .with_ll_resolv_list_size(MAX_BONDS as u16);

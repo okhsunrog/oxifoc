@@ -125,7 +125,7 @@ holds, the reset aside. Replies over BLE were up to 240 ms apart during a captur
 151 ms without one. The host stood in for the remote; the remote was not
 measured beside Wi-Fi.
 
-### Bridge reset and hang under a BLE backlog
+### Bridge reset and radio stall under BLE load
 
 Measured 2026-11-23 with the crash record of `diag bridge`.
 
@@ -145,9 +145,19 @@ msys pools and appends to it without checking for a null pointer; 2 is the
 invalid-argument result of appending to none. The pools are fixed at 12
 blocks of 256 bytes and 24 of 320, while the C5 default (`acl_buf_count`
 24) lets the host queue 24 packets. With Wi-Fi taking the radio the queue
-outgrows the pool. This is read from the esp-radio source, not observed in
-the controller. esp-hal `main` at `64977dfc7` (2026-11-20) has the same
-pool sizes, default and unchecked allocation.
+outgrows the pool. The count of 24 is in the host's start-up log ("setting
+txq to 24"); that the pool ran out is read from the esp-radio source, not
+observed in the controller. esp-hal `main` at `64977dfc7` (2026-11-20) has
+the same pool sizes, default and unchecked allocation.
+
+The bridge now sets `acl_buf_count` to 4 ("setting txq to 4"). Six runs of
+a 138 s hold with a 120 s capture at 20 kHz, on the same host build, ended
+without a reset and without a `CommTimeout`; before, both such holds had
+stopped with `CommTimeout`, after 30.6 and 14.5 s. Each capture missed 340
+to 832 of about 2.06 million records, and replies over BLE were up to
+314 ms apart. A 78 s hold with no capture had no reply gap over 150 ms.
+Received packets take blocks from the same pools, which may be why the
+holds stopped before; that is not established.
 
 Loading the BLE link alone was worse. A 5 kHz capture requested over BLE,
 with no Wi-Fi stream and the motor stopped, left the bridge silent on both

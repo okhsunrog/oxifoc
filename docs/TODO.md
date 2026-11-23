@@ -73,17 +73,21 @@ preserves older review findings and experimental detail.
 - [ ] Recheck fast capture losses under load using the [MK5 bench baseline](notes/foc-loop-research.md#native-rate-recording-on-mk5).
   Measure the producer queue and command delivery separately. Keep
   pre-trigger RAM capture as a separate feature if needed for faults.
-- [ ] Bench-test a fast telemetry session through the bridge's BLE link.
-  The host asks for 478-byte blocks (15 samples) there, so each block fits
-  one 505-byte notification; nothing on that path fragments a frame.
-- [ ] Keep the bridge alive under a BLE backlog
-  ([measurements](notes/ble-link-reliability.md#bridge-reset-and-hang-under-a-ble-backlog)).
-  esp-radio panics when the BLE controller's mbuf pool runs out: bound the
-  host's ACL queue below the pool (`acl_buf_count`) and report it upstream.
-  A capture over BLE alone hangs the bridge without a reset: find where,
-  and run a watchdog so a hang ends in a reset instead of a power cycle.
-- [ ] Find why a setpoint held over BLE beside Wi-Fi still trips the
-  deadman ([measurements](notes/ble-link-reliability.md#a-host-as-central-with-wi-fi-on-the-same-bridge)).
+- [ ] Carry a fast telemetry session over the bridge's BLE link. Captures
+  at 1 to 5 kHz stall: the link's 1 KiB queue refuses most of the 478-byte
+  blocks one SPI slot delivers. Size the queue for a slot, or hold the slot
+  as the Wi-Fi path does.
+- [ ] Report esp-radio's panic on an empty BLE mbuf pool upstream. Drop
+  the two controller buffer settings in `ble_runtime.rs` once a release
+  handles it and carries esp-hal #6448
+  ([measurements](notes/ble-link-reliability.md#bridge-reset-and-radio-stall-under-ble-load)).
+- [ ] End a raw telemetry session whose requester has gone. The controller
+  streamed to a host that had disconnected until the bridge was reset, and
+  refuses other hosts while the session is open. The bridge logs two lines
+  for every frame it cannot route.
+- [ ] Measure the remote, not a host, holding a setpoint beside Wi-Fi. With
+  the ACL queue bound a host held it through six 138 s runs beside a 20 kHz
+  capture; two of nine 78 s holds had stopped before.
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 
