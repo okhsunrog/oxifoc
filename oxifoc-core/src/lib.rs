@@ -180,6 +180,8 @@ macro_rules! clear_rc_w0 {
 /// - Device info and events
 pub mod types;
 
+/// Delta28, the smaller form a relay gives raw blocks.
+pub mod raw_delta;
 /// Independent raw diagnostic blocks, shared by the optional bench sinks.
 pub mod raw_telemetry;
 #[cfg(feature = "spi-link")]

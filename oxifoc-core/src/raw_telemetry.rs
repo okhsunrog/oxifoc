@@ -423,7 +423,27 @@ pub struct DecodedRawBlock {
     pub velocity: heapless::Vec<VelocityDebugFrame, RAW_MAX_RECORDS>,
 }
 
+/// Bytes of the block that starts with `header`. A relay may have rewritten
+/// a Packed28 block as Delta28 (tag 4, see [`crate::raw_delta`]); the
+/// decoders from here on accept both layouts.
+pub fn raw_block_len(header: &[u8]) -> Result<usize, RawDecodeError> {
+    use crate::raw_delta;
+    if raw_delta::is_delta(header) {
+        raw_delta::delta_block_len(header)
+    } else {
+        Ok(RAW_HEADER_BYTES + RawBlockHeader::parse(header)?.payload_bytes())
+    }
+}
+
+/// Decodes one block. A Delta28 block decodes as the Packed28 block it was
+/// made from.
 pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError> {
+    use crate::raw_delta;
+    if raw_delta::is_delta(bytes) {
+        let mut plain = [0; raw_delta::PLAIN_BLOCK_BYTES];
+        let len = raw_delta::expand(bytes, &mut plain)?;
+        return decode_raw_block(&plain[..len]);
+    }
     let header = RawBlockHeader::parse(bytes)?;
     if bytes.len() != RAW_HEADER_BYTES + header.payload_bytes() {
         return Err(RawDecodeError::Length);
@@ -481,7 +501,7 @@ impl RawStreamDecoder {
                 let expected = if self.bytes.len() < RAW_HEADER_BYTES {
                     RAW_HEADER_BYTES
                 } else {
-                    RAW_HEADER_BYTES + RawBlockHeader::parse(&self.bytes)?.payload_bytes()
+                    raw_block_len(&self.bytes)?
                 };
                 let take = (expected - self.bytes.len()).min(input.len());
                 self.bytes
@@ -489,8 +509,7 @@ impl RawStreamDecoder {
                     .map_err(|_| RawDecodeError::Length)?;
                 input = &input[take..];
                 if self.bytes.len() >= RAW_HEADER_BYTES {
-                    let total =
-                        RAW_HEADER_BYTES + RawBlockHeader::parse(&self.bytes)?.payload_bytes();
+                    let total = raw_block_len(&self.bytes)?;
                     if self.bytes.len() == total {
                         on_block(decode_raw_block(&self.bytes)?);
                         self.bytes.clear();
