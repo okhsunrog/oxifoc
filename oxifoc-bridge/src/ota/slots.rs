@@ -19,13 +19,13 @@ const OTA_VALID: u32 = 2;
 #[derive(Clone, Copy)]
 pub struct Slots {
     apps: [PartitionEntry; 2],
-    metadata: u32,
+    metadata: PartitionEntry,
     pub booted: u8,
 }
 
 impl Slots {
     pub fn read(flash: Flash) -> Result<Self, OtaError> {
-        if esp_storage::flash_encryption() {
+        if esp_hal::efuse::flash_encryption() {
             return Err(OtaError::PartitionLayout);
         }
         let mut buffer = [0; PARTITION_TABLE_MAX_LEN];
@@ -81,7 +81,7 @@ impl Slots {
             }
             Ok(Self {
                 apps,
-                metadata: data.offset(),
+                metadata: data,
                 booted,
             })
         })
@@ -91,11 +91,16 @@ impl Slots {
         self.apps[usize::from(self.booted ^ 1)]
     }
 
-    fn newest(self, flash: &mut Flash) -> Result<Option<(u32, u32)>, OtaError> {
+    /// The newer valid record: its offset in the metadata partition and its
+    /// sequence number.
+    fn newest(self, flash: Flash) -> Result<Option<(u32, u32)>, OtaError> {
+        let mut metadata = flash.partition(self.metadata);
         let mut newest = None;
-        for at in [self.metadata, self.metadata + SECTOR] {
+        for at in [0, SECTOR] {
             let mut record = [0; RECORD_SIZE];
-            flash.read(at, &mut record).map_err(|_| OtaError::Flash)?;
+            metadata
+                .read(at, &mut record)
+                .map_err(|_| OtaError::Flash)?;
             if let Some(seq) = sequence(record)
                 && newest.is_none_or(|(_, previous)| seq > previous)
             {
@@ -105,7 +110,7 @@ impl Slots {
         Ok(newest)
     }
 
-    pub fn check_running_selection(self, flash: &mut Flash) -> Result<(), OtaError> {
+    pub fn check_running_selection(self, flash: Flash) -> Result<(), OtaError> {
         let expected = self.newest(flash)?.map_or(0, |(_, seq)| app_index(seq));
         if expected == self.booted {
             Ok(())
@@ -116,9 +121,9 @@ impl Slots {
         }
     }
 
-    pub fn select_inactive(self, flash: &mut Flash) -> Result<u8, OtaError> {
+    pub fn select_inactive(self, flash: Flash) -> Result<u8, OtaError> {
         self.check_running_selection(flash)?;
-        let (at, last) = self.newest(flash)?.unwrap_or((self.metadata + SECTOR, 0));
+        let (at, last) = self.newest(flash)?.unwrap_or((SECTOR, 0));
         let target = self.booted ^ 1;
         let mut seq = last.checked_add(1).ok_or(OtaError::Flash)?;
         if app_index(seq) != target {
@@ -127,21 +132,20 @@ impl Slots {
         if seq == u32::MAX {
             return Err(OtaError::Flash);
         }
-        let other = if at == self.metadata {
-            at + SECTOR
-        } else {
-            self.metadata
-        };
+        let other = if at == 0 { SECTOR } else { 0 };
         let seq_bytes = seq.to_le_bytes();
         let mut record = [0xff; RECORD_SIZE];
         record[..4].copy_from_slice(&seq_bytes);
         record[28..].copy_from_slice(&crc::crc32_le(u32::MAX, &seq_bytes).to_le_bytes());
-        flash
+        let mut metadata = flash.partition(self.metadata);
+        metadata
             .erase(other, other + SECTOR)
             .map_err(|_| OtaError::Flash)?;
-        flash.write(other, &record).map_err(|_| OtaError::Flash)?;
+        metadata
+            .write(other, &record)
+            .map_err(|_| OtaError::Flash)?;
         let mut readback = [0; RECORD_SIZE];
-        flash
+        metadata
             .read(other, &mut readback)
             .map_err(|_| OtaError::Flash)?;
         if readback != record {

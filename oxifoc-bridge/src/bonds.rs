@@ -18,8 +18,8 @@ use trouble_host::prelude::{
     SecurityLevel,
 };
 
-use crate::flash::Flash;
-type Storage = MapStorage<u8, BlockingAsync<Flash>, Cache<Uncached, Uncached, Uncached, u8>>;
+use crate::flash::{Flash, Partition};
+type Storage = MapStorage<u8, BlockingAsync<Partition>, Cache<Uncached, Uncached, Uncached, u8>>;
 
 /// Flash record of one bond. Keys stay on the bridge; only [`BondEntry`] is
 /// reported to clients.
@@ -101,20 +101,25 @@ impl BondStore {
     /// Open the map in the NVS partition and load every bond.
     pub async fn open(flash: Flash) -> Self {
         let mut table_buf = [0u8; PARTITION_TABLE_MAX_LEN];
-        let range = flash.with(|flash| {
+        let nvs = flash.with(|flash| {
             let table =
                 read_partition_table(flash, &mut table_buf).expect("partition table readable");
-            let nvs = table
+            table
                 .find_partition(PartitionType::Data(DataPartitionSubType::Nvs))
                 .expect("partition table parses")
-                .expect("NVS partition present");
-            nvs.offset()..nvs.offset() + nvs.len()
+                .expect("NVS partition present")
         });
-        info!("[bonds] NVS partition {:#x}..{:#x}", range.start, range.end);
+        info!(
+            "[bonds] NVS partition {:#x}..{:#x}",
+            nvs.offset(),
+            nvs.offset() + nvs.len()
+        );
+        // The map covers the whole partition, as it did when the range was
+        // given in flash addresses: the records stay where they are.
         let mut store = Self {
             storage: MapStorage::new(
-                BlockingAsync::new(flash),
-                MapConfig::new(range),
+                BlockingAsync::new(flash.partition(nvs)),
+                MapConfig::new(0..nvs.len()),
                 Cache::new_uncached(),
             ),
             buf: [0; 128],

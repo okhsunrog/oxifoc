@@ -14,7 +14,10 @@ use oxifoc_core::{
 use sha2::{Digest as _, Sha256};
 use static_cell::StaticCell;
 
-use crate::{flash::Flash, transport::Stack};
+use crate::{
+    flash::{Flash, Partition},
+    transport::Stack,
+};
 
 mod slots;
 
@@ -98,7 +101,7 @@ impl Updater {
                         offset: current.offset,
                     });
                 }
-                slots.check_running_selection(&mut self.flash)?;
+                slots.check_running_selection(self.flash)?;
                 self.upload = Some(Upload {
                     length: *length,
                     expected: *digest,
@@ -111,7 +114,7 @@ impl Updater {
             }
             OtaRequest::Chunk { offset, data } => {
                 let current = self.upload.as_mut().ok_or(OtaError::NoUpload)?;
-                current.write(&mut self.flash, inactive.offset(), *offset, data)?;
+                current.write(&mut self.flash.partition(inactive), *offset, data)?;
                 current.last_activity = now;
                 Ok(OtaResponse::Progress {
                     offset: current.offset,
@@ -125,7 +128,7 @@ impl Updater {
                 if <[u8; 32]>::from(current.hash.clone().finalize()) != current.expected {
                     return Err(OtaError::DigestMismatch);
                 }
-                let slot = slots.select_inactive(&mut self.flash)?;
+                let slot = slots.select_inactive(self.flash)?;
                 self.rebooting = Some(slot);
                 Ok(OtaResponse::Rebooting { slot })
             }
@@ -138,13 +141,9 @@ impl Updater {
 }
 
 impl Upload {
-    fn write(
-        &mut self,
-        flash: &mut Flash,
-        base: u32,
-        offset: u32,
-        data: &[u8],
-    ) -> Result<(), OtaError> {
+    /// `slot` is the inactive application partition; offsets count from its
+    /// start.
+    fn write(&mut self, slot: &mut Partition, offset: u32, data: &[u8]) -> Result<(), OtaError> {
         if data.is_empty() || !data.len().is_multiple_of(4) || !offset.is_multiple_of(4) {
             return Err(OtaError::InvalidLength);
         }
@@ -160,19 +159,15 @@ impl Upload {
         }
         if offset == self.offset {
             while self.erased < end {
-                let at = base + self.erased;
-                flash.erase(at, at + SECTOR).map_err(|_| OtaError::Flash)?;
+                let at = self.erased;
+                slot.erase(at, at + SECTOR).map_err(|_| OtaError::Flash)?;
                 self.erased += SECTOR;
             }
-            flash
-                .write(base + offset, data)
-                .map_err(|_| OtaError::Flash)?;
+            slot.write(offset, data).map_err(|_| OtaError::Flash)?;
         }
         let mut readback = [0; CHUNK_SIZE];
         let readback = &mut readback[..data.len()];
-        flash
-            .read(base + offset, readback)
-            .map_err(|_| OtaError::Flash)?;
+        slot.read(offset, readback).map_err(|_| OtaError::Flash)?;
         if readback != data {
             return Err(OtaError::Flash);
         }

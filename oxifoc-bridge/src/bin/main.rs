@@ -43,7 +43,7 @@ async fn main(spawner: Spawner) -> ! {
     // Waveshare C5-Zero onboard antenna, selected before any radio initialization.
     let _antenna = Output::new(p.GPIO26, Level::Low, OutputConfig::default());
     let timer = TimerGroup::new(p.TIMG0);
-    esp_rtos::start(timer.timer0, p.FROM_CPU_INTR0);
+    esp_rtos::start(timer.timer0);
     let rng = esp_hal::rng::Rng::new();
     let epoch = rng.random();
     let spi_sink = BridgeSink::Spi(framed_stream::Sink::new(
@@ -92,7 +92,11 @@ async fn main(spawner: Spawner) -> ! {
         transport::spi::slots(stack, spi_ident, epoch).expect("SPI slot task is spawned once"),
         LINK,
     );
-    let (rx, tx) = UsbSerialJtag::new(p.USB_DEVICE).into_async().split();
+    // GPIO14 and GPIO13 are the C5's USB D+ and D-; the driver checks them.
+    let (rx, tx) = UsbSerialJtag::new(p.USB_DEVICE, p.GPIO14, p.GPIO13, Default::default())
+        .expect("USB Serial/JTAG on its own pins")
+        .into_async()
+        .split();
     spawn_bridge_task(
         spawner,
         transport::usb::rx(stack, rx, usb_ident).expect("USB RX task is spawned once"),

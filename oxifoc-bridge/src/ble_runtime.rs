@@ -45,15 +45,6 @@ const L2CAP_CHANNELS_MAX: usize = 2 * CONNECTIONS_MAX;
 /// so a stranger holds a link slot only briefly. Bonded devices encrypt well
 /// within this (see docs/notes/ble-pairing.md for measurements).
 const UNTRUSTED_TIMEOUT: Duration = Duration::from_secs(3);
-/// Data bytes of one ACL packet, as the controller reports them to the host.
-///
-/// esp-radio 1.0.0-beta.1 takes HCI packets of at most 259 bytes from the
-/// host, and one with the default 255 data bytes is 260 with its header and
-/// packet indicator. It drops that packet, then reads the rest of it as new
-/// packets: the first notification longer than 251 bytes ended all BLE
-/// traffic and left the radio deaf to Wi-Fi as well. 251 is one link-layer
-/// payload.
-const CONTROLLER_ACL_BYTES: u16 = 251;
 /// ACL packets the controller lets the host queue for transmission.
 ///
 /// Each queued packet holds a block of 256 or 320 bytes from the radio heap,
@@ -98,7 +89,6 @@ pub async fn run(
     let radio_config = esp_radio::ble::Config::default()
         .with_default_tx_power(esp_radio::ble::TxPower::P20)
         .with_max_connections(CONNECTIONS_MAX as u16)
-        .with_acl_buf_size(CONTROLLER_ACL_BYTES)
         .with_acl_buf_count(CONTROLLER_ACL_PACKETS)
         // One filter accept list and resolving list entry per bond.
         .with_whitelist_size(MAX_BONDS as u8)

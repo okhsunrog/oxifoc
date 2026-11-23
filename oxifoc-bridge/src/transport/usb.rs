@@ -2,13 +2,12 @@
 use super::{STATE_NOTIFY, Stack, USB_OUTQ};
 use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use embassy_time::Timer;
-use embedded_io_async::Write;
 use ergot::interface_manager::{
     InterfaceState, LivenessConfig, profiles::router::RouterFrameProcessor,
 };
 use esp_hal::{
     Async,
-    usb::usb_serial_jtag::{UsbSerialJtagRx, UsbSerialJtagTx},
+    usb::usb_serial_jtag::{TxError, UsbSerialJtagRx, UsbSerialJtagTx},
 };
 
 /// The network of the USB segment, once assigned.
@@ -57,12 +56,25 @@ pub async fn tx(mut tx: UsbSerialJtagTx<'static, Async>) {
         // even when much of that grant has already left the device.
         let len = grant.len().min(512);
         let last_chunk = len == grant.len();
-        let failed = tx.write_all(&grant[..len]).await.is_err()
-            || (last_chunk && len.is_multiple_of(64) && tx.flush().await.is_err());
+        // The FIFO goes to the host when it holds 64 bytes; the flush sends
+        // a shorter tail once nothing more is waiting.
+        let failed = write_all(&mut tx, &grant[..len]).await.is_err()
+            || (last_chunk && tx.flush_async().await.is_err());
         if failed {
             USB_WRITE_ERRORS.fetch_add(1, Ordering::Relaxed);
         }
         grant.release(len);
         embassy_futures::yield_now().await;
     }
+}
+
+async fn write_all(
+    tx: &mut UsbSerialJtagTx<'static, Async>,
+    mut data: &[u8],
+) -> Result<(), TxError> {
+    while !data.is_empty() {
+        let written = tx.write_async(data).await?;
+        data = &data[written..];
+    }
+    Ok(())
 }
