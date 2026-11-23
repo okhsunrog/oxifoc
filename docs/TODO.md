@@ -77,8 +77,9 @@ preserves older review findings and experimental detail.
   at 1 to 5 kHz stall: the link's 1 KiB queue refuses most of the 478-byte
   blocks one SPI slot delivers. Size the queue for a slot, or hold the slot
   as the Wi-Fi path does.
-- [ ] Report upstream that esp-radio panics when the buffer for a BLE
-  packet cannot be allocated, which an exhausted radio heap causes
+- [ ] Follow [esp-hal #6895](https://github.com/esp-rs/esp-hal/issues/6895):
+  esp-radio panics when the buffer for a BLE packet cannot be allocated,
+  which an exhausted radio heap causes
   ([measurements](notes/ble-link-reliability.md#bridge-reset-and-radio-stall-under-ble-load)).
   Drop the ACL packet size in `ble_runtime.rs` once a release carries
   esp-hal #6448.
