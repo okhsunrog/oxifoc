@@ -114,7 +114,8 @@ of the 78 s, two runs per rate:
 At 20 kHz one capture lost a block within its first second, and the hold
 stopped with `CommTimeout` at 73.9 s, long after the capture had ended. In the
 other the bridge reset itself 22 s into the capture (reset reason: software).
-The cause is unknown: the bridge kept no crash record yet.
+The bridge kept no crash record yet; the cause was found the next day,
+below.
 
 One radio therefore carries a 10 kHz stream (2.4 Mbit/s) beside a BLE
 connection but not the native 20 kHz one, which the bridge forwards without
@@ -123,6 +124,37 @@ still trips the deadman occasionally, at any stream rate: two stops in nine
 holds, the reset aside. Replies over BLE were up to 240 ms apart during a capture against
 151 ms without one. The host stood in for the remote; the remote was not
 measured beside Wi-Fi.
+
+### Bridge reset and hang under a BLE backlog
+
+Measured 2026-11-23 with the crash record of `diag bridge`.
+
+The reset above did not recur in eight more 20 kHz captures: the host ends
+a capture at the first missing block, so the stream lasted 21 s at most.
+With a host build that keeps capturing past a missing block the stream ran
+for 120 s (1 934 100 of 1 935 528 records arrived) and the bridge reset in
+the second run:
+
+```text
+Panic at uptime 38145.910s
+  esp-radio-1.0.0-beta.1/src/ble/npl.rs:1553 r_os_mbuf_append returned 2
+```
+
+`send_packet` there takes an mbuf for each ACL packet from the controller's
+msys pools and appends to it without checking for a null pointer; 2 is the
+invalid-argument result of appending to none. The pools are fixed at 12
+blocks of 256 bytes and 24 of 320, while the C5 default (`acl_buf_count`
+24) lets the host queue 24 packets. With Wi-Fi taking the radio the queue
+outgrows the pool. This is read from the esp-radio source, not observed in
+the controller. esp-hal `main` at `64977dfc7` (2026-11-20) has the same
+pool sizes, default and unchecked allocation.
+
+Loading the BLE link alone is worse. A 5 kHz capture requested over BLE,
+with no Wi-Fi stream and the motor stopped, left the bridge silent on both
+radios about two seconds after the host connected and asked for the
+stream: no reset, still associated at the access point, and a power cycle
+was needed. Not diagnosed. Its watchdogs are off, so nothing ends such a
+state.
 
 ## Plan
 

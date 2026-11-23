@@ -76,11 +76,14 @@ preserves older review findings and experimental detail.
 - [ ] Bench-test a fast telemetry session through the bridge's BLE link.
   The host asks for 478-byte blocks (15 samples) there, so each block fits
   one 505-byte notification; nothing on that path fragments a frame.
-- [ ] Find why the bridge reset itself during a 20 kHz capture over Wi-Fi
-  with a BLE central driving the motor, and why a setpoint held over BLE
-  beside Wi-Fi still trips the deadman
-  ([measurements](notes/ble-link-reliability.md#a-host-as-central-with-wi-fi-on-the-same-bridge)).
-  `diag bridge` shows the panic record once it happens again.
+- [ ] Keep the bridge alive under a BLE backlog
+  ([measurements](notes/ble-link-reliability.md#bridge-reset-and-hang-under-a-ble-backlog)).
+  esp-radio panics when the BLE controller's mbuf pool runs out: bound the
+  host's ACL queue below the pool (`acl_buf_count`) and report it upstream.
+  A capture over BLE alone hangs the bridge without a reset: find where,
+  and run a watchdog so a hang ends in a reset instead of a power cycle.
+- [ ] Find why a setpoint held over BLE beside Wi-Fi still trips the
+  deadman ([measurements](notes/ble-link-reliability.md#a-host-as-central-with-wi-fi-on-the-same-bridge)).
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 
