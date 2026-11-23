@@ -7,12 +7,12 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use oxifoc_core::icd::BridgeDiagEndpoint;
 use oxifoc_core::types::diag::{
-    BleLinkDiag, BridgeDiag, BridgeDiagRequest, BridgeDiagResponse, HeapDiag, SpiLinkDiag,
-    UsbLinkDiag, WifiLinkDiag,
+    BleLinkDiag, BridgeDiag, BridgeDiagRequest, BridgeDiagResponse, HeapDiag, RelayDiag,
+    SpiLinkDiag, UsbLinkDiag, WifiLinkDiag,
 };
 
 use crate::{
-    crash,
+    crash, relay,
     transport::{BLE_LINKS, Stack, spi, usb},
 };
 
@@ -86,6 +86,14 @@ fn snapshot() -> BridgeDiag {
         ble: core::array::from_fn(|link| BLE[link].snapshot()),
         wifi: wifi(),
         heap: heap(),
+        relay: RelayDiag {
+            envelopes: load(&relay::ENVELOPES_SENT),
+            bytes_in: load(&relay::BYTES_IN),
+            bytes_out: load(&relay::BYTES_OUT),
+            missed: load(&relay::MISSED),
+            dropped: load(&relay::DROPPED),
+            busy_us: load(&relay::BUSY_US),
+        },
     }
 }
 

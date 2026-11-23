@@ -16,11 +16,12 @@ pub mod tcp;
 pub mod usb;
 /// Task priority of the forwarding path, ahead of DAP and housekeeping.
 pub const FORWARDING: u8 = 1;
-/// Task priority of the two short steps between the SPI link and the Wi-Fi
-/// stack: routing a received slot and copying the queue into the TCP socket.
-/// The stack sends several segments in one poll; behind it at the same
-/// priority the SPI link fell below a 20 kHz stream, and with only one of
-/// the two raised the queue between them overflowed.
+/// Task priority of the path a fast telemetry stream takes, ahead of the
+/// Wi-Fi stack: routing a received slot, the relay, and emptying the host
+/// link's queue into USB or the TCP socket. The BLE host shares it, so the
+/// stream does not delay a remote's commands. The Wi-Fi stack sends several
+/// segments in one poll; at this priority it kept the SPI link below a
+/// 20 kHz stream.
 pub const LINK: u8 = 2;
 pub const MTU: u16 = 2304;
 pub const BLE_MTU: u16 = 505;
@@ -29,17 +30,15 @@ pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
 pub const WIFI_CONFIGURED: bool = cfg!(feature = "wifi")
     && matches!(option_env!("OXIFOC_PROBE_WIFI_SSID"), Some(ssid) if !ssid.is_empty());
 // An image with Wi-Fi reserves RAM for the TCP transmit buffer, its queue
-// and the radio heap. USB then carries a 10 kHz stream; 20 kHz lost blocks
-// with 44 KiB here as well. The USB-only budget covers about 200 ms at
-// 20 kHz.
+// and the radio heap, and leaves USB the smaller queue.
 const USB_QUEUE_BYTES: usize = if WIFI_CONFIGURED {
     28 * 1024
 } else {
-    124 * 1024
+    108 * 1024
 };
 pub type UsbQueue = kit::Queue<USB_QUEUE_BYTES, AtomicCoord>;
 /// The Wi-Fi backlog: frames wait here, not in the TCP window.
-pub type WifiQueue = kit::Queue<{ 52 * 1024 }, AtomicCoord>;
+pub type WifiQueue = kit::Queue<{ 36 * 1024 }, AtomicCoord>;
 pub type BleQueue = kit::Queue<1024, AtomicCoord>;
 /// Simultaneous BLE centrals, e.g. the remote and a phone or laptop. Each link
 /// is its own ergot interface with its own outbound queue.
@@ -131,6 +130,20 @@ pub static USB_OUTQ: UsbQueue = kit::Queue::new();
 pub static BLE_OUTQ: [BleQueue; BLE_LINKS] = [const { kit::Queue::new() }; BLE_LINKS];
 pub static STATE_NOTIFY: ergot::exports::maitake_sync::WaitQueue =
     ergot::exports::maitake_sync::WaitQueue::new();
+
+/// Wait until the outbound queue of the link to network `net` has contiguous
+/// room for `bytes`. Returns at once for a link without a host, and for BLE,
+/// whose queue is smaller than one SPI slot.
+pub async fn room(net: u16, bytes: usize) {
+    if net == usb::NET.load(Ordering::Relaxed) {
+        // The probe reserves nothing: an uncommitted grant is released.
+        drop(USB_OUTQ.stream_producer().wait_grant_exact(bytes).await);
+    }
+    #[cfg(feature = "wifi")]
+    if net == tcp::NET.load(Ordering::Relaxed) {
+        tcp::room(bytes).await;
+    }
+}
 
 /// C5 owns all directly attached segments. No upstream seed leases are needed.
 #[embassy_executor::task]

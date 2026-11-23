@@ -98,15 +98,25 @@ async fn main(spawner: Spawner) -> ! {
         transport::usb::rx(stack, rx, usb_ident).expect("USB RX task is spawned once"),
         FORWARDING,
     );
+    // Beside the relay that fills its queue, as the task that fills the
+    // TCP socket is.
     spawn_bridge_task(
         spawner,
         transport::usb::tx(tx).expect("USB TX task is spawned once"),
-        FORWARDING,
+        LINK,
     );
     spawn_bridge_task(
         spawner,
         transport::root_services(stack).expect("USB route task is spawned once"),
         FORWARDING,
+    );
+    // Beside the slot task, which waits for it to empty its queue. Below
+    // it the relay took turns with the Wi-Fi stack, and a 20 kHz stream over
+    // Wi-Fi lost a third (with the flash at 40 MHz).
+    spawn_bridge_task(
+        spawner,
+        oxifoc_bridge::relay::run(stack, spi_ident).expect("relay task is spawned once"),
+        LINK,
     );
     #[cfg(any(feature = "ble", feature = "wifi"))]
     {
@@ -134,11 +144,14 @@ async fn main(spawner: Spawner) -> ! {
                 })
                 .expect("BLE interface slots must be available at startup")
         });
+        // The remote's commands and their replies pass through this task.
+        // Below the relay it waited for it: during a capture some 300 of 780
+        // status replies came over 150 ms apart (with the flash at 40 MHz).
         spawn_bridge_task(
             spawner,
             oxifoc_bridge::ble_runtime::run(stack, p.BT, ble_idents, flash)
                 .expect("BLE task is spawned once"),
-            FORWARDING,
+            LINK,
         );
     }
     #[cfg(feature = "wifi")]

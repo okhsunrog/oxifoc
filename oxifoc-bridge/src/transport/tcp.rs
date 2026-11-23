@@ -2,11 +2,11 @@
 //!
 //! TCP repeats lost segments and keeps the stream ordered, so neither side
 //! needs a sequence or replay layer of its own. [`OUT`] holds the backlog
-//! while a loss is repaired, about 90 ms of 20-kHz Packed28 telemetry; the
-//! socket keeps only the window in flight. A frame the queue refuses is
-//! counted in [`DROPPED`].
+//! while a loss is repaired, about 170 ms of a 20 kHz stream as the relay
+//! sends it; the socket keeps only the window in flight. A frame the queue
+//! refuses is counted in [`DROPPED`].
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
@@ -44,6 +44,8 @@ static RX_BUFFER: StaticCell<[u8; RX_BYTES]> = StaticCell::new();
 #[esp_hal::ram(unstable(rtc_fast))]
 static FRAME: StaticCell<[u8; FRAME_BYTES]> = StaticCell::new();
 
+/// The network of the TCP segment, once assigned.
+pub static NET: AtomicU16 = AtomicU16::new(0);
 pub static CONNECTED: AtomicBool = AtomicBool::new(false);
 pub static CONNECTS: AtomicU32 = AtomicU32::new(0);
 pub static DROPPED: AtomicU32 = AtomicU32::new(0);
@@ -86,6 +88,7 @@ async fn run(router: &'static Stack, stack: NetStack<'static>) {
     let Some(net) = router.manage_profile(|p| p.net_id_of(ident)) else {
         return;
     };
+    NET.store(net, Ordering::Relaxed);
     let rx_buffer = RX_BUFFER.init_with(|| [0; RX_BYTES]);
     let tx_buffer = TX_BUFFER.init_with(|| [0; TX_BYTES]);
     let frame = FRAME.init_with(|| [0; FRAME_BYTES]);

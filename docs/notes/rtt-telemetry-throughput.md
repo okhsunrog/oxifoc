@@ -294,6 +294,9 @@ moving Packed26Delta at 644.5: delta added about 5.5% CPU at 20 kHz. Full-width
 36-byte streaming exceeds the standalone C5 USB Serial JTAG benchmark's roughly
 0.66 MB/s ceiling. Packed28 needs about 570 kB/s including block headers, before
 Ergot/COBS overhead. Fixed packing is the selected CPU/bandwidth tradeoff.
+Since 2026-11-23 the bridge rewrites the blocks as Delta28 on their way to
+the host; the controller's cost for that was measured again and is
+[still too high at 20 kHz](ble-link-reliability.md#the-relay-and-the-flash-speed).
 
 Normal-image results, configured native rate 20004.272 Hz, unchanged 24 V/5.5 A
 bench supply and 10 A target / 30 A phase / 5 A bus / zero regen limits:

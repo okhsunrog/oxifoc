@@ -89,6 +89,18 @@ broadcast topic with its byte-delta `FastTelemetryBatch` and the
 `RawTelemetryEndpoint`. The G474 caps its blocks at 997 bytes (34 records)
 for its 1024-byte MTU.
 
+The bridge serves `cmd/raw_relay` and `cmd/raw_relay_velocity_debug`, the
+controller's two session requests with the same types and replies. A host
+behind a bridge sends its requests there. The bridge passes them on from its
+own address, so the controller's blocks come to the bridge, and it sends
+them to the requester on `telemetry/raw_block` with each Packed28 block of
+two or more records rewritten as Delta28 (in-block tag 4, see
+`oxifoc_core::raw_delta`). A block that would not shrink, a velocity block
+and END pass unchanged, so a stream may mix both layouts and a reader must
+take both. The session belongs to the requesting node until its END or
+until that node's link goes down, when the bridge stops it. A host whose
+link peer is the controller itself still asks the controller.
+
 The bridge adds `cmd/bridge_ota` for application updates over any of its
 links.
 

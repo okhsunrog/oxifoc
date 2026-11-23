@@ -24,6 +24,7 @@
 //! | `MotorEndpoint` | `MotorRequest` | `MotorStatus` | Setpoint, affirmation, stop, and phase-source selection |
 //! | `SlowTelemetryEndpoint` | `()` | `SlowTelemetry` | System health poll (~10 Hz, doubles as heartbeat) |
 //! | `RawTelemetryEndpoint` | `RawTelemetryRequest` | `RawTelemetryAck` | Arm, stop and query a fast telemetry session |
+//! | `RawRelayEndpoint` | `RawTelemetryRequest` | `RawTelemetryAck` | The same, through the bridge, which relays the blocks as Delta28 |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
 //! | `DiagEndpoint` | `DiagRequest` | `DiagResponse` | ISR timing, totals since boot, reset cause, crash record |
 //! | `BridgeDiagEndpoint` | `BridgeDiagRequest` | `BridgeDiagResponse` | Link counters and the crash record (served by the bridge) |
@@ -75,9 +76,9 @@ fn serialize_raw_block_bytes<S: serde::Serializer>(
     serializer.serialize_bytes(bytes)
 }
 
-/// Borrowed sender representation: serialization copies directly into Ergot's
-/// framed queue without first copying the block into a second owned buffer.
-#[derive(serde::Serialize)]
+/// Borrowed representation: a sender serializes straight into Ergot's framed
+/// queue, and a relay reads the block from the frame it arrived in.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct RawTelemetryBlockRef<'a> {
     #[serde(serialize_with = "serialize_raw_block_bytes")]
     pub data: &'a [u8],
@@ -168,6 +169,21 @@ endpoint!(
     RawTelemetryAck,
     "cmd/raw_velocity_debug"
 );
+// The bridge serves the same two requests in the controller's place. It
+// passes them on from its own address, so the controller's blocks come to
+// the bridge, which sends them to the requester as Delta28.
+endpoint!(
+    RawRelayEndpoint,
+    RawTelemetryRequest,
+    RawTelemetryAck,
+    "cmd/raw_relay"
+);
+endpoint!(
+    VelocityDebugRelayEndpoint,
+    VelocityDebugArm,
+    RawTelemetryAck,
+    "cmd/raw_relay_velocity_debug"
+);
 
 // Fault management endpoint (host → device)
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
@@ -250,6 +266,12 @@ mod delivery_classes {
         type Delivery = Idempotent;
     }
     impl Command for VelocityDebugArmEndpoint {
+        type Delivery = Idempotent;
+    }
+    impl Command for RawRelayEndpoint {
+        type Delivery = Idempotent;
+    }
+    impl Command for VelocityDebugRelayEndpoint {
         type Delivery = Idempotent;
     }
     impl Command for FaultEndpoint {

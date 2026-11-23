@@ -203,9 +203,30 @@ pub struct BridgeDiag {
     pub ble: [BleLinkDiag; BRIDGE_BLE_LINKS],
     pub wifi: WifiLinkDiag,
     pub heap: HeapDiag,
+    pub relay: RelayDiag,
 }
 
 pub const BRIDGE_BLE_LINKS: usize = 2;
+
+/// The bridge's relay of fast telemetry sessions. Counters only grow, and
+/// wrap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RelayDiag {
+    /// Envelopes sent on to a host.
+    pub envelopes: u32,
+    /// Their bytes as the controller sent them.
+    pub bytes_in: u32,
+    /// Their bytes as they left, most blocks rewritten as Delta28.
+    pub bytes_out: u32,
+    /// Blocks missing from a session's sequence when the next one arrived:
+    /// lost in a damaged SPI slot, or refused by the relay's full queue.
+    pub missed: u32,
+    /// Envelopes the bridge lost: malformed, or refused by the host's link.
+    pub dropped: u32,
+    /// Microseconds spent rewriting envelopes and queueing them.
+    pub busy_us: u32,
+}
 
 /// The bridge's radio heap, which the Wi-Fi and BLE drivers share. Bytes;
 /// all zero in an image without a radio.
@@ -428,6 +449,14 @@ mod tests {
                 size: u32::MAX,
                 free: u32::MAX,
                 lowest_free: u32::MAX,
+            },
+            relay: RelayDiag {
+                envelopes: u32::MAX,
+                bytes_in: u32::MAX,
+                bytes_out: u32::MAX,
+                missed: u32::MAX,
+                dropped: u32::MAX,
+                busy_us: u32::MAX,
             },
         };
         let mut buf = [0u8; 512];

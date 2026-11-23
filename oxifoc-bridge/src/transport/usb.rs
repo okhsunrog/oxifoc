@@ -1,6 +1,6 @@
 //! USB Serial/JTAG COBS downstream; USB throughput is independent of baud.
 use super::{STATE_NOTIFY, Stack, USB_OUTQ};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use embassy_time::Timer;
 use embedded_io_async::Write;
 use ergot::interface_manager::{
@@ -11,6 +11,8 @@ use esp_hal::{
     usb::usb_serial_jtag::{UsbSerialJtagRx, UsbSerialJtagTx},
 };
 
+/// The network of the USB segment, once assigned.
+pub static NET: AtomicU16 = AtomicU16::new(0);
 #[unsafe(no_mangle)]
 pub static USB_DROPPED: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
@@ -25,6 +27,7 @@ pub async fn rx(stack: &'static Stack, rx: UsbSerialJtagRx<'static, Async>, iden
     let net = stack
         .manage_profile(|p| p.net_id_of(ident))
         .expect("registered USB segment");
+    NET.store(net, Ordering::Relaxed);
     let mut rx = ergot::interface_manager::transports::eio::RxWorker::new(
         stack,
         rx,

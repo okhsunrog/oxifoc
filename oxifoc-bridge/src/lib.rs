@@ -5,6 +5,7 @@ pub mod ble_nus;
 pub mod bridge_logs;
 pub mod crash;
 pub mod diag;
+pub mod relay;
 pub mod transport;
 
 #[cfg(feature = "ble")]

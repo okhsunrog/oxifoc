@@ -6,8 +6,9 @@ use crossbeam_channel::Sender;
 use oxifoc_core::raw_telemetry::RAW_MAX_BLOCK_BYTES;
 use oxifoc_core::{
     raw_telemetry::{
-        DecodedRawBlock, RAW_HEADER_BYTES, RAW_MAGIC, RawBlockHeader, RawEncoding,
-        RawStreamDecoder, RawTelemetryStatus,
+        DecodedRawBlock, RAW_HEADER_BYTES, RAW_MAGIC, RawEncoding, RawStreamDecoder,
+        RawTelemetryAck, RawTelemetryRequest, RawTelemetryStatus, VelocityDebugArm,
+        raw_block_header,
     },
     types::FastTelemetry,
     velocity_telemetry::{SESSION_START, VelocityDebugFrame},
@@ -150,6 +151,8 @@ struct Inner {
     ready: bool,
     transport_error: Option<String>,
     capture: Option<CaptureState>,
+    /// The bridge that relays sessions on this connection, if one does.
+    relay: Option<ergot::Address>,
 }
 
 pub struct RawTelemetryState {
@@ -193,6 +196,21 @@ impl RawTelemetryState {
             .velocity_debug
             .as_ref()
             .map(|_| capture.velocity_frames.clone()))
+    }
+
+    /// Where this connection asks for sessions: the bridge's relay if it has
+    /// one, and the controller at `device` otherwise.
+    fn control(&self, device: ergot::Address) -> Control {
+        match self.inner.lock().unwrap().relay {
+            Some(address) => Control {
+                address,
+                relay: true,
+            },
+            None => Control {
+                address: device,
+                relay: false,
+            },
+        }
     }
 
     pub(crate) fn reader_ready(&self) {
@@ -538,8 +556,84 @@ where
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
+    use ergot::{interface_manager::profiles::direct_edge::CENTRAL_NODE_ID, traits::Endpoint as _};
+    // A controller that is the link's own peer has no bridge in front of it.
+    let relay = if address.node_id == CENTRAL_NODE_ID {
+        None
+    } else {
+        crate::connection::resolve_endpoint_addr(
+            stack,
+            oxifoc_core::icd::RawRelayEndpoint::REQ_KEY.to_bytes(),
+            crate::RESOLVE_TIMEOUT,
+        )
+        .await
+    };
+    state.inner.lock().unwrap().relay = relay;
     configure_inner(stack, state, 0, address, true).await?;
-    wait_stopped(stack, address).await
+    wait_stopped(stack, state.control(address)).await
+}
+
+/// Where a connection asks for sessions.
+#[derive(Clone, Copy)]
+struct Control {
+    address: ergot::Address,
+    /// The bridge answers and relays the blocks; otherwise the controller.
+    relay: bool,
+}
+
+impl Control {
+    async fn raw<NS>(self, stack: &NS, request: &RawTelemetryRequest) -> Result<RawTelemetryAck>
+    where
+        NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
+        NS::Mutex: Send + Sync,
+        NS::Profile: Send,
+        NS::Target: Send + Sync,
+    {
+        use oxifoc_core::{
+            delivery::ReliableExt,
+            icd::{RawRelayEndpoint, RawTelemetryEndpoint},
+        };
+        let client = stack.clone().reliable::<crate::TokioTimer>();
+        let policy = &crate::SETPOINT_POLICY;
+        if self.relay {
+            client
+                .at_least_once::<RawRelayEndpoint>(self.address, request, Some("raw_relay"), policy)
+                .await
+        } else {
+            let name = Some("raw_telemetry");
+            client
+                .at_least_once::<RawTelemetryEndpoint>(self.address, request, name, policy)
+                .await
+        }
+        .map_err(|error| anyhow!("{error:?}"))
+    }
+
+    async fn velocity<NS>(self, stack: &NS, request: &VelocityDebugArm) -> Result<RawTelemetryAck>
+    where
+        NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
+        NS::Mutex: Send + Sync,
+        NS::Profile: Send,
+        NS::Target: Send + Sync,
+    {
+        use oxifoc_core::{
+            delivery::ReliableExt,
+            icd::{VelocityDebugArmEndpoint, VelocityDebugRelayEndpoint},
+        };
+        let client = stack.clone().reliable::<crate::TokioTimer>();
+        let policy = &crate::SETPOINT_POLICY;
+        if self.relay {
+            let name = Some("raw_relay_velocity");
+            client
+                .at_least_once::<VelocityDebugRelayEndpoint>(self.address, request, name, policy)
+                .await
+        } else {
+            let name = Some("velocity_debug");
+            client
+                .at_least_once::<VelocityDebugArmEndpoint>(self.address, request, name, policy)
+                .await
+        }
+        .map_err(|error| anyhow!("{error:?}"))
+    }
 }
 
 async fn configure_inner<NS>(
@@ -555,12 +649,7 @@ where
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
-    use oxifoc_core::{
-        delivery::ReliableExt,
-        icd::{RawTelemetryEndpoint, VelocityDebugArmEndpoint},
-        raw_telemetry::{RawTelemetryRequest, RawTelemetryStatus, VelocityDebugArm},
-    };
-    let client = stack.clone().reliable::<crate::TokioTimer>();
+    let control = state.control(address);
     if fast_hz != 0
         && state
             .report()
@@ -568,15 +657,10 @@ where
     {
         bail!("raw capture already active; stop it before arming another session");
     }
-    let status = client
-        .at_least_once::<RawTelemetryEndpoint>(
-            address,
-            &RawTelemetryRequest::Status,
-            Some("raw_telemetry"),
-            &crate::SETPOINT_POLICY,
-        )
+    let status = control
+        .raw(stack, &RawTelemetryRequest::Status)
         .await
-        .map_err(|error| anyhow!("raw telemetry unsupported/status failed: {error:?}"))?;
+        .map_err(|error| anyhow!("raw telemetry unsupported/status failed: {error}"))?;
     let previous_session = status.session;
     if fast_hz == 0 && !startup_cleanup {
         validate_stop_cookie(
@@ -614,29 +698,16 @@ where
         }
     };
     let result = if fast_hz != 0 && state.velocity_debug {
-        client
-            .at_least_once::<VelocityDebugArmEndpoint>(
-                address,
-                &VelocityDebugArm {
-                    session,
-                    previous_session,
-                    fast_hz,
-                },
-                Some("velocity_debug"),
-                &crate::SETPOINT_POLICY,
-            )
-            .await
+        let arm = VelocityDebugArm {
+            session,
+            previous_session,
+            fast_hz,
+        };
+        control.velocity(stack, &arm).await
     } else {
-        client
-            .at_least_once::<RawTelemetryEndpoint>(
-                address,
-                &request,
-                Some("raw_telemetry"),
-                &crate::SETPOINT_POLICY,
-            )
-            .await
+        control.raw(stack, &request).await
     }
-    .map_err(|error| anyhow!("raw telemetry control failed: {error:?}"));
+    .map_err(|error| anyhow!("raw telemetry control failed: {error}"));
     let result = result.and_then(|ack| {
         if ack.session != session {
             bail!("raw acknowledgement cookie mismatch");
@@ -665,31 +736,20 @@ where
 
 /// Startup-only drain fence; callers have not published control readiness yet.
 /// Ordinary telemetry Stop returns its producer-disable ACK without this wait.
-pub(crate) async fn wait_stopped<NS>(stack: &NS, address: ergot::Address) -> Result<()>
+async fn wait_stopped<NS>(stack: &NS, control: Control) -> Result<()>
 where
     NS: ergot::net_stack::NetStackHandle + Clone + Send + Sync + 'static,
     NS::Mutex: Send + Sync,
     NS::Profile: Send,
     NS::Target: Send + Sync,
 {
-    use oxifoc_core::{
-        delivery::ReliableExt,
-        icd::RawTelemetryEndpoint,
-        raw_telemetry::{RawTelemetryRequest, RawTelemetryStatus},
-    };
-    let client = stack.clone().reliable::<crate::TokioTimer>();
     tokio::time::timeout(STALL_LIMIT, async {
         let mut previous = None;
         loop {
-            let status = client
-                .at_least_once::<RawTelemetryEndpoint>(
-                    address,
-                    &RawTelemetryRequest::Status,
-                    Some("raw_telemetry"),
-                    &crate::SETPOINT_POLICY,
-                )
+            let status = control
+                .raw(stack, &RawTelemetryRequest::Status)
                 .await
-                .map_err(|error| anyhow!("raw cleanup status failed: {error:?}"))?;
+                .map_err(|error| anyhow!("raw cleanup status failed: {error}"))?;
             if previous.is_some_and(|session| session != status.session) {
                 bail!("raw session changed during startup cleanup");
             }
@@ -827,7 +887,7 @@ impl RawIngress {
                 && self.prefix[..4] == RAW_MAGIC
                 && Some(u64::from_le_bytes(self.prefix[8..16].try_into().unwrap())) == session
             {
-                let header = RawBlockHeader::parse(&self.prefix)
+                let header = raw_block_header(&self.prefix)
                     .map_err(|error| anyhow!("malformed current raw header: {error:?}"))?;
                 if header.block_index != 0 {
                     bail!("raw first block index {}, expected 0", header.block_index);
@@ -877,7 +937,7 @@ mod tests {
         assert_eq!(fit.rate_hz(), None);
     }
     use crossbeam_channel::{Receiver, bounded};
-    use oxifoc_core::raw_telemetry::RawBlockEncoder;
+    use oxifoc_core::raw_telemetry::{RawBlockEncoder, RawBlockHeader};
 
     #[test]
     fn velocity_sidecar_requires_its_own_totals_and_session_origin() {
@@ -1075,6 +1135,41 @@ mod tests {
             assert_eq!(report.blocks_received, 2);
             assert_eq!(report.packed28_blocks, 1);
             assert_eq!(rx.try_iter().collect::<Vec<_>>(), samples);
+        }
+    }
+
+    #[test]
+    fn a_session_relayed_as_delta28_delivers_the_same_samples() {
+        use oxifoc_core::raw_delta::{compress_envelope, is_delta};
+        let samples = consecutive(
+            FastTelemetry {
+                seq: 65_500,
+                angle: 1234,
+                ..FastTelemetry::default()
+            },
+            64,
+        );
+        for chunk in [1, 7, 33, 4096] {
+            let (state, rx, session) = ready(128);
+            let mut stream = Vec::new();
+            for index in 0..2 {
+                let plain = data(session, index, &samples, 0);
+                let mut relayed = vec![0; plain.len()];
+                let len = compress_envelope(&plain, &mut relayed).unwrap();
+                assert!(is_delta(&relayed[..len]) && len < plain.len() / 2);
+                stream.extend(&relayed[..len]);
+            }
+            stream.extend(end(session, 2, 128, 0));
+            let mut ingress = RawIngress::new(state.clone());
+            for bytes in stream.chunks(chunk) {
+                ingress.push(bytes).unwrap();
+            }
+            let report = state.wait_end(Duration::ZERO).unwrap();
+            assert_eq!(report.records_delivered, 128);
+            assert_eq!(report.packed28_blocks, 2);
+            let delivered: Vec<_> = rx.try_iter().collect();
+            assert_eq!(delivered[..64], samples[..]);
+            assert_eq!(delivered[64..], samples[..]);
         }
     }
 

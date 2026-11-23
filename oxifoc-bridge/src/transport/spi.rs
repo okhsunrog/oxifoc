@@ -3,9 +3,7 @@ use super::{SPI_OUTQ, STATE_NOTIFY, Stack};
 use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::Timer;
-#[cfg(feature = "wifi")]
-use embassy_time::with_timeout;
+use embassy_time::{Timer, with_timeout};
 use ergot::interface_manager::{
     FrameProcessor, InterfaceState, Profile, profiles::router::RouterFrameProcessor,
 };
@@ -56,11 +54,9 @@ static FREE_TX: Channel<CriticalSectionRawMutex, DmaTxBuf, 1> = Channel::new();
 static PREPARED: Channel<CriticalSectionRawMutex, DmaTxBuf, 1> = Channel::new();
 static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 /// Outbound room one slot of COBS-encoded frames needs.
-#[cfg(feature = "wifi")]
 const SLOT_ROOM: usize = oxifoc_core::spi_link::PAYLOAD_BYTES + 64;
 /// Longest a received slot waits for that room: within the controller's
 /// 150 ms deadman, so commands from another link still arrive in time.
-#[cfg(feature = "wifi")]
 const HOLD: embassy_time::Duration = embassy_time::Duration::from_millis(50);
 
 fn build_slot(tx: &mut DmaTxBuf, epoch: u32, fill: impl FnOnce(&mut Builder<'_>)) {
@@ -209,12 +205,20 @@ pub async fn slots(stack: &'static Stack, ident: u8, epoch: u32) {
             }
         };
         if let Some(mut rx) = received {
-            // Hold the buffer while the Wi-Fi queue is full: READY then stays
-            // low and the backlog collects in the controller's larger queue
-            // instead of being dropped here. The bound keeps a stalled host
-            // from holding the link against the other interfaces.
-            #[cfg(feature = "wifi")]
-            let _ = with_timeout(HOLD, super::tcp::room(SLOT_ROOM)).await;
+            // Hold the buffer while the relay has no room for this slot's
+            // telemetry, or the queue of the link that takes it is full:
+            // READY then stays low and the backlog collects in the
+            // controller's larger queue instead of being dropped here. The
+            // relay may still hold the slot before this one, so the link
+            // needs room for both. The bound keeps a stalled host from
+            // holding the link against the other interfaces.
+            let _ = with_timeout(HOLD, async {
+                crate::relay::room().await;
+                if let Some(net) = crate::relay::stream_net() {
+                    super::room(net, 2 * SLOT_ROOM).await;
+                }
+            })
+            .await;
             process_slot(stack, ident, &mut processor, &mut peer_epoch, &mut rx);
             let _ = FREE_RX.try_send(rx);
             // Let the task that drains the outbound queue run between slots.

@@ -179,6 +179,15 @@ fn format_bridge(b: &BridgeDiag) -> String {
         "\nheap: free={} lowest={} of {}",
         b.heap.free, b.heap.lowest_free, b.heap.size,
     ));
+    out.push_str(&format!(
+        "\nrelay: envelopes={} bytes_in={} bytes_out={} missed={} dropped={} busy_us={}",
+        b.relay.envelopes,
+        b.relay.bytes_in,
+        b.relay.bytes_out,
+        b.relay.missed,
+        b.relay.dropped,
+        b.relay.busy_us,
+    ));
     out
 }
 

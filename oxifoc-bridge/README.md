@@ -21,6 +21,34 @@ The GPIO adapter uses the bit-bang driver now included in
 
 See [Wireless SWD](../docs/hw/vesc6-mk5.md#wireless-swd) for wiring and use.
 
+`just flash-bridge` writes the bootloader for quad I/O flash at 80 MHz. The
+bridge runs its code from flash through a 32 KiB cache, and with the
+defaults (dual I/O, 40 MHz) reloading that cache took most of its time:
+see [the measurements](../docs/notes/ble-link-reliability.md#the-relay-and-the-flash-speed).
+A firmware update over Ergot replaces the application only, so a bridge
+installed before this change needs one wired `just flash-bridge`.
+
+## Fast telemetry relay
+
+A host asks the bridge, not the controller, for a fast telemetry session
+(`cmd/raw_relay`). The bridge opens the session at the controller from its
+own address, takes the Packed28 blocks, and sends them to the host as
+Delta28: 10.4 bytes a record instead of 28.5 on the bench motor at
++120 rad/s, 5.7 at standstill. The host expands them to the identical
+Packed28 bytes.
+
+The session belongs to the host that asked. Another host is answered
+`Busy` while the controller runs it. When the owner's link goes down the
+bridge stops the session, so the next host can ask: after a host was
+killed or frozen in the middle of a capture, another captured on its first
+try.
+
+`diag bridge` reports the relay as `relay: envelopes=… bytes_in=…
+bytes_out=… missed=… dropped=… busy_us=…`: what it sent on, the bytes
+before and after, blocks that never reached it, envelopes the host's link
+refused, and the time it spent. On the bench the rewrite and the send took
+about 0.47 ms an envelope, 15 % of the CPU at 20 kHz.
+
 ## Ergot over Wi-Fi
 
 With Wi-Fi configured, the C5 listens on TCP port 2025 and routes the
@@ -36,17 +64,17 @@ target/debug/oxifoc-host-cli --transport tcp --tcp-host 192.0.2.10 status
 ```
 
 TCP repeats lost segments, so a native-rate capture needs no recovery of
-its own. The bridge queues up to 52 KiB for the socket, about 90 ms at
-20 kHz, and keeps the TCP window at 16 KiB: its TCP stack resends the
-whole window after a lost segment. It retransmits after 50 ms without an
-acknowledgement (`SMOLTCP_TCP_MIN_RTO_MS` in `.cargo/config.toml`; see
-`../vendor/smoltcp/PATCHES.md`). While the queue is full the bridge holds
+its own. The bridge queues up to 36 KiB for the socket, about 170 ms of a
+relayed 20 kHz stream, and keeps the TCP window at 16 KiB: its TCP stack
+resends the whole window after a lost segment. It retransmits after 50 ms
+without an acknowledgement (`SMOLTCP_TCP_MIN_RTO_MS` in
+`.cargo/config.toml`; see `../vendor/smoltcp/PATCHES.md`). While the queue
+of the link that takes a session is full, USB or Wi-Fi, the bridge holds
 back the SPI link for up to 50 ms per slot, so the backlog collects in the
 controller's queue first; a longer stall drops frames at the bridge and
 fails the capture. `diag bridge` reports those drops and the fullest TCP
-window as `wifi: dropped=… max_backlog=…`. A BLE central exchanging data at
-the same time takes radio time from Wi-Fi, and a 20 kHz stream then does
-not fit. USB and BLE remain available.
+window as `wifi: dropped=… max_backlog=…`. A 20 kHz capture is complete
+over Wi-Fi beside a BLE central that drives the motor, and over USB.
 
 ## Bridge logs
 

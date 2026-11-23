@@ -237,6 +237,69 @@ run). The controller also kept streaming to the host that had gone, until
 the bridge was reset; by the session rules another host is refused while
 that session is open.
 
+### The relay and the flash speed
+
+Measured 2026-11-23. The bridge now holds the fast telemetry session for a
+host and sends the blocks on as Delta28
+([bridge README](../../oxifoc-bridge/README.md#fast-telemetry-relay)).
+
+Where to rewrite the blocks was measured first, on blocks rebuilt from a
+20 kHz capture of the bench motor at +120 rad/s and at standstill. On the
+MK5 (F405, 168 MHz, flash at five wait states with the ART caches,
+interrupts masked, 32 repeats, a build with nothing else in it):
+
+| Work on one block of 64 records | Cycles | CPU at 20 kHz |
+|---|---|---|
+| Packing the records as Packed28, as the controller does | 12 200 | 2.3 % |
+| Delta28, as first written | 120 500 | 22 % |
+| Delta28, reading fields from their bytes and writing through a bit accumulator | 49 500 to 50 000 (34 000 at standstill) | 9.3 % |
+
+The interrupt takes 38 µs of the 50 at 20 kHz when the motor runs, so the
+controller has no 9 % to give; at 15 kHz it would be 6.9 %. The C5
+(240 MHz) rewrites the same block in 219 µs in a loop of its own, 6.8 % at
+20 kHz, and has no control loop to keep. The bridge does it.
+
+The first builds showed the bridge was slower than that loop. In the
+running firmware the rewrite took 0.52 ms a block and sending the result
+another 0.45 ms. The flash ran in dual I/O mode at 40 MHz
+(`SPI_MEM_CTRL` 0x00ac200c, `SPI_MEM_CLOCK` 0x00010001), the defaults of
+the tools that install the bootloader, and each envelope's code was read
+from it again: placing the rewrite in RAM alone brought it to 0.28 ms. At
+that flash speed a 20 kHz capture over USB was complete, but with a BLE
+central driving the motor either the capture lost blocks or the central's
+status replies came late, whichever task had the lower priority.
+
+`just flash-bridge` now sets quad I/O at 80 MHz (0x012c200c, 0x80000000).
+The rewrite and the send together take 0.47 ms an envelope, 15 % of the
+CPU at 20 kHz. With the rewrite in RAM that is 7 % less, so it stays in
+flash. Captures at 20 kHz with the motor driven, before on `main` and now:
+
+| Capture | Before | Now |
+|---|---|---|
+| USB, the host drives (+120, +450, +120 rad/s, 19 s) | a block lost in the first 50; 10 kHz complete, replies to commands after 6 to 9 ms | complete, 5 of 5; replies after 6 to 10 ms |
+| Wi-Fi, the host drives | complete; replies after 51 to 121 ms | complete, 2 of 2; replies after 14 to 19 ms |
+| Wi-Fi, 60 s, beside a BLE central driving for 78 s | a third lost at the controller; 4 to 43 status replies over 150 ms apart | complete, 3 of 3; none over 150 ms |
+| USB, 60 s, beside a BLE central driving for 78 s | – | complete, 4 of 4; none over 150 ms |
+
+The counts include runs on builds that differed only in where the USB
+transmit task ran and whether the rewrite was in RAM. A 10 kHz capture over
+Wi-Fi beside the central was complete as well (1 of 1). The stream is 2.75
+times smaller than the controller's with the motor running and 5 times at
+standstill.
+
+A host that is killed or frozen in the middle of a capture no longer keeps
+the session: another host captured on its first try within 10 s, four
+times out of four. A second host that asks during a capture is answered
+`Busy`, and the capture already running was complete.
+
+The task priorities were settled at 40 MHz and have not been compared
+again at 80 MHz. The relay runs beside the SPI slot task; below it, with
+the Wi-Fi stack, a 20 kHz capture over Wi-Fi alone lost a third. The BLE
+host runs there too; below the relay some 300 of its 780 status replies
+were over 150 ms apart during a capture. The slot task waits until the
+host link's queue has room for two slots, because the relay may still hold
+the slot before; with room for one, an envelope was refused now and then.
+
 ## Plan
 
 ### P0 — cheap, large effect

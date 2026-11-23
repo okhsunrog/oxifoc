@@ -101,6 +101,23 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
    serializer. Same condition, two errors — the local path should also say
    "too big, mtu is N".
 
+13. **A late reply answers the next request.** A response is matched to
+    its client by port and key alone. When a request is retried, or a
+    second request to the same endpoint follows from a socket that got the
+    freed port, a reply to the earlier one that arrives late is taken as
+    the answer. Seen 2026-11-23 on an overloaded bridge: a raw-session
+    `Stop` was answered with the `Armed` reply of a `Status` sent before
+    it, and the host reported the stop as rejected. Upstream shape: a
+    request sequence number echoed in the response, or ports that are not
+    reused while a reply may still be in flight.
+
+14. **Unicast subscription for borrowed topic receivers.**
+    `topic::stack_bor::Receiver` offers only `subscribe()` (broadcast).
+    The bridge's telemetry relay takes blocks addressed to it without
+    copying them out of their frame, and builds `socket::borrow::Socket`
+    by hand to `attach()` it. A `subscribe_unicast()` beside the owned
+    receivers' would cover it.
+
 ## Small
 
 10. **Port exhaustion should not panic.** `alloc_port` panics when all 254

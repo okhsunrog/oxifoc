@@ -78,20 +78,36 @@ preserves older review findings and experimental detail.
 - [ ] Recheck fast capture losses under load using the [MK5 bench baseline](notes/foc-loop-research.md#native-rate-recording-on-mk5).
   Measure the producer queue and command delivery separately. Keep
   pre-trigger RAM capture as a separate feature if needed for faults.
+- [ ] Record fast telemetry sessions on the bridge: start, stop, fetch and
+  clear by command, into the RAM of a board with PSRAM, either until the
+  buffer is full or as a ring that freezes on a fault. The relay already
+  holds the session and the Delta28 blocks
+  ([bridge README](../oxifoc-bridge/README.md#fast-telemetry-relay)).
 - [ ] Carry a fast telemetry session over the bridge's BLE link. Captures
-  at 1 to 5 kHz stall: the link's 1 KiB queue refuses most of the 478-byte
-  blocks one SPI slot delivers. Size the queue for a slot, or hold the slot
-  as the Wi-Fi path does.
+  at 1 to 5 kHz stalled before the relay: the link's 1 KiB queue refuses
+  most of the blocks one SPI slot delivers. The relay sends them smaller
+  but does not wait for room on a BLE link. Size the queue for a slot, or
+  hold the slot as the USB and Wi-Fi paths do.
+- [ ] Compare the bridge's task priorities again with its flash at 80 MHz.
+  The relay and the BLE host were raised to the slot task's priority at
+  40 MHz, where the bridge had no time to spare
+  ([measurements](notes/ble-link-reliability.md#the-relay-and-the-flash-speed)).
+- [ ] Keep a held SPI slot from delaying the other links. While the slot
+  task waits for room on the link that takes a capture, up to 50 ms a
+  slot, the replies in that slot wait too, and the controller's own queue
+  fills behind it. This is the suspected cause of late status replies to a
+  BLE central during a 10 kHz capture over USB with the flash at 40 MHz:
+  16 gaps over 150 ms in 78 s, up to 615 ms. The 20 kHz captures at 80 MHz
+  had none.
+- [ ] Carry CMSIS-DAP over Ergot, with a local probe port in the host
+  library, so the wireless probe needs no second connection to the bridge.
+  Keep its packets exactly-once and its pacing while the SPI link is busy.
 - [ ] Follow [esp-hal #6895](https://github.com/esp-rs/esp-hal/issues/6895):
   esp-radio panics when the buffer for a BLE packet cannot be allocated,
   which an exhausted radio heap causes
   ([measurements](notes/ble-link-reliability.md#bridge-reset-and-radio-stall-under-ble-load)).
   Drop the ACL packet size in `ble_runtime.rs` once a release carries
   esp-hal #6448.
-- [ ] End a raw telemetry session whose requester has gone. The controller
-  streamed to a host that had disconnected until the bridge was reset, and
-  refuses other hosts while the session is open. The bridge logs two lines
-  for every frame it cannot route.
 - [ ] Measure the remote, not a host, holding a setpoint beside Wi-Fi, and
   find what stopped a host's holds with `CommTimeout`: four stops in about
   750 s of driving before the radio heap grew, none in five holds since
@@ -101,6 +117,7 @@ preserves older review findings and experimental detail.
   passes the bench runs except that BLE advertising now costs Wi-Fi about
   a third of its airtime
   ([measurements](notes/ble-link-reliability.md#wi-fi-beside-ble-on-esp-hal-main)).
+  Measure it again with the relay: the stream is now 2.75 times smaller.
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 
