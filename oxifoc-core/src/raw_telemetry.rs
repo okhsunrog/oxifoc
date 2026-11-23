@@ -435,6 +435,16 @@ pub fn raw_block_len(header: &[u8]) -> Result<usize, RawDecodeError> {
     }
 }
 
+/// The header of a block in either layout. For a Delta28 block it is the
+/// header of the Packed28 block it was made from.
+pub fn raw_block_header(header: &[u8]) -> Result<RawBlockHeader, RawDecodeError> {
+    use crate::raw_delta;
+    if raw_delta::is_delta(header) {
+        return RawBlockHeader::parse(&raw_delta::plain_header(header)?);
+    }
+    RawBlockHeader::parse(header)
+}
+
 /// Decodes one block. A Delta28 block decodes as the Packed28 block it was
 /// made from.
 pub fn decode_raw_block(bytes: &[u8]) -> Result<DecodedRawBlock, RawDecodeError> {

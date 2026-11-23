@@ -268,6 +268,43 @@ fn padding_bits_must_be_zero() {
 }
 
 #[test]
+fn an_envelope_keeps_its_blocks_and_shrinks_the_plain_ones() {
+    let mut seed = 0x0dd_ba11;
+    let records = turning_block(&mut seed, 3, 64, 63);
+    let mut velocity =
+        [0; RAW_HEADER_BYTES + 11 * crate::velocity_telemetry::VELOCITY_RECORD_BYTES];
+    RawBlockHeader::velocity(7, 4, 11, 0, None).write(&mut velocity);
+    let mut envelope = records.clone();
+    envelope.extend_from_slice(&velocity);
+
+    let mut out = [0; crate::raw_telemetry::RAW_MAX_BLOCK_BYTES];
+    let len = compress_envelope(&envelope, &mut out).unwrap();
+    let delta = compressed(&records);
+    assert_eq!(out[..delta.len()], delta[..]);
+    assert_eq!(out[delta.len()..len], velocity[..]);
+    assert_eq!(
+        crate::raw_telemetry::raw_block_header(&out[..len])
+            .unwrap()
+            .payload_bytes(),
+        64 * 28
+    );
+
+    // What does not shrink goes through unchanged, and a cut envelope fails.
+    let frames: Vec<_> = (0..64).map(|i| noise(&mut seed, i)).collect();
+    let plain = block(0, &frames);
+    assert_eq!(compress_envelope(&plain, &mut out), Ok(plain.len()));
+    assert_eq!(out[..plain.len()], plain[..]);
+    assert_eq!(
+        compress_envelope(&envelope[..envelope.len() - 1], &mut out),
+        Err(RawDecodeError::Truncated)
+    );
+    assert_eq!(
+        compress_envelope(&plain, &mut out[..plain.len() - 1]),
+        Err(RawDecodeError::Length)
+    );
+}
+
+#[test]
 fn decoders_take_both_layouts_in_one_stream() {
     let mut seed = 0xabcd_ef01;
     let mut stream = Vec::new();
@@ -306,4 +343,93 @@ fn decoders_take_both_layouts_in_one_stream() {
             assert_eq!(block.samples, wanted.samples);
         }
     }
+}
+
+/// The format written out field by field with the general bit helpers, as
+/// the module documentation states it.
+fn reference(plain: &[u8]) -> Option<Vec<u8>> {
+    let count = usize::from(plain[7]);
+    let records = &plain[RAW_HEADER_BYTES..];
+    let field = |record: usize, field: usize| {
+        let bits = usize::from(FIELD_BITS[field]);
+        read_bits(records, record * RECORD_BYTES * 8 + FIELD_AT[field], bits)
+    };
+    let code = |record: usize, index: usize| {
+        let size = 1_u32 << FIELD_BITS[index];
+        let delta = (size + field(record, index) - field(record - 1, index)) % size;
+        if delta < size / 2 {
+            delta * 2
+        } else {
+            (size - 1 - delta) * 2 + 1
+        }
+    };
+    let widths: Vec<usize> = (0..FIELDS)
+        .map(|index| {
+            let widest = (1..count).map(|record| code(record, index)).max().unwrap();
+            (u32::BITS - widest.leading_zeros()) as usize
+        })
+        .collect();
+    let bits: usize = widths.iter().map(|width| width * (count - 1)).sum();
+    let payload = RECORD_BYTES + WIDTH_BYTES + bits.div_ceil(8);
+    if payload >= count * RECORD_BYTES {
+        return None;
+    }
+    let mut out = std::vec![0; RAW_HEADER_BYTES + payload];
+    out[..RAW_HEADER_BYTES].copy_from_slice(&plain[..RAW_HEADER_BYTES]);
+    out[5] = DELTA28_TAG;
+    out[30..32].copy_from_slice(&(payload as u16).to_le_bytes());
+    let body = &mut out[RAW_HEADER_BYTES..];
+    body[..RECORD_BYTES].copy_from_slice(&records[..RECORD_BYTES]);
+    let mut cursor = RECORD_BYTES * 8;
+    for &width in &widths {
+        write_bits(body, cursor, width as u32);
+        cursor += WIDTH_BITS;
+    }
+    for (index, &width) in widths.iter().enumerate() {
+        for record in 1..count {
+            write_bits(body, cursor, code(record, index));
+            cursor += width;
+        }
+    }
+    Some(out)
+}
+
+#[test]
+fn the_compressor_writes_the_documented_format_bit_for_bit() {
+    let mut seed = 0x51ed_270b;
+    let mut out = [0xa5; PLAIN_BLOCK_BYTES];
+    let mut blocks = Vec::new();
+    for speed in [0, 1, 7, 113, 2048, 20_000, 32_768, 65_535] {
+        for count in [2, 3, 17, 63, 64] {
+            blocks.push(turning_block(&mut seed, 5, count, speed));
+        }
+    }
+    // Every field takes its full width, and the block still shrinks: the
+    // records alternate between two random ones bar a field or two.
+    for held in 0..FIELDS {
+        let mut frames = [noise(&mut seed, 0), noise(&mut seed, 1)];
+        frames[1].pwm_enables = frames[0].pwm_enables;
+        if held < 3 {
+            frames[1].vphase_adc[held] = frames[0].vphase_adc[held];
+        } else {
+            frames[1].pwm_ccr[held % 3] = frames[0].pwm_ccr[held % 3];
+        }
+        let frames: Vec<_> = (0..64)
+            .map(|index| FastTelemetry {
+                seq: index as u16,
+                ..frames[index % 2]
+            })
+            .collect();
+        blocks.push(block(9, &frames));
+    }
+    let noisy: Vec<_> = (0..64).map(|index| noise(&mut seed, index)).collect();
+    blocks.push(block(9, &noisy));
+    let mut shrunk = 0;
+    for plain in &blocks {
+        let expected = reference(plain);
+        let written = compress(plain, &mut out).map(|len| out[..len].to_vec());
+        assert_eq!(written, expected);
+        shrunk += usize::from(written.is_some());
+    }
+    assert!(shrunk > blocks.len() / 2 && shrunk < blocks.len());
 }

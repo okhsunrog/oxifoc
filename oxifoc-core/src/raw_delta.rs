@@ -35,14 +35,22 @@ const FIELD_BITS: [u8; FIELDS] = [
 ];
 const WIDTH_BITS: usize = 5;
 const WIDTH_BYTES: usize = (FIELDS * WIDTH_BITS).div_ceil(8);
-const _: () = {
+/// The bit each field starts at in a record.
+const FIELD_AT: [usize; FIELDS] = {
+    let mut at = [0; FIELDS];
     let mut bits = 0;
     let mut field = 0;
     while field < FIELDS {
+        at[field] = bits;
         bits += FIELD_BITS[field] as usize;
+        // `Place` reads a field from the two bytes it starts in.
+        assert!(at[field] % 8 + FIELD_BITS[field] as usize <= 16);
         field += 1;
     }
     assert!(bits == RECORD_BYTES * 8);
+    // The widths end on a byte, so one writer serves them and the differences.
+    assert!((FIELDS * WIDTH_BITS).is_multiple_of(8));
+    at
 };
 
 /// Largest Packed28 block: what [`expand`] may write.
@@ -65,21 +73,82 @@ fn write_bits(bytes: &mut [u8], at: usize, value: u32) {
     }
 }
 
-fn field_offset(field: usize) -> usize {
-    FIELD_BITS[..field]
-        .iter()
-        .map(|&bits| usize::from(bits))
-        .sum()
+/// Where the compressor finds a field in a record. It reads some 2000 fields
+/// a block, so it takes each from the two bytes it starts in and not through
+/// [`read_bits`].
+#[derive(Clone, Copy)]
+struct Place {
+    byte: usize,
+    shift: u32,
+    /// Unused high bits of a 32-bit word that holds the field.
+    spare: u32,
 }
 
-/// The zigzag code of `current - previous` taken modulo the field's size.
-fn difference(previous: u32, current: u32, bits: usize) -> u32 {
-    let mask = (1_u32 << bits) - 1;
-    let delta = current.wrapping_sub(previous) & mask;
-    if delta >> (bits - 1) == 0 {
-        delta << 1
-    } else {
-        ((mask - delta) << 1) | 1
+impl Place {
+    const fn of(field: usize) -> Self {
+        Self {
+            byte: FIELD_AT[field] / 8,
+            shift: (FIELD_AT[field] % 8) as u32,
+            spare: u32::BITS - FIELD_BITS[field] as u32,
+        }
+    }
+
+    /// The field, in the high bits of the word.
+    #[inline(always)]
+    fn read(self, record: &[u8; RECORD_BYTES]) -> u32 {
+        let word = u16::from_le_bytes([record[self.byte], record[self.byte + 1]]);
+        (u32::from(word) >> self.shift) << self.spare
+    }
+
+    /// The zigzag code of `current - previous` taken modulo the field's size.
+    #[inline(always)]
+    fn difference(self, previous: u32, current: u32) -> u32 {
+        // In the high bits the subtraction wraps at the field's size, and
+        // the arithmetic shift brings the difference down with its sign.
+        let delta = (current.wrapping_sub(previous) as i32) >> self.spare;
+        ((delta << 1) ^ (delta >> 31)) as u32
+    }
+}
+
+/// Appends values of up to 16 bits to a little-endian bit string.
+struct BitWriter<'a> {
+    out: &'a mut [u8],
+    at: usize,
+    word: u32,
+    held: u32,
+}
+
+impl<'a> BitWriter<'a> {
+    fn new(out: &'a mut [u8]) -> Self {
+        Self {
+            out,
+            at: 0,
+            word: 0,
+            held: 0,
+        }
+    }
+
+    /// `value` must fit in `bits`, and `bits` in 16.
+    #[inline(always)]
+    fn put(&mut self, value: u32, bits: u32) {
+        self.word |= value << self.held;
+        self.held += bits;
+        if self.held >= 16 {
+            self.out[self.at..self.at + 2].copy_from_slice(&(self.word as u16).to_le_bytes());
+            self.at += 2;
+            self.word >>= 16;
+            self.held -= 16;
+        }
+    }
+
+    /// Writes the bits still held, zero-padded to a whole byte.
+    fn finish(mut self) {
+        while self.held > 0 {
+            self.out[self.at] = self.word as u8;
+            self.at += 1;
+            self.word >>= 8;
+            self.held = self.held.saturating_sub(8);
+        }
     }
 }
 
@@ -130,6 +199,38 @@ pub fn delta_block_len(header: &[u8]) -> Result<usize, RawDecodeError> {
     Ok(RAW_HEADER_BYTES + delta_shape(header)?.payload)
 }
 
+/// The header of the Packed28 block this Delta28 header stands for.
+pub fn plain_header(header: &[u8]) -> Result<[u8; RAW_HEADER_BYTES], RawDecodeError> {
+    let Shape { count, .. } = delta_shape(header)?;
+    let mut plain = [0; RAW_HEADER_BYTES];
+    plain.copy_from_slice(&header[..RAW_HEADER_BYTES]);
+    plain[5] = PACKED28_TAG;
+    plain[30..32].copy_from_slice(&((count * RECORD_BYTES) as u16).to_le_bytes());
+    Ok(plain)
+}
+
+/// Rewrites every Packed28 block of an envelope that shrinks, and copies the
+/// rest. `out` must hold `envelope.len()` bytes; returns the bytes written.
+pub fn compress_envelope(mut envelope: &[u8], out: &mut [u8]) -> Result<usize, RawDecodeError> {
+    let mut written = 0;
+    while !envelope.is_empty() {
+        let len = crate::raw_telemetry::raw_block_len(envelope)?;
+        let block = envelope.get(..len).ok_or(RawDecodeError::Truncated)?;
+        let room = out.get_mut(written..).ok_or(RawDecodeError::Length)?;
+        written += match compress(block, room) {
+            Some(shrunk) => shrunk,
+            None => {
+                room.get_mut(..len)
+                    .ok_or(RawDecodeError::Length)?
+                    .copy_from_slice(block);
+                len
+            }
+        };
+        envelope = &envelope[len..];
+    }
+    Ok(written)
+}
+
 /// Rewrites one Packed28 block as Delta28 in `out` and returns its length.
 ///
 /// Returns `None`, leaving the caller to pass the block on as it is, for
@@ -147,51 +248,52 @@ pub fn compress(block: &[u8], out: &mut [u8]) -> Option<usize> {
     {
         return None;
     }
-    let records = &block[RAW_HEADER_BYTES..];
-    let record = |index: usize| &records[index * RECORD_BYTES..][..RECORD_BYTES];
+    let (first, rest) = block[RAW_HEADER_BYTES..]
+        .as_chunks::<RECORD_BYTES>()
+        .0
+        .split_first()?;
 
-    let mut widths = [0_usize; FIELDS];
+    let mut widths = [0; FIELDS];
     let mut bits = 0;
     for (field, width) in widths.iter_mut().enumerate() {
-        let (at, size) = (field_offset(field), usize::from(FIELD_BITS[field]));
-        let mut previous = read_bits(record(0), at, size);
+        let place = Place::of(field);
+        let mut previous = place.read(first);
         let mut widest = 0;
-        for index in 1..count {
-            let current = read_bits(record(index), at, size);
-            widest |= difference(previous, current, size);
+        for record in rest {
+            let current = place.read(record);
+            widest |= place.difference(previous, current);
             previous = current;
         }
-        *width = (u32::BITS - widest.leading_zeros()) as usize;
-        bits += *width * (count - 1);
+        *width = u32::BITS - widest.leading_zeros();
+        bits += *width as usize * rest.len();
     }
     let payload = RECORD_BYTES + WIDTH_BYTES + bits.div_ceil(8);
     if payload >= count * RECORD_BYTES {
         return None;
     }
     let out = out.get_mut(..RAW_HEADER_BYTES + payload)?;
-    out.fill(0);
     out[..RAW_HEADER_BYTES].copy_from_slice(header);
     out[5] = DELTA28_TAG;
     out[30..32].copy_from_slice(&(payload as u16).to_le_bytes());
     let body = &mut out[RAW_HEADER_BYTES..];
-    body[..RECORD_BYTES].copy_from_slice(record(0));
-    for (field, &width) in widths.iter().enumerate() {
-        write_bits(&mut body[RECORD_BYTES..], field * WIDTH_BITS, width as u32);
+    body[..RECORD_BYTES].copy_from_slice(first);
+    let mut writer = BitWriter::new(&mut body[RECORD_BYTES..]);
+    for width in widths {
+        writer.put(width, WIDTH_BITS as u32);
     }
-    let mut cursor = (RECORD_BYTES + WIDTH_BYTES) * 8;
-    for (field, &width) in widths.iter().enumerate() {
+    for (field, width) in widths.into_iter().enumerate() {
         if width == 0 {
             continue;
         }
-        let (at, size) = (field_offset(field), usize::from(FIELD_BITS[field]));
-        let mut previous = read_bits(record(0), at, size);
-        for index in 1..count {
-            let current = read_bits(record(index), at, size);
-            write_bits(body, cursor, difference(previous, current, size));
-            cursor += width;
+        let place = Place::of(field);
+        let mut previous = place.read(first);
+        for record in rest {
+            let current = place.read(record);
+            writer.put(place.difference(previous, current), width);
             previous = current;
         }
     }
+    writer.finish();
     Some(RAW_HEADER_BYTES + payload)
 }
 
@@ -224,14 +326,12 @@ pub fn expand(block: &[u8], out: &mut [u8]) -> Result<usize, RawDecodeError> {
     let plain = RAW_HEADER_BYTES + count * RECORD_BYTES;
     let out = out.get_mut(..plain).ok_or(RawDecodeError::Length)?;
     out.fill(0);
-    out[..RAW_HEADER_BYTES].copy_from_slice(&block[..RAW_HEADER_BYTES]);
-    out[5] = PACKED28_TAG;
-    out[30..32].copy_from_slice(&((count * RECORD_BYTES) as u16).to_le_bytes());
+    out[..RAW_HEADER_BYTES].copy_from_slice(&plain_header(block)?);
     let records = &mut out[RAW_HEADER_BYTES..];
     records[..RECORD_BYTES].copy_from_slice(&body[..RECORD_BYTES]);
     let mut cursor = (RECORD_BYTES + WIDTH_BYTES) * 8;
     for (field, &width) in widths.iter().enumerate() {
-        let (at, size) = (field_offset(field), usize::from(FIELD_BITS[field]));
+        let (at, size) = (FIELD_AT[field], usize::from(FIELD_BITS[field]));
         let mut previous = read_bits(records, at, size);
         for index in 1..count {
             let code = read_bits(body, cursor, width);
