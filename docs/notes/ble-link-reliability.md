@@ -132,32 +132,50 @@ Measured 2026-11-23 with the crash record of `diag bridge`.
 The reset above did not recur in eight more 20 kHz captures: the host ends
 a capture at the first missing block, so the stream lasted 21 s at most.
 With a host build that keeps capturing past a missing block the stream ran
-for 120 s (1 934 100 of 1 935 528 records arrived) and the bridge reset in
-the second run:
+for 120 s and the bridge reset in the second run:
 
 ```text
 Panic at uptime 38145.910s
   esp-radio-1.0.0-beta.1/src/ble/npl.rs:1553 r_os_mbuf_append returned 2
 ```
 
-`send_packet` there takes an mbuf for each ACL packet from the controller's
-msys pools and appends to it without checking for a null pointer; 2 is the
-invalid-argument result of appending to none. The pools are fixed at 12
-blocks of 256 bytes and 24 of 320, while the C5 default (`acl_buf_count`
-24) lets the host queue 24 packets. With Wi-Fi taking the radio the queue
-outgrows the pool. The count of 24 is in the host's start-up log ("setting
-txq to 24"); that the pool ran out is read from the esp-radio source, not
-observed in the controller. esp-hal `main` at `64977dfc7` (2026-11-20) has
-the same pool sizes, default and unchecked allocation.
+`send_packet` there asks the controller for a buffer for each ACL packet
+and appends to it without checking for a null pointer; 2 is the
+invalid-argument result of appending to none. esp-hal `main` at `64977dfc7`
+(2026-11-20) has the same unchecked allocation.
 
-The bridge now sets `acl_buf_count` to 4 ("setting txq to 4"). Six runs of
-a 138 s hold with a 120 s capture at 20 kHz, on the same host build, ended
-without a reset and without a `CommTimeout`; before, both such holds had
-stopped with `CommTimeout`, after 30.6 and 14.5 s. Each capture missed 340
-to 832 of about 2.06 million records, and replies over BLE were up to
-314 ms apart. A 78 s hold with no capture had no reply gap over 150 ms.
-Received packets take blocks from the same pools, which may be why the
-holds stopped before; that is not established.
+The buffer comes from the radio heap, and the heap was what ran out. The
+drivers left 15.2 KiB of its 76 KiB free once both radios were up. A
+20 kHz stream takes 13 to 16 KiB of that for frames in flight, and 19 to
+22 KiB with a central connected. Four 138 s holds beside a 20 kHz capture
+each left 580 bytes free at the worst moment. With six Wi-Fi transmit
+buffers instead of ten, one such hold panicked with "heap free 620" in its
+record, and a hold beside a 10 kHz capture left 768 bytes. On the original
+settings the bridge panicked in 2 of 15 holds.
+
+The depth of the controller's ACL queue was blamed first, and bounding it
+from 24 to 4 was followed by six clean holds. That was chance. The heap's
+low mark was the same 580 bytes at either depth, the original settings
+later ran eight holds without a panic, and the controller's own packet
+budget of 10 752 bytes never had more than 256 in use. The bound stays for
+a case it does cover and that was not exercised: a central out of reach
+with packets queued for it, which hold 256 or 320 bytes of heap each.
+
+The heap's static region grew from 12 to 28 KiB, and the USB queue shrank
+from 44 to 28 KiB to pay for it. Three more holds beside a 20 kHz capture
+then left at least 10.0 KiB free, with no reset, and 20 kHz over Wi-Fi
+alone stayed complete with 18.5 KiB free. `diag bridge` reports the heap.
+Over USB a 20 kHz capture lost blocks with either queue size and a 10 kHz
+one was complete with either.
+
+Beside a central the 20 kHz stream is incomplete at any setting: the
+controller dropped 14 to 18 % of the samples before sending them, 335 000
+to 424 000 of 2.4 million. On the original heap a few hundred more were
+lost on the way. 10 kHz is complete.
+
+The `CommTimeout` stops are not explained. The first two 138 s holds
+stopped, after 30.6 and 14.5 s; none of the 30 that followed did, at any
+setting.
 
 Loading the BLE link alone was worse. A 5 kHz capture requested over BLE,
 with no Wi-Fi stream and the motor stopped, left the bridge silent on both
@@ -179,7 +197,7 @@ is then read as new packets, one byte at a time. Raw telemetry blocks over
 BLE are the first notifications long enough to fill a packet. Upstream
 fixed the limit on 2026-10-02 (esp-hal #6448), after the last release.
 
-The bridge now tells the host 251 data bytes per ACL packet. Five more
+The bridge now tells the host 251 data bytes per ACL packet. Six more
 captures over BLE at 1 to 5 kHz left it answering over Wi-Fi at once, with
 no such warning. The captures themselves still stall: the link's 1 KiB
 queue refuses most of the blocks one SPI slot delivers (539 in one 15 s

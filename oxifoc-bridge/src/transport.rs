@@ -28,10 +28,12 @@ pub type SpiQueue = kit::Queue<16384, AtomicCoord>;
 /// Wi-Fi station credentials were set when the image was built.
 pub const WIFI_CONFIGURED: bool = cfg!(feature = "wifi")
     && matches!(option_env!("OXIFOC_PROBE_WIFI_SSID"), Some(ssid) if !ssid.is_empty());
-// An image with Wi-Fi reserves RAM for the TCP transmit buffer and its
-// queue. The USB-only budget covers about 200 ms at 20 kHz.
+// An image with Wi-Fi reserves RAM for the TCP transmit buffer, its queue
+// and the radio heap. USB then carries a 10 kHz stream; 20 kHz lost blocks
+// with 44 KiB here as well. The USB-only budget covers about 200 ms at
+// 20 kHz.
 const USB_QUEUE_BYTES: usize = if WIFI_CONFIGURED {
-    44 * 1024
+    28 * 1024
 } else {
     124 * 1024
 };

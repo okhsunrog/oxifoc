@@ -42,9 +42,14 @@ fn configure(wifi: WIFI<'static>) -> Result<Option<WifiController<'static>>, Wif
         return Ok(None);
     };
 
-    // Reserve headroom for association, BLE connections and in-flight frames
-    // without moving the existing 64 KiB radio heap onto the main stack's RAM.
-    esp_alloc::heap_allocator!(size: 12 * 1024);
+    // With a 12 KiB region the radio drivers left about 15 KiB of the heap
+    // free. A 20 kHz stream takes 13 to 16 KiB for frames in flight and 19 to
+    // 22 KiB with a BLE central connected: the heap ran out, and esp-radio
+    // panics when the buffer for a BLE packet cannot be allocated. This
+    // region leaves 10 KiB free at that load. It is static, so the 64 KiB
+    // region stays off the main stack's RAM; the USB queue gave up the
+    // difference.
+    esp_alloc::heap_allocator!(size: 28 * 1024);
     let station = StationConfig::default()
         .with_ssid(ssid.try_into()?)
         .with_authentication(AuthenticationMethodConfig::Wpa2Personal(

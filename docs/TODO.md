@@ -77,17 +77,18 @@ preserves older review findings and experimental detail.
   at 1 to 5 kHz stall: the link's 1 KiB queue refuses most of the 478-byte
   blocks one SPI slot delivers. Size the queue for a slot, or hold the slot
   as the Wi-Fi path does.
-- [ ] Report esp-radio's panic on an empty BLE mbuf pool upstream. Drop
-  the two controller buffer settings in `ble_runtime.rs` once a release
-  handles it and carries esp-hal #6448
+- [ ] Report upstream that esp-radio panics when the buffer for a BLE
+  packet cannot be allocated, which an exhausted radio heap causes
   ([measurements](notes/ble-link-reliability.md#bridge-reset-and-radio-stall-under-ble-load)).
+  Drop the ACL packet size in `ble_runtime.rs` once a release carries
+  esp-hal #6448.
 - [ ] End a raw telemetry session whose requester has gone. The controller
   streamed to a host that had disconnected until the bridge was reset, and
   refuses other hosts while the session is open. The bridge logs two lines
   for every frame it cannot route.
-- [ ] Measure the remote, not a host, holding a setpoint beside Wi-Fi. With
-  the ACL queue bound a host held it through six 138 s runs beside a 20 kHz
-  capture; two of nine 78 s holds had stopped before.
+- [ ] Measure the remote, not a host, holding a setpoint beside Wi-Fi, and
+  find what stopped a host's holds with `CommTimeout` in the first
+  measurements: four of eleven then, none of the 30 holds since.
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 

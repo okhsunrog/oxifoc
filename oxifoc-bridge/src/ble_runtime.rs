@@ -56,12 +56,11 @@ const UNTRUSTED_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTROLLER_ACL_BYTES: u16 = 251;
 /// ACL packets the controller lets the host queue for transmission.
 ///
-/// esp-radio takes an mbuf per packet from pools fixed at 12 blocks of
-/// 256 bytes and 24 of 320, and panics when one is empty. Its default of 24
-/// packets outgrew them once Wi-Fi kept the radio from sending: the bridge
-/// reset during a 20 kHz capture with a central driving. A packet of 229 to
-/// 240 bytes can take two small blocks, so four packets stay within the
-/// small pool with room for received ones.
+/// Each queued packet holds a block of 256 or 320 bytes from the radio heap,
+/// which Wi-Fi frames in flight draw on too, and esp-radio panics when that
+/// allocation fails (see `wifi.rs` for the heap budget). The default of 24
+/// packets can hold 7.7 KiB while a central is out of reach; four hold
+/// 1.3 KiB.
 const CONTROLLER_ACL_PACKETS: u16 = 4;
 /// The connection interval asked of a trusted central that keeps a longer
 /// one, the same as the remote sets itself. A Linux host connects at 45 ms:
