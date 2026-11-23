@@ -305,11 +305,11 @@ build-bridge features=bridge_features:
 
 # Package an app-only image for the inactive OTA slot.
 build-bridge-ota output features=bridge_features: (build-bridge features)
-    espflash save-image --chip esp32c5 --flash-size 4mb --partition-table {{bridge_partitions}} --target-app-partition ota_0 {{bridge_elf}} {{quote(output)}}
+    espflash save-image --chip esp32c5 --flash-size 4mb --flash-mode qio --flash-freq 80mhz --partition-table {{bridge_partitions}} --target-app-partition ota_0 {{bridge_elf}} {{quote(output)}}
 
 # Install or recover the bridge in ota_0. Preserve the existing NVS bonds.
 flash-bridge features=bridge_features: (build-bridge features)
-    probe-rs download --verify --restore-unwritten --chip esp32c5 {{c5_probe_arg}} --idf-partition-table {{bridge_partitions}} --idf-target-app-partition ota_0 {{bridge_elf}}
+    probe-rs download --verify --restore-unwritten --chip esp32c5 {{c5_probe_arg}} --idf-partition-table {{bridge_partitions}} --idf-target-app-partition ota_0 --idf-flash-mode qio --idf-flash-freq 80mhz {{bridge_elf}}
     uv run --no-project python -c 'from pathlib import Path; Path("{{bridge_blank_otadata}}").write_bytes(bytes([255]) * 8192)'
     probe-rs download --verify --chip esp32c5 {{c5_probe_arg}} --binary-format bin --base-address 0x3e0000 {{bridge_blank_otadata}}
     probe-rs reset --chip esp32c5 {{c5_probe_arg}}
