@@ -202,9 +202,21 @@ pub struct BridgeDiag {
     pub usb: UsbLinkDiag,
     pub ble: [BleLinkDiag; BRIDGE_BLE_LINKS],
     pub wifi: WifiLinkDiag,
+    pub heap: HeapDiag,
 }
 
 pub const BRIDGE_BLE_LINKS: usize = 2;
+
+/// The bridge's radio heap, which the Wi-Fi and BLE drivers share. Bytes;
+/// all zero in an image without a radio.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct HeapDiag {
+    pub size: u32,
+    pub free: u32,
+    /// Least free space since boot.
+    pub lowest_free: u32,
+}
 
 /// SPI link to the controller. Counters only grow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
@@ -411,6 +423,11 @@ mod tests {
                 connects: u32::MAX,
                 dropped: u32::MAX,
                 max_backlog: u32::MAX,
+            },
+            heap: HeapDiag {
+                size: u32::MAX,
+                free: u32::MAX,
+                lowest_free: u32::MAX,
             },
         };
         let mut buf = [0u8; 512];

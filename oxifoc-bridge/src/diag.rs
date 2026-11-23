@@ -7,8 +7,8 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use oxifoc_core::icd::BridgeDiagEndpoint;
 use oxifoc_core::types::diag::{
-    BleLinkDiag, BridgeDiag, BridgeDiagRequest, BridgeDiagResponse, SpiLinkDiag, UsbLinkDiag,
-    WifiLinkDiag,
+    BleLinkDiag, BridgeDiag, BridgeDiagRequest, BridgeDiagResponse, HeapDiag, SpiLinkDiag,
+    UsbLinkDiag, WifiLinkDiag,
 };
 
 use crate::{
@@ -85,6 +85,16 @@ fn snapshot() -> BridgeDiag {
         },
         ble: core::array::from_fn(|link| BLE[link].snapshot()),
         wifi: wifi(),
+        heap: heap(),
+    }
+}
+
+fn heap() -> HeapDiag {
+    let stats = esp_alloc::HEAP.stats();
+    HeapDiag {
+        size: stats.size as u32,
+        free: stats.size.saturating_sub(stats.current_usage) as u32,
+        lowest_free: stats.size.saturating_sub(stats.max_usage) as u32,
     }
 }
 

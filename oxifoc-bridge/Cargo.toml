@@ -58,7 +58,8 @@ embassy-time = { version = "0.5.1", features = ["log"] }
 embassy-sync = "0.8"
 embedded-io = { version = "0.7.1" }
 embedded-io-async = { version = "0.7.0" }
-esp-alloc = { version = "0.11.0" }
+# The heap statistics feed `req/bridge_diag`.
+esp-alloc = { version = "0.11.0", features = ["internal-heap-stats"] }
 esp-radio = { features = ["ble", "log-04", "esp-alloc", "esp32c5", "unstable"], version = "1.0.0-beta.1", optional = true }
 # Bond storage in the NVS partition (ble feature).
 esp-storage = { version = "0.10", features = ["esp32c5", "embedded-storage"], optional = true }

@@ -619,7 +619,7 @@ pub struct TelemetryConfigAck {
 /// and `cmd/bridge_ota` for app-slot updates, over any of its links, and
 /// publishes bridge logs on Ergot's standard formatted-log topic.
 /// The bridge carries Ergot over Wi-Fi as COBS frames on one TCP connection
-/// and reports that link in `req/bridge_diag`.
+/// and reports that link and its radio heap in `req/bridge_diag`.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.

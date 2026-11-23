@@ -145,7 +145,8 @@ The bridge serves its own diagnostics, `req/bridge_diag`
 errors by kind, controller boots it has seen (its link epoch changing), USB
 and per-link BLE counters (connects, disconnects with the last HCI reason,
 untrusted drops, notify errors, frames the outbound queue refused), the
-Wi-Fi link and the bridge's crash record. It answers over any link even
+Wi-Fi link, the radio heap's free space and its lowest since boot, and the
+bridge's crash record. It answers over any link even
 when the controller is silent.
 
 A bridge panic resets the C5 (`esp_hal::init` disables its watchdogs, so

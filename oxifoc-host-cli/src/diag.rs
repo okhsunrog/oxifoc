@@ -175,6 +175,10 @@ fn format_bridge(b: &BridgeDiag) -> String {
         b.wifi.dropped,
         b.wifi.max_backlog,
     ));
+    out.push_str(&format!(
+        "\nheap: free={} lowest={} of {}",
+        b.heap.free, b.heap.lowest_free, b.heap.size,
+    ));
     out
 }
 

@@ -121,8 +121,9 @@ window of control-ISR timing, telemetry and Hall counts, numbered so a
 poller sees a missed one) and `Crash` (the last panic or HardFault record,
 which survives resets until `ClearCrash`). `req/bridge_diag` is served by
 the bridge itself, so it answers even when the controller is silent:
-`Links` reports its uptime, reset reason and the SPI, USB, Wi-Fi and
-per-link BLE counters, `Crash` and `ClearCrash` its own panic record.
+`Links` reports its uptime, reset reason, the SPI, USB, Wi-Fi and
+per-link BLE counters and the radio heap, `Crash` and `ClearCrash` its own
+panic record.
 Every response fits one 505-byte BLE frame.
 
 
