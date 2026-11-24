@@ -50,8 +50,8 @@ oxifoc-core = { path = "../oxifoc-core", default-features = false, features = [
     "algorithms", "detection", "offset-diagnostics",
     "runtime", "defmt", "storage", "embassy", "cordic", "embassy-hal", "hfi", "hfi-detect", "isr-speed",
 ] }
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a", default-features = false, features = [
-    "embassy-usb-v0_6-preview",
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "ef3ffa6a4dbbe6929f272a91f72fda44c90d779a", default-features = false, features = [
+    "embassy-usb-v0_7-preview",
     "embedded-io-async-v0_7",
     "nostd-seed-router",
     "embassy-time",
@@ -76,6 +76,9 @@ rtt-target = "0.6"
 # embassy-stm32.
 [patch.crates-io]
 embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }
+# ergot builds its embassy-usb 0.6 adapter for the unreleased API
+# (`embassy-usb-v0_7-preview`) and takes the crate from here.
+embassy-usb = { git = "https://github.com/embassy-rs/embassy.git", rev = "72f7affbdcddb9fdcf3fdcaff72c5dbc8b0be6b8" }
 
 [profile.dev]
 debug = true

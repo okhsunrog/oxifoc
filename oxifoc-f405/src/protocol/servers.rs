@@ -4,7 +4,7 @@ use embassy_executor::Spawner;
 #[cfg(feature = "transport-usb")]
 use ergot::{
     exports::bbqueue::prod_cons::framed::FramedConsumer,
-    toolkits::embassy_usb_v0_6_preview as usb_kit,
+    toolkits::embassy_usb_v0_7_preview as usb_kit,
 };
 use heapless::String;
 use oxifoc_core::foc::current_offset::{

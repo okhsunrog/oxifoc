@@ -4,7 +4,7 @@ use embassy_executor::Spawner;
 use embedded_io_async::Write;
 use ergot::{
     exports::bbqueue::prod_cons::framed::FramedConsumer,
-    toolkits::embassy_usb_v0_6_preview as usb_kit,
+    toolkits::embassy_usb_v0_7_preview as usb_kit,
 };
 use heapless::String;
 use oxifoc_core::runtime::raw_stream::{self, ErgotRawSink};

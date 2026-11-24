@@ -19,7 +19,7 @@ use ergot::interface_manager::profiles::router::Router;
 use ergot::interface_manager::profiles::router::RouterFrameProcessor;
 use ergot::interface_manager::utils::framed_stream;
 #[cfg(feature = "transport-usb")]
-use ergot::toolkits::embassy_usb_v0_6_preview as usb_kit;
+use ergot::toolkits::embassy_usb_v0_7_preview as usb_kit;
 use ergot::toolkits::embedded_io_async_v0_7 as io_kit;
 use rtt_target::{ChannelMode::*, rtt_init};
 use static_cell::StaticCell;
@@ -86,7 +86,7 @@ pub type AppDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
 // RxWorker types — generic over FrameProcessor
 #[cfg(feature = "transport-usb")]
-pub type UsbRxWorker = ergot::interface_manager::transports::eusb_0_6_preview::RxWorker<
+pub type UsbRxWorker = ergot::interface_manager::transports::eusb_0_6::RxWorker<
     &'static Stack,
     AppDriver,
     RouterFrameProcessor,

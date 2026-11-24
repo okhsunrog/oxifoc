@@ -69,9 +69,10 @@ oxifoc-core = { path = "oxifoc-core" }
 # Git deps are pinned to revs for reproducible builds (CI runs with --locked).
 # To bump: update the rev here AND in the excluded device crates' Cargo.toml
 # (oxifoc-g474/f405/bridge/remote), then refresh all Cargo.lock files.
-# Bench pin: fork branch fix/embassy-usb-endpoint-options, which includes the receive headroom fix.
+# Pin: ergot main at #247 (nusb receive depth, COBS frames copied in runs,
+# embassy-usb 0.7 preview through a workspace patch).
 # Keep a fixed commit so capture provenance remains reproducible.
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "daeb0a75f79949100ff72f86a4514c503649977a" }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "ef3ffa6a4dbbe6929f272a91f72fda44c90d779a" }
 tokio = { version = "1.54", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

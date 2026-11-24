@@ -118,24 +118,6 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
     by hand to `attach()` it. A `subscribe_unicast()` beside the owned
     receivers' would cover it.
 
-15. **Encode COBS frames in runs.** `cobs_stream::Sink` serializes through
-    postcard's `Cobs` flavor, which has no `try_extend` of its own: every
-    byte of a body goes through `try_push` and
-    `cobs::enc::EncoderState::push`. What a byte costs is then the
-    compiler's choice. On the bridge (C5 at 240 MHz, `opt-level = "s"`,
-    stack protector on) sending one envelope of a 20 kHz telemetry stream
-    takes 0.20 ms where that loop is inlined into the frame encoder and
-    0.54 ms where it is not, a call with a stack check for every byte
-    ([measured 2026-11-24](../hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24)).
-    Upstream shape: a flavor for the sink whose `try_extend` copies each
-    run, up to the next zero or the end of the 254-byte block, with one
-    `copy_from_slice`. The bytes on the wire stay the same, and
-    `send_raw` and byte bodies cost a scan and a copy.
-    Opened as ergot #248. A bridge built with it, relaying a 20 kHz
-    stream over Wi-Fi with the motor stopped (391 bytes a block), took
-    0.59 ms a block where it took 0.79; the host that read both captures
-    was built without the change.
-
 ## Small
 
 10. **Port exhaustion should not panic.** `alloc_port` panics when all 254
@@ -282,6 +264,21 @@ per-fragment transfer id, and the ID carries only segment delivery
 
 ## Landed (kept for the record)
 
+- **COBS frames copied in runs** — ergot #248 merged 2026-11-24 as
+  `10e1b82` (wishlist item 15). `cobs_stream::Sink` encoded through
+  postcard's `Cobs` flavor a byte at a time, and whether the compiler
+  inlined that loop decided the cost
+  ([measurements](../hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24)). The
+  sink now has a flavor that copies each run of non-zero bytes at once and
+  writes the same bytes. On the bridge, sending a 391-byte block over TCP
+  went from 0.47 ms to 0.26 ms. oxifoc pins `ef3ffa6`, which has it.
+- **nusb receive depth** — ergot #246 merged 2026-11-24 as `b8c2862`: 32
+  reads queued instead of 4, and `NusbTransportConfig` sets the depth for
+  a connection.
+- **embassy-usb 0.7 preview** — ergot #247 merged 2026-11-24 as `ef3ffa6`:
+  the feature `embassy-usb-v0_7-preview` builds the 0.6 adapter for the
+  unreleased API, and the firmware points embassy-usb at Embassy's main
+  with `[patch.crates-io]`, as #245 does for embassy-net.
 - **Header compaction + traffic class** — ergot #226 merged 2026-09-28 as
   `70cb01c`: `seq_no` dropped and `Header`/`HeaderSeq` merged; `kind 2 |
   class 2 | ttl 4` packed into one byte (`PROTOCOL_ERROR = 0`, `MAX_TTL =

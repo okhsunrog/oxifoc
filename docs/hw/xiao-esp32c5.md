@@ -117,9 +117,14 @@ which the bridge answers `cmd/raw_record` with chunks of a recording, a
 second type whose bytes go through that flavor, the encoder is 184 bytes
 and every byte is a call to `cobs::enc::EncoderState::push`, with a frame
 pointer and a stack check each time. `opt-level = 3` sends in 0.24 ms and
-rewrites in 0.27, with 250 KiB more code. Encoding in runs inside ergot
-would take the choice from the compiler
-([wishlist](../notes/ergot-wishlist.md), item 15).
+rewrites in 0.27, with 250 KiB more code.
+
+ergot #248 took the choice from the compiler: its COBS sink copies each
+run of non-zero bytes at once. Timed over Wi-Fi with the motor stopped,
+where a block is 391 bytes, the send went from 0.47 ms to 0.26 ms and a
+whole block from 0.79 ms to 0.60 ms; the rewrite is 0.33 ms in both. The
+motor was not driven for this, so the 0.87 ms above has no counterpart
+yet.
 
 Recording is described in the
 [bridge README](../../oxifoc-bridge/README.md#recording-on-the-bridge).
