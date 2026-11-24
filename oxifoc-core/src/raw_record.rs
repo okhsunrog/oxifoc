@@ -90,7 +90,7 @@ pub struct RecordStatus {
     /// Bytes kept, and the memory there is for them.
     pub bytes: u32,
     pub capacity: u32,
-    /// Blocks taken into the recording.
+    /// Blocks kept.
     pub blocks: u32,
     /// Blocks missing from the session's sequence when the next arrived.
     pub missed: u32,
@@ -146,6 +146,7 @@ pub struct Recording<'a> {
     /// Where the older blocks end, once the newer ones have continued at the
     /// start of the memory: `start..wrap` is then followed by `0..end`.
     wrap: Option<usize>,
+    blocks: u32,
     overwritten: u32,
 }
 
@@ -156,12 +157,14 @@ impl<'a> Recording<'a> {
             start: 0,
             end: 0,
             wrap: None,
+            blocks: 0,
             overwritten: 0,
         }
     }
 
     pub fn clear(&mut self) {
-        (self.start, self.end, self.wrap, self.overwritten) = (0, 0, None, 0);
+        (self.start, self.end, self.wrap) = (0, 0, None);
+        (self.blocks, self.overwritten) = (0, 0);
     }
 
     pub fn capacity(&self) -> usize {
@@ -177,6 +180,11 @@ impl<'a> Recording<'a> {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Blocks kept.
+    pub fn blocks(&self) -> u32 {
+        self.blocks
     }
 
     /// Bytes a ring has dropped from its old end.
@@ -204,6 +212,7 @@ impl<'a> Recording<'a> {
                     let old = &self.memory[self.start..wrap];
                     let block = raw_block_len(old).map_or(old.len(), |block| block.min(old.len()));
                     self.start += block;
+                    self.blocks = self.blocks.saturating_sub(1);
                     self.overwritten = self.overwritten.wrapping_add(block as u32);
                     if self.start == wrap {
                         (self.start, self.wrap) = (0, None);
@@ -213,6 +222,13 @@ impl<'a> Recording<'a> {
         }
         self.memory[self.end..self.end + len].copy_from_slice(envelope);
         self.end += len;
+        let mut rest = envelope;
+        while let Ok(block) = raw_block_len(rest)
+            && let Some(after) = rest.get(block..)
+        {
+            self.blocks += 1;
+            rest = after;
+        }
         true
     }
 

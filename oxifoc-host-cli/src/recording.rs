@@ -108,7 +108,7 @@ fn report(json: bool, status: &RecordStatus) -> Result<()> {
 }
 
 pub fn run(runtime: &HostRuntime, action: RecordingAction, json: bool) -> Result<()> {
-    let cmd = &runtime.cmd_tx;
+    let mut bridge = ops::Client::new(&runtime.cmd_tx);
     match action {
         RecordingAction::Start { fast_hz, ring } => {
             let mode = if ring {
@@ -116,11 +116,11 @@ pub fn run(runtime: &HostRuntime, action: RecordingAction, json: bool) -> Result
             } else {
                 RecordMode::UntilFull
             };
-            report(json, &ops::start(cmd, fast_hz, mode)?)
+            report(json, &bridge.start(fast_hz, mode)?)
         }
-        RecordingAction::Stop => report(json, &ops::stop(cmd)?),
-        RecordingAction::Status => report(json, &ops::status(cmd)?),
-        RecordingAction::Clear => report(json, &ops::clear(cmd)?),
+        RecordingAction::Stop => report(json, &bridge.stop()?),
+        RecordingAction::Status => report(json, &bridge.status()?),
+        RecordingAction::Clear => report(json, &bridge.clear()?),
         RecordingAction::Fetch { out, raw } => fetch(runtime, out.as_deref(), raw.as_deref(), json),
     }
 }
@@ -131,7 +131,7 @@ fn fetch(runtime: &HostRuntime, out: Option<&str>, raw: Option<&str>, json: bool
     let chunk = (runtime.raw_telemetry.max_block_bytes() - 8).min(RECORD_CHUNK_BYTES as u16);
     let began = Instant::now();
     let mut shown = Instant::now();
-    let (status, bytes) = ops::fetch(cmd, chunk, |done, total| {
+    let (status, bytes) = ops::Client::new(cmd).fetch(chunk, |done, total| {
         if !json && shown.elapsed() > Duration::from_secs(1) {
             shown = Instant::now();
             eprintln!("fetched {done} of {total} bytes");

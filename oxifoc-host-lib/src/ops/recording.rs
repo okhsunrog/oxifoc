@@ -1,26 +1,112 @@
 //! A fast telemetry session recorded on the bridge: start, stop, fetch, clear.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use ergot::{Address, net_stack::NetStackHandle, traits::Endpoint};
 use oxifoc_core::{
+    icd::RawRecordEndpoint,
     raw_record::{RecordMode, RecordRequest, RecordResponse, RecordState, RecordStatus},
     raw_telemetry::RawStreamDecoder,
     types::FastTelemetry,
 };
 
-use crate::{CommandSender, HostCommand};
+use crate::{CommandSender, HostCommand, connection};
 
 /// Tries of one chunk read before a fetch gives up. Reads repeat safely.
 const READ_TRIES: usize = 4;
 
-pub fn request(cmd: &CommandSender, request: RecordRequest) -> Result<RecordResponse> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    cmd.send(HostCommand::RawRecord(request, tx))
-        .context("send recording request")?;
-    rx.blocking_recv()
-        .context("backend dropped the recording request")?
-        .context("recording request failed")
+/// Keeps the bridge's resolved address, so each chunk of a fetch costs one
+/// round trip.
+pub struct Client<'a> {
+    pub cmd: &'a CommandSender,
+    pub target: Option<Address>,
+}
+
+impl<'a> Client<'a> {
+    pub fn new(cmd: &'a CommandSender) -> Self {
+        Self { cmd, target: None }
+    }
+
+    pub fn request(&mut self, request: RecordRequest) -> Result<RecordResponse> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd
+            .send(HostCommand::RawRecord(self.target, request, tx))
+            .context("send recording request")?;
+        let (target, response) = rx
+            .blocking_recv()
+            .context("backend dropped the recording request")??;
+        self.target = Some(target);
+        Ok(response)
+    }
+
+    pub fn status(&mut self) -> Result<RecordStatus> {
+        status_of(self.request(RecordRequest::Status)?)
+    }
+
+    /// Start a recording at `fast_hz`, or at the controller's rate if that
+    /// is lower. The token and the start time come from this host's clock.
+    pub fn start(&mut self, fast_hz: u16, mode: RecordMode) -> Result<RecordStatus> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        status_of(self.request(RecordRequest::Start {
+            session: (now.as_nanos() as u64).max(1),
+            fast_hz,
+            mode,
+            started_unix_ms: now.as_millis() as u64,
+        })?)
+    }
+
+    pub fn stop(&mut self) -> Result<RecordStatus> {
+        status_of(self.request(RecordRequest::Stop)?)
+    }
+
+    pub fn clear(&mut self) -> Result<RecordStatus> {
+        status_of(self.request(RecordRequest::Clear)?)
+    }
+
+    /// Read a stopped recording whole, `chunk` bytes a request; `progress`
+    /// is told the bytes read so far and the total.
+    pub fn fetch(
+        &mut self,
+        chunk: u16,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<(RecordStatus, Vec<u8>)> {
+        let status = self.status()?;
+        if !matches!(status.state, RecordState::Stopped(_)) {
+            bail!("no stopped recording to fetch: {:?}", status.state);
+        }
+        let total = status.bytes as usize;
+        let mut bytes = Vec::with_capacity(total);
+        loop {
+            let read = RecordRequest::Read {
+                offset: bytes.len() as u32,
+                max_bytes: chunk,
+            };
+            let mut tries = 0;
+            let data = loop {
+                tries += 1;
+                match self.request(read) {
+                    Ok(RecordResponse::Data(data)) => break data.data,
+                    Ok(other) => bail!("the bridge answered {other:?} to a read"),
+                    Err(error) if tries == READ_TRIES => {
+                        return Err(error).with_context(|| format!("read at byte {}", bytes.len()));
+                    }
+                    Err(_) => {}
+                }
+            };
+            bytes.extend_from_slice(&data);
+            progress(bytes.len(), total);
+            if data.len() < usize::from(chunk) {
+                break;
+            }
+        }
+        if bytes.len() != total {
+            bail!("fetched {} bytes of a {total}-byte recording", bytes.len());
+        }
+        Ok((status, bytes))
+    }
 }
 
 fn status_of(response: RecordResponse) -> Result<RecordStatus> {
@@ -31,75 +117,34 @@ fn status_of(response: RecordResponse) -> Result<RecordStatus> {
     }
 }
 
-pub fn status(cmd: &CommandSender) -> Result<RecordStatus> {
-    status_of(request(cmd, RecordRequest::Status)?)
-}
-
-/// Start a recording at `fast_hz`, or at the controller's rate if that is
-/// lower. The token and the start time come from this host's clock.
-pub fn start(cmd: &CommandSender, fast_hz: u16, mode: RecordMode) -> Result<RecordStatus> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    status_of(request(
-        cmd,
-        RecordRequest::Start {
-            session: (now.as_nanos() as u64).max(1),
-            fast_hz,
-            mode,
-            started_unix_ms: now.as_millis() as u64,
-        },
-    )?)
-}
-
-pub fn stop(cmd: &CommandSender) -> Result<RecordStatus> {
-    status_of(request(cmd, RecordRequest::Stop)?)
-}
-
-pub fn clear(cmd: &CommandSender) -> Result<RecordStatus> {
-    status_of(request(cmd, RecordRequest::Clear)?)
-}
-
-/// Read a stopped recording whole, `chunk` bytes a request; `progress` is
-/// told the bytes read so far and the total.
-pub fn fetch(
-    cmd: &CommandSender,
-    chunk: u16,
-    mut progress: impl FnMut(usize, usize),
-) -> Result<(RecordStatus, Vec<u8>)> {
-    let status = status(cmd)?;
-    if !matches!(status.state, RecordState::Stopped(_)) {
-        bail!("no stopped recording to fetch: {:?}", status.state);
-    }
-    let total = status.bytes as usize;
-    let mut bytes = Vec::with_capacity(total);
-    loop {
-        let read = RecordRequest::Read {
-            offset: bytes.len() as u32,
-            max_bytes: chunk,
-        };
-        let mut tries = 0;
-        let data = loop {
-            tries += 1;
-            match request(cmd, read) {
-                Ok(RecordResponse::Data(data)) => break data.data,
-                Ok(other) => bail!("the bridge answered {other:?} to a read"),
-                Err(error) if tries == READ_TRIES => {
-                    return Err(error).with_context(|| format!("read at byte {}", bytes.len()));
-                }
-                Err(_) => {}
-            }
-        };
-        bytes.extend_from_slice(&data);
-        progress(bytes.len(), total);
-        if data.len() < usize::from(chunk) {
-            break;
-        }
-    }
-    if bytes.len() != total {
-        bail!("fetched {} bytes of a {total}-byte recording", bytes.len());
-    }
-    Ok((status, bytes))
+pub(crate) async fn request_on_link<NS>(
+    ns: &NS,
+    target: Option<Address>,
+    request: &RecordRequest,
+) -> Result<(Address, RecordResponse)>
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    let target = match target {
+        Some(addr) => addr,
+        None => connection::resolve_endpoint_addr(
+            ns,
+            RawRecordEndpoint::REQ_KEY.to_bytes(),
+            Duration::from_millis(500),
+        )
+        .await
+        .context("no bridge serves the recording endpoint")?,
+    };
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        ns.stack()
+            .endpoints()
+            .request::<RawRecordEndpoint>(target, request, None),
+    )
+    .await
+    .context("recording request timed out")?
+    .map_err(|err| anyhow!("recording request failed: {err:?}"))?;
+    Ok((target, response))
 }
 
 /// The records of a fetched recording.

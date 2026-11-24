@@ -63,6 +63,7 @@ fn until_full_keeps_the_beginning_and_refuses_the_block_that_does_not_fit() {
     }
     assert!(stored > 3 && stored < 40);
     assert_eq!(recording.len(), expected.len());
+    assert_eq!(recording.blocks(), stored);
     assert_eq!(recording.overwritten(), 0);
     for chunk in [1, 7, 480, 2048, 4000] {
         assert_eq!(contents(&recording, chunk), expected);
@@ -101,6 +102,7 @@ fn a_ring_keeps_the_newest_whole_blocks() {
             };
             assert_eq!(kept, tail, "capacity {capacity}, block {index}");
             let found = indices(&kept);
+            assert_eq!(found.len(), recording.blocks() as usize);
             assert_eq!(found.last(), Some(&index));
             assert!(found.windows(2).all(|pair| pair[1] == pair[0] + 1));
             let total: usize = pushed.iter().map(Vec::len).sum();

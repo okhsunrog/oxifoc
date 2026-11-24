@@ -239,7 +239,6 @@ struct Recorder {
     session: u64,
     started_unix_ms: u64,
     timing: TelemetryConfigAck,
-    blocks: u32,
     missed: u32,
     /// When a ring ends that saw a fault stop the motor.
     ends_at: Option<Instant>,
@@ -254,7 +253,6 @@ impl Recorder {
             session: 0,
             started_unix_ms: 0,
             timing: NO_TIMING,
-            blocks: 0,
             missed: 0,
             ends_at: None,
         }
@@ -269,7 +267,7 @@ impl Recorder {
             timing: self.timing,
             bytes: self.recording.len() as u32,
             capacity: self.recording.capacity() as u32,
-            blocks: self.blocks,
+            blocks: self.recording.blocks(),
             missed: self.missed,
             overwritten: self.recording.overwritten(),
         }
@@ -278,7 +276,7 @@ impl Recorder {
     fn clear(&mut self) {
         self.recording.clear();
         (self.state, self.session, self.started_unix_ms) = (RecordState::Empty, 0, 0);
-        (self.timing, self.blocks, self.missed, self.ends_at) = (NO_TIMING, 0, 0, None);
+        (self.timing, self.missed, self.ends_at) = (NO_TIMING, 0, None);
     }
 
     fn stop(&mut self, end: RecordEnd) {
@@ -307,7 +305,6 @@ impl Recorder {
         } else if !self.recording.push(envelope, self.mode) {
             self.stop(RecordEnd::Full);
         } else {
-            self.blocks = self.blocks.wrapping_add(blocks.count);
             self.missed = self.missed.wrapping_add(missing);
         }
         self.state == RecordState::Recording
