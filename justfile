@@ -4,7 +4,11 @@ set dotenv-load
 
 # Device firmware crates (excluded from workspace, different toolchain)
 bridge_features := "ble,swd-probe,ota"
-bridge_elf := "oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge"
+# The bridge's board: c5-zero (Waveshare ESP32-C5-Zero) or xiao-c5 (Seeed
+# XIAO ESP32-C5). Each builds into its own directory, so no ELF path
+# changes its pins.
+bridge_board := env("OXIFOC_BRIDGE_BOARD", "c5-zero")
+bridge_elf := "oxifoc-bridge/target" / bridge_board / "riscv32imac-unknown-none-elf/release/oxifoc-bridge"
 bridge_partitions := "oxifoc-bridge/partitions.csv"
 bridge_blank_otadata := "oxifoc-bridge/target/blank-otadata.bin"
 device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
@@ -301,7 +305,7 @@ test-replay-bridge capture resistance request:
 
 # Build ESP32 bridge firmware.
 build-bridge features=bridge_features:
-    cd oxifoc-bridge && cargo build --release --features {{quote(features)}}
+    cd oxifoc-bridge && cargo build --release --target-dir target/{{bridge_board}} --no-default-features --features {{quote("board-" + bridge_board + "," + features)}}
 
 # Package an app-only image for the inactive OTA slot.
 build-bridge-ota output features=bridge_features: (build-bridge features)

@@ -10,7 +10,7 @@ use ergot::interface_manager::{
 use esp_hal::{
     dma::{DmaRxBuf, DmaTxBuf},
     dma_rx_buffer, dma_tx_buffer,
-    gpio::{Input, InputConfig, Level, Output, OutputConfig},
+    gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull},
     peripherals::*,
     spi::{Mode, slave::Spi},
 };
@@ -18,7 +18,8 @@ use oxifoc_core::spi_link::{Builder, SLOT_BYTES, parse};
 
 pub struct Resources {
     pub bus: SPI2<'static>,
-    pub sck: GPIO6<'static>,
+    /// GPIO6 on the C5-Zero. The XIAO does not bring it out and uses GPIO8.
+    pub sck: AnyPin<'static>,
     pub mosi: GPIO7<'static>,
     pub miso: GPIO9<'static>,
     pub cs: GPIO10<'static>,
@@ -79,7 +80,8 @@ fn build_slot(tx: &mut DmaTxBuf, epoch: u32, fill: impl FnOnce(&mut Builder<'_>)
 pub async fn link(r: Resources, epoch: u32) {
     assert_eq!(checksum(b"123456789"), 0x0376_e6e7);
     let mut ready = Output::new(r.ready, Level::Low, OutputConfig::default());
-    let mut cs = Input::new(r.cs, InputConfig::default());
+    // Pulled up: with no controller wired, a floating CS would ask for slots.
+    let mut cs = Input::new(r.cs, InputConfig::default().with_pull(Pull::Up));
     let mut spi = Spi::new(r.bus, Mode::_0)
         .with_sck(r.sck)
         .with_mosi(r.mosi)

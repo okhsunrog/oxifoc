@@ -10,8 +10,7 @@ use dap_rs::{
 use esp_hal::{
     clock,
     delay::Delay,
-    gpio::{Flex, InputConfig, Level, OutputConfig},
-    peripherals::{GPIO4, GPIO5},
+    gpio::{AnyPin, Flex, InputConfig, Level, OutputConfig},
 };
 use riscv::register::mcycle;
 
@@ -23,7 +22,7 @@ pub struct Pins {
 }
 
 impl Pins {
-    pub fn new(clk: GPIO4<'static>, dio: GPIO5<'static>) -> Self {
+    pub fn new(clk: AnyPin<'static>, dio: AnyPin<'static>) -> Self {
         let mut clk = Flex::new(clk);
         let mut dio = Flex::new(dio);
         for pin in [&mut clk, &mut dio] {

@@ -11,7 +11,7 @@ use embassy_net::{Stack as NetStack, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read, Write};
-use esp_hal::peripherals::{GPIO4, GPIO5};
+use esp_hal::gpio::AnyPin;
 use oxifoc_core::{
     icd::SwdProbeEndpoint,
     types::swd_probe::{MAX_ARM_MINUTES, ProbeRequest, ProbeResponse},
@@ -38,8 +38,8 @@ static ARM: Signal<CriticalSectionRawMutex, Option<Instant>> = Signal::new();
 pub fn start(
     spawner: Spawner,
     router: &'static Stack,
-    clk: GPIO4<'static>,
-    dio: GPIO5<'static>,
+    clk: AnyPin<'static>,
+    dio: AnyPin<'static>,
     stack: Option<NetStack<'static>>,
 ) {
     let pins = Pins::new(clk, dio);

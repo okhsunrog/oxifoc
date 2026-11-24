@@ -19,7 +19,14 @@ test = false
 bench = false
 
 [features]
-default = []
+# Exactly one board feature must be enabled (compile_error in lib.rs). Its
+# pins are named in src/bin/main.rs.
+default = ["board-c5-zero"]
+# Waveshare ESP32-C5-Zero: 4 MB flash, an antenna switch on GPIO26.
+board-c5-zero = []
+# Seeed XIAO ESP32-C5 (ESP32-C5HR8): 8 MB flash, 8 MB PSRAM in the package,
+# an external antenna only. GPIO6 is not brought out.
+board-xiao-c5 = []
 ble = [
   "dep:esp-radio",
   "dep:embedded-storage",

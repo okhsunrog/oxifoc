@@ -7,11 +7,10 @@ use ergot::{
     NetStack,
     interface_manager::utils::{cobs_stream, framed_stream},
 };
+#[cfg(feature = "board-c5-zero")]
+use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::{
-    clock::CpuClock,
-    gpio::{Level, Output, OutputConfig},
-    timer::timg::TimerGroup,
-    usb::usb_serial_jtag::UsbSerialJtag,
+    clock::CpuClock, gpio::Pin, timer::timg::TimerGroup, usb::usb_serial_jtag::UsbSerialJtag,
 };
 use oxifoc_bridge::{
     bridge_logs,
@@ -40,7 +39,20 @@ async fn main(spawner: Spawner) -> ! {
         core::sync::atomic::Ordering::Relaxed,
     );
     oxifoc_bridge::crash::count_boot();
-    // Waveshare C5-Zero onboard antenna, selected before any radio initialization.
+    // The pins that differ between the boards: the SPI clock from the
+    // controller, and SWCLK and SWDIO of the wireless probe. MOSI, MISO, CS
+    // and READY are GPIO7, 9, 10 and 0 on both.
+    #[cfg(feature = "board-c5-zero")]
+    let sck = p.GPIO6.degrade();
+    #[cfg(feature = "board-xiao-c5")]
+    let sck = p.GPIO8.degrade();
+    #[cfg(all(feature = "swd-probe", feature = "board-c5-zero"))]
+    let (swclk, swdio) = (p.GPIO4.degrade(), p.GPIO5.degrade());
+    #[cfg(all(feature = "swd-probe", feature = "board-xiao-c5"))]
+    let (swclk, swdio) = (p.GPIO23.degrade(), p.GPIO24.degrade());
+    // The C5-Zero's onboard antenna, selected before any radio
+    // initialization. The XIAO has only its antenna connector.
+    #[cfg(feature = "board-c5-zero")]
     let _antenna = Output::new(p.GPIO26, Level::Low, OutputConfig::default());
     let timer = TimerGroup::new(p.TIMG0);
     esp_rtos::start(timer.timer0);
@@ -76,7 +88,7 @@ async fn main(spawner: Spawner) -> ! {
             transport::spi::link(
                 transport::spi::Resources {
                     bus: p.SPI2,
-                    sck: p.GPIO6,
+                    sck,
                     mosi: p.GPIO7,
                     miso: p.GPIO9,
                     cs: p.GPIO10,
@@ -165,7 +177,7 @@ async fn main(spawner: Spawner) -> ! {
         transport::tcp::start(spawner, stack, network);
     }
     #[cfg(feature = "swd-probe")]
-    oxifoc_bridge::probe::start(spawner, stack, p.GPIO4, p.GPIO5, network);
+    oxifoc_bridge::probe::start(spawner, stack, swclk, swdio, network);
     #[cfg(feature = "ota")]
     oxifoc_bridge::ota::start(spawner, stack, flash);
     log::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");
