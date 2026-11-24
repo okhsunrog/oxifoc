@@ -25,6 +25,7 @@
 //! | `SlowTelemetryEndpoint` | `()` | `SlowTelemetry` | System health poll (~10 Hz, doubles as heartbeat) |
 //! | `RawTelemetryEndpoint` | `RawTelemetryRequest` | `RawTelemetryAck` | Arm, stop and query a fast telemetry session |
 //! | `RawRelayEndpoint` | `RawTelemetryRequest` | `RawTelemetryAck` | The same, through the bridge, which relays the blocks as Delta28 |
+//! | `RawRecordEndpoint` | `RecordRequest` | `RecordResponse` | Record a fast telemetry session on the bridge and fetch it (served by the bridge) |
 //! | `FaultEndpoint` | `FaultRequest` | `FaultResponse` | Fault query/clear |
 //! | `DiagEndpoint` | `DiagRequest` | `DiagResponse` | ISR timing, totals since boot, reset cause, crash record |
 //! | `BridgeDiagEndpoint` | `BridgeDiagRequest` | `BridgeDiagResponse` | Link counters and the crash record (served by the bridge) |
@@ -37,6 +38,7 @@ use ergot::endpoint;
 // Re-export all types for convenience
 pub use crate::types::*;
 
+use crate::raw_record::{RecordRequest, RecordResponse};
 use crate::raw_telemetry;
 use crate::raw_telemetry::{RawTelemetryAck, RawTelemetryRequest, VelocityDebugArm};
 use crate::types::bridge_ota::{OtaRequest, OtaResponse};
@@ -184,6 +186,13 @@ endpoint!(
     RawTelemetryAck,
     "cmd/raw_relay_velocity_debug"
 );
+// The bridge records a session in its own memory, for a host to fetch.
+endpoint!(
+    RawRecordEndpoint,
+    RecordRequest,
+    RecordResponse,
+    "cmd/raw_record"
+);
 
 // Fault management endpoint (host → device)
 endpoint!(FaultEndpoint, FaultRequest, FaultResponse, "cmd/fault");
@@ -272,6 +281,10 @@ mod delivery_classes {
         type Delivery = Idempotent;
     }
     impl Command for VelocityDebugRelayEndpoint {
+        type Delivery = Idempotent;
+    }
+    // Start names its recording, so a repeat changes nothing.
+    impl Command for RawRecordEndpoint {
         type Delivery = Idempotent;
     }
     impl Command for FaultEndpoint {

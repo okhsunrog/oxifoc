@@ -182,6 +182,8 @@ pub mod types;
 
 /// Delta28, the smaller form a relay gives raw blocks.
 pub mod raw_delta;
+/// A raw session recorded on the bridge, and the requests for it.
+pub mod raw_record;
 /// Independent raw diagnostic blocks, shared by the optional bench sinks.
 pub mod raw_telemetry;
 #[cfg(feature = "spi-link")]
