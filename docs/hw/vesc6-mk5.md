@@ -78,13 +78,16 @@ The [official schematic](https://vesc-project.com/sites/default/files/Benjamin%2
 shows PA7 (pin 23) and PB10 (pin 29) on the same net on MCU sheet 3;
 the main sheet connects it to COMM pin 6.
 
-| COMM / controller | STM32 | ESP32-C5 |
+| COMM / controller | STM32 | ESP32-C5-Zero |
 |---|---|---|
 | TX/SCL, pin 6 | PA7, PB10 Hi-Z | GPIO7 |
 | ADC1, pin 4 | PA5 | GPIO6 |
 | ADC2, pin 7 | PA6 | GPIO9 |
 | RX/SDA, pin 5 | PB11 | GPIO10 |
 | SERVO signal | PB6 | GPIO0 |
+
+The [XIAO ESP32-C5](xiao-esp32c5.md#wiring-to-the-mk5) takes the same
+signals on its own pins: only the clock's GPIO differs.
 
 The actual TX/SCL wire is connected to **GPIO7**, as confirmed by the owner.
 Initial tests used GPIO8 and therefore did not test that wire. Repeating the
@@ -344,7 +347,8 @@ Keep this in mind on every first flash of a new image.
 
 ## Wireless SWD
 
-Connect the MK5 SWCLK pad to C5 GPIO4 and SWDIO to GPIO5. A 33–100 Ω
+Connect the MK5 SWCLK pad to C5 GPIO4 and SWDIO to GPIO5 (GPIO23 and
+GPIO24 on the [XIAO](xiao-esp32c5.md)). A 33–100 Ω
 series resistor on each line is optional: it limits the current when the
 two ends drive SWDIO against each other or one board is unpowered. The
 bench bridge is wired directly, and at 1 MHz it wrote and verified the

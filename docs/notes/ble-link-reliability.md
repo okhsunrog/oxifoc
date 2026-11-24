@@ -262,9 +262,10 @@ controller has no 9 % to give; at 15 kHz it would be 6.9 %. The C5
 The first builds showed the bridge was slower than that loop. In the
 running firmware the rewrite took 0.52 ms a block and sending the result
 another 0.45 ms. The flash ran in dual I/O mode at 40 MHz
-(`SPI_MEM_CTRL` 0x00ac200c, `SPI_MEM_CLOCK` 0x00010001), the defaults of
-the tools that install the bootloader, and each envelope's code was read
-from it again: placing the rewrite in RAM alone brought it to 0.28 ms. At
+(`SPI_MEM_CTRL` 0x00ac200c, `SPI_MEM_CLOCK` 0x00010001, read from SPI1;
+SPI0, which serves the cache, was not read on that board and showed the
+same values as SPI1 on the XIAO), the defaults of the tools that install
+the bootloader, and each envelope's code was read from it again: placing the rewrite in RAM alone brought it to 0.28 ms. At
 that flash speed a 20 kHz capture over USB was complete, but with a BLE
 central driving the motor either the capture lost blocks or the central's
 status replies came late, whichever task had the lower priority.

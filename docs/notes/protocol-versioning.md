@@ -101,11 +101,17 @@ take both. The session belongs to the requesting node until its END or
 until that node's link goes down, when the bridge stops it. A host whose
 link peer is the controller itself still asks the controller.
 
+The bridge serves `cmd/raw_record` where it has memory for recordings:
+Status, Start, Stop, Read and Clear of a session it keeps itself
+(`oxifoc_core::raw_record`). A recording is the blocks one after another
+without an END, and a ring starts at whatever block it still holds. Every
+request is idempotent; Start carries the requester's token.
+
 The bridge adds `cmd/bridge_ota` for application updates over any of its
 links.
 
 The bridge carries Ergot over Wi-Fi as COBS frames on one TCP connection,
-and `req/bridge_diag` reports that link.
+and `req/bridge_diag` reports that link, with the access point's signal.
 
 The C5 bridge adds `cmd/swd_probe` for time-limited arming and disarming
 of wireless SWD over any of its links.

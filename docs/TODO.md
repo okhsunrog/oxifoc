@@ -78,20 +78,24 @@ preserves older review findings and experimental detail.
 - [ ] Recheck fast capture losses under load using the [MK5 bench baseline](notes/foc-loop-research.md#native-rate-recording-on-mk5).
   Measure the producer queue and command delivery separately. Keep
   pre-trigger RAM capture as a separate feature if needed for faults.
-- [ ] Record fast telemetry sessions on the bridge: start, stop, fetch and
-  clear by command, into the RAM of a board with PSRAM, either until the
-  buffer is full or as a ring that freezes on a fault. The relay already
-  holds the session and the Delta28 blocks
-  ([bridge README](../oxifoc-bridge/README.md#fast-telemetry-relay)).
-  The board is a Seeed XIAO ESP32-C5 (ESP32-C5HR8 with 8 MB of PSRAM in the
-  package, 8 MB Puya flash beside it), measured 2026-11-24 with esp-hal
-  `main` before any wiring: the flash runs in quad I/O at 80 MHz, and the
-  PSRAM in quad mode at 80 MHz passed 248 write-and-verify passes over all
-  8 MB, writing 13.4 MiB/s and reading 24 (7.3 and 13.5 at 40 MHz). The
-  8 MB hold about 40 s of a relayed 20 kHz stream with the bench motor
-  running. The bridge needs the board's pins (GPIO6, its SPI clock today,
-  is not brought out) and esp-hal `main`, which has three fixes to the C5
-  PSRAM start-up that no release carries.
+- [ ] Record a session from the controller on the XIAO bridge. The
+  recorder has stored and returned only made-up blocks
+  ([bridge README](../oxifoc-bridge/README.md#recording-on-the-bridge));
+  the requests to the controller, the stop one second after a fault, and a
+  fetch over BLE are untried. Then run the bench captures again on this
+  board and on esp-hal `main`, where BLE advertising costs Wi-Fi about
+  40 % ([measurements](hw/xiao-esp32c5.md#measured-before-wiring-2026-11-24)).
+- [ ] Move the queues of the host links into the XIAO's PSRAM and give the
+  radio heap their room: the Wi-Fi queue, the USB queue and the TCP
+  socket's buffer are 80 KiB of internal RAM, and esp-radio allocates only
+  there. PSRAM shares the 32 KiB cache with code from flash, and is out of
+  reach while flash is written: measure both before keeping it.
+- [ ] Fetch a recording faster over Wi-Fi: 8 MB take 62 s, one chunk a
+  round trip. Several reads in flight, or a stream with its own
+  acknowledgement, would use the link.
+- [ ] Refuse a bridge image built for the other board. Their pins differ,
+  and an update with the wrong one leaves the bridge without its link to
+  the controller until it is flashed again.
 - [ ] Carry a fast telemetry session over the bridge's BLE link. Captures
   at 1 to 5 kHz stalled before the relay: the link's 1 KiB queue refuses
   most of the blocks one SPI slot delivers. The relay sends them smaller
@@ -115,18 +119,10 @@ preserves older review findings and experimental detail.
   esp-radio panics when the buffer for a BLE packet cannot be allocated,
   which an exhausted radio heap causes
   ([measurements](notes/ble-link-reliability.md#bridge-reset-and-radio-stall-under-ble-load)).
-  Drop the ACL packet size in `ble_runtime.rs` once a release carries
-  esp-hal #6448.
 - [ ] Measure the remote, not a host, holding a setpoint beside Wi-Fi, and
   find what stopped a host's holds with `CommTimeout`: four stops in about
   750 s of driving before the radio heap grew, none in five holds since
   ([measurements](notes/ble-link-reliability.md#bridge-reset-and-radio-stall-under-ble-load)).
-- [ ] Move the bridge to esp-hal `main` for the CAN FD driver and the BLE
-  fixes no release carries. The branch `bridge-esp-hal-main` builds and
-  passes the bench runs except that BLE advertising now costs Wi-Fi about
-  a third of its airtime
-  ([measurements](notes/ble-link-reliability.md#wi-fi-beside-ble-on-esp-hal-main)).
-  Measure it again with the relay: the stream is now 2.75 times smaller.
 - [ ] Reproduce old board timing issues before applying any fixes described
   in the [backlog snapshot](archive/backlog-through-2026-11-13.md).
 

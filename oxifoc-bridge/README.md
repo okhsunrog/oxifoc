@@ -5,6 +5,13 @@ Use the optional feature-list argument for a different build. The bridge
 routes ergot between the controller's SPI link, USB Serial/JTAG, and two BLE
 NUS links when `ble` is enabled.
 
+`OXIFOC_BRIDGE_BOARD` selects the board: `c5-zero` for the Waveshare
+ESP32-C5-Zero, the default, or `xiao-c5` for the
+[Seeed XIAO ESP32-C5](../docs/hw/xiao-esp32c5.md), which has the PSRAM for
+recordings. Each board builds into its own directory under `target/`. An
+image is for the board it was built for: the SPI clock, the probe's pins
+and the antenna switch differ, and nothing yet refuses the wrong one.
+
 The `wifi` feature adds WPA2-Personal Wi-Fi station mode and Ergot TCP.
 The `swd-probe` feature enables Wi-Fi and adds an armed-only CMSIS-DAP TCP
 listener. Set `OXIFOC_PROBE_WIFI_SSID` and
@@ -16,8 +23,9 @@ private because they contain the password.
 The GPIO adapter uses the bit-bang driver now included in
 [dap-rs](https://github.com/probe-rs/dap-rs/tree/a867ca7b41547b24aaad52b913528575685a5df5)
 0.2.0 (MIT or Apache-2.0), the successor to espdap's standalone
-`bitbang-dap`. The station uses the bridge's `esp-radio` 1.0.0-beta.1 and
-`embassy-net` 0.9.1.
+`bitbang-dap`. The Espressif crates come from esp-hal `main` at a pinned
+revision (`Cargo.toml`), which has the C5's CAN FD driver and PSRAM and BLE
+fixes that no release carries.
 
 See [Wireless SWD](../docs/hw/vesc6-mk5.md#wireless-swd) for wiring and use.
 
@@ -49,6 +57,39 @@ before and after, blocks that never reached it, envelopes the host's link
 refused, and the time it spent. On the bench the rewrite and the send took
 about 0.47 ms an envelope, 15 % of the CPU at 20 kHz.
 
+## Recording on the bridge
+
+On a board with PSRAM the bridge can keep a session itself, for a host to
+fetch later: start a recording from a phone before a ride, fetch it at
+home over Wi-Fi or USB.
+
+```sh
+oxifoc-host-cli recording start --ring     # or without --ring: until full
+oxifoc-host-cli recording status
+oxifoc-host-cli recording stop
+oxifoc-host-cli recording fetch --out ride.parquet
+oxifoc-host-cli recording clear
+```
+
+A recording is the session's blocks as the relay would send them. Without
+`--ring` it stops when the memory is full and holds the beginning. With
+`--ring` it drops its oldest blocks and holds the time before it stopped:
+by `stop`, or one second after a fault that stops the motor. The XIAO's
+8 MB hold about 40 s of a 20 kHz session with the bench motor running.
+
+Any host may send these requests over any link, and the recording stays
+until it is cleared or the bridge restarts. While one runs, a host that
+asks for a live session is answered `Busy`. `fetch --out` writes the same
+parquet file as `record` and needs the controller connected, for its
+calibration; `fetch --raw` saves the bytes as stored and needs only the
+bridge.
+
+Tried on the XIAO with made-up blocks, no controller being wired yet: the
+memory filled to 8 388 259 of 8 388 608 bytes in 15 917 blocks, a fetch
+took 22 s over USB and 62 s over Wi-Fi with identical bytes, and a ring
+given 30 000 blocks kept the newest 15 917 in order. A session from the
+controller, and the stop on a fault, have not been tried.
+
 ## Ergot over Wi-Fi
 
 With Wi-Fi configured, the C5 listens on TCP port 2025 and routes the
@@ -72,8 +113,9 @@ without an acknowledgement (`SMOLTCP_TCP_MIN_RTO_MS` in
 of the link that takes a session is full, USB or Wi-Fi, the bridge holds
 back the SPI link for up to 50 ms per slot, so the backlog collects in the
 controller's queue first; a longer stall drops frames at the bridge and
-fails the capture. `diag bridge` reports those drops and the fullest TCP
-window as `wifi: dropped=… max_backlog=…`. A 20 kHz capture is complete
+fails the capture. `diag bridge` reports those drops, the fullest TCP
+window and the access point's signal at the bridge as
+`wifi: dropped=… max_backlog=… signal=… dBm`. A 20 kHz capture is complete
 over Wi-Fi beside a BLE central that drives the motor, and over USB.
 
 ## Bridge logs
