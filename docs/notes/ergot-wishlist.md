@@ -131,6 +131,10 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
     run, up to the next zero or the end of the 254-byte block, with one
     `copy_from_slice`. The bytes on the wire stay the same, and
     `send_raw` and byte bodies cost a scan and a copy.
+    Opened as ergot #248. A bridge built with it, relaying a 20 kHz
+    stream over Wi-Fi with the motor stopped (391 bytes a block), took
+    0.59 ms a block where it took 0.79; the host that read both captures
+    was built without the change.
 
 ## Small
 

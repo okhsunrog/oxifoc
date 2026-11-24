@@ -83,7 +83,9 @@ preserves older review findings and experimental detail.
   less: ergot's COBS sink encodes a byte at a time, and the bridge's build
   no longer has that loop inline
   ([measurements](hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24),
-  [ergot wishlist](notes/ergot-wishlist.md), item 15).
+  [ergot wishlist](notes/ergot-wishlist.md), item 15). ergot #248 copies
+  runs instead: move the pin to it once it is merged, and time the relay
+  with the motor driven.
 - [ ] Give the bridge firmware its CAN FD link. The transceiver is on the
   XIAO's GPIO23 (TXD) and GPIO24 (RXD), and two boards exchange frames at
   5 Mbit/s
