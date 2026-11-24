@@ -36,11 +36,10 @@ The board is wired as the table says. The chip routes these signals to any
 pin, and `src/bin/main.rs` of the bridge names the assignment in one place.
 
 A CAN FD transceiver (TJA1051T/3, 5 V supply, 3.3 V on VIO) is on the
-header: RXD on D5 (GPIO24), TXD on D6 (GPIO11). The bridge firmware does
-not use it yet. TXD is on the wrong pin: GPIO11 is UART0 TX out of reset,
+header: RXD on D5 (GPIO24), TXD on D4 (GPIO23). The bridge firmware does
+not use it yet. TXD must not be on D6: GPIO11 is UART0 TX out of reset,
 and what the bootloaders print there reaches the bus
-([measured](#can-fd-between-two-boards-2026-11-24)). It moves to D4
-(GPIO23), which has no function out of reset; D0 is free as well.
+([measured](#can-fd-between-two-boards-2026-11-24)). D0 and D6 are free.
 
 Leave the strapping pins
 unconnected to the controller: D2 (GPIO25) and D3 (GPIO7) on the header,
@@ -129,7 +128,7 @@ Recording is described in the
 
 A second XIAO with a transceiver wired the same way, the two transceivers
 on one bus, and on both boards a test built on the `canfd` driver of
-esp-hal `main`. Each board sent numbered 64-byte frames with the bit rate
+esp-hal `main`. TXD was on D6 (GPIO11) for the runs in the table. Each board sent numbered 64-byte frames with the bit rate
 switched and checked the numbers and the payloads of the other's; a
 quarter of the payloads were all zeros and a quarter all ones, for the
 most stuff bits. The controller's clock is 80 MHz.
@@ -147,10 +146,16 @@ stayed at zero in every run. The data phases at 5 and 8 Mbit/s are 16 and
 point 12 and 7 periods after the measured transceiver delay. The
 transceiver is specified up to 5 Mbit/s.
 
-A reset of either board disturbs the bus. The ROM and the second-stage
-bootloader print their log on GPIO11, and the transceiver sends it as
-dominant pulses. A board that transmitted alone, error-passive with its
+With TXD on GPIO11 a reset of either board disturbed the bus. The ROM
+and the second-stage bootloader print their log on that pin, and the
+transceiver sends it as dominant pulses. A board that transmitted alone, error-passive with its
 transmit counter at 128 and its receive counter at 0, went bus-off once
 when the other board was reset, and its receive counter read 511 from
 then on. In the runs above the board that started first went bus-off up
 to 5 times while the other started.
+
+With TXD moved to D4 (GPIO23) on both boards the same reset left the
+transmitting board's counters at 128 and 0, with no bus-off. At 1 and
+5 Mbit/s the boards then exchanged 6 750 frames each way in 14 s at 500 a
+second and 41 200 in 17 s at 2 500 a second: none missing or damaged, no
+transmission failed from the start, and no bus-off.
