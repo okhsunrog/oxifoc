@@ -34,8 +34,15 @@ notes were measured on that board.
 
 The board is wired as the table says. The chip routes these signals to any
 pin, and `src/bin/main.rs` of the bridge names the assignment in one place.
-D0, D4, D5 and D6 are free; two of them are meant for a CAN FD
-transceiver. Leave the strapping pins
+
+A CAN FD transceiver (TJA1051T/3, 5 V supply, 3.3 V on VIO) is on the
+header: RXD on D5 (GPIO24), TXD on D6 (GPIO11). The bridge firmware does
+not use it yet. TXD is on the wrong pin: GPIO11 is UART0 TX out of reset,
+and what the bootloaders print there reaches the bus
+([measured](#can-fd-between-two-boards-2026-11-24)). It moves to D4
+(GPIO23), which has no function out of reset; D0 is free as well.
+
+Leave the strapping pins
 unconnected to the controller: D2 (GPIO25) and D3 (GPIO7) on the header,
 GPIO2 and GPIO3 among the pads on the back. The chip reads them at reset,
 and a level from outside can change how it starts.
@@ -117,3 +124,33 @@ would take the choice from the compiler
 
 Recording is described in the
 [bridge README](../../oxifoc-bridge/README.md#recording-on-the-bridge).
+
+## CAN FD between two boards, 2026-11-24
+
+A second XIAO with a transceiver wired the same way, the two transceivers
+on one bus, and on both boards a test built on the `canfd` driver of
+esp-hal `main`. Each board sent numbered 64-byte frames with the bit rate
+switched and checked the numbers and the payloads of the other's; a
+quarter of the payloads were all zeros and a quarter all ones, for the
+most stuff bits. The controller's clock is 80 MHz.
+
+| Arbitration | Data | Frames a second, each way | Frames each way | Missing or damaged |
+|---|---|---|---|---|
+| 500 kbit/s | 2 Mbit/s | 500 | 2 250 in 5 s | none |
+| 1 Mbit/s | 5 Mbit/s | 500 | 10 750 in 22 s | none |
+| 1 Mbit/s | 8 Mbit/s | 500 | 10 250 in 21 s | none |
+| 1 Mbit/s | 5 Mbit/s | 2 500 | 51 200 in 21 s | none |
+
+Once both boards ran, no transmission failed and both error counters
+stayed at zero in every run. The data phases at 5 and 8 Mbit/s are 16 and
+10 clock periods a bit, sampled at 75 and 70 %, with the secondary sample
+point 12 and 7 periods after the measured transceiver delay. The
+transceiver is specified up to 5 Mbit/s.
+
+A reset of either board disturbs the bus. The ROM and the second-stage
+bootloader print their log on GPIO11, and the transceiver sends it as
+dominant pulses. A board that transmitted alone, error-passive with its
+transmit counter at 128 and its receive counter at 0, went bus-off once
+when the other board was reset, and its receive counter read 511 from
+then on. In the runs above the board that started first went bus-off up
+to 5 times while the other started.

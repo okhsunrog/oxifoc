@@ -84,6 +84,10 @@ preserves older review findings and experimental detail.
   no longer has that loop inline
   ([measurements](hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24),
   [ergot wishlist](notes/ergot-wishlist.md), item 15).
+- [ ] Move the CAN FD transceiver's TXD from GPIO11 to GPIO23 on the XIAO
+  boards, and reset one board again while the other transmits
+  ([why](hw/xiao-esp32c5.md#can-fd-between-two-boards-2026-11-24)). Then
+  give the bridge firmware its CAN FD link.
 - [ ] Move the queues of the host links into the XIAO's PSRAM and give the
   radio heap their room: the Wi-Fi queue, the USB queue and the TCP
   socket's buffer are 80 KiB of internal RAM, and esp-radio allocates only
