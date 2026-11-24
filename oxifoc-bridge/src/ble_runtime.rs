@@ -29,6 +29,7 @@ use ergot::interface_manager::{
     FrameProcessor, InterfaceState, Profile, profiles::router::RouterFrameProcessor,
 };
 use ergot::socket::HeaderMessage;
+use esp_hal::efuse::InterfaceMacAddress;
 use esp_radio::ble::controller::BleConnector;
 use log::{debug, error, info, warn};
 use oxifoc_core::icd::{PairingEndpoint, PairingEventTopic};
@@ -104,7 +105,15 @@ pub async fn run(
         MAX_BONDS,
     > = HostResources::new();
 
-    let address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
+    // A static random address made from the chip's own Bluetooth address, so
+    // two bridges are two devices to a central. Its top two bits mark the
+    // kind.
+    let mut address = [0; 6];
+    let own = esp_hal::efuse::interface_mac_address(InterfaceMacAddress::Bluetooth);
+    address.copy_from_slice(own.as_bytes());
+    address.reverse();
+    address[5] |= 0xc0;
+    let address = Address::random(address);
     // The bridge's keyboard and display are a trusted device at the other end
     // of Ergot, so every pairing method with MITM protection is available.
     let ble_stack = trouble_host::new(ble_controller, &mut resources)
