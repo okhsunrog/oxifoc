@@ -83,6 +83,15 @@ preserves older review findings and experimental detail.
   buffer is full or as a ring that freezes on a fault. The relay already
   holds the session and the Delta28 blocks
   ([bridge README](../oxifoc-bridge/README.md#fast-telemetry-relay)).
+  The board is a Seeed XIAO ESP32-C5 (ESP32-C5HR8 with 8 MB of PSRAM in the
+  package, 8 MB Puya flash beside it), measured 2026-11-24 with esp-hal
+  `main` before any wiring: the flash runs in quad I/O at 80 MHz, and the
+  PSRAM in quad mode at 80 MHz passed 248 write-and-verify passes over all
+  8 MB, writing 13.4 MiB/s and reading 24 (7.3 and 13.5 at 40 MHz). The
+  8 MB hold about 40 s of a relayed 20 kHz stream with the bench motor
+  running. The bridge needs the board's pins (GPIO6, its SPI clock today,
+  is not brought out) and esp-hal `main`, which has three fixes to the C5
+  PSRAM start-up that no release carries.
 - [ ] Carry a fast telemetry session over the bridge's BLE link. Captures
   at 1 to 5 kHz stalled before the relay: the link's 1 KiB queue refuses
   most of the blocks one SPI slot delivers. The relay sends them smaller
