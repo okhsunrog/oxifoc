@@ -184,6 +184,11 @@ impl RawTelemetryState {
         })
     }
 
+    /// The largest raw block one frame of this connection's link carries.
+    pub fn max_block_bytes(&self) -> u16 {
+        self.max_block_bytes
+    }
+
     pub fn velocity_frames(&self, session: u64) -> Result<Option<Vec<VelocityDebugFrame>>> {
         let inner = self.inner.lock().unwrap();
         let capture = inner

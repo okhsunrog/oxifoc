@@ -13,6 +13,7 @@ pub mod diag;
 pub mod fault;
 pub mod pairing;
 pub mod phase;
+pub mod recording;
 pub mod swd_probe;
 pub mod telemetry;
 

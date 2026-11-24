@@ -11,6 +11,7 @@ mod detect;
 mod diag;
 mod maneuver;
 mod pairing;
+mod recording;
 mod swd_probe;
 mod watch;
 
@@ -300,6 +301,11 @@ enum Command {
     SwdProbe {
         #[command(subcommand)]
         action: swd_probe::ProbeAction,
+    },
+    /// Record fast telemetry in the bridge's memory and fetch it later
+    Recording {
+        #[command(subcommand)]
+        action: recording::RecordingAction,
     },
     /// Query active faults; --clear / --clear-category to clear
     Faults {
@@ -690,13 +696,14 @@ fn main() -> Result<()> {
     // The bridge serves pairing itself: wait for the bridge, not for the
     // motor controller, which may be absent or on another protocol version.
     // The bridge answers these itself; the controller may be absent.
-    let pairing = matches!(
-        cli.command,
+    let pairing = match &cli.command {
         Command::Pairing { .. }
-            | Command::Diag {
-                action: diag::DiagAction::Bridge { .. }
-            }
-    );
+        | Command::Diag {
+            action: diag::DiagAction::Bridge { .. },
+        } => true,
+        Command::Recording { action } => !action.needs_controller(),
+        _ => false,
+    };
     if pairing && cli.wait_secs > 0 {
         oxifoc_host_lib::ops::pairing::wait_for_bridge(&runtime.cmd_tx, wait)?;
     } else if cli.wait_secs > 0 && !runtime.wait_for_connection(wait) {
@@ -931,6 +938,7 @@ fn main() -> Result<()> {
         Command::Monitor { seconds, .. } => {
             watch::run_monitor(&runtime, Duration::from_secs(seconds), json)?;
         }
+        Command::Recording { action } => recording::run(&runtime, action, json)?,
         Command::Record {
             out,
             seconds,
