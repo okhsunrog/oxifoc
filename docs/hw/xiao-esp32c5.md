@@ -75,5 +75,21 @@ A relayed 20 kHz stream needs 1.7 Mbit/s. A laptop received the board's
 advertising at −27 to −35 dBm. At these levels the figures show that the
 radio and the antenna work, not how far they reach.
 
-The recorder was tried on the PSRAM with made-up blocks, no controller
-being wired: see the [bridge README](../../oxifoc-bridge/README.md#recording-on-the-bridge).
+## Wired to the MK5, 2026-11-24
+
+With the wiring above, the firmware on esp-hal `main`, and the bench motor
+driven at +120, +450 and +120 rad/s for 19 s by the capturing host:
+
+| 20 kHz capture | Result | Replies to commands |
+|---|---|---|
+| USB | complete, 372 185 records | after 7 to 11 ms |
+| Wi-Fi | complete, 375 647 records | after 21 to 68 ms |
+
+The SPI link carried 61 531 slots without an error. The wireless probe
+read the controller's CPUID and reset it over the new pads. The relay took
+0.87 ms an envelope over USB, against 0.47 ms on the first board with the
+September releases; the cause is not known. Captures beside a BLE central
+have not been repeated here: the board's centrals are not paired yet.
+
+Recording is described in the
+[bridge README](../../oxifoc-bridge/README.md#recording-on-the-bridge).

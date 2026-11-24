@@ -107,6 +107,11 @@ Status, Start, Stop, Read and Clear of a session it keeps itself
 without an END, and a ring starts at whatever block it still holds. Every
 request is idempotent; Start carries the requester's token.
 
+A host that connects while the session is another host's, or the bridge's
+recording, is answered `Busy` when it tries to stop the session it found.
+It keeps the connection for everything else and refuses its own captures
+until that session ends. It used to drop the link and try again.
+
 The bridge adds `cmd/bridge_ota` for application updates over any of its
 links.
 

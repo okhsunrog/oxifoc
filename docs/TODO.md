@@ -78,13 +78,11 @@ preserves older review findings and experimental detail.
 - [ ] Recheck fast capture losses under load using the [MK5 bench baseline](notes/foc-loop-research.md#native-rate-recording-on-mk5).
   Measure the producer queue and command delivery separately. Keep
   pre-trigger RAM capture as a separate feature if needed for faults.
-- [ ] Record a session from the controller on the XIAO bridge. The
-  recorder has stored and returned only made-up blocks
-  ([bridge README](../oxifoc-bridge/README.md#recording-on-the-bridge));
-  the requests to the controller, the stop one second after a fault, and a
-  fetch over BLE are untried. Then run the bench captures again on this
-  board and on esp-hal `main`, where BLE advertising costs Wi-Fi about
-  40 % ([measurements](hw/xiao-esp32c5.md#measured-before-wiring-2026-11-24)).
+- [ ] Repeat the captures beside a BLE central on the XIAO bridge, once a
+  central is paired with it: on esp-hal `main` BLE advertising costs Wi-Fi
+  about 40 %, and the relay takes 0.87 ms an envelope where it took 0.47
+  ([measurements](hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24)). Fetch a
+  recording over BLE.
 - [ ] Move the queues of the host links into the XIAO's PSRAM and give the
   radio heap their room: the Wi-Fi queue, the USB queue and the TCP
   socket's buffer are 80 KiB of internal RAM, and esp-radio allocates only

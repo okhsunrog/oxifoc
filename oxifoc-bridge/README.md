@@ -76,17 +76,27 @@ by `stop`, or one second after a fault that stops the motor. The XIAO's
 8 MB hold about 40 s of a 20 kHz session with the bench motor running.
 
 Any host may send these requests over any link, and the recording stays
-until it is cleared or the bridge restarts. While one runs, a host that
-asks for a live session is answered `Busy`. `fetch --out` writes the same
-parquet file as `record` and needs the controller connected, for its
-calibration; `fetch --raw` saves the bytes as stored and needs only the
-bridge.
+until it is cleared or the bridge restarts. While one runs, hosts connect
+and command the controller as usual, and one that asks for a live session
+is told it is in use. `fetch --out` writes the same parquet file as
+`record` and needs the controller connected, for its calibration;
+`fetch --raw` saves the bytes as stored and needs only the bridge.
 
-Tried on the XIAO with made-up blocks, no controller being wired yet: the
-memory filled to 8 388 259 of 8 388 608 bytes in 15 917 blocks, a fetch
-took 22 s over USB and 62 s over Wi-Fi with identical bytes, and a ring
-given 30 000 blocks kept the newest 15 917 in order. A session from the
-controller, and the stop on a fault, have not been tried.
+On the bench MK5, 2026-11-24, recording at 20 kHz:
+
+- Until full: 20 975 blocks, 67 s, the first 12 s with the motor at
+  +120 rad/s. The fetch over USB took 19.7 s and decoded to 1 342 400
+  records with no gap in their sequence.
+- A ring while a host held +120 rad/s over Wi-Fi and then went away: the
+  controller's deadman stopped the motor, and the recording ended 1.02 s
+  after the speed began to fall, as `Stopped(Fault)`.
+- During a recording, status and stop were answered over USB and Wi-Fi, and
+  a capture asked for by a host was refused with the reason.
+
+A ring that fills and wraps was tried only with made-up blocks, before the
+controller was wired: given 30 000 it kept the newest 15 917 in order, and
+a fetch of the full 8 MB took 62 s over Wi-Fi. A fetch over BLE has not
+been tried.
 
 ## Ergot over Wi-Fi
 
