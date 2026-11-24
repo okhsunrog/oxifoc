@@ -391,6 +391,8 @@ where
                 fast_hz_flag.store(0, Ordering::Relaxed);
                 info!("Telemetry stopped before transport shutdown (acknowledged)");
             }
+            // Not this connection's session to stop.
+            Ok(Err(error)) if error.is::<raw_telemetry::HeldElsewhere>() => {}
             result => {
                 tracing::warn!("Could not confirm telemetry stop before shutdown: {result:?}");
             }

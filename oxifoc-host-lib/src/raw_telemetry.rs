@@ -574,9 +574,29 @@ where
         .await
     };
     state.inner.lock().unwrap().relay = relay;
-    configure_inner(stack, state, 0, address, true).await?;
-    wait_stopped(stack, state.control(address)).await
+    match configure_inner(stack, state, 0, address, true).await {
+        Ok(_) => wait_stopped(stack, state.control(address)).await,
+        // The link serves everything else. A capture asked for on it is
+        // refused until that session ends.
+        Err(error) if error.is::<HeldElsewhere>() => {
+            tracing::info!("{error}; this connection has no fast telemetry until it ends");
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
+
+/// The fast telemetry session is another host's, or the bridge records it.
+#[derive(Debug)]
+pub struct HeldElsewhere;
+
+impl std::fmt::Display for HeldElsewhere {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("fast telemetry is held by another host or by a recording on the bridge")
+    }
+}
+
+impl std::error::Error for HeldElsewhere {}
 
 /// Where a connection asks for sessions.
 #[derive(Clone, Copy)]
@@ -677,7 +697,10 @@ where
         // Startup performs stale-session cleanup before publishing connected.
         // An ordinary command never waits for raw I/O or silently replaces a
         // running capture, so Motor Stop remains independent of reader drain.
-        bail!("raw previous session is not stopped; stop it before arming: {status:?}");
+        bail!(
+            "fast telemetry is in use, by this or another host or by a recording on the \
+             bridge; stop it before arming: {status:?}"
+        );
     }
     let session = if fast_hz != 0 {
         state.wait_ready().await?;
@@ -718,6 +741,9 @@ where
             bail!("raw acknowledgement cookie mismatch");
         }
         if fast_hz == 0 {
+            if ack.status == RawTelemetryStatus::Busy {
+                return Err(HeldElsewhere.into());
+            }
             if !(ack.status == RawTelemetryStatus::Stopping || producer_off(ack.status))
                 || ack.timing.actual_fast_hz != 0
             {
