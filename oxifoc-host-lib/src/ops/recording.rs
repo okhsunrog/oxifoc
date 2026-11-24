@@ -135,15 +135,17 @@ where
         .await
         .context("no bridge serves the recording endpoint")?,
     };
-    let response = tokio::time::timeout(
-        Duration::from_secs(3),
-        ns.stack()
+    // The reply's two-kilobyte chunk is part of the request future.
+    let stack = ns.stack();
+    let reply = Box::pin(
+        stack
             .endpoints()
             .request::<RawRecordEndpoint>(target, request, None),
-    )
-    .await
-    .context("recording request timed out")?
-    .map_err(|err| anyhow!("recording request failed: {err:?}"))?;
+    );
+    let response = tokio::time::timeout(Duration::from_secs(3), reply)
+        .await
+        .context("recording request timed out")?
+        .map_err(|err| anyhow!("recording request failed: {err:?}"))?;
     Ok((target, response))
 }
 

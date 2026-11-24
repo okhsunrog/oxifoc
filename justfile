@@ -112,6 +112,11 @@ check-device:
             # BLE is opt-in but is the deployed configuration: check it too.
             (cd "$crate" && cargo clippy --quiet --features ble -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
             (cd "$crate" && cargo build --release --quiet --features ble 2>&1 | filter) || exit 1
+            # The second board must not rot. Its artifacts stay in the
+            # directory `just build-bridge` gives that board.
+            xiao=(--target-dir target/xiao-c5 --no-default-features --features board-xiao-c5,{{bridge_features}})
+            (cd "$crate" && cargo clippy --quiet "${xiao[@]}" -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
+            (cd "$crate" && cargo build --release --quiet "${xiao[@]}" 2>&1 | filter) || exit 1
         fi
     done
     for crate in {{ target_test_crates }}; do

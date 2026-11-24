@@ -116,6 +116,10 @@ pub enum RecordRefusal {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Schema)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a bounded chunk keeps the wire type allocation-free"
+)]
 pub enum RecordResponse {
     Status(RecordStatus),
     Data(RecordChunk),
