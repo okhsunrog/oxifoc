@@ -347,9 +347,9 @@ Keep this in mind on every first flash of a new image.
 Connect the MK5 SWCLK pad to C5 GPIO4 and SWDIO to GPIO5. A 33–100 Ω
 series resistor on each line is optional: it limits the current when the
 two ends drive SWDIO against each other or one board is unpowered. The
-bench bridge is wired directly, with wires a few centimetres long, and at
-1 MHz it wrote and verified the controller's 446 KiB image over them. The
-COMM ground is shared. The bridge keeps
+bench bridge is wired directly, and at 1 MHz it wrote and verified the
+controller's 446 KiB image over those wires. The COMM ground is shared.
+The bridge keeps
 both pins as inputs without pulls between TCP sessions, so you can use a
 wired probe on the same pads while the wireless probe is idle. Use one
 probe at a time. The STM32 resets through SYSRESETREQ over SWD. NRST is
