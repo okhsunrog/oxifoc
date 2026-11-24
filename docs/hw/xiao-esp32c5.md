@@ -86,10 +86,34 @@ driven at +120, +450 and +120 rad/s for 19 s by the capturing host:
 | Wi-Fi | complete, 375 647 records | after 21 to 68 ms |
 
 The SPI link carried 61 531 slots without an error. The wireless probe
-read the controller's CPUID and reset it over the new pads. The relay took
-0.87 ms an envelope over USB, against 0.47 ms on the first board with the
-September releases; the cause is not known. Captures beside a BLE central
-have not been repeated here: the board's centrals are not paired yet.
+read the controller's CPUID and reset it over the new pads.
+
+Beside a BLE central that drove the motor for 78 s, a laptop paired with
+this bridge, 60 s captures at 20 kHz were complete over Wi-Fi (1 194 810
+records) and over USB (1 193 992). The central's status replies were more
+than 150 ms apart 7 and 11 times, 166 ms at the longest. The heap had
+7 352 bytes of 94 208 free at its lowest in these runs.
+
+The relay took 0.87 ms an envelope over USB, against 0.47 ms on the first
+board with the September releases. This board takes 0.47 ms as well with
+that firmware, so the firmware differs, not the board. Timed apart, the
+rewrite takes 0.23 to 0.24 ms in both, and sending the rewritten block
+0.20 ms there and 0.54 ms here. The clock and cache registers are the same
+in both; the flash controller's differ in the PSRAM's settings and in the
+timing its driver sets.
+
+The code that sends is the same ergot. Its COBS sink encodes a frame a
+byte at a time through postcard's `Cobs` flavor, and what a byte costs is
+the compiler's choice. With the releases the loop is inline in the block's
+frame encoder, 382 bytes of code. It is still there with esp-hal `main`
+alone and in the builds for a board without PSRAM. From the commit at
+which the bridge answers `cmd/raw_record` with chunks of a recording, a
+second type whose bytes go through that flavor, the encoder is 184 bytes
+and every byte is a call to `cobs::enc::EncoderState::push`, with a frame
+pointer and a stack check each time. `opt-level = 3` sends in 0.24 ms and
+rewrites in 0.27, with 250 KiB more code. Encoding in runs inside ergot
+would take the choice from the compiler
+([wishlist](../notes/ergot-wishlist.md), item 15).
 
 Recording is described in the
 [bridge README](../../oxifoc-bridge/README.md#recording-on-the-bridge).

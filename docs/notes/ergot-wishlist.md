@@ -118,6 +118,20 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
     by hand to `attach()` it. A `subscribe_unicast()` beside the owned
     receivers' would cover it.
 
+15. **Encode COBS frames in runs.** `cobs_stream::Sink` serializes through
+    postcard's `Cobs` flavor, which has no `try_extend` of its own: every
+    byte of a body goes through `try_push` and
+    `cobs::enc::EncoderState::push`. What a byte costs is then the
+    compiler's choice. On the bridge (C5 at 240 MHz, `opt-level = "s"`,
+    stack protector on) sending one envelope of a 20 kHz telemetry stream
+    takes 0.20 ms where that loop is inlined into the frame encoder and
+    0.54 ms where it is not, a call with a stack check for every byte
+    ([measured 2026-11-24](../hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24)).
+    Upstream shape: a flavor for the sink whose `try_extend` copies each
+    run, up to the next zero or the end of the 254-byte block, with one
+    `copy_from_slice`. The bytes on the wire stay the same, and
+    `send_raw` and byte bodies cost a scan and a copy.
+
 ## Small
 
 10. **Port exhaustion should not panic.** `alloc_port` panics when all 254

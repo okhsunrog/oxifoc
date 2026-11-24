@@ -78,16 +78,19 @@ preserves older review findings and experimental detail.
 - [ ] Recheck fast capture losses under load using the [MK5 bench baseline](notes/foc-loop-research.md#native-rate-recording-on-mk5).
   Measure the producer queue and command delivery separately. Keep
   pre-trigger RAM capture as a separate feature if needed for faults.
-- [ ] Repeat the captures beside a BLE central on the XIAO bridge, once a
-  central is paired with it: on esp-hal `main` BLE advertising costs Wi-Fi
-  about 40 %, and the relay takes 0.87 ms an envelope where it took 0.47
-  ([measurements](hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24)). Fetch a
-  recording over BLE.
+- [ ] Fetch a recording from the XIAO bridge over BLE.
+- [ ] Bring the relay's send back from 0.54 ms an envelope to 0.20 or
+  less: ergot's COBS sink encodes a byte at a time, and the bridge's build
+  no longer has that loop inline
+  ([measurements](hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24),
+  [ergot wishlist](notes/ergot-wishlist.md), item 15).
 - [ ] Move the queues of the host links into the XIAO's PSRAM and give the
   radio heap their room: the Wi-Fi queue, the USB queue and the TCP
   socket's buffer are 80 KiB of internal RAM, and esp-radio allocates only
-  there. PSRAM shares the 32 KiB cache with code from flash, and is out of
-  reach while flash is written: measure both before keeping it.
+  there. A 20 kHz capture beside a BLE central left 7 352 bytes of the
+  94 208 free at the lowest. PSRAM shares the 32 KiB cache with code from
+  flash, and is out of reach while flash is written: measure both before
+  keeping it.
 - [ ] Fetch a recording faster over Wi-Fi: 8 MB take 62 s, one chunk a
   round trip. Several reads in flight, or a stream with its own
   acknowledgement, would use the link.
