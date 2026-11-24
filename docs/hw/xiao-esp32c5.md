@@ -29,13 +29,13 @@ notes were measured on that board.
 | COMM pin 6, TX/SCL (MOSI) | PA7 | D8 | 8 |
 | COMM pin 7, ADC2 (MISO) | PA6 | D7 | 12 |
 | SERVO signal (READY) | PB6 | D1 | 0 |
-| SWCLK pad | – | D4 | 23 |
-| SWDIO pad | – | D5 | 24 |
+| SWCLK pad | – | MTCK pad on the back | 4 |
+| SWDIO pad | – | MTDO pad on the back | 5 |
 
-The COMM cable is soldered as the table says. READY and the probe's two
-lines are not wired yet, and their rows are the firmware's present choice.
-The chip routes these signals to any pin, and `src/bin/main.rs` of the
-bridge names the assignment in one place. Leave the strapping pins
+The board is wired as the table says. The chip routes these signals to any
+pin, and `src/bin/main.rs` of the bridge names the assignment in one place.
+D0, D4, D5 and D6 are free; two of them are meant for a CAN FD
+transceiver. Leave the strapping pins
 unconnected to the controller: D2 (GPIO25) and D3 (GPIO7) on the header,
 GPIO2 and GPIO3 among the pads on the back. The chip reads them at reset,
 and a level from outside can change how it starts.

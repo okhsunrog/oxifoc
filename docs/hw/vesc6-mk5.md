@@ -349,8 +349,8 @@ Keep this in mind on every first flash of a new image.
 
 ## Wireless SWD
 
-Connect the MK5 SWCLK and SWDIO pads to the bridge's probe pins; see the
-[XIAO's wiring](xiao-esp32c5.md#wiring-to-the-mk5). A 33–100 Ω series
+Connect the MK5 SWCLK and SWDIO pads to the bridge's probe pins, GPIO4
+and GPIO5; see the [XIAO's wiring](xiao-esp32c5.md#wiring-to-the-mk5). A 33–100 Ω series
 resistor on each line is optional: it limits the current when the two ends
 drive SWDIO against each other or one board is unpowered. The first bridge
 board was wired directly, and at 1 MHz it wrote and verified the

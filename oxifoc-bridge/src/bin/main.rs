@@ -39,8 +39,8 @@ async fn main(spawner: Spawner) -> ! {
     oxifoc_bridge::crash::count_boot();
     // The board is a Seeed XIAO ESP32-C5. These are its pins as wired to
     // the controller (docs/hw/xiao-esp32c5.md): the SPI link, and SWCLK and
-    // SWDIO of the wireless probe. Any of the header's pins serves any of
-    // them but D2 and D3, which the chip reads at reset.
+    // SWDIO of the wireless probe. Any pin serves any of them but the
+    // strapping pins, which the chip reads at reset: D2, D3, GPIO2, GPIO3.
     let link = transport::spi::Resources {
         bus: p.SPI2,
         sck: p.GPIO10.degrade(),  // D10
@@ -51,7 +51,7 @@ async fn main(spawner: Spawner) -> ! {
         dma: p.DMA_CH0,
     };
     #[cfg(feature = "swd-probe")]
-    let (swclk, swdio) = (p.GPIO23.degrade(), p.GPIO24.degrade()); // D4, D5
+    let (swclk, swdio) = (p.GPIO4.degrade(), p.GPIO5.degrade()); // the MTCK and MTDO pads
     // The PSRAM in the chip's package holds recordings of fast telemetry.
     let recording_memory: &'static mut [u8] = {
         let psram = esp_hal::psram::Psram::new(p.PSRAM, Default::default());
