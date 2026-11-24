@@ -273,6 +273,9 @@ pub struct WifiLinkDiag {
     pub dropped: u32,
     /// Most bytes the TCP transmit buffer has held.
     pub max_backlog: u32,
+    /// The access point's signal as the bridge receives it, dBm, read once
+    /// a second; `None` while not associated.
+    pub signal_dbm: Option<i8>,
 }
 
 /// One BLE central slot. Counters only grow.
@@ -444,6 +447,7 @@ mod tests {
                 connects: u32::MAX,
                 dropped: u32::MAX,
                 max_backlog: u32::MAX,
+                signal_dbm: Some(i8::MIN),
             },
             heap: HeapDiag {
                 size: u32::MAX,

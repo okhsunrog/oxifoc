@@ -1,5 +1,7 @@
+use core::sync::atomic::{AtomicI8, Ordering};
+
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use embassy_futures::{join::join, select::select};
 use embassy_net::{Runner, Stack, StackResources};
 use embassy_time::Timer;
 use esp_hal::{peripherals::WIFI, rng::Rng};
@@ -8,6 +10,15 @@ use esp_radio::wifi::{
     sta::StationConfig,
 };
 use static_cell::StaticCell;
+
+/// No reading: a received signal is below 0 dBm.
+const NO_SIGNAL: i8 = 0;
+static SIGNAL_DBM: AtomicI8 = AtomicI8::new(NO_SIGNAL);
+
+/// The access point's signal at the last reading, while associated.
+pub fn signal_dbm() -> Option<i8> {
+    Some(SIGNAL_DBM.load(Ordering::Relaxed)).filter(|&dbm| dbm != NO_SIGNAL)
+}
 
 pub fn start(spawner: Spawner, wifi: WIFI<'static>) -> Option<Stack<'static>> {
     match configure(wifi) {
@@ -76,7 +87,15 @@ async fn run(mut controller: WifiController<'static>, mut runner: Runner<'static
             match controller.connect_async().await {
                 Ok(_) => {
                     log::info!("Wi-Fi associated");
-                    let _ = controller.wait_for_disconnect_async().await;
+                    let signal = async {
+                        loop {
+                            let dbm = controller.rssi().map_or(NO_SIGNAL, |dbm| dbm as i8);
+                            SIGNAL_DBM.store(dbm, Ordering::Relaxed);
+                            Timer::after_secs(1).await;
+                        }
+                    };
+                    let _ = select(controller.wait_for_disconnect_async(), signal).await;
+                    SIGNAL_DBM.store(NO_SIGNAL, Ordering::Relaxed);
                 }
                 Err(err) => log::warn!("Wi-Fi association failed: {err:?}"),
             }

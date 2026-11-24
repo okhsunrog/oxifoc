@@ -165,7 +165,7 @@ fn format_bridge(b: &BridgeDiag) -> String {
         ));
     }
     out.push_str(&format!(
-        "\nwifi: {} connects={} dropped={} max_backlog={}",
+        "\nwifi: {} connects={} dropped={} max_backlog={} signal={}",
         if b.wifi.connected {
             "connected"
         } else {
@@ -174,6 +174,9 @@ fn format_bridge(b: &BridgeDiag) -> String {
         b.wifi.connects,
         b.wifi.dropped,
         b.wifi.max_backlog,
+        b.wifi
+            .signal_dbm
+            .map_or_else(|| "none".into(), |dbm| format!("{dbm} dBm")),
     ));
     out.push_str(&format!(
         "\nheap: free={} lowest={} of {}",

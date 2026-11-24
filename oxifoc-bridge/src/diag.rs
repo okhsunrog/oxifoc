@@ -114,6 +114,7 @@ fn wifi() -> WifiLinkDiag {
         connects: tcp::CONNECTS.load(Ordering::Relaxed),
         dropped: tcp::DROPPED.load(Ordering::Relaxed),
         max_backlog: tcp::MAX_BACKLOG.load(Ordering::Relaxed),
+        signal_dbm: crate::wifi::signal_dbm(),
     }
 }
 
