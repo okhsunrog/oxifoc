@@ -54,6 +54,20 @@ async fn main(spawner: Spawner) -> ! {
     // initialization. The XIAO has only its antenna connector.
     #[cfg(feature = "board-c5-zero")]
     let _antenna = Output::new(p.GPIO26, Level::Low, OutputConfig::default());
+    // The XIAO's PSRAM holds recordings of fast telemetry. The C5-Zero has
+    // none.
+    #[cfg(feature = "board-xiao-c5")]
+    let recording_memory: &'static mut [u8] = {
+        let psram = esp_hal::psram::Psram::new(p.PSRAM, Default::default());
+        match psram.raw_parts() {
+            (_, 0) => &mut [],
+            // SAFETY: the driver mapped this many bytes at this address for
+            // the life of the firmware, and nothing else is given them.
+            (start, size) => unsafe { core::slice::from_raw_parts_mut(start, size) },
+        }
+    };
+    #[cfg(feature = "board-c5-zero")]
+    let recording_memory: &'static mut [u8] = &mut [];
     let timer = TimerGroup::new(p.TIMG0);
     esp_rtos::start(timer.timer0);
     let rng = esp_hal::rng::Rng::new();
@@ -131,7 +145,8 @@ async fn main(spawner: Spawner) -> ! {
     // Wi-Fi lost a third (with the flash at 40 MHz).
     spawn_bridge_task(
         spawner,
-        oxifoc_bridge::relay::run(stack, spi_ident).expect("relay task is spawned once"),
+        oxifoc_bridge::relay::run(stack, spi_ident, recording_memory)
+            .expect("relay task is spawned once"),
         LINK,
     );
     #[cfg(any(feature = "ble", feature = "wifi"))]
