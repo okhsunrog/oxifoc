@@ -7,8 +7,6 @@ use ergot::{
     NetStack,
     interface_manager::utils::{cobs_stream, framed_stream},
 };
-#[cfg(feature = "board-c5-zero")]
-use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::{
     clock::CpuClock, gpio::Pin, timer::timg::TimerGroup, usb::usb_serial_jtag::UsbSerialJtag,
 };
@@ -39,24 +37,22 @@ async fn main(spawner: Spawner) -> ! {
         core::sync::atomic::Ordering::Relaxed,
     );
     oxifoc_bridge::crash::count_boot();
-    // The pins that differ between the boards: the SPI clock from the
-    // controller, and SWCLK and SWDIO of the wireless probe. MOSI, MISO, CS
-    // and READY are GPIO7, 9, 10 and 0 on both.
-    #[cfg(feature = "board-c5-zero")]
-    let sck = p.GPIO6.degrade();
-    #[cfg(feature = "board-xiao-c5")]
-    let sck = p.GPIO8.degrade();
-    #[cfg(all(feature = "swd-probe", feature = "board-c5-zero"))]
-    let (swclk, swdio) = (p.GPIO4.degrade(), p.GPIO5.degrade());
-    #[cfg(all(feature = "swd-probe", feature = "board-xiao-c5"))]
-    let (swclk, swdio) = (p.GPIO23.degrade(), p.GPIO24.degrade());
-    // The C5-Zero's onboard antenna, selected before any radio
-    // initialization. The XIAO has only its antenna connector.
-    #[cfg(feature = "board-c5-zero")]
-    let _antenna = Output::new(p.GPIO26, Level::Low, OutputConfig::default());
-    // The XIAO's PSRAM holds recordings of fast telemetry. The C5-Zero has
-    // none.
-    #[cfg(feature = "board-xiao-c5")]
+    // The board is a Seeed XIAO ESP32-C5. These are its pins as wired to
+    // the controller (docs/hw/xiao-esp32c5.md): the SPI link, and SWCLK and
+    // SWDIO of the wireless probe. Any of the header's pins serves any of
+    // them but D2 and D3, which the chip reads at reset.
+    let link = transport::spi::Resources {
+        bus: p.SPI2,
+        sck: p.GPIO8.degrade(),   // D8
+        mosi: p.GPIO7.degrade(),  // D3
+        miso: p.GPIO9.degrade(),  // D9
+        cs: p.GPIO10.degrade(),   // D10
+        ready: p.GPIO0.degrade(), // D1
+        dma: p.DMA_CH0,
+    };
+    #[cfg(feature = "swd-probe")]
+    let (swclk, swdio) = (p.GPIO23.degrade(), p.GPIO24.degrade()); // D4, D5
+    // The PSRAM in the chip's package holds recordings of fast telemetry.
     let recording_memory: &'static mut [u8] = {
         let psram = esp_hal::psram::Psram::new(p.PSRAM, Default::default());
         match psram.raw_parts() {
@@ -66,8 +62,6 @@ async fn main(spawner: Spawner) -> ! {
             (start, size) => unsafe { core::slice::from_raw_parts_mut(start, size) },
         }
     };
-    #[cfg(feature = "board-c5-zero")]
-    let recording_memory: &'static mut [u8] = &mut [];
     let timer = TimerGroup::new(p.TIMG0);
     esp_rtos::start(timer.timer0);
     let rng = esp_hal::rng::Rng::new();
@@ -98,21 +92,7 @@ async fn main(spawner: Spawner) -> ! {
         LINK_EXECUTOR.init(esp_rtos::embassy::InterruptExecutor::new(p.FROM_CPU_INTR2));
     link_executor
         .start(esp_hal::interrupt::Priority::Priority1)
-        .spawn(
-            transport::spi::link(
-                transport::spi::Resources {
-                    bus: p.SPI2,
-                    sck,
-                    mosi: p.GPIO7,
-                    miso: p.GPIO9,
-                    cs: p.GPIO10,
-                    ready: p.GPIO0,
-                    dma: p.DMA_CH0,
-                },
-                epoch,
-            )
-            .expect("SPI link task is spawned once"),
-        );
+        .spawn(transport::spi::link(link, epoch).expect("SPI link task is spawned once"));
     spawn_bridge_task(
         spawner,
         transport::spi::slots(stack, spi_ident, epoch).expect("SPI slot task is spawned once"),

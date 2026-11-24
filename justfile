@@ -4,11 +4,7 @@ set dotenv-load
 
 # Device firmware crates (excluded from workspace, different toolchain)
 bridge_features := "ble,swd-probe,ota"
-# The bridge's board: c5-zero (Waveshare ESP32-C5-Zero) or xiao-c5 (Seeed
-# XIAO ESP32-C5). Each builds into its own directory, so no ELF path
-# changes its pins.
-bridge_board := env("OXIFOC_BRIDGE_BOARD", "c5-zero")
-bridge_elf := "oxifoc-bridge/target" / bridge_board / "riscv32imac-unknown-none-elf/release/oxifoc-bridge"
+bridge_elf := "oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge"
 bridge_partitions := "oxifoc-bridge/partitions.csv"
 bridge_blank_otadata := "oxifoc-bridge/target/blank-otadata.bin"
 device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
@@ -112,11 +108,6 @@ check-device:
             # BLE is opt-in but is the deployed configuration: check it too.
             (cd "$crate" && cargo clippy --quiet --features ble -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
             (cd "$crate" && cargo build --release --quiet --features ble 2>&1 | filter) || exit 1
-            # The second board must not rot. Its artifacts stay in the
-            # directory `just build-bridge` gives that board.
-            xiao=(--target-dir target/xiao-c5 --no-default-features --features board-xiao-c5,{{bridge_features}})
-            (cd "$crate" && cargo clippy --quiet "${xiao[@]}" -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
-            (cd "$crate" && cargo build --release --quiet "${xiao[@]}" 2>&1 | filter) || exit 1
         fi
     done
     for crate in {{ target_test_crates }}; do
@@ -310,7 +301,7 @@ test-replay-bridge capture resistance request:
 
 # Build ESP32 bridge firmware.
 build-bridge features=bridge_features:
-    cd oxifoc-bridge && cargo build --release --target-dir target/{{bridge_board}} --no-default-features --features {{quote("board-" + bridge_board + "," + features)}}
+    cd oxifoc-bridge && cargo build --release --features {{quote(features)}}
 
 # Package an app-only image for the inactive OTA slot.
 build-bridge-ota output features=bridge_features: (build-bridge features)

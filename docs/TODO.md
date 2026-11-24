@@ -93,9 +93,6 @@ preserves older review findings and experimental detail.
 - [ ] Fetch a recording faster over Wi-Fi: 8 MB take 62 s, one chunk a
   round trip. Several reads in flight, or a stream with its own
   acknowledgement, would use the link.
-- [ ] Refuse a bridge image built for the other board. Their pins differ,
-  and an update with the wrong one leaves the bridge without its link to
-  the controller until it is flashed again.
 - [ ] Carry a fast telemetry session over the bridge's BLE link. Captures
   at 1 to 5 kHz stalled before the relay: the link's 1 KiB queue refuses
   most of the blocks one SPI slot delivers. The relay sends them smaller

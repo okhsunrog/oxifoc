@@ -86,8 +86,10 @@ the main sheet connects it to COMM pin 6.
 | RX/SDA, pin 5 | PB11 | GPIO10 |
 | SERVO signal | PB6 | GPIO0 |
 
-The [XIAO ESP32-C5](xiao-esp32c5.md#wiring-to-the-mk5) takes the same
-signals on its own pins: only the clock's GPIO differs.
+This table and the tests below are of the first bridge board, a Waveshare
+ESP32-C5-Zero. The bridge now runs on a
+[XIAO ESP32-C5](xiao-esp32c5.md#wiring-to-the-mk5), which takes the same
+signals on its own pins.
 
 The actual TX/SCL wire is connected to **GPIO7**, as confirmed by the owner.
 Initial tests used GPIO8 and therefore did not test that wire. Repeating the
@@ -347,11 +349,11 @@ Keep this in mind on every first flash of a new image.
 
 ## Wireless SWD
 
-Connect the MK5 SWCLK pad to C5 GPIO4 and SWDIO to GPIO5 (GPIO23 and
-GPIO24 on the [XIAO](xiao-esp32c5.md)). A 33–100 Ω
-series resistor on each line is optional: it limits the current when the
-two ends drive SWDIO against each other or one board is unpowered. The
-bench bridge is wired directly, and at 1 MHz it wrote and verified the
+Connect the MK5 SWCLK and SWDIO pads to the bridge's probe pins; see the
+[XIAO's wiring](xiao-esp32c5.md#wiring-to-the-mk5). A 33–100 Ω series
+resistor on each line is optional: it limits the current when the two ends
+drive SWDIO against each other or one board is unpowered. The first bridge
+board was wired directly, and at 1 MHz it wrote and verified the
 controller's 446 KiB image over those wires. The COMM ground is shared.
 The bridge keeps
 both pins as inputs without pulls between TCP sessions, so you can use a

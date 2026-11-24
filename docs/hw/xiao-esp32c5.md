@@ -1,13 +1,10 @@
-# Seeed XIAO ESP32-C5 as the bridge
+# The bridge board: Seeed XIAO ESP32-C5
 
-The bridge firmware runs on two boards. The Waveshare ESP32-C5-Zero was the
-first; the XIAO ESP32-C5 adds 8 MB of PSRAM, where the bridge
+The bridge firmware runs on a Seeed XIAO ESP32-C5. Its 8 MB of PSRAM are
+where the bridge
 [records fast telemetry](../../oxifoc-bridge/README.md#recording-on-the-bridge).
-Select it at build time:
-
-```sh
-OXIFOC_BRIDGE_BOARD=xiao-c5 just flash-bridge
-```
+The firmware first ran on a Waveshare ESP32-C5-Zero, and the earlier bench
+notes were measured on that board.
 
 ## The board
 
@@ -23,24 +20,29 @@ OXIFOC_BRIDGE_BOARD=xiao-c5 just flash-bridge
 
 ## Wiring to the MK5
 
-The firmware keeps the C5-Zero's GPIO numbers where the XIAO brings them
-out. The SPI clock moves, because GPIO6 is not available, and the wireless
-probe's pins move to the edge.
+| MK5 | STM32 | XIAO pin | GPIO |
+|---|---|---|---|
+| COMM pin 6, TX/SCL (MOSI) | PA7 | D3 | 7 |
+| COMM pin 4, ADC1 (SCK) | PA5 | D8 | 8 |
+| COMM pin 7, ADC2 (MISO) | PA6 | D9 | 9 |
+| COMM pin 5, RX/SDA (CS) | PB11 | D10 | 10 |
+| SERVO signal (READY) | PB6 | D1 | 0 |
+| SWCLK pad | – | D4 | 23 |
+| SWDIO pad | – | D5 | 24 |
+| GND | | GND | |
 
-| MK5 | STM32 | XIAO pin | GPIO | C5-Zero GPIO |
-|---|---|---|---|---|
-| COMM pin 6, TX/SCL (MOSI) | PA7 | D3 | 7 | 7 |
-| COMM pin 4, ADC1 (SCK) | PA5 | D8 | 8 | 6 |
-| COMM pin 7, ADC2 (MISO) | PA6 | D9 | 9 | 9 |
-| COMM pin 5, RX/SDA (CS) | PB11 | D10 | 10 | 10 |
-| SERVO signal (READY) | PB6 | D1 | 0 | 0 |
-| SWCLK pad | – | D4 | 23 | 4 |
-| SWDIO pad | – | D5 | 24 | 5 |
-| GND | | GND | | |
+The table is the assignment the firmware has now; no board has been wired
+to it yet. The chip routes these signals to any pin, so it is a choice,
+and `src/bin/main.rs` of the bridge names it in one place. Two header pins
+should stay unconnected to the controller: D2 (GPIO25) and D3 (GPIO7) are
+strapping pins, which the chip reads at reset, and a level driven from
+outside can change how it starts. D3 carries MOSI in the table because
+GPIO7 did on the first board, where it caused no trouble; the wiring to
+come avoids it.
 
-D6 and D7 (GPIO11, GPIO12) are kept for CAN FD. D0 and D2 are free.
-See the [MK5 notes](vesc6-mk5.md#c5-bridge-wiring-and-continuity-check) for
-the connector and for the series resistors on the probe's lines.
+Two of D0, D1 and D4 to D10 stay free for CAN FD. See the
+[MK5 notes](vesc6-mk5.md#c5-bridge-wiring-and-continuity-check) for the
+connector and for the series resistors on the probe's lines.
 
 ## Measured before wiring, 2026-11-24
 

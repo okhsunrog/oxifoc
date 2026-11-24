@@ -16,14 +16,14 @@ use esp_hal::{
 };
 use oxifoc_core::spi_link::{Builder, SLOT_BYTES, parse};
 
+/// The pins are the board's wiring, named in `main.rs`.
 pub struct Resources {
     pub bus: SPI2<'static>,
-    /// GPIO6 on the C5-Zero. The XIAO does not bring it out and uses GPIO8.
     pub sck: AnyPin<'static>,
-    pub mosi: GPIO7<'static>,
-    pub miso: GPIO9<'static>,
-    pub cs: GPIO10<'static>,
-    pub ready: GPIO0<'static>,
+    pub mosi: AnyPin<'static>,
+    pub miso: AnyPin<'static>,
+    pub cs: AnyPin<'static>,
+    pub ready: AnyPin<'static>,
     pub dma: DMA_CH0<'static>,
 }
 #[unsafe(no_mangle)]

@@ -5,12 +5,10 @@ Use the optional feature-list argument for a different build. The bridge
 routes ergot between the controller's SPI link, USB Serial/JTAG, and two BLE
 NUS links when `ble` is enabled.
 
-`OXIFOC_BRIDGE_BOARD` selects the board: `c5-zero` for the Waveshare
-ESP32-C5-Zero, the default, or `xiao-c5` for the
-[Seeed XIAO ESP32-C5](../docs/hw/xiao-esp32c5.md), which has the PSRAM for
-recordings. Each board builds into its own directory under `target/`. An
-image is for the board it was built for: the SPI clock, the probe's pins
-and the antenna switch differ, and nothing yet refuses the wrong one.
+The board is a [Seeed XIAO ESP32-C5](../docs/hw/xiao-esp32c5.md); its pins
+are named in `src/bin/main.rs`. The firmware first ran on a Waveshare
+ESP32-C5-Zero, which it no longer supports: that board has no PSRAM and a
+different clock pin.
 
 The `wifi` feature adds WPA2-Personal Wi-Fi station mode and Ergot TCP.
 The `swd-probe` feature enables Wi-Fi and adds an armed-only CMSIS-DAP TCP
@@ -59,8 +57,8 @@ about 0.47 ms an envelope, 15 % of the CPU at 20 kHz.
 
 ## Recording on the bridge
 
-On a board with PSRAM the bridge can keep a session itself, for a host to
-fetch later: start a recording from a phone before a ride, fetch it at
+The bridge can keep a session itself, in its PSRAM, for a host to fetch
+later: start a recording from a phone before a ride, fetch it at
 home over Wi-Fi or USB.
 
 ```sh
