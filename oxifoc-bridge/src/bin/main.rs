@@ -43,10 +43,10 @@ async fn main(spawner: Spawner) -> ! {
     // them but D2 and D3, which the chip reads at reset.
     let link = transport::spi::Resources {
         bus: p.SPI2,
-        sck: p.GPIO8.degrade(),   // D8
-        mosi: p.GPIO7.degrade(),  // D3
-        miso: p.GPIO9.degrade(),  // D9
-        cs: p.GPIO10.degrade(),   // D10
+        sck: p.GPIO10.degrade(),  // D10
+        mosi: p.GPIO8.degrade(),  // D8
+        miso: p.GPIO12.degrade(), // D7
+        cs: p.GPIO9.degrade(),    // D9
         ready: p.GPIO0.degrade(), // D1
         dma: p.DMA_CH0,
     };

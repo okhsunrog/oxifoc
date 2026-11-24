@@ -22,27 +22,26 @@ notes were measured on that board.
 
 | MK5 | STM32 | XIAO pin | GPIO |
 |---|---|---|---|
-| COMM pin 6, TX/SCL (MOSI) | PA7 | D3 | 7 |
-| COMM pin 4, ADC1 (SCK) | PA5 | D8 | 8 |
-| COMM pin 7, ADC2 (MISO) | PA6 | D9 | 9 |
-| COMM pin 5, RX/SDA (CS) | PB11 | D10 | 10 |
+| COMM, 5 V | | VBUS | |
+| COMM, GND | | GND | |
+| COMM pin 4, ADC1 (SCK) | PA5 | D10 | 10 |
+| COMM pin 5, RX/SDA (CS) | PB11 | D9 | 9 |
+| COMM pin 6, TX/SCL (MOSI) | PA7 | D8 | 8 |
+| COMM pin 7, ADC2 (MISO) | PA6 | D7 | 12 |
 | SERVO signal (READY) | PB6 | D1 | 0 |
 | SWCLK pad | – | D4 | 23 |
 | SWDIO pad | – | D5 | 24 |
-| GND | | GND | |
 
-The table is the assignment the firmware has now; no board has been wired
-to it yet. The chip routes these signals to any pin, so it is a choice,
-and `src/bin/main.rs` of the bridge names it in one place. Two header pins
-should stay unconnected to the controller: D2 (GPIO25) and D3 (GPIO7) are
-strapping pins, which the chip reads at reset, and a level driven from
-outside can change how it starts. D3 carries MOSI in the table because
-GPIO7 did on the first board, where it caused no trouble; the wiring to
-come avoids it.
+The COMM cable is soldered as the table says. READY and the probe's two
+lines are not wired yet, and their rows are the firmware's present choice.
+The chip routes these signals to any pin, and `src/bin/main.rs` of the
+bridge names the assignment in one place. Leave the strapping pins
+unconnected to the controller: D2 (GPIO25) and D3 (GPIO7) on the header,
+GPIO2 and GPIO3 among the pads on the back. The chip reads them at reset,
+and a level from outside can change how it starts.
 
-Two of D0, D1 and D4 to D10 stay free for CAN FD. See the
-[MK5 notes](vesc6-mk5.md#c5-bridge-wiring-and-continuity-check) for the
-connector and for the series resistors on the probe's lines.
+See the [MK5 notes](vesc6-mk5.md#c5-bridge-wiring-and-continuity-check) for
+the connector and for the series resistors on the probe's lines.
 
 ## Measured before wiring, 2026-11-24
 
