@@ -17,7 +17,7 @@ use ergot::{
             router::{RouterFrameProcessor, UPSTREAM_IDENT},
         },
         transports::can::{CanConfig, CanError, CanErrorKind, CanRx, CanRxTxWorker, CanTx},
-        utils::can::{CanFrame, CanId, Sink},
+        utils::can::{BROADCAST_NODE_ID, CanFrame, CanId, Sink},
     },
     net_stack::services::{
         NodeClaimLease, bridge_seed_assign, bridge_seed_refresh, bus_claim_refresh,
@@ -28,8 +28,8 @@ use ergot::{
 use esp_hal::{
     Async,
     canfd::{
-        CanFd, CanFdRx, CanFdTx, Config, Error, ErrorState, ExtendedId, Frame, Id, Timing,
-        TxBufferState,
+        CanFd, CanFdRx, CanFdTx, Config, Error, ErrorState, ExtendedId, Frame, Id, MaskFilter,
+        MaskFilterConfig, Timing, TxBufferState,
     },
     gpio::AnyPin,
     peripherals::TWAI0,
@@ -207,6 +207,16 @@ struct Rx {
     half: CanFdRx<'static, Async>,
 }
 
+/// The filter that passes the frames to `node`, whatever else they carry.
+fn to_node(node: u8) -> MaskFilterConfig {
+    let (id, mask) = CanId::dst_filter(node);
+    // Both are below 2^29: a node is eight bits of the identifier.
+    MaskFilterConfig::extended(
+        ExtendedId::new(id).unwrap_or(ExtendedId::ZERO),
+        ExtendedId::new(mask).unwrap_or(ExtendedId::ZERO),
+    )
+}
+
 /// The controller's RX buffer was full and frames were lost.
 #[derive(Debug)]
 pub struct Overrun;
@@ -220,8 +230,6 @@ impl CanError for Overrun {
 impl CanRx for Rx {
     type Error = Overrun;
 
-    /// The worker filters by node itself: this half cannot change the
-    /// controller's acceptance filters (esp-hal #6437).
     async fn recv(&mut self) -> Result<CanFrame, Overrun> {
         loop {
             // What the buffer still holds came before the frames that were
@@ -245,6 +253,21 @@ impl CanRx for Rx {
                 return Ok(frame);
             }
         }
+    }
+
+    /// With an address the controller takes the frames to it and to every
+    /// node, and without one every frame. The filter for every node is set
+    /// first, so the bridge hears them throughout.
+    fn set_node_filter(&mut self, node: Option<u8>) -> Result<(), Overrun> {
+        match node {
+            Some(node) => {
+                self.half
+                    .set_mask_filter(MaskFilter::B, &to_node(BROADCAST_NODE_ID));
+                self.half.set_mask_filter(MaskFilter::A, &to_node(node));
+            }
+            None => self.half.accept_all(),
+        }
+        Ok(())
     }
 }
 
