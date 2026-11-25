@@ -189,6 +189,14 @@ as its upstream and no radio, no controller on its SPI port.
   link's queues and assembly buffers are in RTC RAM beside the TCP port's.
 - A 20 kHz capture on the root over USB stayed complete.
 
+On 2026-11-25 both bridges moved to the transport as reworked after its
+review (message numbers per destination, what was assembling dropped when
+frames were lost, no stale frames kept in the queues). The second bridge
+claimed the same address, and an update of it over the bus took 457 488
+bytes: the root sent 8 443 CAN frames and received 1 261, with no failed
+transmission, no overrun and no bus-off. A host on the second bridge read
+the controller's status through both.
+
 ## A controller left running by other firmware, 2026-11-25
 
 The root was given firmware without the CAN link over the probe, while

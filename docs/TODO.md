@@ -100,11 +100,11 @@ preserves older review findings and experimental detail.
   - list the bridges and controllers a host can reach, and name a
     controller as `--bridge` names a bridge;
   - set the role in the bridge's own settings instead of at build time.
-- [ ] Fix ergot's CAN transport, #227, as its review found: the message
-  number is counted over all destinations and compared by one, a
-  continuation's destination is not checked, the worker's error paths,
-  the queue's size and the sizes two ends must agree on
-  (the probes are the branch `review/pr-227-probes` of the ergot clone).
+- [ ] Settle what the review of ergot's CAN transport (#227) left open: a
+  bus on which nothing is acknowledged does not show in the interface's
+  state, the sink and the worker are each told the frame size and nothing
+  compares the two, and a sender keeps 512 bytes of message counters, one
+  for every destination a bus can have.
 - [ ] Move the queues of the host links into the XIAO's PSRAM and give the
   radio heap their room: the Wi-Fi queue, the USB queue and the TCP
   socket's buffer are 80 KiB of internal RAM, and esp-radio allocates only

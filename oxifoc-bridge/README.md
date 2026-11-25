@@ -100,8 +100,8 @@ been tried.
 
 ## CAN FD between bridges
 
-Bridges share a CAN FD bus through ergot's CAN transport (ergot #227, a
-draft the firmware pins): 1 Mbit/s and 5 Mbit/s, ergot frames of up to
+Bridges share a CAN FD bus through ergot's CAN transport (ergot #227,
+which the firmware pins): 1 Mbit/s and 5 Mbit/s, ergot frames of up to
 512 bytes cut into CAN frames and assembled again.
 
 One bridge is the root, as before: it routes the bus as one more segment,
