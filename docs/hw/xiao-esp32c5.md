@@ -36,8 +36,9 @@ The board is wired as the table says. The chip routes these signals to any
 pin, and `src/bin/main.rs` of the bridge names the assignment in one place.
 
 A CAN FD transceiver (TJA1051T/3, 5 V supply, 3.3 V on VIO) is on the
-header: RXD on D5 (GPIO24), TXD on D4 (GPIO23). The bridge firmware does
-not use it yet. TXD must not be on D6: GPIO11 is UART0 TX out of reset,
+header: RXD on D5 (GPIO24), TXD on D4 (GPIO23), for the
+[bus between bridges](../../oxifoc-bridge/README.md#can-fd-between-bridges).
+TXD must not be on D6: GPIO11 is UART0 TX out of reset,
 and what the bootloaders print there reaches the bus
 ([measured](#can-fd-between-two-boards-2026-11-24)). D0 and D6 are free.
 
@@ -164,3 +165,26 @@ transmitting board's counters at 128 and 0, with no bus-off. At 1 and
 5 Mbit/s the boards then exchanged 6 750 frames each way in 14 s at 500 a
 second and 41 200 in 17 s at 2 500 a second: none missing or damaged, no
 transmission failed from the start, and no bus-off.
+
+## ergot over the bus, 2026-11-24
+
+The two boards as bridges: the wired one the root, the other with the bus
+as its upstream and no radio, no controller on its SPI port.
+
+- The second bridge claimed node 19 of the bus's net and was leased nets
+  for its SPI and USB segments. It kept the address through resets, and
+  held the claim and the leases for 11.7 hours.
+- A host on the root's USB port read the second bridge's diagnostics and
+  recording state, and a host on the second bridge's USB port read the
+  root's diagnostics and the controller's status, each through both
+  bridges and the bus.
+- The second bridge's firmware was updated over the bus from a host on the
+  root: 453 760 bytes in 12 s, the restart included. The root sent 8 371
+  CAN frames and received 1 253 for it, with no failed transmission, no
+  overrun and no bus-off.
+- After a restart of the root the second bridge claimed and leased again by
+  itself. After its own restart it has new nets, and the old ones stay
+  leased until they run out.
+- The root's main stack is 20 328 bytes with the bus, 23 080 without: the
+  link's queues and assembly buffers are in RTC RAM beside the TCP port's.
+- A 20 kHz capture on the root over USB stayed complete.

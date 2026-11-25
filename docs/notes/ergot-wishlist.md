@@ -118,6 +118,20 @@ Each entry: the pain as observed in oxifoc, then the upstream shape.
     by hand to `attach()` it. A `subscribe_unicast()` beside the owned
     receivers' would cover it.
 
+15. **A bridge whose upstream is a bus.** Found with two oxifoc bridges
+    on CAN FD (2026-11-24), the first such setup:
+    - `CanRxTxWorker` has no liveness and no return to link-local, unlike
+      the other workers, so a bridge learns that the root restarted only
+      when a renewal fails, and the root drops its frames until then.
+    - Nothing renews a claim or a seed lease; every firmware writes that
+      loop.
+    - A requester that restarts cannot give its seed leases back and is
+      leased new nets while the old ones run out. A lease the same node
+      asks for again could be the one it had.
+    - A bridge whose upstream is down has no nets and answers nobody, not
+      even a host on one of its own links.
+    - No test builds a bridge with a bus as its upstream.
+
 ## Small
 
 10. **Port exhaustion should not panic.** `alloc_port` panics when all 254

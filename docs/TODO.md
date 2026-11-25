@@ -83,10 +83,28 @@ preserves older review findings and experimental detail.
   frames in runs: with the motor stopped a 391-byte block is sent in
   0.26 ms instead of 0.47, and what is left of the send is not encoding
   ([measurements](hw/xiao-esp32c5.md#wired-to-the-mk5-2026-11-24)).
-- [ ] Give the bridge firmware its CAN FD link. The transceiver is on the
-  XIAO's GPIO23 (TXD) and GPIO24 (RXD), and two boards exchange frames at
-  5 Mbit/s
-  ([measurements](hw/xiao-esp32c5.md#can-fd-between-two-boards-2026-11-24)).
+- [ ] Reach a bridge behind the CAN bus without the root. It has no nets
+  until the root has leased them, so a host on its USB port reaches
+  nothing while the root is away or was never there. Accepted for the
+  first stage; think again about how the roles are designed
+  ([what is there](../oxifoc-bridge/README.md#can-fd-between-bridges)).
+- [ ] Finish the CAN link of the bridges:
+  - notice a restarted or absent root at once, not at the next renewal;
+  - keep a restarted bridge's nets instead of leasing new ones while the
+    old run out (the root has 16);
+  - program the controller's acceptance filters (esp-hal #6437);
+  - report the bus in `req/bridge_diag`, and leave bus-off when idle, not
+    only at the next transmission;
+  - read a segment's net when it is used: a bridge behind the bus reads 0
+    at start, which the relay's flow control then compares with;
+  - list the bridges and controllers a host can reach, and name a
+    controller as `--bridge` names a bridge;
+  - set the role in the bridge's own settings instead of at build time.
+- [ ] Fix ergot's CAN transport, #227, as its review found: the message
+  number is counted over all destinations and compared by one, a
+  continuation's destination is not checked, the worker's error paths,
+  the queue's size and the sizes two ends must agree on
+  (the probes are the branch `review/pr-227-probes` of the ergot clone).
 - [ ] Move the queues of the host links into the XIAO's PSRAM and give the
   radio heap their room: the Wi-Fi queue, the USB queue and the TCP
   socket's buffer are 80 KiB of internal RAM, and esp-radio allocates only
