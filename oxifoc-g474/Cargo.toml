@@ -50,7 +50,7 @@ oxifoc-core = { path = "../oxifoc-core", default-features = false, features = [
     "algorithms", "detection", "offset-diagnostics",
     "runtime", "defmt", "storage", "embassy", "cordic", "embassy-hal", "hfi", "hfi-detect", "isr-speed",
 ] }
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9cc0c05db97e88e9e10e847f289d68686148c0d0", default-features = false, features = [
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "f2b64cccbc6c8c2020c0ca82125ba38059181826", default-features = false, features = [
     "embassy-usb-v0_7-preview",
     "embedded-io-async-v0_7",
     "nostd-seed-router",

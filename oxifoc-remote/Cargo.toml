@@ -31,7 +31,7 @@ rtt-target = { version = "0.6.2", features = ["defmt"] }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "9cc0c05db97e88e9e10e847f289d68686148c0d0", version = "0.12.0", default-features = false, features = ["embassy-time", "disable-cache-padding", "defmt-v1"] }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "f2b64cccbc6c8c2020c0ca82125ba38059181826", version = "0.12.0", default-features = false, features = ["embassy-time", "disable-cache-padding", "defmt-v1"] }
 mutex = "1.0.2"
 serde = { version = "1.0.229", default-features = false, features = ["derive"] }
 postcard-schema = "0.2.5"
