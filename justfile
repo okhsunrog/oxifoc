@@ -7,6 +7,9 @@ bridge_features := "ble,swd-probe,ota"
 bridge_elf := "oxifoc-bridge/target/riscv32imac-unknown-none-elf/release/oxifoc-bridge"
 bridge_partitions := "oxifoc-bridge/partitions.csv"
 bridge_blank_otadata := "oxifoc-bridge/target/blank-otadata.bin"
+# A bridge whose upstream is the CAN bus, without radios.
+bridge_uplink_features := "ota"
+bridge_uplink_elf := "oxifoc-bridge/target/uplink/riscv32imac-unknown-none-elf/release/oxifoc-bridge"
 device_crates := "oxifoc-g474 oxifoc-f405 oxifoc-bridge oxifoc-remote"
 
 # On-target test crates (run on hardware; compiled here so they don't rot)
@@ -33,6 +36,8 @@ mk5_probe := env("OXIFOC_MK5_PROBE", "")
 mk5_probe_arg := if mk5_probe == "" { "" } else { "--probe " + mk5_probe }
 c5_probe := env("OXIFOC_C5_PROBE", "")
 c5_probe_arg := if c5_probe == "" { "" } else { "--probe " + c5_probe }
+c5_uplink_probe := env("OXIFOC_C5_UPLINK_PROBE", "")
+c5_uplink_probe_arg := if c5_uplink_probe == "" { "" } else { "--probe " + c5_uplink_probe }
 bridge_serial := env("OXIFOC_BRIDGE_SERIAL", "")
 bridge_serial_arg := if bridge_serial == "" { "" } else { "--serial-path " + bridge_serial }
 c5_project := env("OXIFOC_C5_PROJECT", "")
@@ -108,6 +113,9 @@ check-device:
             # BLE is opt-in but is the deployed configuration: check it too.
             (cd "$crate" && cargo clippy --quiet --features ble -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
             (cd "$crate" && cargo build --release --quiet --features ble 2>&1 | filter) || exit 1
+            # The bridge behind the CAN bus has no radio.
+            (cd "$crate" && OXIFOC_BRIDGE_UPSTREAM=can cargo clippy --quiet --target-dir target/uplink --features {{quote(bridge_uplink_features)}} -- -D warnings -W clippy::disallowed-methods 2>&1 | filter) || exit 1
+            (cd "$crate" && OXIFOC_BRIDGE_UPSTREAM=can cargo build --release --quiet --target-dir target/uplink --features {{quote(bridge_uplink_features)}} 2>&1 | filter) || exit 1
         fi
     done
     for crate in {{ target_test_crates }}; do
@@ -313,6 +321,21 @@ flash-bridge features=bridge_features: (build-bridge features)
     uv run --no-project python -c 'from pathlib import Path; Path("{{bridge_blank_otadata}}").write_bytes(bytes([255]) * 8192)'
     probe-rs download --verify --chip esp32c5 {{c5_probe_arg}} --binary-format bin --base-address 0x3e0000 {{bridge_blank_otadata}}
     probe-rs reset --chip esp32c5 {{c5_probe_arg}}
+
+# Build the firmware of a bridge whose upstream is the CAN bus.
+build-bridge-uplink features=bridge_uplink_features:
+    cd oxifoc-bridge && OXIFOC_BRIDGE_UPSTREAM=can cargo build --release --target-dir target/uplink --features {{quote(features)}}
+
+# Package it as an app-only image for the inactive OTA slot.
+build-bridge-uplink-ota output features=bridge_uplink_features: (build-bridge-uplink features)
+    espflash save-image --chip esp32c5 --flash-size 4mb --flash-mode qio --flash-freq 80mhz --partition-table {{bridge_partitions}} --target-app-partition ota_0 {{bridge_uplink_elf}} {{quote(output)}}
+
+# Install or recover it in ota_0, over the probe OXIFOC_C5_UPLINK_PROBE.
+flash-bridge-uplink features=bridge_uplink_features: (build-bridge-uplink features)
+    probe-rs download --verify --restore-unwritten --chip esp32c5 {{c5_uplink_probe_arg}} --idf-partition-table {{bridge_partitions}} --idf-target-app-partition ota_0 --idf-flash-mode qio --idf-flash-freq 80mhz {{bridge_uplink_elf}}
+    uv run --no-project python -c 'from pathlib import Path; Path("{{bridge_blank_otadata}}").write_bytes(bytes([255]) * 8192)'
+    probe-rs download --verify --chip esp32c5 {{c5_uplink_probe_arg}} --binary-format bin --base-address 0x3e0000 {{bridge_blank_otadata}}
+    probe-rs reset --chip esp32c5 {{c5_uplink_probe_arg}}
 
 # Build nRF52840 remote firmware.
 build-remote:

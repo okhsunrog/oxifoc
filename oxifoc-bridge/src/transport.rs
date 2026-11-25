@@ -1,5 +1,5 @@
-//! C5 bridge: root router with SPI, USB Serial/JTAG and optional BLE and
-//! Wi-Fi segments.
+//! C5 bridge: a router with SPI, USB Serial/JTAG, CAN FD and optional BLE
+//! and Wi-Fi segments. It is the root, or has the CAN bus as its upstream.
 use core::sync::atomic::{AtomicU32, Ordering};
 use ergot::{
     NetStack,
@@ -10,6 +10,7 @@ use ergot::{
 
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 
+pub mod can;
 pub mod spi;
 #[cfg(feature = "wifi")]
 pub mod tcp;
@@ -113,17 +114,29 @@ impl Interface for UsbInterface {
 impl Interface for BleNusInterface {
     type Sink = Counted<framed_stream::Sink<&'static BleQueue>>;
 }
+pub struct CanLink;
+impl Interface for CanLink {
+    type Sink = ergot::interface_manager::utils::can::Sink<&'static can::Queue, { can::MTU }>;
+}
 ergot::multi_interface! {
     pub enum BridgeSink for BridgeInterface {
         Spi(SpiInterface),
         Usb(UsbInterface),
         Ble(BleNusInterface),
         Wifi(WifiInterface),
+        Can(CanLink),
     }
 }
+/// Segments a bridge can route: SPI, USB, two BLE links, the CAN bus when it
+/// is not the upstream, and the Wi-Fi port.
+pub const SEGMENTS: usize = 5 + cfg!(feature = "wifi") as usize;
+/// Nets the root leases to the bridges behind the bus, one for each of
+/// their segments. A bridge that restarts asks for new ones while its old
+/// ones run out.
+pub const LEASED_NETS: usize = 16;
 pub type Stack = NetStack<
     CriticalSectionRawMutex,
-    Router<BridgeInterface, esp_hal::rng::Rng, { 4 + cfg!(feature = "wifi") as usize }, 8>,
+    Router<BridgeInterface, esp_hal::rng::Rng, SEGMENTS, LEASED_NETS, { can::CLAIMS }>,
 >;
 pub static SPI_OUTQ: SpiQueue = kit::Queue::new();
 pub static USB_OUTQ: UsbQueue = kit::Queue::new();
@@ -145,14 +158,37 @@ pub async fn room(net: u16, bytes: usize) {
     }
 }
 
-/// C5 owns all directly attached segments. No upstream seed leases are needed.
+/// Registers a segment of this bridge. The root numbers its segments
+/// itself; a bridge with an upstream leaves each without a net until the
+/// root has leased it one ([`can::uplink`]).
+pub fn register(
+    stack: &'static Stack,
+    sink: BridgeSink,
+) -> Result<u8, ergot::interface_manager::profiles::router::RegisterError> {
+    stack.manage_profile(|p| {
+        if can::UPSTREAM {
+            p.register_interface_pending(sink)
+        } else {
+            p.register_interface(sink)
+        }
+    })
+}
+
+/// What every bridge answers, and what the root does besides: it owns the
+/// nets, and grants the node addresses of the CAN bus. A bridge with an
+/// upstream passes requests for nets on to the root.
 #[embassy_executor::task]
 pub async fn root_services(stack: &'static Stack) {
-    embassy_futures::join::join4(
+    embassy_futures::join::join5(
         stack.services().seed_router_request_handler::<2>(),
         stack.services().ping_handler::<2>(),
         stack.services().socket_query_handler::<2>(),
         crate::diag::server(stack),
+        async {
+            if !can::UPSTREAM {
+                stack.services().address_claim_handler::<2>().await;
+            }
+        },
     )
     .await;
 }

@@ -98,6 +98,47 @@ controller was wired: given 30 000 it kept the newest 15 917 in order, and
 a fetch of the full 8 MB took 62 s over Wi-Fi. A fetch over BLE has not
 been tried.
 
+## CAN FD between bridges
+
+Bridges share a CAN FD bus through ergot's CAN transport (ergot #227, a
+draft the firmware pins): 1 Mbit/s and 5 Mbit/s, ergot frames of up to
+512 bytes cut into CAN frames and assembled again.
+
+One bridge is the root, as before: it routes the bus as one more segment,
+owns the net numbers and grants the bus's node addresses. Any other bridge
+is built with `OXIFOC_BRIDGE_UPSTREAM=can` and has the bus as its upstream.
+It claims a node address from the root, the same after every reset because
+it comes from the chip's address, and leases from the root a net for each
+of its own segments. It renews both, and asks again from the start when
+the root stops answering, as after the root restarted.
+
+`just build-bridge-uplink` and `just flash-bridge-uplink` build and install
+such a bridge without radios (`ota` only), over the probe
+`OXIFOC_C5_UPLINK_PROBE`. A host on either bridge reaches the other bridge
+and the controller:
+
+```sh
+oxifoc-host-cli diag bridge                 # the bridge this host is linked to
+oxifoc-host-cli --bridge 3.19 diag bridge   # another, by net and node
+oxifoc-host-cli --bridge 3.19 ota update bridge.bin
+```
+
+When several bridges answer for a service, the host takes the one it is
+linked to and logs the others with their addresses; `--bridge` names
+another. The relay of a controller's fast telemetry is always the bridge
+on the controller's own segment.
+
+What it does not do yet:
+
+- A bridge behind the bus has no nets until the root has leased them, so a
+  host on its USB port reaches nothing while the root is away.
+- It learns that the root restarted only at its next renewal, up to a
+  minute later.
+- The controller's acceptance filters stay open and the transport filters
+  by node itself (esp-hal #6437).
+- The bus is not in `req/bridge_diag`; the link's counters are the statics
+  `CAN_*` in `transport/can.rs`.
+
 ## Ergot over Wi-Fi
 
 With Wi-Fi configured, the C5 listens on TCP port 2025 and routes the

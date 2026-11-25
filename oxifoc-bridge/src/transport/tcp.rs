@@ -79,7 +79,7 @@ async fn run(router: &'static Stack, stack: NetStack<'static>) {
         cobs_stream::Sink::new(OUT.stream_producer(), MTU),
         &DROPPED,
     ));
-    let Ok(ident) = router.manage_profile(|p| p.register_interface(sink)) else {
+    let Ok(ident) = super::register(router, sink) else {
         log::warn!("Ergot TCP has no router interface slot");
         return;
     };

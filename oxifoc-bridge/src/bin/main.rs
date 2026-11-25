@@ -52,6 +52,13 @@ async fn main(spawner: Spawner) -> ! {
     };
     #[cfg(feature = "swd-probe")]
     let (swclk, swdio) = (p.GPIO4.degrade(), p.GPIO5.degrade()); // the MTCK and MTDO pads
+    // The CAN FD transceiver. TXD is not on D6: GPIO11 is UART0 TX out of
+    // reset, and the bootloaders' log would reach the bus.
+    let can = transport::can::Resources {
+        controller: p.TWAI0,
+        txd: p.GPIO23.degrade(), // D4
+        rxd: p.GPIO24.degrade(), // D5
+    };
     // The PSRAM in the chip's package holds recordings of fast telemetry.
     let recording_memory: &'static mut [u8] = {
         let psram = esp_hal::psram::Psram::new(p.PSRAM, Default::default());
@@ -64,27 +71,54 @@ async fn main(spawner: Spawner) -> ! {
     };
     let timer = TimerGroup::new(p.TIMG0);
     esp_rtos::start(timer.timer0);
+    // Without a radio the generator has no entropy of its own; the ADC's
+    // noise gives it some for as long as this is held.
+    #[cfg(not(any(feature = "ble", feature = "wifi")))]
+    let _entropy = esp_hal::rng::TrngSource::new(p.RNG, p.ADC1);
     let rng = esp_hal::rng::Rng::new();
     let epoch = rng.random();
+    // What this bridge is on the CAN bus when the bus is its upstream: the
+    // address it asks for, and the token that tells the bus's router it is
+    // the same device asking again. Both come from the chip's address, so a
+    // reset brings the bridge back under the address it had.
+    let mac = esp_hal::efuse::interface_mac_address(esp_hal::efuse::InterfaceMacAddress::Station);
+    let can_nonce = mac
+        .as_bytes()
+        .iter()
+        .fold(0u64, |token, byte| token << 8 | u64::from(*byte));
+    let can_candidate = 3 + (can_nonce % 252) as u8;
+    // Where the numbering of its messages starts.
+    let can_tid_seed = rng.random() as u8;
     let spi_sink = BridgeSink::Spi(framed_stream::Sink::new(
         transport::SPI_OUTQ.framed_producer(),
         MTU,
     ));
-    let router = ergot::interface_manager::profiles::router::Router::new(rng);
+    use ergot::interface_manager::profiles::router::Router;
+    let router = if transport::can::UPSTREAM {
+        Router::new_bridge(rng, BridgeSink::Can(transport::can::sink()))
+    } else {
+        Router::new(rng)
+    };
     static STACK: static_cell::StaticCell<transport::Stack> = static_cell::StaticCell::new();
     let stack = STACK.init(NetStack::new_with_profile(router));
     spawner.spawn(bridge_logs::forward(stack).expect("bridge log task is spawned once"));
-    let spi_ident = stack
-        .manage_profile(|p| p.register_interface(spi_sink))
+    let spi_ident = transport::register(stack, spi_sink)
         .expect("SPI interface slot must be available at startup");
-    let usb_ident = stack
-        .manage_profile(|p| {
-            p.register_interface(BridgeSink::Usb(transport::Counted::new(
-                cobs_stream::Sink::new(transport::USB_OUTQ.stream_producer(), MTU),
-                &transport::usb::USB_DROPPED,
-            )))
-        })
-        .expect("USB interface slot must be available at startup");
+    let usb_ident = transport::register(
+        stack,
+        BridgeSink::Usb(transport::Counted::new(
+            cobs_stream::Sink::new(transport::USB_OUTQ.stream_producer(), MTU),
+            &transport::usb::USB_DROPPED,
+        )),
+    )
+    .expect("USB interface slot must be available at startup");
+    // The root routes the bus as one more segment; otherwise it is the
+    // upstream the router was built with.
+    let can_segment = (!transport::can::UPSTREAM).then(|| {
+        stack
+            .manage_profile(|p| p.register_interface(BridgeSink::Can(transport::can::sink())))
+            .expect("CAN interface slot must be available at startup")
+    });
     // The slot handshake preempts the thread executor and the radio tasks.
     static LINK_EXECUTOR: static_cell::StaticCell<esp_rtos::embassy::InterruptExecutor<2>> =
         static_cell::StaticCell::new();
@@ -120,6 +154,20 @@ async fn main(spawner: Spawner) -> ! {
         transport::root_services(stack).expect("USB route task is spawned once"),
         FORWARDING,
     );
+    spawn_bridge_task(
+        spawner,
+        transport::can::link(stack, can, can_segment, can_candidate, can_tid_seed)
+            .expect("CAN link task is spawned once"),
+        LINK,
+    );
+    if transport::can::UPSTREAM {
+        spawn_bridge_task(
+            spawner,
+            transport::can::uplink(stack, can_candidate, can_nonce)
+                .expect("CAN uplink task is spawned once"),
+            FORWARDING,
+        );
+    }
     // Beside the slot task, which waits for it to empty its queue. Below
     // it the relay took turns with the Wi-Fi stack, and a 20 kHz stream over
     // Wi-Fi lost a third (with the flash at 40 MHz).
@@ -143,17 +191,17 @@ async fn main(spawner: Spawner) -> ! {
     #[cfg(feature = "ble")]
     {
         let ble_idents = core::array::from_fn(|link| {
-            stack
-                .manage_profile(|p| {
-                    p.register_interface(BridgeSink::Ble(transport::Counted::new(
-                        framed_stream::Sink::new(
-                            transport::BLE_OUTQ[link].framed_producer(),
-                            transport::BLE_MTU,
-                        ),
-                        &oxifoc_bridge::diag::BLE[link].dropped,
-                    )))
-                })
-                .expect("BLE interface slots must be available at startup")
+            transport::register(
+                stack,
+                BridgeSink::Ble(transport::Counted::new(
+                    framed_stream::Sink::new(
+                        transport::BLE_OUTQ[link].framed_producer(),
+                        transport::BLE_MTU,
+                    ),
+                    &oxifoc_bridge::diag::BLE[link].dropped,
+                )),
+            )
+            .expect("BLE interface slots must be available at startup")
         });
         // The remote's commands and their replies pass through this task.
         // Below the relay it waited for it: during a capture some 300 of 780
@@ -175,7 +223,14 @@ async fn main(spawner: Spawner) -> ! {
     oxifoc_bridge::probe::start(spawner, stack, swclk, swdio, network);
     #[cfg(feature = "ota")]
     oxifoc_bridge::ota::start(spawner, stack, flash);
-    log::info!("OxiFOC C5: root router: SPI DMA controller, USB Serial/JTAG host");
+    log::info!(
+        "OxiFOC C5: {}: SPI DMA controller, USB Serial/JTAG host, CAN FD",
+        if transport::can::UPSTREAM {
+            "router behind the CAN bus"
+        } else {
+            "root router"
+        }
+    );
     loop {
         Timer::after_secs(60).await;
     }
