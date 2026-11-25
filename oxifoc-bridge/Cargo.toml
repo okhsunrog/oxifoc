@@ -101,19 +101,19 @@ embedded-test = { version = "0.7.3", features = [
 # TCP_MIN_RTO_MS; see ../vendor/smoltcp/PATCHES.md.
 [patch.crates-io]
 smoltcp = { path = "../vendor/smoltcp" }
-esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-rtos = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-alloc = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-config = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-hal-procmacros = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-metadata-generated = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-phy = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-radio-rtos-driver = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-riscv-rt = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-rom-sys = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
-esp-sync = { git = "https://github.com/esp-rs/esp-hal.git", rev = "ba36471099724aeb042e87375a87caddbf615247" }
+esp-hal = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-rtos = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-radio = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-alloc = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-bootloader-esp-idf = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-config = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-hal-procmacros = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-metadata-generated = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-phy = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-radio-rtos-driver = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-riscv-rt = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-rom-sys = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
+esp-sync = { git = "https://github.com/okhsunrog/esp-hal.git", rev = "e4e2aa018cc2a386f437837d4210b739fecc63e0" }
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
