@@ -188,3 +188,29 @@ as its upstream and no radio, no controller on its SPI port.
 - The root's main stack is 20 328 bytes with the bus, 23 080 without: the
   link's queues and assembly buffers are in RTC RAM beside the TCP port's.
 - A 20 kHz capture on the root over USB stayed complete.
+
+## A controller left running by other firmware, 2026-11-25
+
+The root was given firmware without the CAN link over the probe, while
+the second board ran the CAN FD tests of esp-hal at other bit rates. The
+root's controller stayed on the bus at 1 Mbit/s:
+
+- The probe's reset does not reset the peripherals. GPIO23 was still the
+  controller's output (`GPIO_FUNC23_OUT_SEL_CFG` read 66, TWAI0 TX).
+- esp-hal's start-up turned off the register clock of the unused TWAI0
+  (`PCR_TWAI0_CONF` read 4) and left its function clock on
+  (`PCR_TWAI0_FUNC_CLK_CONF` read 0x00500000).
+
+The second board, alone in transmitting, then lost the same classic
+frames every time: at 500 kbit/s eight bytes of `00`, `07` or `0f` but
+not of `f0`, `55` or `ff`, at 250 kbit/s `f0` and `ff`, and none at
+1 Mbit/s or 125 kbit/s. The errors were a bit error in the CRC field or
+a form error at the acknowledgement, after three retransmissions.
+Nothing acknowledged its frames and it received none, so what disturbed
+them was presumably the error and overload flags of the root's
+controller. With that controller held in reset through the probe
+(`PCR_TWAI0_CONF` written 2) every frame passed.
+
+Firmware with the link starts the controller anew. A board on the bus
+that gets firmware without it keeps the old controller until its
+peripherals are reset; a power cycle was not tried.
