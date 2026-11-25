@@ -202,10 +202,15 @@ filters, on the bus, when they have their address: the root's passed the
 frames to node 1 and to every node, the second bridge's those to node 19
 and to every node, read from the filter registers of both. An update of
 the second bridge then took 458 544 bytes, 8 465 frames from the root and
-1 265 to it, with no overrun and no bus-off. The root counted two failed
-transmissions, as in one of the five updates before it, and where they
-come from is not found yet. After its restart the second bridge had the
-same filter again.
+1 265 to it, with no overrun and no bus-off. After its restart the second
+bridge had the same filter again.
+
+In three of eight updates that day the root counted two failed
+transmissions. Its counters, read ten times a second through the probe,
+place both about 0.9 s after the last frame of the upload, in the second
+for which the root sends nothing, and just before frames flow again: they
+are frames to the second bridge while it restarts and acknowledges
+nothing, which the controller gives up after three retransmissions.
 
 ## A controller left running by other firmware, 2026-11-25
 
