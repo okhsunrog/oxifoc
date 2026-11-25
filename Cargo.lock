@@ -4923,6 +4923,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxifoc-wire-sizes"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ergot",
+ "heapless 0.9.3",
+ "oxifoc-core",
+ "postcard",
+ "postcard-schema",
+ "serde",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

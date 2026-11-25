@@ -172,6 +172,12 @@ clippy-core-embassy:
 clippy-core:
     cargo clippy -p oxifoc-core --all-targets --locked --features {{ core_test_features }} -- -D warnings
 
+# Encoded sizes and CAN frame counts of every ICD and ergot message
+# (`--full` for every table, optional path to other Packed28 raw blocks).
+[positional-arguments]
+wire-sizes *ARGS:
+    cargo run -p oxifoc-wire-sizes --locked --quiet -- "$@"
+
 # Flashes only the F405 wrap benchmark: MK5 power held, gate driver disabled.
 # Replaces the controller firmware; restore the intended firmware afterwards.
 bench-wrap-f405:

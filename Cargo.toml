@@ -7,6 +7,7 @@ members = [
     "oxifoc-host-slint",
     "oxifoc-virtual",
     "oxifoc-plot",
+    "oxifoc-wire-sizes",
 ]
 exclude = [
     "vendor/rtt-target", # Locally patched RTT transport, tested independently.
