@@ -5,10 +5,7 @@
 //! numbers and grants the node addresses of the bus. Any other bridge has
 //! the bus as its upstream ([`UPSTREAM`]): it claims a node address there
 //! and leases from the router the nets of its own segments.
-use core::{
-    convert::Infallible,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use ergot::{
@@ -210,18 +207,32 @@ struct Rx {
     half: CanFdRx<'static, Async>,
 }
 
+/// The controller's RX buffer was full and frames were lost.
+#[derive(Debug)]
+pub struct Overrun;
+
+impl CanError for Overrun {
+    fn kind(&self) -> CanErrorKind {
+        CanErrorKind::Overrun
+    }
+}
+
 impl CanRx for Rx {
-    type Error = Infallible;
+    type Error = Overrun;
 
     /// The worker filters by node itself: this half cannot change the
     /// controller's acceptance filters (esp-hal #6437).
-    async fn recv(&mut self) -> Result<CanFrame, Infallible> {
+    async fn recv(&mut self) -> Result<CanFrame, Overrun> {
         loop {
-            let frame = self.half.receive_async().await;
+            // What the buffer still holds came before the frames that were
+            // lost. It goes too, so the worker starts clean behind the gap.
             if self.half.rx_overrun() {
+                self.half.flush_rx();
                 self.half.clear_rx_overrun();
                 count(&CAN_RX_OVERRUNS);
+                return Err(Overrun);
             }
+            let frame = self.half.receive_async().await;
             // Anything else on the bus is not ergot's.
             let Id::Extended(id) = frame.id() else {
                 continue;
