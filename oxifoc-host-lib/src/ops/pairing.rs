@@ -28,14 +28,15 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-/// No node on the link serves the pairing endpoint (no bridge, or the link
-/// is not up yet). Nothing was sent, so the request may be retried.
+/// No bridge serves the endpoint that was asked for: there is none, the link
+/// is not up yet, or the bridge that was named does not have this service.
+/// Nothing was sent, so the request may be retried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoBridge;
 
 impl std::fmt::Display for NoBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("no bridge serves the pairing endpoint")
+        f.write_str("no bridge answers for this service")
     }
 }
 

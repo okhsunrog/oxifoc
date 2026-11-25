@@ -623,8 +623,58 @@ where
     resolve_key_addr(stack, MotorEndpoint::REQ_KEY.to_bytes(), timeout).await
 }
 
-/// The single node that serves the endpoint with this request key, if exactly
-/// one answers (e.g. the bridge's `PairingEndpoint`).
+/// The bridge named in the configuration ([`crate::HostConfig::bridge`]).
+static BRIDGE: std::sync::OnceLock<Address> = std::sync::OnceLock::new();
+
+/// Use the services of this bridge instead of looking for one. Takes effect
+/// once, before the first request.
+pub(crate) fn select_bridge(network_id: u16, node_id: u8) {
+    let _ = BRIDGE.set(Address {
+        network_id,
+        node_id,
+        port_id: 0,
+    });
+}
+
+/// The bridge to ask for a service the user addresses to a bridge, such as
+/// its diagnostics or a firmware update: the one named in the configuration
+/// if it serves the endpoint with this request key, or else the one
+/// [`resolve_endpoint_addr`] finds.
+pub(crate) async fn resolve_bridge_addr<NS>(
+    stack: &NS,
+    key: [u8; 8],
+    timeout: Duration,
+) -> Option<Address>
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    let Some(bridge) = BRIDGE.get() else {
+        return resolve_endpoint_addr(stack, key, timeout).await;
+    };
+    // Asked for all the same: the answer shows that the link is up and that
+    // the named bridge serves this endpoint.
+    let nodes = responders(stack, key, timeout).await;
+    let found = nodes
+        .iter()
+        .any(|node| (node.network_id, node.node_id) == (bridge.network_id, bridge.node_id));
+    if !found {
+        tracing::warn!(
+            "bridge {}.{} did not answer for this endpoint; these did: {}",
+            bridge.network_id,
+            bridge.node_id,
+            nodes
+                .iter()
+                .map(|node| format!("{}.{}", node.network_id, node.node_id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    found.then_some(*bridge)
+}
+
+/// The node that serves the endpoint with this request key (e.g. the
+/// bridge's `PairingEndpoint`). When several bridges are reachable and serve
+/// it, the one this host is linked to.
 pub(crate) async fn resolve_endpoint_addr<NS>(
     stack: &NS,
     key: [u8; 8],
@@ -633,13 +683,65 @@ pub(crate) async fn resolve_endpoint_addr<NS>(
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
-    match resolve_key_addr(stack, key, timeout).await {
-        AddrResolution::Resolved(addr) => Some(addr),
-        _ => None,
+    let nodes = responders(stack, key, timeout).await;
+    let address = |node: &Responder| Address {
+        network_id: node.network_id,
+        node_id: node.node_id,
+        port_id: 0,
+    };
+    match nodes.as_slice() {
+        [] => None,
+        [node] => Some(address(node)),
+        many => {
+            let near = many.iter().find(|node| node.on_this_link);
+            tracing::info!(
+                "{} nodes serve this endpoint: {}",
+                many.len(),
+                many.iter()
+                    .map(|node| format!(
+                        "{}.{}{}",
+                        node.network_id,
+                        node.node_id,
+                        if node.on_this_link {
+                            " (this link)"
+                        } else {
+                            ""
+                        }
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            near.map(address)
+        }
     }
 }
 
 async fn resolve_key_addr<NS>(stack: &NS, key: [u8; 8], timeout: Duration) -> AddrResolution
+where
+    NS: NetStackHandle + Clone + Send + Sync + 'static,
+{
+    match responders(stack, key, timeout).await.as_slice() {
+        [] => AddrResolution::NoAnswer,
+        [node] => AddrResolution::Resolved(Address {
+            network_id: node.network_id,
+            node_id: node.node_id,
+            port_id: 0,
+        }),
+        many => AddrResolution::Ambiguous(many.len()),
+    }
+}
+
+/// A node that answered a socket query.
+struct Responder {
+    network_id: u16,
+    node_id: u8,
+    /// It answered from the segment this host is on: its reply names the
+    /// same net for both ends.
+    on_this_link: bool,
+}
+
+/// Every node that says it serves the endpoint with this request key.
+async fn responders<NS>(stack: &NS, key: [u8; 8], timeout: Duration) -> Vec<Responder>
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
@@ -665,7 +767,12 @@ where
         broadcast: false,
     };
 
-    let mut nodes: Vec<(u16, u8)> = Vec::new();
+    let responder = |hdr: &ergot::Header| Responder {
+        network_id: hdr.src.network_id,
+        node_id: hdr.src.node_id,
+        on_this_link: hdr.src.network_id == hdr.dst.network_id,
+    };
+    let mut nodes: Vec<Responder> = Vec::new();
     for attempt in 1..=RESOLVE_ATTEMPTS {
         if let Err(e) = ns
             .topics()
@@ -677,14 +784,17 @@ where
         let Ok(first) = tokio::time::timeout(timeout, hdl.recv()).await else {
             continue;
         };
-        nodes.push((first.hdr.src.network_id, first.hdr.src.node_id));
+        nodes.push(responder(&first.hdr));
         // Settle window: a duplicate answer (retried attempt) dedups away; a
-        // DIFFERENT node answering means two controllers are reachable.
+        // DIFFERENT node answering means two nodes are reachable.
         let settle = async {
             loop {
                 let msg = hdl.recv().await;
-                let node = (msg.hdr.src.network_id, msg.hdr.src.node_id);
-                if !nodes.contains(&node) {
+                let node = responder(&msg.hdr);
+                let known = nodes.iter().any(|known| {
+                    (known.network_id, known.node_id) == (node.network_id, node.node_id)
+                });
+                if !known {
                     nodes.push(node);
                 }
             }
@@ -692,16 +802,7 @@ where
         let _ = tokio::time::timeout(RESOLVE_SETTLE, settle).await;
         break;
     }
-
-    match nodes.as_slice() {
-        [] => AddrResolution::NoAnswer,
-        [(network_id, node_id)] => AddrResolution::Resolved(Address {
-            network_id: *network_id,
-            node_id: *node_id,
-            port_id: 0,
-        }),
-        many => AddrResolution::Ambiguous(many.len()),
-    }
+    nodes
 }
 
 // ── Device handshake & telemetry setup ───────────────────────────────────────

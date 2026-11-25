@@ -42,6 +42,10 @@ pub struct HostConfig {
     /// Connect to bridge services without configuring the controller stream.
     #[serde(skip)]
     pub bridge_only: bool,
+    /// The bridge whose services to use, as net and node, when several are
+    /// reachable. Without it the bridge this host is linked to is used.
+    #[serde(default)]
+    pub bridge: Option<(u16, u8)>,
 }
 
 /// Controls how the host handles transport disconnection/failure.

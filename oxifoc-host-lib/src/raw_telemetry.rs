@@ -563,6 +563,9 @@ where
 {
     use ergot::{interface_manager::profiles::direct_edge::CENTRAL_NODE_ID, traits::Endpoint as _};
     // A controller that is the link's own peer has no bridge in front of it.
+    // Otherwise the bridge that holds the controller's link relays its
+    // stream: the router of the controller's segment, whichever bridge this
+    // host is linked to. An answer from any bridge shows that relays exist.
     let relay = if address.node_id == CENTRAL_NODE_ID {
         None
     } else {
@@ -572,6 +575,11 @@ where
             crate::RESOLVE_TIMEOUT,
         )
         .await
+        .map(|_| ergot::Address {
+            network_id: address.network_id,
+            node_id: CENTRAL_NODE_ID,
+            port_id: 0,
+        })
     };
     state.inner.lock().unwrap().relay = relay;
     match configure_inner(stack, state, 0, address, true).await {

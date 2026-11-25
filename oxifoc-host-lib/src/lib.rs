@@ -756,6 +756,9 @@ pub fn start_host(cfg: HostConfig) -> HostRuntime {
 // ── Backend dispatch ─────────────────────────────────────────────────────────
 
 async fn backend_main(cfg: HostConfig, ctx: BackendCtx) -> Result<()> {
+    if let Some((network_id, node_id)) = cfg.bridge {
+        connection::select_bridge(network_id, node_id);
+    }
     let transport_type = cfg.transport_type();
     info!("Oxifoc Host backend - transport: {:?}", transport_type);
 
@@ -1104,7 +1107,7 @@ where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
     let addr =
-        connection::resolve_endpoint_addr(ns, E::REQ_KEY.to_bytes(), Duration::from_millis(500))
+        connection::resolve_bridge_addr(ns, E::REQ_KEY.to_bytes(), Duration::from_millis(500))
             .await
             .ok_or(ops::pairing::NoBridge)?;
     tokio::time::timeout(

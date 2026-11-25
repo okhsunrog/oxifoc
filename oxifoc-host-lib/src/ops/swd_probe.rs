@@ -34,7 +34,7 @@ pub(crate) async fn request_on_link<NS>(ns: &NS, request: &ProbeRequest) -> Resu
 where
     NS: NetStackHandle + Clone + Send + Sync + 'static,
 {
-    let addr = connection::resolve_endpoint_addr(
+    let addr = connection::resolve_bridge_addr(
         ns,
         SwdProbeEndpoint::REQ_KEY.to_bytes(),
         Duration::from_millis(500),

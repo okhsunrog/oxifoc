@@ -39,7 +39,7 @@ where
 {
     let target = match target {
         Some(addr) => addr,
-        None => connection::resolve_endpoint_addr(
+        None => connection::resolve_bridge_addr(
             ns,
             BridgeOtaEndpoint::REQ_KEY.to_bytes(),
             Duration::from_millis(500),

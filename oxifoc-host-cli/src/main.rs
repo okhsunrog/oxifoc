@@ -228,6 +228,11 @@ struct Cli {
     #[arg(long)]
     serial_path: Option<String>,
 
+    /// The bridge whose services to use, as NET.NODE (e.g. 3.86), when
+    /// several are reachable. Default: the bridge this host is linked to.
+    #[arg(long, global = true, value_parser = parse_bridge)]
+    bridge: Option<(u16, u8)>,
+
     /// Serial baud rate (overrides config file; default: config value, else 921600)
     #[arg(long)]
     baud: Option<u32>,
@@ -696,9 +701,11 @@ fn main() -> Result<()> {
     // The bridge serves pairing itself: wait for the bridge, not for the
     // motor controller, which may be absent or on another protocol version.
     // The bridge answers these itself; the controller may be absent.
-    let pairing = match &cli.command {
-        Command::Pairing { .. }
-        | Command::Diag {
+    let pairing = matches!(&cli.command, Command::Pairing { .. });
+    // Any bridge answers for its diagnostics; one without a radio has no
+    // pairing service to wait for.
+    let bridge = match &cli.command {
+        Command::Diag {
             action: diag::DiagAction::Bridge { .. },
         } => true,
         Command::Recording { action } => !action.needs_controller(),
@@ -706,6 +713,8 @@ fn main() -> Result<()> {
     };
     if pairing && cli.wait_secs > 0 {
         oxifoc_host_lib::ops::pairing::wait_for_bridge(&runtime.cmd_tx, wait)?;
+    } else if bridge && cli.wait_secs > 0 {
+        oxifoc_host_lib::ops::diag::wait_for_bridge(&runtime.cmd_tx, wait)?;
     } else if cli.wait_secs > 0 && !runtime.wait_for_connection(wait) {
         runtime.raw_telemetry.check()?;
         bail!(
@@ -1344,6 +1353,10 @@ fn build_config(cli: &Cli) -> Result<HostConfig> {
         cfg.serial_path = Some(path.clone());
     }
 
+    if cli.bridge.is_some() {
+        cfg.bridge = cli.bridge;
+    }
+
     // Only an explicitly passed --baud overrides the config file; the
     // host-lib accessor falls back to 921600 when neither is set.
     if let Some(baud) = cli.baud {
@@ -1441,6 +1454,17 @@ fn list_devices(json: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// A bridge's address as `NET.NODE`.
+fn parse_bridge(text: &str) -> Result<(u16, u8), String> {
+    let (net, node) = text
+        .split_once('.')
+        .ok_or("expected NET.NODE, such as 3.86")?;
+    Ok((
+        net.parse().map_err(|_| "the net is a number up to 65535")?,
+        node.parse().map_err(|_| "the node is a number up to 255")?,
+    ))
 }
 
 #[cfg(test)]

@@ -82,3 +82,21 @@ pub fn isr_window(cmd: &CommandSender) -> Result<Option<IsrWindow>> {
         other => bail!("device answered {other:?} to an ISR window request"),
     }
 }
+
+/// Wait until a bridge answers for its diagnostics, up to `wait`. Every
+/// bridge serves them, with or without a radio.
+pub fn wait_for_bridge(cmd: &CommandSender, wait: std::time::Duration) -> Result<()> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match bridge_request(cmd, BridgeDiagRequest::Links) {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if error.is::<super::pairing::NoBridge>()
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
