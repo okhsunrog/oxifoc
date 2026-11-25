@@ -92,9 +92,10 @@ preserves older review findings and experimental detail.
   - notice a restarted or absent root at once, not at the next renewal;
   - keep a restarted bridge's nets instead of leasing new ones while the
     old run out (the root has 16);
-  - program the controller's acceptance filters (esp-hal #6437);
   - report the bus in `req/bridge_diag`, and leave bus-off when idle, not
     only at the next transmission;
+  - find the two transmissions the root counts as failed in some updates
+    of the second bridge over the bus, two of six so far;
   - read a segment's net when it is used: a bridge behind the bus reads 0
     at start, which the relay's flow control then compares with;
   - list the bridges and controllers a host can reach, and name a

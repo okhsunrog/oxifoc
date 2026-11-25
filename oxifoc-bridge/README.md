@@ -21,9 +21,10 @@ private because they contain the password.
 The GPIO adapter uses the bit-bang driver now included in
 [dap-rs](https://github.com/probe-rs/dap-rs/tree/a867ca7b41547b24aaad52b913528575685a5df5)
 0.2.0 (MIT or Apache-2.0), the successor to espdap's standalone
-`bitbang-dap`. The Espressif crates come from esp-hal `main` at a pinned
-revision (`Cargo.toml`), which has the C5's CAN FD driver and PSRAM and BLE
-fixes that no release carries.
+`bitbang-dap`. The Espressif crates come from a pinned revision of esp-hal
+(`Cargo.toml`): its `main`, which has the C5's CAN FD driver and PSRAM and
+BLE fixes that no release carries, with esp-hal #6437 on top, which lets a
+controller's acceptance filters change while it is on the bus.
 
 See [Wireless SWD](../docs/hw/vesc6-mk5.md#wireless-swd) for wiring and use.
 
@@ -112,6 +113,10 @@ it comes from the chip's address, and leases from the root a net for each
 of its own segments. It renews both, and asks again from the start when
 the root stops answering, as after the root restarted.
 
+Each controller's acceptance filters pass the frames to its bridge's node
+and those to every node. A bridge sets them when it has its address, and
+takes every frame until then.
+
 `just build-bridge-uplink` and `just flash-bridge-uplink` build and install
 such a bridge without radios (`ota` only), over the probe
 `OXIFOC_C5_UPLINK_PROBE`. A host on either bridge reaches the other bridge
@@ -134,8 +139,6 @@ What it does not do yet:
   host on its USB port reaches nothing while the root is away.
 - It learns that the root restarted only at its next renewal, up to a
   minute later.
-- The controller's acceptance filters stay open and the transport filters
-  by node itself (esp-hal #6437).
 - The bus is not in `req/bridge_diag`; the link's counters are the statics
   `CAN_*` in `transport/can.rs`.
 
