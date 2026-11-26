@@ -873,7 +873,7 @@ fn process_commands_switches_phase_source() {
     );
     assert_eq!(
         send(11, 4, MotorCommand::SetPhaseSource(PhaseSource::Manual)),
-        MotorCommandOutcome::RejectedSafety
+        MotorCommandOutcome::RejectedSafety(crate::types::SafetyReason::NotIdle)
     );
     assert_eq!(
         send(11, 5, MotorCommand::Affirm { setpoint_seq: 3 }),
@@ -4443,6 +4443,90 @@ mod severity_gate {
             driver.pwm().enabled,
             "a repaired calibration must permit starts"
         );
+    }
+
+    /// A refused command names the gate that refused it.
+    #[cfg(feature = "storage")]
+    #[test]
+    fn safety_rejections_carry_their_reason() {
+        use crate::foc::fault::StandardFault;
+        use crate::state::{ISR_FLAGS, MOTOR_COMMAND_DONE};
+        use crate::types::{
+            ConfigGroupId, MotorCommand, MotorCommandOutcome, MotorRequest, SafetyReason,
+        };
+        use core::sync::atomic::Ordering;
+        let _serial = cmd_channel_lock();
+        enum Setup {
+            SafetyRecordCorrupt,
+            BoardCalibrationInvalid,
+            StoppingFault,
+            FlashBusy,
+        }
+        let cases = [
+            (
+                Setup::SafetyRecordCorrupt,
+                SafetyReason::SafetyConfigInvalid,
+            ),
+            (
+                Setup::BoardCalibrationInvalid,
+                SafetyReason::BoardCalibrationInvalid,
+            ),
+            (Setup::StoppingFault, SafetyReason::StoppingFault),
+            (Setup::FlashBusy, SafetyReason::FlashBusy),
+        ];
+        for (seq, (setup, reason)) in (1..).zip(cases) {
+            let state = CriticalSectionMutex::new(RefCell::new(MotorControlState::new()));
+            let registry = FaultRegistry::<StandardFault>::new();
+            critical_section::with(|cs| {
+                let mut state = state.borrow(cs).borrow_mut();
+                state.set_link_active();
+                match setup {
+                    Setup::SafetyRecordCorrupt => {
+                        let mut config = RuntimeConfig::default();
+                        config.mark_corrupt(ConfigGroupId::Failsafe);
+                        state.load_record_health(&config);
+                    }
+                    Setup::BoardCalibrationInvalid => {
+                        state.load_board_calibration(&RuntimeConfig {
+                            board_calibration_invalid: true,
+                            ..Default::default()
+                        });
+                    }
+                    Setup::StoppingFault | Setup::FlashBusy => {}
+                }
+            });
+            if matches!(setup, Setup::StoppingFault) {
+                registry.set(StandardFault::UnderVoltage);
+            }
+            let flash = matches!(setup, Setup::FlashBusy);
+            ISR_FLAGS.flash_op_pending.store(flash, Ordering::SeqCst);
+            let mut driver = FocDriver::new(
+                FocController::<SvpwmModulator>::new(volts(24.0)),
+                GatedPwm {
+                    enabled: false,
+                    applied: [0; 3],
+                },
+                MockCurrentSensor {
+                    currents: (0.0, 0.0, 0.0),
+                },
+                PhaseManager::sensorless(),
+                seconds(0.00005),
+            );
+            MOTOR_COMMAND_DONE.reset();
+            CMD_CHANNEL
+                .try_send(DriverCommand::Motor(MotorRequest {
+                    source_session: 7,
+                    seq,
+                    command: MotorCommand::SetMode(ControlMode::Brake),
+                }))
+                .unwrap();
+            process_commands(&state, &mut driver, &registry);
+            ISR_FLAGS.flash_op_pending.store(false, Ordering::SeqCst);
+            assert_eq!(
+                MOTOR_COMMAND_DONE.try_take().unwrap().2,
+                MotorCommandOutcome::RejectedSafety(reason)
+            );
+        }
     }
 
     /// An observer restart reported by the service hook raises the

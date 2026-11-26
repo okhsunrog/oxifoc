@@ -52,6 +52,7 @@ use crate::storage::{
 use crate::timer::Timer;
 use crate::types::{
     DriveOwnership, DriveSessionId, MotorCommand, MotorCommandOutcome, MotorRequest, MotorState,
+    SafetyReason,
 };
 #[cfg(feature = "detection")]
 use crate::units::{ConstZero, ElectricalAngularVelocity};
@@ -872,6 +873,43 @@ fn apply_phase_source<P: PhasePwm, C: CurrentSensor, Ph: PhaseProvider, S: SinCo
     })
 }
 
+// The reasons for the gates that test several conditions at once, worked
+// out only on the rejection path. Out of line so the gates keep their shape
+// in the command path, and not `#[cold]` (see `isr_log::raise`).
+
+#[inline(never)]
+fn affirm_block_reason(link_active: bool, motor_state: MotorState) -> SafetyReason {
+    if !link_active {
+        SafetyReason::LinkInactive
+    } else if motor_state != MotorState::Running {
+        SafetyReason::NotRunning
+    } else {
+        SafetyReason::StoppingFault
+    }
+}
+
+#[inline(never)]
+fn start_fault_reason(motor_state: MotorState, stopping_fault: bool) -> SafetyReason {
+    if motor_state == MotorState::Error {
+        SafetyReason::ErrorLatched
+    } else if stopping_fault {
+        SafetyReason::StoppingFault
+    } else {
+        SafetyReason::DetectionCancelled
+    }
+}
+
+#[inline(never)]
+fn storage_busy_reason() -> SafetyReason {
+    if ISR_FLAGS.flash_op_pending.load(Ordering::SeqCst) {
+        SafetyReason::FlashBusy
+    } else if model_apply_pending() {
+        SafetyReason::ModelApplyBusy
+    } else {
+        SafetyReason::DriveSetupRecovery
+    }
+}
+
 /// Like [`process_commands`] but also reports fresh drive activity for the
 /// deadman. Protocol requests must apply a setpoint or affirm the current
 /// owner. Internal setpoints retain their existing watchdog behavior.
@@ -1002,7 +1040,10 @@ where
                             || state.motor_state != MotorState::Running
                             || fault_registry.any_stopping()
                         {
-                            return MotorCommandOutcome::RejectedSafety;
+                            return MotorCommandOutcome::RejectedSafety(affirm_block_reason(
+                                link_active,
+                                state.motor_state,
+                            ));
                         }
                         match state
                             .drive_ownership
@@ -1031,7 +1072,9 @@ where
                     ) {
                         Ok(true) => MotorCommandOutcome::Applied,
                         Ok(false) => MotorCommandOutcome::AlreadyApplied,
-                        Err(MotorModelError::Busy) => MotorCommandOutcome::RejectedSafety,
+                        Err(MotorModelError::Busy) => {
+                            MotorCommandOutcome::RejectedSafety(SafetyReason::NotIdle)
+                        }
                         Err(_) => MotorCommandOutcome::RejectedInvalid,
                     };
                     signal_motor_completion(request, outcome);
@@ -1155,16 +1198,20 @@ where
                 .boot_current_offset_pending
                 .load(Ordering::Relaxed)
             {
-                isr_log::raise(isr_log::Event::RejectedBootCalibration);
                 if let Some(request) = protocol_request {
-                    signal_motor_completion(request, MotorCommandOutcome::RejectedSafety);
+                    signal_motor_completion(
+                        request,
+                        MotorCommandOutcome::RejectedSafety(SafetyReason::BootCalibration),
+                    );
                 }
                 continue;
             }
             if mode != ControlMode::Stopped {
-                isr_log::raise(isr_log::Event::RejectedOffsetCalibration);
                 if let Some(request) = protocol_request {
-                    signal_motor_completion(request, MotorCommandOutcome::RejectedSafety);
+                    signal_motor_completion(
+                        request,
+                        MotorCommandOutcome::RejectedSafety(SafetyReason::OffsetCalibration),
+                    );
                 }
                 continue;
             }
@@ -1176,7 +1223,7 @@ where
             // Recheck at the application boundary, serialized with guard
             // cancellation/drop, not merely when dequeuing the command.
             if detection_authority.is_some_and(|token| !token.is_current()) {
-                return MotorCommandOutcome::RejectedSafety;
+                return MotorCommandOutcome::RejectedSafety(SafetyReason::DetectionStale);
             }
 
             // Exit the Error latch only once the host has explicitly cleared
@@ -1199,7 +1246,10 @@ where
                     || fault_registry.any_stopping()
                     || detection_cancelled())
             {
-                return MotorCommandOutcome::RejectedSafety;
+                return MotorCommandOutcome::RejectedSafety(start_fault_reason(
+                    state.motor_state,
+                    fault_registry.any_stopping(),
+                ));
             }
 
             // A queued flash write/erase would stall the chip mid-spin —
@@ -1209,15 +1259,18 @@ where
                     || model_apply_pending()
                     || ISR_FLAGS.drive_setup_recovery.load(Ordering::Acquire))
             {
-                isr_log::raise(isr_log::Event::RejectedFlashPending);
-                return MotorCommandOutcome::RejectedSafety;
+                return MotorCommandOutcome::RejectedSafety(storage_busy_reason());
             }
 
             #[cfg(feature = "storage")]
             if mode != ControlMode::Stopped
                 && !(state.board_calibration_valid && state.safety_records_valid)
             {
-                return MotorCommandOutcome::RejectedSafety;
+                return MotorCommandOutcome::RejectedSafety(if state.board_calibration_valid {
+                    SafetyReason::SafetyConfigInvalid
+                } else {
+                    SafetyReason::BoardCalibrationInvalid
+                });
             }
 
             #[cfg(feature = "storage")]
@@ -1230,7 +1283,11 @@ where
                         | ControlMode::PositionControl { .. }
                 )
             {
-                return MotorCommandOutcome::RejectedSafety;
+                return MotorCommandOutcome::RejectedSafety(if foc.drive_config_valid() {
+                    SafetyReason::FeedbackNotConfigured
+                } else {
+                    SafetyReason::DriveNotConfigured
+                });
             }
 
             #[cfg(feature = "storage")]
@@ -1245,7 +1302,7 @@ where
                 ) || mode == ControlMode::Brake
                     && foc.torque_speed().abs() > BRAKE_ENTRY_MAX_SPEED)
             {
-                return MotorCommandOutcome::RejectedSafety;
+                return MotorCommandOutcome::RejectedSafety(SafetyReason::HallReferenceMissing);
             }
 
             // Brake (windings shorted) is only safe to enter near standstill:
@@ -1266,8 +1323,9 @@ where
                     state.drive_ownership.release();
                     return MotorCommandOutcome::Applied;
                 } else {
-                    isr_log::raise(isr_log::Event::BrakeRejectedUncalibrated);
-                    return MotorCommandOutcome::RejectedSafety;
+                    return MotorCommandOutcome::RejectedSafety(
+                        SafetyReason::BrakeNeedsCalibration,
+                    );
                 }
             }
 
@@ -1283,8 +1341,7 @@ where
                     mode,
                     ControlMode::Stopped | ControlMode::Coast | ControlMode::Brake
                 ) {
-                    isr_log::raise(isr_log::Event::RejectedFailsafeLatched);
-                    return MotorCommandOutcome::RejectedSafety;
+                    return MotorCommandOutcome::RejectedSafety(SafetyReason::FailsafeLatched);
                 }
                 // The safe-mode command IS the acknowledgement — released
                 // here at the host-command boundary only. Internal stop

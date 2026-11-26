@@ -53,16 +53,11 @@ pub(crate) enum Event {
         limit: f32,
     },
     NonFiniteCommand,
-    RejectedBootCalibration,
-    RejectedOffsetCalibration,
-    RejectedFlashPending,
     BrakeRampAtSpeed,
-    BrakeRejectedUncalibrated,
-    RejectedFailsafeLatched,
 }
 
 #[cfg(any(all(feature = "defmt", feature = "runtime"), test))]
-const KINDS: usize = 18;
+const KINDS: usize = 13;
 #[cfg(any(all(feature = "defmt", feature = "runtime"), test))]
 const _: () = assert!(KINDS <= 32, "the pending set is one u32");
 
@@ -156,12 +151,7 @@ impl Event {
             Self::StepError(e) => (9, [e as u32, 0, 0]),
             Self::ParkBrakeReleased { current, limit } => (10, [f(current), f(limit), 0]),
             Self::NonFiniteCommand => (11, [0; 3]),
-            Self::RejectedBootCalibration => (12, [0; 3]),
-            Self::RejectedOffsetCalibration => (13, [0; 3]),
-            Self::RejectedFlashPending => (14, [0; 3]),
-            Self::BrakeRampAtSpeed => (15, [0; 3]),
-            Self::BrakeRejectedUncalibrated => (16, [0; 3]),
-            Self::RejectedFailsafeLatched => (17, [0; 3]),
+            Self::BrakeRampAtSpeed => (12, [0; 3]),
         }
     }
 
@@ -202,19 +192,15 @@ impl Event {
                 limit: f(w1),
             },
             11 => Self::NonFiniteCommand,
-            12 => Self::RejectedBootCalibration,
-            13 => Self::RejectedOffsetCalibration,
-            14 => Self::RejectedFlashPending,
-            15 => Self::BrakeRampAtSpeed,
-            16 => Self::BrakeRejectedUncalibrated,
-            17 => Self::RejectedFailsafeLatched,
+            12 => Self::BrakeRampAtSpeed,
             _ => return None,
         })
     }
 }
 
 // The texts are matched by scripts/benchsuite.py ("CommTimeout raised",
-// "stop sequence armed", "FAULT:", "FOC step error", "failsafe latched").
+// "stop sequence armed", "FAULT:", "FOC step error"). Command rejections
+// are not logged: the reply carries a `SafetyReason`.
 fn print(event: Event) {
     match event {
         Event::CommTimeout {
@@ -255,18 +241,7 @@ fn print(event: Event) {
             current, limit
         ),
         Event::NonFiniteCommand => warn!("Dropping non-finite driver command"),
-        Event::RejectedBootCalibration => warn!("Mode rejected: boot current calibration active"),
-        Event::RejectedOffsetCalibration => {
-            warn!("Mode rejected: current-offset calibration active");
-        }
-        Event::RejectedFlashPending => warn!("Motor start rejected: flash operation in flight"),
         Event::BrakeRampAtSpeed => info!("Brake at speed: ramping to standstill first"),
-        Event::BrakeRejectedUncalibrated => {
-            warn!("Brake rejected: at speed and current sensor uncalibrated");
-        }
-        Event::RejectedFailsafeLatched => {
-            warn!("Mode rejected: failsafe latched, acknowledge with Stopped first");
-        }
     }
 }
 
@@ -309,12 +284,7 @@ mod round_trip {
                 limit: 10.0,
             },
             Event::NonFiniteCommand,
-            Event::RejectedBootCalibration,
-            Event::RejectedOffsetCalibration,
-            Event::RejectedFlashPending,
             Event::BrakeRampAtSpeed,
-            Event::BrakeRejectedUncalibrated,
-            Event::RejectedFailsafeLatched,
         ];
         let mut kinds = [false; KINDS];
         for event in events {

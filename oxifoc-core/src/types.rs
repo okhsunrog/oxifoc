@@ -282,7 +282,7 @@ pub enum MotorCommandOutcome {
     /// A different source currently owns active drive control.
     RejectedSourceBusy,
     /// A fault, calibration, flash operation, or re-arm latch blocked it.
-    RejectedSafety,
+    RejectedSafety(SafetyReason),
     /// Payload failed validation.
     RejectedInvalid,
     // postcard encodes the variant index — append only.
@@ -291,6 +291,52 @@ pub enum MotorCommandOutcome {
     /// command MAY still be applied once the ISR resumes; retrying with the
     /// same `seq` is safe (a late application answers `AlreadyApplied`).
     TimedOut,
+}
+
+/// Why the command gate refused a command for safety.
+// postcard encodes the variant index — append only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Schema)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SafetyReason {
+    /// The boot current-offset calibration is still running.
+    BootCalibration,
+    /// A requested current-offset calibration is running; only Stop is accepted.
+    OffsetCalibration,
+    /// The detection run that issued the command has ended or been replaced.
+    DetectionStale,
+    /// A detection run was cancelled and has not been cleared yet.
+    DetectionCancelled,
+    /// The Error latch is set; clear the faults first.
+    ErrorLatched,
+    /// A stopping-class fault is active.
+    StoppingFault,
+    /// A flash write or erase is queued or running.
+    FlashBusy,
+    /// A motor-model change is being applied.
+    ModelApplyBusy,
+    /// A drive setup save is being recovered.
+    DriveSetupRecovery,
+    /// The stored board calibration is invalid.
+    BoardCalibrationInvalid,
+    /// A stored current-limit, voltage-limit or failsafe record is corrupt.
+    SafetyConfigInvalid,
+    /// There is no valid drive configuration.
+    DriveNotConfigured,
+    /// There is no valid motor feedback configuration.
+    FeedbackNotConfigured,
+    /// The phase source needs a Hall calibration that is missing or invalid.
+    HallReferenceMissing,
+    /// Braking at speed ramps on current, which needs a calibrated sensor.
+    BrakeNeedsCalibration,
+    /// A failsafe stopped the motor; acknowledge with Stopped, Coast or Brake.
+    FailsafeLatched,
+    /// No host link is active.
+    LinkInactive,
+    /// An affirmation arrived while the motor was not running.
+    NotRunning,
+    /// The drive must be stopped and idle: no calibration, detection or flash
+    /// operation in progress.
+    NotIdle,
 }
 
 impl MotorCommandOutcome {
@@ -620,6 +666,8 @@ pub struct TelemetryConfigAck {
 /// publishes bridge logs on Ergot's standard formatted-log topic.
 /// The bridge carries Ergot over Wi-Fi as COBS frames on one TCP connection
 /// and reports that link and its radio heap in `req/bridge_diag`.
+/// `MotorCommandOutcome::RejectedSafety` carries a `SafetyReason` naming the
+/// gate that refused the command.
 pub const ICD_PROTO_VERSION: u16 = 24;
 
 /// Current feedback and host enrichment use all three measured shunts.

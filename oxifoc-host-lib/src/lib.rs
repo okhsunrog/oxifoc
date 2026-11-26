@@ -1681,7 +1681,7 @@ mod tests {
     fn rejected_and_late_motor_responses_do_not_keep_a_setpoint_alive() {
         use super::{MotorCommandError, MotorCommandOutcome, MotorStatus, Setpoint};
         for outcome in [
-            MotorCommandOutcome::RejectedSafety,
+            MotorCommandOutcome::RejectedSafety(oxifoc_core::types::SafetyReason::FailsafeLatched),
             MotorCommandOutcome::RejectedSourceBusy,
         ] {
             let rejected = MotorCommandError::Rejected(outcome);

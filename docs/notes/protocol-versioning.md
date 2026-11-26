@@ -149,6 +149,15 @@ per-link BLE counters and the radio heap, `Crash` and `ClearCrash` its own
 panic record.
 Every response fits one 505-byte BLE frame.
 
+A command refused for safety now says why: `MotorCommandOutcome::RejectedSafety`
+carries a `SafetyReason` (boot or offset calibration running, a stale or
+cancelled detection, the Error latch, a stopping fault, a flash or
+model-apply operation, invalid board calibration or safety records, no
+drive or feedback configuration, a missing Hall reference, braking at
+speed without a calibrated current sensor, the failsafe re-arm latch, no
+link, an affirmation while stopped, a phase-source change while not idle).
+The controller no longer logs these rejections.
+
 
 The host validates, in order:
 
