@@ -377,7 +377,7 @@ dependencies = [
 [[package]]
 name = "cobs-acc"
 version = "0.1.0"
-source = "git+https://github.com/okhsunrog/ergot?rev=f2b64cccbc6c8c2020c0ca82125ba38059181826#f2b64cccbc6c8c2020c0ca82125ba38059181826"
+source = "git+https://github.com/okhsunrog/ergot?rev=c9d347c232d92a0a7dc7085e217b799a63006e30#c9d347c232d92a0a7dc7085e217b799a63006e30"
 dependencies = [
  "cobs 0.4.0",
 ]
@@ -464,6 +464,21 @@ dependencies = [
  "quote",
  "syn 3.0.10",
 ]
+
+[[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "critical-section"
@@ -1154,13 +1169,14 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 [[package]]
 name = "ergot"
 version = "0.12.0"
-source = "git+https://github.com/okhsunrog/ergot?rev=f2b64cccbc6c8c2020c0ca82125ba38059181826#f2b64cccbc6c8c2020c0ca82125ba38059181826"
+source = "git+https://github.com/okhsunrog/ergot?rev=c9d347c232d92a0a7dc7085e217b799a63006e30#c9d347c232d92a0a7dc7085e217b799a63006e30"
 dependencies = [
  "bbqueue",
  "cobs 0.3.0",
  "cobs-acc",
  "const-fnv1a-hash",
  "cordyceps",
+ "crc",
  "critical-section",
  "defmt 1.2.0",
  "embassy-futures 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",

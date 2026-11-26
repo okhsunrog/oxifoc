@@ -73,7 +73,7 @@ oxifoc-core = { path = "oxifoc-core" }
 # Pin: the fork branch can-transport (ergot #227, a draft) on top of ergot
 # main at #247.
 # Keep a fixed commit so capture provenance remains reproducible.
-ergot = { git = "https://github.com/okhsunrog/ergot", rev = "f2b64cccbc6c8c2020c0ca82125ba38059181826" }
+ergot = { git = "https://github.com/okhsunrog/ergot", rev = "c9d347c232d92a0a7dc7085e217b799a63006e30" }
 tokio = { version = "1.54", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
