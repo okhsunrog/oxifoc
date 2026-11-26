@@ -94,6 +94,9 @@ preserves older review findings and experimental detail.
     old run out (the root has 16);
   - report the bus in `req/bridge_diag`, and leave bus-off when idle, not
     only at the next transmission;
+  - find why a freshly flashed bridge behind the bus twice did not answer
+    through the root for up to 150 s
+    ([what was seen](hw/xiao-esp32c5.md#ergot-over-the-bus-2026-11-24));
   - read a segment's net when it is used: a bridge behind the bus reads 0
     at start, which the relay's flow control then compares with;
   - list the bridges and controllers a host can reach, and name a

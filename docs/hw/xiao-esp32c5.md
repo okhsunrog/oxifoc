@@ -212,6 +212,22 @@ for which the root sends nothing, and just before frames flow again: they
 are frames to the second bridge while it restarts and acknowledges
 nothing, which the controller gives up after three retransmissions.
 
+From the evening of 2026-11-25 messages of more than one CAN frame end
+with a CRC. An update of the second bridge took 460 560 bytes, 8 500
+frames from the root and 1 271 to it, with no overrun and no bus-off, and
+the two failed transmissions of the restart. The bridges then ran through
+the night: after 15.2 hours the root had sent another 2 606 frames and
+received 2 610, the second bridge's renewals of its address and nets,
+with no failed transmission, no overrun and no bus-off among them. Power
+cycled in the morning, the second bridge claimed the same address again.
+
+Twice that day the second bridge did not answer `diag bridge` through the
+root for 40 to 150 s after both had been flashed with a new build, though
+it ran the new image and an update over the bus then went through. The
+same steps on the next morning had its answer after 1.3 s, and its log
+of the first three minutes held one refusal by the root at start, which
+it asked again after. The cause is not found.
+
 ## A controller left running by other firmware, 2026-11-25
 
 The root was given firmware without the CAN link over the probe, while
